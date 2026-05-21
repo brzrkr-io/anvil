@@ -126,7 +126,7 @@ pub const Tab = struct {
     pub fn label(self: *const Tab, out: []u8) []const u8 {
         const title = self.terminal.title();
         if (title.len > 0) return copyTrunc(out, title);
-        const cwd = self.terminal.cwd();
+        const cwd = self.terminal.cwdPath();
         if (cwd.len > 0) return copyTrunc(out, basename(cwd));
         return copyTrunc(out, "shell");
     }

@@ -283,6 +283,28 @@ pub const Terminal = struct {
         return self.cwd_buf[0..self.cwd_len];
     }
 
+    /// Return the filesystem path from the stored OSC 7 value.
+    /// If the value starts with `file://`, the host component is stripped and
+    /// the path from the first `/` after `file://` is returned.
+    ///   "file:///home/dev"     -> "/home/dev"
+    ///   "file://myhost/tmp"    -> "/tmp"
+    ///   "file://"  (no path)   -> ""
+    /// Anything else (bare path or empty) is returned as-is.
+    /// Returns a sub-slice of `cwd_buf` — no allocation.
+    pub fn cwdPath(self: *const Terminal) []const u8 {
+        const raw = self.cwd_buf[0..self.cwd_len];
+        const prefix = "file://";
+        if (std.mem.startsWith(u8, raw, prefix)) {
+            const after_prefix = raw[prefix.len..];
+            // Find the first '/' — everything from there onward is the path.
+            if (std.mem.indexOfScalar(u8, after_prefix, '/')) |slash| {
+                return after_prefix[slash..];
+            }
+            return ""; // "file://" with no path component
+        }
+        return raw;
+    }
+
     pub fn clipboard(self: *const Terminal) []const u8 {
         return self.clipboard_buf[0..self.clipboard_len];
     }
@@ -917,6 +939,31 @@ test "OSC 7 records the working directory" {
     defer term.deinit();
     term.feed("\x1B]7;file:///home/dev\x07");
     try testing.expectEqualStrings("file:///home/dev", term.cwd());
+}
+
+test "cwdPath strips file:// prefix and host" {
+    var term = try makeTerminal(10, 2);
+    defer term.deinit();
+
+    // Empty host (three slashes): file:///home/dev -> /home/dev
+    term.feed("\x1B]7;file:///home/dev\x07");
+    try testing.expectEqualStrings("/home/dev", term.cwdPath());
+
+    // Named host: file://somehost/var/log -> /var/log
+    term.feed("\x1B]7;file://somehost/var/log\x07");
+    try testing.expectEqualStrings("/var/log", term.cwdPath());
+
+    // Bare path passthrough
+    term.feed("\x1B]7;/plain/path\x07");
+    try testing.expectEqualStrings("/plain/path", term.cwdPath());
+
+    // Empty value passthrough
+    term.feed("\x1B]7;\x07");
+    try testing.expectEqualStrings("", term.cwdPath());
+
+    // file:// with no path component -> empty
+    term.feed("\x1B]7;file://\x07");
+    try testing.expectEqualStrings("", term.cwdPath());
 }
 
 test "OSC 133 prompt marks are recorded with absolute lines" {

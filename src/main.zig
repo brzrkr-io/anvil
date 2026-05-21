@@ -337,8 +337,9 @@ fn scrollToCurrentMatch() void {
 }
 
 /// The active tab's cwd (OSC 7), or null if unknown.
+/// Returns the filesystem path (file:// host stripped), not the raw URL.
 fn currentCwd() ?[]const u8 {
-    const cwd = g.tabs.current().terminal.cwd();
+    const cwd = g.tabs.current().terminal.cwdPath();
     return if (cwd.len > 0) cwd else null;
 }
 
