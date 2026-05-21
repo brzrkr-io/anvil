@@ -719,4 +719,5 @@ test {
     _ = @import("terminal/terminal.zig");
     _ = @import("terminal/search.zig");
     _ = @import("pty/pty.zig");
+    _ = @import("ipc/bridge.zig");
 }
