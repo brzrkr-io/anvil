@@ -1,0 +1,97 @@
+CALDERA CONSOLE — TODO
+======================
+Native Zig rebuild of Caldera Console: a GPU terminal growing into a unified
+control plane for software/devops work.  Repo: caldera/caldera-console.
+Updated: 2026-05-21
+
+Full plan & milestones: docs/product/console-rebuild-plan.md
+AI dev env spec:        docs/specs/2026-05-21-ai-dev-environment-design.md
+
+
+DONE
+----
+[x] M0 — Zig scaffold
+    - Zig 0.16 repo, build.zig + zig-objc dependency
+    - Native AppKit window + Metal renderer, clears to Mineral #0c0d10
+    - Caldera brand mark as the macOS Dock icon
+[x] M1 — Terminal core (a genuinely usable single-pane terminal)
+    - VT/ANSI parser (Williams DFA), grid, alternate screen
+    - Deep scrollback: ring of trimmed rows, 100,000-line capacity
+    - PTY: openpty + fork/exec the login shell; read / write / resize
+    - Metal text rendering: CoreText glyphs -> BGRA bitmap -> texture,
+      runtime-compiled MSL shader; Mineral + xterm-256 palette
+    - Keyboard input, scroll-wheel history, window resize
+    - OSC 133 semantic prompt marks (the AI-readiness hook)
+    - 102 unit tests; verified end-to-end (render / input / scroll / resize)
+[x] AI dev environment — design spec written & approved
+[x] AI dev environment — sub-project A (caldera-console) landed:
+    AGENTS.md, CLAUDE.md, BRAND.md + brand/ (9 assets), wiki/, context/,
+    and 7 subagents in .claude/agents/ (builder, reviewer, systems-architect,
+    orchestrator, librarian, design-lead, product-strategist)
+
+
+NEXT UP
+-------
+[ ] AI DEV ENVIRONMENT — sub-project B: global ~/.claude  (sub-project A done)
+      [ ] ~/.claude/CLAUDE.md — Karpathy/multica behavioral standard (verbatim)
+      [ ] ~/.claude/llmwiki-convention.md — LLM-wiki pattern guide
+      [ ] Refresh 3 global agents (backup to ~/.claude/backups/ first; review diffs)
+      [ ] Review settings.json (report only — no changes)
+
+[ ] BRAND ALIGNMENT — reconcile the M1 renderer with BRAND.md
+    M1 shipped before BRAND.md existed; the brand gate flags these divergences:
+      [ ] Font: M1 uses "Menlo" — BRAND.md mandates "IBM Plex Mono"
+          (fallback: SFMono-Regular, Consolas, Liberation Mono)
+      [ ] Background: M1 uses #0c0d10 — brand canvas is graphite #0b0d0e
+      [ ] Accent/cursor: M1 uses #2bb8b0 — brand mineral accent is #2f7f86
+      [ ] ANSI 16-color palette was invented — align with brand semantic
+          status colors (verified #3f8a5b, attention #b07a14, failure #b13a30,
+          agent #6a5fa3, risk #a8623a, info/trace #2f7f86)
+    Cleanest done as part of M2's config/theme work.
+
+[ ] WIKI RECONCILE — wiki/index.md "Current State" still says "M1 in progress";
+    update to M1 complete and append wiki/log.md (per the AGENTS.md session loop)
+
+[ ] M2 — Multi-tab, search, shell integration, config/theme
+      [ ] Multiple terminal tabs (tab bar + switching, per-tab Terminal + Pty)
+      [ ] In-terminal search (search the grid + scrollback)
+      [ ] Shell integration scripts (emit OSC 133, report cwd)
+      [ ] Config file + theme system — apply BRAND.md tokens
+          (brand/tokens.json), IBM Plex Mono, configurable scrollback size
+
+
+ROADMAP  (docs/product/console-rebuild-plan.md, section 6)
+----------------------------------------------------------
+M0  Zig scaffold ......................................... DONE
+M1  Terminal core (usable single-pane terminal) .......... DONE
+M2  Multi-tab, search, shell integration, config/theme ... NEXT
+M3  Webview host + typed IPC bridge; first web surface (overlays / HUD)
+M4  Built-in browser surface
+M5  Editor + file explorer (web surfaces)
+M6  Agent orchestration (Claude Code, Codex, etc.)
+M7  Plugin backplane (write the spec before the code)
+
+Vision: "more than a terminal" — one control plane for everything a software /
+devops engineer does. Terminal + browser + editor + agents + overlays + plugins.
+
+
+POLISH / TECH DEBT  (deferred from M1 — none block M2)
+------------------------------------------------------
+[ ] Renderer: glyph-atlas fast path (today the whole screen is CPU-rasterized
+    each frame — correct and fine, but a per-glyph atlas would be faster)
+[ ] DECCKM application-cursor-keys mode not wired to key input
+    (always sends normal-mode cursor sequences)
+[ ] Cursor blink not implemented (static block cursor)
+[ ] Bold attribute not rendered (no bold/bright glyph variant)
+[ ] Bracketed paste + mouse reporting parsed as flags, not fully wired
+[ ] OSC 52 clipboard / OSC 7 cwd captured by the model but not surfaced to macOS
+[ ] Resize taller leaves blank space below (doesn't pull scrollback down)
+[ ] git: local `main` is ahead of origin/main (Codeberg) — not yet pushed
+
+
+NOTES
+-----
+- Build / run / test:   zig build run   |   zig build test
+- BRAND GATE: once BRAND.md lands in the repo, read it before any UI /
+  window / icon / user-facing work.
+- caldera-console must not depend on caldera-os, Linear, anvil, or Forge.
