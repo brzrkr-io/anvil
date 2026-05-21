@@ -24,6 +24,11 @@ pub fn build(b: *std.Build) void {
     exe_mod.linkFramework("CoreText", .{});
     exe_mod.linkFramework("CoreGraphics", .{});
     exe_mod.linkFramework("CoreFoundation", .{});
+    exe_mod.linkFramework("WebKit", .{});
+
+    exe_mod.addAnonymousImport("palette_html", .{
+        .root_source_file = b.path("ui/palette/index.html"),
+    });
 
     const exe = b.addExecutable(.{
         .name = "caldera-console",
