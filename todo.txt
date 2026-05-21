@@ -50,7 +50,8 @@ NEXT UP
 [ ] WIKI RECONCILE — wiki/index.md "Current State" still says "M1 in progress";
     update to M1 complete and append wiki/log.md (per the AGENTS.md session loop)
 
-[ ] M2 — Multi-tab, search, shell integration, config/theme
+[x] M2 — Multi-tab, search, shell integration, config/theme
+    COMPLETE 2026-05-21. All four sub-projects done and verified end-to-end.
       [x] Multiple terminal tabs (tab bar + switching, per-tab Terminal + Pty)
           Done 2026-05-21. Tab bar auto-hides at 1 tab; configurable ⌘ shortcuts
           (⌘T new, ⌘W close, ⌘⇧]/⌘⇧[ next/prev, ⌘1–9 jump); per-tab shells with
@@ -61,7 +62,13 @@ NEXT UP
           smart-case; ⌘F open, ⌘G/⌘⇧G/Enter navigate, Esc close; bottom search bar
           with find:/current/total display; viewport scrolls to current match.
           187 tests pass. See wiki/concepts/search-system.md.
-      [ ] Shell integration scripts (emit OSC 133, report cwd)
+      [x] Shell integration scripts (emit OSC 133, report cwd)
+          Done 2026-05-21. OSC 133 A/B/C/D marks + OSC 7 cwd emitted by zsh/bash
+          hook scripts; zsh auto-injected via ZDOTDIR shim; bash opt-in line;
+          `shell_integration` config toggle; scripts embedded and written at startup
+          by `src/app/shell_integration.zig`; `Terminal.cwdPath()` strips `file://`
+          for new-tab cwd inheritance. 193 tests pass.
+          See wiki/concepts/shell-integration.md.
       [x] Config file + theme system — apply BRAND.md tokens
           (brand/tokens.json), IBM Plex Mono, configurable scrollback size
           Done 2026-05-21. ZON config at ~/.config/caldera-console/config.zon;
@@ -69,13 +76,16 @@ NEXT UP
           startup. Two built-in themes: mineral-dark (default), mineral-light.
           See wiki/concepts/config-system.md.
 
+[ ] M3 — Webview host + typed IPC bridge; first web surface (overlays / HUD)
+    See docs/product/console-rebuild-plan.md for sub-tasks.
+
 
 ROADMAP  (docs/product/console-rebuild-plan.md, section 6)
 ----------------------------------------------------------
 M0  Zig scaffold ......................................... DONE
 M1  Terminal core (usable single-pane terminal) .......... DONE
-M2  Multi-tab, search, shell integration, config/theme ... NEXT
-M3  Webview host + typed IPC bridge; first web surface (overlays / HUD)
+M2  Multi-tab, search, shell integration, config/theme ... DONE
+M3  Webview host + typed IPC bridge; first web surface (overlays / HUD) ... NEXT
 M4  Built-in browser surface
 M5  Editor + file explorer (web surfaces)
 M6  Agent orchestration (Claude Code, Codex, etc.)
