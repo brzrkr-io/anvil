@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root { --bg: #0b0d0e; --fg: #e8e6e3; --accent: #2f7f86; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: transparent;
+    display: none;
+    font-family: 'IBM Plex Sans', -apple-system, sans-serif;
+  }
+  body.visible { display: block; }
+  #backdrop {
+    position: fixed; inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    display: flex; justify-content: center; align-items: flex-start;
+  }
+  #palette {
+    margin-top: 12vh; width: 540px; max-width: 90vw;
+    background: var(--bg);
+    border: 1px solid var(--accent);
+    border-radius: 8px; overflow: hidden;
+    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
+  }
+  #query {
+    width: 100%; box-sizing: border-box; padding: 14px 16px;
+    background: var(--bg); color: var(--fg);
+    border: none; outline: none; font-size: 15px;
+    font-family: 'IBM Plex Mono', ui-monospace, monospace;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  #list { list-style: none; margin: 0; padding: 6px; max-height: 320px; overflow-y: auto; }
+  #list li {
+    padding: 9px 12px; border-radius: 5px; color: var(--fg);
+    cursor: pointer; display: flex; justify-content: space-between;
+  }
+  #list li .sub { opacity: 0.5; font-size: 12px; }
+  #list li.sel { background: var(--accent); color: var(--bg); }
+  #list li.sel .sub { opacity: 0.8; }
+</style>
+</head>
+<body>
+<div id="backdrop">
+  <div id="palette">
+    <input id="query" type="text" placeholder="Type a command…" autocomplete="off" spellcheck="false">
+    <ul id="list"></ul>
+  </div>
+</div>
+<script>
+(function () {
+  var commands = [], filtered = [], sel = 0;
+  var body = document.body;
+  var query = document.getElementById('query');
+  var list = document.getElementById('list');
+  var backdrop = document.getElementById('backdrop');
+
+  function post(obj) {
+    window.webkit.messageHandlers.caldera.postMessage(JSON.stringify(obj));
+  }
+
+  function fuzzy(needle, hay) {
+    needle = needle.toLowerCase();
+    hay = hay.toLowerCase();
+    var i = 0;
+    for (var j = 0; j < hay.length && i < needle.length; j++) {
+      if (hay[j] === needle[i]) i++;
+    }
+    return i === needle.length;
+  }
+
+  function render() {
+    var q = query.value.trim();
+    filtered = commands.filter(function (c) { return q === '' || fuzzy(q, c.title); });
+    if (sel >= filtered.length) sel = Math.max(0, filtered.length - 1);
+    list.innerHTML = '';
+    filtered.forEach(function (c, idx) {
+      var li = document.createElement('li');
+      if (idx === sel) li.className = 'sel';
+      var title = document.createElement('span');
+      title.textContent = c.title;
+      li.appendChild(title);
+      if (c.subtitle) {
+        var sub = document.createElement('span');
+        sub.className = 'sub';
+        sub.textContent = c.subtitle;
+        li.appendChild(sub);
+      }
+      li.addEventListener('click', function () { invoke(idx); });
+      list.appendChild(li);
+    });
+  }
+
+  function invoke(idx) {
+    if (idx >= 0 && idx < filtered.length) {
+      post({ type: 'invoke', id: filtered[idx].id });
+    }
+  }
+
+  window.caldera = {
+    receive: function (msg) {
+      if (msg.type === 'show') {
+        commands = msg.commands || [];
+        if (msg.theme) {
+          var r = document.documentElement.style;
+          r.setProperty('--bg', msg.theme.background);
+          r.setProperty('--fg', msg.theme.foreground);
+          r.setProperty('--accent', msg.theme.accent);
+        }
+        query.value = '';
+        sel = 0;
+        render();
+        body.classList.add('visible');
+        query.focus();
+      } else if (msg.type === 'hide') {
+        body.classList.remove('visible');
+        query.value = '';
+        sel = 0;
+      }
+    }
+  };
+
+  query.addEventListener('input', render);
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') {
+      post({ type: 'dismiss' });
+      e.preventDefault();
+    } else if (e.key === 'ArrowDown') {
+      if (sel < filtered.length - 1) { sel++; render(); }
+      e.preventDefault();
+    } else if (e.key === 'ArrowUp') {
+      if (sel > 0) { sel--; render(); }
+      e.preventDefault();
+    } else if (e.key === 'Enter') {
+      invoke(sel);
+      e.preventDefault();
+    }
+  });
+
+  backdrop.addEventListener('mousedown', function (e) {
+    if (e.target === backdrop) post({ type: 'dismiss' });
+  });
+
+  post({ type: 'ready' });
+})();
+</script>
+</body>
+</html>
