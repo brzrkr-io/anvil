@@ -62,6 +62,7 @@ pub const Grid = struct {
         const w = @max(cols, 1);
         const h = @max(rows, 1);
         const cells = try alloc.alloc(Cell, w * h);
+        errdefer alloc.free(cells);
         @memset(cells, Cell{});
         const scrolled_off = try alloc.alloc(Cell, w);
         @memset(scrolled_off, Cell{});

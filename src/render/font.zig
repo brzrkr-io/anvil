@@ -110,3 +110,17 @@ test "glyph lookup resolves common characters" {
     try std.testing.expect(f.glyph('z') != 0);
     try std.testing.expect(f.glyph('0') != 0);
 }
+
+test "glyph handles an astral-plane codepoint via the surrogate-pair path" {
+    const names = [_][:0]const u8{ "IBMPlexMono", "SFMono-Regular", "Menlo" };
+    const f = try Font.initFirstAvailable(&names, 26.0);
+    defer f.deinit();
+    // U+1F600 is above the BMP, so glyph() builds a UTF-16 surrogate pair.
+    // The font need not carry the glyph; the lookup must not crash.
+    _ = f.glyph(0x1F600);
+}
+
+test "initFirstAvailable with no names returns NoFontAvailable" {
+    const empty = [_][:0]const u8{};
+    try std.testing.expectError(error.NoFontAvailable, Font.initFirstAvailable(&empty, 26.0));
+}

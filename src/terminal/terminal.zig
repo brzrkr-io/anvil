@@ -1005,3 +1005,207 @@ test "viewportRow always returns exactly cols cells" {
     try testing.expectEqual(@as(usize, 8), term.viewportRow(0).len);
     try testing.expectEqual(@as(usize, 8), term.viewportRow(1).len);
 }
+
+test "init releases partial state on allocation failure" {
+    const H = struct {
+        fn run(alloc: std.mem.Allocator) !void {
+            var term = try Terminal.init(alloc, 8, 4, scrollback.default_capacity);
+            term.deinit();
+        }
+    };
+    // Fails each allocation in turn; init's errdefers must leave no leaks.
+    try testing.checkAllAllocationFailures(testing.allocator, H.run, .{});
+}
+
+test "BS and HT execute as cursor controls" {
+    var term = try makeTerminal(20, 2);
+    defer term.deinit();
+    term.feed("ab\x08"); // backspace after 'ab'
+    try testing.expectEqual(@as(usize, 1), term.cursor().x);
+    term.feed("\r\x09"); // CR home, then HT to the next 8-column tab stop
+    try testing.expectEqual(@as(usize, 8), term.cursor().x);
+}
+
+test "CSI relative cursor moves B, C, D" {
+    var term = try makeTerminal(10, 5);
+    defer term.deinit();
+    term.feed("\x1B[3;5H"); // row 2, col 4
+    term.feed("\x1B[1B"); // down 1
+    try testing.expectEqual(@as(usize, 3), term.cursor().y);
+    term.feed("\x1B[2C"); // forward 2
+    try testing.expectEqual(@as(usize, 6), term.cursor().x);
+    term.feed("\x1B[3D"); // back 3
+    try testing.expectEqual(@as(usize, 3), term.cursor().x);
+}
+
+test "CSI E and F move to line start, down and up" {
+    var term = try makeTerminal(10, 5);
+    defer term.deinit();
+    term.feed("\x1B[3;5H\x1B[1E"); // CNL from row 2 -> col 0, row 3
+    try testing.expectEqual(@as(usize, 0), term.cursor().x);
+    try testing.expectEqual(@as(usize, 3), term.cursor().y);
+    term.feed("\x1B[5;5H\x1B[2F"); // CPL from row 4 -> col 0, row 2
+    try testing.expectEqual(@as(usize, 0), term.cursor().x);
+    try testing.expectEqual(@as(usize, 2), term.cursor().y);
+}
+
+test "CSI d sets the cursor row absolutely" {
+    var term = try makeTerminal(10, 5);
+    defer term.deinit();
+    term.feed("\x1B[3d"); // line position absolute -> row index 2
+    try testing.expectEqual(@as(usize, 2), term.cursor().y);
+}
+
+test "CSI @ and P insert and delete characters" {
+    var term = try makeTerminal(6, 2);
+    defer term.deinit();
+    term.feed("abcdef\x1B[1G\x1B[2@"); // insert 2 blanks at the line start
+    var buf: [8]u8 = undefined;
+    try testing.expectEqualStrings("  abcd", viewportText(&term, 0, &buf));
+    term.feed("\x1B[1G\x1B[3P"); // delete 3 characters from the start
+    try testing.expectEqualStrings("bcd   ", viewportText(&term, 0, &buf));
+}
+
+test "CSI X erases characters in place" {
+    var term = try makeTerminal(6, 2);
+    defer term.deinit();
+    term.feed("abcdef\x1B[1G\x1B[3X");
+    var buf: [8]u8 = undefined;
+    try testing.expectEqualStrings("   def", viewportText(&term, 0, &buf));
+}
+
+test "CSI S and T scroll the screen up and down" {
+    var term = try makeTerminal(4, 3);
+    defer term.deinit();
+    term.feed("11\r\n22\r\n33");
+    var buf: [8]u8 = undefined;
+    term.feed("\x1B[1S"); // scroll up
+    try testing.expectEqualStrings("22  ", viewportText(&term, 0, &buf));
+    term.feed("\x1B[1T"); // scroll down
+    try testing.expectEqualStrings("    ", viewportText(&term, 0, &buf));
+    try testing.expectEqualStrings("22  ", viewportText(&term, 1, &buf));
+}
+
+test "CSI M deletes lines" {
+    var term = try makeTerminal(4, 4);
+    defer term.deinit();
+    term.feed("11\r\n22\r\n33\r\n44");
+    term.feed("\x1B[1;1H\x1B[1M"); // delete the line at row 0
+    var buf: [8]u8 = undefined;
+    try testing.expectEqualStrings("22  ", viewportText(&term, 0, &buf));
+}
+
+test "CSI 4h and 4l toggle the grid insert mode" {
+    var term = try makeTerminal(6, 2);
+    defer term.deinit();
+    term.feed("\x1B[4h"); // SM: insert mode on
+    try testing.expect(term.primary.modes.insert);
+    term.feed("\x1B[4l"); // RM: insert mode off
+    try testing.expect(!term.primary.modes.insert);
+}
+
+test "ESC D indexes down and ESC E moves to the next line" {
+    var term = try makeTerminal(6, 3);
+    defer term.deinit();
+    term.feed("\x1B[2;3H\x1BD"); // IND from row 1 -> row 2, column kept
+    try testing.expectEqual(@as(usize, 2), term.cursor().y);
+    try testing.expectEqual(@as(usize, 2), term.cursor().x);
+    term.feed("\x1B[1;3H\x1BE"); // NEL from row 0 -> col 0, row 1
+    try testing.expectEqual(@as(usize, 0), term.cursor().x);
+    try testing.expectEqual(@as(usize, 1), term.cursor().y);
+}
+
+test "ESC M reverse-indexes, scrolling down at the top" {
+    var term = try makeTerminal(4, 3);
+    defer term.deinit();
+    term.feed("11\r\n22\r\n33");
+    term.feed("\x1B[2;1H\x1BM"); // RI from row 1 -> cursor up to row 0
+    try testing.expectEqual(@as(usize, 0), term.cursor().y);
+    term.feed("\x1BM"); // RI at the top -> scroll the region down
+    var buf: [8]u8 = undefined;
+    try testing.expectEqualStrings("    ", viewportText(&term, 0, &buf));
+    try testing.expectEqualStrings("11  ", viewportText(&term, 1, &buf));
+}
+
+test "OSC 52 stores the clipboard payload" {
+    var term = try makeTerminal(10, 2);
+    defer term.deinit();
+    term.feed("\x1B]52;c;SGVsbG8=\x07"); // selection 'c', base64 payload
+    try testing.expectEqualStrings("SGVsbG8=", term.clipboard());
+}
+
+test "DECSET ?1 toggles application cursor keys" {
+    var term = try makeTerminal(10, 2);
+    defer term.deinit();
+    term.feed("\x1B[?1h");
+    try testing.expect(term.modes.app_cursor_keys);
+    term.feed("\x1B[?1l");
+    try testing.expect(!term.modes.app_cursor_keys);
+}
+
+test "DECSET mouse modes ?1000 ?1002 ?1006" {
+    var term = try makeTerminal(10, 2);
+    defer term.deinit();
+    term.feed("\x1B[?1000h");
+    try testing.expect(term.modes.mouse_button);
+    term.feed("\x1B[?1000l\x1B[?1002h");
+    try testing.expect(term.modes.mouse_button);
+    term.feed("\x1B[?1006h");
+    try testing.expect(term.modes.mouse_sgr);
+}
+
+test "SGR with no parameters resets the pen" {
+    var term = try makeTerminal(10, 2);
+    defer term.deinit();
+    term.feed("\x1B[1mA\x1B[mB"); // bare CSI m resets
+    try testing.expect(term.viewportRow(0)[0].attrs.bold);
+    try testing.expect(!term.viewportRow(0)[1].attrs.bold);
+}
+
+test "SGR applies and clears every text attribute" {
+    var term = try makeTerminal(20, 2);
+    defer term.deinit();
+    term.feed("\x1B[2;3;5;7;8;9mA"); // dim, italic, blink, inverse, invisible, strike
+    const a = term.viewportRow(0)[0];
+    try testing.expect(a.attrs.dim and a.attrs.italic and a.attrs.blink);
+    try testing.expect(a.attrs.inverse and a.attrs.invisible and a.attrs.strikethrough);
+    // 22 clears bold+dim; 23/24/25/27/28/29 clear the remaining attributes.
+    term.feed("\x1B[1;2;22;23;24;25;27;28;29mB");
+    const b = term.viewportRow(0)[1];
+    try testing.expect(!b.attrs.bold and !b.attrs.dim and !b.attrs.italic);
+    try testing.expect(!b.attrs.underline and !b.attrs.blink and !b.attrs.inverse);
+    try testing.expect(!b.attrs.invisible and !b.attrs.strikethrough);
+}
+
+test "SGR foreground and background color codes" {
+    var term = try makeTerminal(20, 2);
+    defer term.deinit();
+    term.feed("\x1B[44mA"); // background palette 4
+    try testing.expectEqual(Color{ .palette = 4 }, term.viewportRow(0)[0].bg);
+    term.feed("\x1B[39;49mB"); // default foreground and background
+    try testing.expectEqual(Color.default, term.viewportRow(0)[1].fg);
+    try testing.expectEqual(Color.default, term.viewportRow(0)[1].bg);
+    term.feed("\x1B[91mC"); // bright foreground -> palette 9
+    try testing.expectEqual(Color{ .palette = 9 }, term.viewportRow(0)[2].fg);
+    term.feed("\x1B[102mD"); // bright background -> palette 10
+    try testing.expectEqual(Color{ .palette = 10 }, term.viewportRow(0)[3].bg);
+}
+
+test "SGR extended-color with an unknown selector consumes one parameter" {
+    var term = try makeTerminal(10, 2);
+    defer term.deinit();
+    // 38 then 9 (neither 5 nor 2): the selector is skipped, the trailing 1m applies.
+    term.feed("\x1B[38;9;1mX");
+    try testing.expect(term.viewportRow(0)[0].attrs.bold);
+}
+
+test "OSC 133 marks evict the oldest past the cap" {
+    var term = try makeTerminal(6, 3);
+    defer term.deinit();
+    var i: usize = 0;
+    while (i < max_marks + 5) : (i += 1) {
+        term.feed("\x1B]133;A\x07");
+    }
+    // The ring is capped; the most recent max_marks are retained.
+    try testing.expectEqual(@as(usize, max_marks), term.promptMarks().len);
+}

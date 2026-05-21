@@ -290,6 +290,12 @@ test "spawnShell starts an interactive login shell" {
     );
 }
 
+test "lookupEnv finds a present variable and misses an absent one" {
+    // PATH is set in every reasonable test environment.
+    try std.testing.expect(lookupEnv("PATH") != null);
+    try std.testing.expect(lookupEnv("CALDERA_DEFINITELY_UNSET_VAR_XYZ") == null);
+}
+
 test "child environment advertises xterm-256color" {
     const alloc = std.testing.allocator;
     var pty = try Pty.spawn(

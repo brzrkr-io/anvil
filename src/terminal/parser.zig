@@ -725,3 +725,206 @@ test "CSI with colon sub-params is ignored" {
     try std.testing.expectEqual(@as(usize, 1), h.count);
     try std.testing.expectEqual(@as(u21, 'X'), h.events[0].print);
 }
+
+test "CAN aborts an escape sequence to ground" {
+    var h = TestHandler{};
+    var p = Parser.init();
+    // CAN (0x18) mid-CSI drops the sequence; the following text still prints.
+    p.feed(&h, "\x1B[1;2\x18X");
+    try std.testing.expectEqual(@as(usize, 1), h.count);
+    try std.testing.expectEqual(@as(u21, 'X'), h.events[0].print);
+}
+
+test "SUB aborts to ground and executes" {
+    var h = TestHandler{};
+    var p = Parser.init();
+    // SUB (0x1A) executes, then aborts the in-progress sequence to ground.
+    p.feed(&h, "\x1B[3\x1AY");
+    try std.testing.expectEqual(@as(u8, 0x1A), h.events[0].execute);
+    try std.testing.expectEqual(@as(u21, 'Y'), h.events[1].print);
+}
+
+test "ESC with an unhandled final byte returns to ground" {
+    var h = TestHandler{};
+    var p = Parser.init();
+    p.feed(&h, "\x1B\x7FZ"); // DEL is not a valid ESC final
+    try std.testing.expectEqual(@as(usize, 1), h.count);
+    try std.testing.expectEqual(@as(u21, 'Z'), h.events[0].print);
+}
+
+test "ESC dispatch collects multiple intermediates" {
+    var h = TestHandler{};
+    var p = Parser.init();
+    p.feed(&h, "\x1B #8"); // ESC, intermediates SP and '#', final '8'
+    const esc = h.events[0].esc;
+    try std.testing.expectEqual(@as(u8, '8'), esc.final);
+    try std.testing.expectEqual(@as(usize, 2), esc.inter_len);
+    try std.testing.expectEqual(@as(u8, ' '), esc.inter[0]);
+    try std.testing.expectEqual(@as(u8, '#'), esc.inter[1]);
+}
+
+test "ESC intermediate then an unhandled byte returns to ground" {
+    var h = TestHandler{};
+    var p = Parser.init();
+    p.feed(&h, "\x1B \x7FW"); // ESC, intermediate SP, DEL (unhandled)
+    try std.testing.expectEqual(@as(usize, 1), h.count);
+    try std.testing.expectEqual(@as(u21, 'W'), h.events[0].print);
+}
+
+test "CSI cursor-style sequence carries a parameter and an intermediate" {
+    var h = TestHandler{};
+    var p = Parser.init();
+    p.feed(&h, "\x1B[2 q"); // DECSCUSR: param 2, intermediate SP, final 'q'
+    const csi = h.events[0].csi;
+    try std.testing.expectEqual(@as(u8, 'q'), csi.final);
+    try std.testing.expectEqual(@as(u16, 2), csi.params[0]);
+    try std.testing.expectEqual(@as(usize, 1), csi.inter_len);
+    try std.testing.expectEqual(@as(u8, ' '), csi.inter[0]);
+}
+
+test "CSI intermediate immediately after CSI dispatches" {
+    var h = TestHandler{};
+    var p = Parser.init();
+    p.feed(&h, "\x1B[ q"); // intermediate with no preceding parameter
+    const csi = h.events[0].csi;
+    try std.testing.expectEqual(@as(u8, 'q'), csi.final);
+    try std.testing.expectEqual(@as(usize, 1), csi.inter_len);
+}
+
+test "CSI collects multiple intermediates" {
+    var h = TestHandler{};
+    var p = Parser.init();
+    p.feed(&h, "\x1B[ !q"); // intermediates SP and '!'
+    try std.testing.expectEqual(@as(usize, 2), h.events[0].csi.inter_len);
+}
+
+test "CSI intermediate followed by a digit abandons the sequence" {
+    var h = TestHandler{};
+    var p = Parser.init();
+    p.feed(&h, "\x1B[ 1qX"); // a digit after an intermediate is invalid
+    try std.testing.expectEqual(@as(usize, 1), h.count);
+    try std.testing.expectEqual(@as(u21, 'X'), h.events[0].print);
+}
+
+test "CSI intermediate followed by an unhandled byte abandons the sequence" {
+    var h = TestHandler{};
+    var p = Parser.init();
+    p.feed(&h, "\x1B[ \x7FqX"); // DEL after an intermediate
+    try std.testing.expectEqual(@as(usize, 1), h.count);
+    try std.testing.expectEqual(@as(u21, 'X'), h.events[0].print);
+}
+
+test "CSI colon immediately after CSI is ignored" {
+    var h = TestHandler{};
+    var p = Parser.init();
+    p.feed(&h, "\x1B[:5mX"); // ':' at csi_entry abandons the sequence
+    try std.testing.expectEqual(@as(usize, 1), h.count);
+    try std.testing.expectEqual(@as(u21, 'X'), h.events[0].print);
+}
+
+test "CSI private marker after a parameter is ignored" {
+    var h = TestHandler{};
+    var p = Parser.init();
+    p.feed(&h, "\x1B[1?hX"); // '?' mid-param abandons the sequence
+    try std.testing.expectEqual(@as(usize, 1), h.count);
+    try std.testing.expectEqual(@as(u21, 'X'), h.events[0].print);
+}
+
+test "CSI unhandled byte at entry and mid-param is ignored" {
+    var h = TestHandler{};
+    var p = Parser.init();
+    p.feed(&h, "\x1B[\x7FmA"); // DEL right after CSI
+    p.feed(&h, "\x1B[2\x7FmB"); // DEL after a parameter digit
+    try std.testing.expectEqual(@as(usize, 2), h.count);
+    try std.testing.expectEqual(@as(u21, 'A'), h.events[0].print);
+    try std.testing.expectEqual(@as(u21, 'B'), h.events[1].print);
+}
+
+/// A handler that also records the optional DCS hook/put/unhook callbacks.
+const DcsHandler = struct {
+    put: [64]u8 = undefined,
+    put_len: usize = 0,
+    unhooked: bool = false,
+
+    pub fn print(_: *DcsHandler, _: u21) void {}
+    pub fn execute(_: *DcsHandler, _: u8) void {}
+    pub fn csiDispatch(_: *DcsHandler, _: []const u8, _: []const u16, _: u8) void {}
+    pub fn escDispatch(_: *DcsHandler, _: []const u8, _: u8) void {}
+    pub fn oscDispatch(_: *DcsHandler, _: []const u8) void {}
+
+    pub fn dcsPut(self: *DcsHandler, byte: u8) void {
+        if (self.put_len < self.put.len) {
+            self.put[self.put_len] = byte;
+            self.put_len += 1;
+        }
+    }
+
+    pub fn dcsUnhook(self: *DcsHandler) void {
+        self.unhooked = true;
+    }
+};
+
+test "DCS delivers its payload and unhooks on ST" {
+    var h = DcsHandler{};
+    var p = Parser.init();
+    // ESC P, params 1;2, intermediate '!', final 'q', payload, then ST.
+    p.feed(&h, "\x1BP1;2 !qDATA\x1B\\");
+    try std.testing.expectEqualStrings("DATA", h.put[0..h.put_len]);
+    try std.testing.expect(h.unhooked);
+}
+
+test "DCS entered via a private marker and ended by 8-bit ST" {
+    var h = DcsHandler{};
+    var p = Parser.init();
+    p.feed(&h, "\x1BP<qPAYLOAD\x9C");
+    try std.testing.expectEqualStrings("PAYLOAD", h.put[0..h.put_len]);
+    try std.testing.expect(h.unhooked);
+}
+
+test "DCS with a leading intermediate reaches passthrough" {
+    var h = DcsHandler{};
+    var p = Parser.init();
+    p.feed(&h, "\x1BP qX\x9C");
+    try std.testing.expectEqualStrings("X", h.put[0..h.put_len]);
+}
+
+test "a C0 control inside DCS is swallowed, not delivered as payload" {
+    var h = DcsHandler{};
+    var p = Parser.init();
+    // BS (0x08) arrives in dcs_passthrough; DCS string states absorb C0.
+    p.feed(&h, "\x1BPqAB\x08CD\x9C");
+    try std.testing.expectEqualStrings("ABCD", h.put[0..h.put_len]);
+}
+
+test "DCS aborted by a colon ignores the rest of the sequence" {
+    var h = DcsHandler{};
+    var p = Parser.init();
+    p.feed(&h, "\x1BP:junk\x1B\\");
+    try std.testing.expectEqual(@as(usize, 0), h.put_len);
+    try std.testing.expect(!h.unhooked);
+}
+
+test "DCS rejects unhandled bytes in entry, param, and intermediate states" {
+    var p = Parser.init();
+    var h1 = DcsHandler{};
+    p.feed(&h1, "\x1BP\x7Fjunk\x1B\\"); // DEL at dcs_entry
+    try std.testing.expectEqual(@as(usize, 0), h1.put_len);
+
+    p = Parser.init();
+    var h2 = DcsHandler{};
+    p.feed(&h2, "\x1BP1\x7Fjunk\x1B\\"); // DEL after a param digit
+    try std.testing.expectEqual(@as(usize, 0), h2.put_len);
+
+    p = Parser.init();
+    var h3 = DcsHandler{};
+    p.feed(&h3, "\x1BP 1junk\x1B\\"); // digit after a leading intermediate
+    try std.testing.expectEqual(@as(usize, 0), h3.put_len);
+}
+
+test "PM string is consumed and discarded" {
+    var h = TestHandler{};
+    var p = Parser.init();
+    // ESC ^ ... ST (PM). Content is swallowed; the trailing text prints.
+    p.feed(&h, "\x1B^private\x07message\x1B\\X");
+    try std.testing.expectEqual(@as(u21, 'X'), h.events[h.count - 1].print);
+}
