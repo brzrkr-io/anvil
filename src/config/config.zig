@@ -44,6 +44,7 @@ pub const Config = struct {
     window: WindowCfg = .{},
     theme: []const u8 = "mineral-dark",
     theme_overrides: Overrides = .{},
+    keybindings: Keybindings = .{},
 
     pub const FontCfg = struct {
         family: []const u8 = "IBM Plex Mono",
@@ -182,6 +183,67 @@ pub const Watcher = struct {
         if (m == 0) return defaults(backing); // file was removed -> defaults
         return load(backing, self.path);
     }
+};
+
+/// A parsed key chord: modifier flags plus one key codepoint (lowercased for
+/// ASCII letters). The default tab shortcuts all use single-character keys.
+pub const Chord = struct {
+    cmd: bool = false,
+    shift: bool = false,
+    ctrl: bool = false,
+    opt: bool = false,
+    key: u21,
+};
+
+/// Parse a chord string like "cmd+shift+]" or "cmd+t". Modifier tokens are
+/// cmd/shift/ctrl/opt (case-insensitive); the final token is a single key
+/// character. Returns null on a malformed string.
+pub fn parseChord(s: []const u8) ?Chord {
+    var ch: Chord = .{ .key = 0 };
+    var have_key = false;
+    var it = std.mem.splitScalar(u8, s, '+');
+    while (it.next()) |tok_raw| {
+        const tok = std.mem.trim(u8, tok_raw, " ");
+        if (tok.len == 0) return null;
+        if (eqIgnoreCase(tok, "cmd")) {
+            ch.cmd = true;
+        } else if (eqIgnoreCase(tok, "shift")) {
+            ch.shift = true;
+        } else if (eqIgnoreCase(tok, "ctrl")) {
+            ch.ctrl = true;
+        } else if (eqIgnoreCase(tok, "opt")) {
+            ch.opt = true;
+        } else {
+            // Must be the key — exactly one ASCII character, and last.
+            if (have_key or tok.len != 1) return null;
+            ch.key = std.ascii.toLower(tok[0]);
+            have_key = true;
+        }
+    }
+    if (!have_key) return null;
+    return ch;
+}
+
+fn eqIgnoreCase(a: []const u8, b: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(a, b);
+}
+
+/// Chord strings for tab actions. Live-reloadable. Each is parsed via
+/// `parseChord`; an unparseable string falls back to that field's default.
+pub const Keybindings = struct {
+    new_tab: []const u8 = "cmd+t",
+    close_tab: []const u8 = "cmd+w",
+    next_tab: []const u8 = "cmd+shift+]",
+    prev_tab: []const u8 = "cmd+shift+[",
+    tab_1: []const u8 = "cmd+1",
+    tab_2: []const u8 = "cmd+2",
+    tab_3: []const u8 = "cmd+3",
+    tab_4: []const u8 = "cmd+4",
+    tab_5: []const u8 = "cmd+5",
+    tab_6: []const u8 = "cmd+6",
+    tab_7: []const u8 = "cmd+7",
+    tab_8: []const u8 = "cmd+8",
+    tab_9: []const u8 = "cmd+9",
 };
 
 const testing = std.testing;
@@ -330,4 +392,33 @@ test "Watcher parse failure advances mtime so it is not re-reported" {
 
     // Third poll: file unchanged, mtime was already recorded -> must return null.
     try testing.expect(w.poll(testing.allocator) == null);
+}
+
+test "parseChord parses modifiers and key" {
+    const c = parseChord("cmd+shift+]").?;
+    try testing.expect(c.cmd and c.shift and !c.ctrl and !c.opt);
+    try testing.expectEqual(@as(u21, ']'), c.key);
+
+    const t = parseChord("cmd+t").?;
+    try testing.expect(t.cmd);
+    try testing.expectEqual(@as(u21, 't'), t.key);
+
+    // Case-insensitive, letter lowercased.
+    const u = parseChord("CMD+T").?;
+    try testing.expectEqual(@as(u21, 't'), u.key);
+}
+
+test "parseChord rejects malformed strings" {
+    try testing.expect(parseChord("") == null);
+    try testing.expect(parseChord("cmd+") == null);
+    try testing.expect(parseChord("cmd+ab") == null); // key not single char
+    try testing.expect(parseChord("cmd") == null); // no key
+    try testing.expect(parseChord("cmd+t+w") == null); // two keys
+}
+
+test "config parses a keybindings override" {
+    var loaded = try parseSlice(testing.allocator, ".{ .keybindings = .{ .new_tab = \"ctrl+n\" } }");
+    defer loaded.deinit();
+    try testing.expectEqualStrings("ctrl+n", loaded.config.keybindings.new_tab);
+    try testing.expectEqualStrings("cmd+w", loaded.config.keybindings.close_tab); // default
 }
