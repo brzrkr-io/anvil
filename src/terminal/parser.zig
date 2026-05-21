@@ -387,6 +387,9 @@ pub const Parser = struct {
         self.param_started = false;
         self.intermediate_count = 0;
         self.osc_len = 0;
+        // Zero the first slot so `appendDigit` accumulates from a clean base
+        // even before the slot is formally "activated".
+        self.params[0] = 0;
     }
 
     fn collectIntermediate(self: *Parser, byte: u8) void {
@@ -700,6 +703,18 @@ test "feed handles escape split across calls" {
     try std.testing.expectEqual(@as(usize, 1), h.count);
     try std.testing.expectEqual(@as(u8, 'A'), h.events[0].csi.final);
     try std.testing.expectEqual(@as(u16, 5), h.events[0].csi.params[0]);
+}
+
+test "consecutive CSI sequences do not leak param state" {
+    var h = TestHandler{};
+    var p = Parser.init();
+    // Regression: a `CSI 0 m` after `CSI 1;31 m` must dispatch param 0, not
+    // a digit accumulated onto the stale first slot.
+    p.feed(&h, "\x1B[1;31m\x1B[0m");
+    try std.testing.expectEqual(@as(usize, 2), h.count);
+    try std.testing.expectEqual(@as(usize, 2), h.events[0].csi.param_len);
+    try std.testing.expectEqual(@as(usize, 1), h.events[1].csi.param_len);
+    try std.testing.expectEqual(@as(u16, 0), h.events[1].csi.params[0]);
 }
 
 test "CSI with colon sub-params is ignored" {
