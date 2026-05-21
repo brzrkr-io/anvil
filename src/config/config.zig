@@ -267,3 +267,68 @@ test "Watcher detects a change and reloads" {
     // No change -> no reload.
     try testing.expect(w.poll(testing.allocator) == null);
 }
+
+test "Watcher file removed returns defaults" {
+    const io = std.testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path_len = try tmp.dir.realPath(io, &path_buf);
+    const dir_path = path_buf[0..path_len];
+
+    var full_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const full = try std.fmt.bufPrint(&full_buf, "{s}/config.zon", .{dir_path});
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "config.zon", .data = ".{ .scrollback = 42 }" });
+    var w = Watcher.init(full);
+
+    // First poll: file exists, gets loaded config.
+    var first = w.poll(testing.allocator) orelse return error.ExpectedReload;
+    defer first.deinit();
+    try testing.expectEqual(@as(usize, 42), first.config.scrollback);
+
+    // Delete the file.
+    try tmp.dir.deleteFile(io, "config.zon");
+
+    // Second poll: file removed -> m == 0 branch -> returns defaults.
+    var second = w.poll(testing.allocator) orelse return error.ExpectedDefaults;
+    defer second.deinit();
+    try testing.expectEqual(@as(usize, 100_000), second.config.scrollback);
+}
+
+test "Watcher parse failure advances mtime so it is not re-reported" {
+    const io = std.testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path_len = try tmp.dir.realPath(io, &path_buf);
+    const dir_path = path_buf[0..path_len];
+
+    var full_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const full = try std.fmt.bufPrint(&full_buf, "{s}/config.zon", .{dir_path});
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "config.zon", .data = ".{ .scrollback = 77 }" });
+    var w = Watcher.init(full);
+
+    // First poll: valid content loads successfully.
+    var first = w.poll(testing.allocator) orelse return error.ExpectedReload;
+    defer first.deinit();
+    try testing.expectEqual(@as(usize, 77), first.config.scrollback);
+
+    // Sleep 10 ms to ensure the second write gets a distinct mtime.
+    const delay = std.c.timespec{ .sec = 0, .nsec = 10_000_000 };
+    _ = std.c.nanosleep(&delay, null);
+
+    // Overwrite with malformed ZON.
+    try tmp.dir.writeFile(io, .{ .sub_path = "config.zon", .data = ".{ .scrollback =" });
+
+    // Second poll: parse fails, falls back to defaults — but mtime is advanced.
+    var second = w.poll(testing.allocator) orelse return error.ExpectedDefaults;
+    defer second.deinit();
+    try testing.expectEqual(@as(usize, 100_000), second.config.scrollback);
+
+    // Third poll: file unchanged, mtime was already recorded -> must return null.
+    try testing.expect(w.poll(testing.allocator) == null);
+}
