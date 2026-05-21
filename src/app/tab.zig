@@ -54,6 +54,7 @@ pub const Tab = struct {
     len: usize = 0,
     mutex: std.atomic.Mutex = .unlocked, // match M1's lock type exactly
     dead: bool = false,
+    closing: bool = false,
     reader: ?std.Thread = null,
 
     /// Create a tab: a `cols x rows` terminal with `scrollback` history and a
@@ -85,8 +86,11 @@ pub const Tab = struct {
 
     /// Stop the shell + reader thread, free the terminal, free the Tab.
     pub fn deinit(self: *Tab) void {
+        self.lock();
+        self.closing = true;
+        self.unlock();
         self.pty.deinit(); // closes the master fd -> read() returns Eof
-        if (self.reader) |t| t.join(); // reader loop exits, then joins
+        if (self.reader) |t| t.join(); // inner-loop escape (closing) or Eof -> thread exits
         self.terminal.deinit();
         const alloc = self.alloc;
         alloc.destroy(self);
@@ -131,12 +135,16 @@ pub const Tab = struct {
 /// PTY reader thread body — blocking reads appended to the tab's handoff buffer.
 fn readerLoop(tab: *Tab) void {
     var local: [64 * 1024]u8 = undefined;
-    while (true) {
+    outer: while (true) {
         const n = tab.pty.read(&local) catch break;
         if (n == 0) break;
         var off: usize = 0;
         while (off < n) {
             tab.lock();
+            if (tab.closing) {
+                tab.unlock();
+                break :outer;
+            }
             const space = tab.buf.len - tab.len;
             if (space == 0) {
                 tab.unlock();
@@ -163,18 +171,20 @@ fn readerLoop(tab: *Tab) void {
 /// in Zig 0.16 (the process API requires an Io instance in that version).
 fn spawnIn(alloc: std.mem.Allocator, cols: u16, rows: u16, cwd: ?[]const u8) !Pty {
     if (cwd) |dir| {
-        // Save the current working directory.
+        // Save the current working directory. Only proceed with the chdir-spawn-
+        // restore dance when getcwd succeeds; if it fails we cannot guarantee a
+        // restore, so fall through to the no-cwd spawn below.
         var saved_buf: [std.fs.max_path_bytes]u8 = undefined;
         const saved_ptr = std.c.getcwd(&saved_buf, saved_buf.len);
-        // Null-terminate the requested dir for the C call.
-        var dir_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
-        if (dir.len >= dir_buf.len) return error.NameTooLong;
-        @memcpy(dir_buf[0..dir.len], dir);
-        dir_buf[dir.len] = 0;
-        _ = std.c.chdir(@ptrCast(dir_buf[0..dir.len :0])); // best-effort
-        const pty = Pty.spawnShell(alloc, cols, rows);
-        // Restore the saved cwd if we had one.
         if (saved_ptr != null) {
+            // Null-terminate the requested dir for the C call.
+            var dir_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
+            if (dir.len >= dir_buf.len) return error.NameTooLong;
+            @memcpy(dir_buf[0..dir.len], dir);
+            dir_buf[dir.len] = 0;
+            _ = std.c.chdir(@ptrCast(dir_buf[0..dir.len :0])); // best-effort
+            const pty = Pty.spawnShell(alloc, cols, rows);
+            // Restore the saved cwd (guaranteed to have been saved).
             const saved = std.mem.span(@as([*:0]const u8, @ptrCast(&saved_buf)));
             var restore_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
             if (saved.len < restore_buf.len) {
@@ -182,8 +192,8 @@ fn spawnIn(alloc: std.mem.Allocator, cols: u16, rows: u16, cwd: ?[]const u8) !Pt
                 restore_buf[saved.len] = 0;
                 _ = std.c.chdir(@ptrCast(restore_buf[0..saved.len :0]));
             }
+            return pty;
         }
-        return pty;
     }
     return Pty.spawnShell(alloc, cols, rows);
 }
