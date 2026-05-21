@@ -25,17 +25,25 @@ pub fn drawSearchBar(
     while (c < total_cols) : (c += 1) raster.cellBg(font, c, bottom_row, theme.ansi[8]);
 
     // Compose the bar text: "find: <query>" left-aligned, "<cur>/<total>" right.
-    var line_buf: [512]u8 = undefined;
+    // Compute the counter first so its length is known when capping the left text.
+    var count_buf: [32]u8 = undefined;
     const cur = if (search.count() == 0) 0 else search.current + 1;
+    const counter = std.fmt.bufPrint(&count_buf, "{d}/{d}", .{ cur, search.count() }) catch "";
+
+    var line_buf: [512]u8 = undefined;
     const text = std.fmt.bufPrint(&line_buf, "find: {s}", .{search.query()}) catch "find:";
-    var i: usize = 0;
-    while (i < text.len and i < total_cols) : (i += 1) {
-        raster.cellGlyph(font, i, bottom_row, font.glyph(text[i]), theme.foreground);
+    // Left text must not reach the counter; leave at least a 1-column gap.
+    // Guard against usize underflow when the counter alone fills the window.
+    if (counter.len + 1 < total_cols) {
+        const left_limit = total_cols - counter.len - 1;
+        var i: usize = 0;
+        while (i < text.len and i < left_limit) : (i += 1) {
+            raster.cellGlyph(font, i, bottom_row, font.glyph(text[i]), theme.foreground);
+        }
     }
 
-    var count_buf: [32]u8 = undefined;
-    const counter = std.fmt.bufPrint(&count_buf, "{d}/{d}", .{ cur, search.count() }) catch "";
-    if (counter.len < total_cols) {
+    // Fix: use <= so a counter whose length exactly equals total_cols still fits.
+    if (counter.len <= total_cols) {
         const start = total_cols - counter.len;
         for (counter, 0..) |ch, j| {
             raster.cellGlyph(font, start + j, bottom_row, font.glyph(ch), theme.foreground);
