@@ -28,16 +28,14 @@ DONE
     AGENTS.md, CLAUDE.md, BRAND.md + brand/ (9 assets), wiki/, context/,
     and 7 subagents in .claude/agents/ (builder, reviewer, systems-architect,
     orchestrator, librarian, design-lead, product-strategist)
+[x] AI dev environment — sub-project B (global ~/.claude) landed:
+    ~/.claude/CLAUDE.md (Karpathy/multica standard) + llmwiki-convention.md
+    (with a pointer from CLAUDE.md); the 3 global agents + settings.json
+    backed up to ~/.claude/backups/pre-ai-env-2026-05-21/
 
 
 NEXT UP
 -------
-[ ] AI DEV ENVIRONMENT — sub-project B: global ~/.claude  (sub-project A done)
-      [ ] ~/.claude/CLAUDE.md — Karpathy/multica behavioral standard (verbatim)
-      [ ] ~/.claude/llmwiki-convention.md — LLM-wiki pattern guide
-      [ ] Refresh 3 global agents (backup to ~/.claude/backups/ first; review diffs)
-      [ ] Review settings.json (report only — no changes)
-
 [ ] BRAND ALIGNMENT — reconcile the M1 renderer with BRAND.md
     M1 shipped before BRAND.md existed; the brand gate flags these divergences:
       [ ] Font: M1 uses "Menlo" — BRAND.md mandates "IBM Plex Mono"
