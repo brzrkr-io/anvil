@@ -379,6 +379,7 @@ pub fn main() void {
 
 test {
     _ = @import("config/config.zig");
+    _ = @import("config/theme.zig");
     _ = @import("render/color.zig");
     _ = @import("render/font.zig");
     _ = @import("render/raster.zig");
