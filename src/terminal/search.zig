@@ -88,6 +88,29 @@ pub const Search = struct {
             }
         }
     }
+
+    /// Advance the current match (wraps). No-op when there are no matches.
+    pub fn next(self: *Search) void {
+        if (self.matches.items.len == 0) return;
+        self.current = (self.current + 1) % self.matches.items.len;
+    }
+
+    /// Step the current match back (wraps). No-op when there are no matches.
+    pub fn prev(self: *Search) void {
+        if (self.matches.items.len == 0) return;
+        self.current = (self.current + self.matches.items.len - 1) % self.matches.items.len;
+    }
+
+    /// How the cell at content (`row`,`col`) should be tinted.
+    pub fn classify(self: *const Search, row: usize, col: usize) MatchKind {
+        for (self.matches.items, 0..) |m, i| {
+            if (m.row != row) continue;
+            if (col >= m.col and col < m.col + m.len) {
+                return if (i == self.current) .current else .other;
+            }
+        }
+        return .none;
+    }
 };
 
 /// True when `row[col..col+q.len]` equals `q` (codepoint-wise, case-folded
@@ -183,4 +206,49 @@ test "finds a match in scrollback" {
     try testing.expectEqual(@as(usize, 1), s.count());
     const m = s.currentMatch().?;
     try testing.expect(m.row < t.history.len());
+}
+
+test "next and prev wrap around" {
+    var t = try Terminal.init(testing.allocator, 40, 5, 1000);
+    defer t.deinit();
+    t.feed("x x x");
+    var s = Search.init(testing.allocator);
+    defer s.deinit();
+    s.setQuery(&t, "x");
+    try testing.expectEqual(@as(usize, 3), s.count());
+    try testing.expectEqual(@as(usize, 0), s.current);
+    s.next();
+    try testing.expectEqual(@as(usize, 1), s.current);
+    s.next();
+    s.next();
+    try testing.expectEqual(@as(usize, 0), s.current); // wrapped
+    s.prev();
+    try testing.expectEqual(@as(usize, 2), s.current); // wrapped back
+}
+
+test "next/prev are no-ops with no matches" {
+    var t = try Terminal.init(testing.allocator, 40, 5, 1000);
+    defer t.deinit();
+    t.feed("abc");
+    var s = Search.init(testing.allocator);
+    defer s.deinit();
+    s.setQuery(&t, "zzz");
+    s.next();
+    s.prev();
+    try testing.expectEqual(@as(usize, 0), s.current);
+}
+
+test "classify tags current, other, and none" {
+    var t = try Terminal.init(testing.allocator, 40, 5, 1000);
+    defer t.deinit();
+    t.feed("ab ab");
+    var s = Search.init(testing.allocator);
+    defer s.deinit();
+    s.setQuery(&t, "ab");
+    // current match is index 0 at (grid row 0, col 0..2)
+    const r0 = t.contentRowOfViewport(0);
+    try testing.expectEqual(MatchKind.current, s.classify(r0, 0));
+    try testing.expectEqual(MatchKind.current, s.classify(r0, 1));
+    try testing.expectEqual(MatchKind.other, s.classify(r0, 3));
+    try testing.expectEqual(MatchKind.none, s.classify(r0, 2)); // the space
 }
