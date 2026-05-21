@@ -17,7 +17,6 @@ const keys = @import("app/keys.zig");
 const tabs_mod = @import("app/tab.zig");
 const tabbar = @import("render/tabbar.zig");
 const Search = @import("terminal/search.zig").Search;
-const SearchMod = @import("terminal/search.zig");
 const searchbar = @import("render/searchbar.zig");
 
 const CGPoint = extern struct { x: f64, y: f64 };
@@ -53,6 +52,9 @@ const App = struct {
     keys_next: ?cfg_mod.Chord = null,
     keys_prev: ?cfg_mod.Chord = null,
     keys_jump: [9]?cfg_mod.Chord = [_]?cfg_mod.Chord{null} ** 9,
+    keys_search_open: ?cfg_mod.Chord = null,
+    keys_search_next: ?cfg_mod.Chord = null,
+    keys_search_prev: ?cfg_mod.Chord = null,
     search: Search,
     search_open: bool = false,
 };
@@ -113,6 +115,9 @@ fn loadKeybindings(kb: cfg_mod.Keybindings) void {
         kb.tab_6, kb.tab_7, kb.tab_8, kb.tab_9,
     };
     for (strs, 0..) |s, i| g.keys_jump[i] = cfg_mod.parseChord(s);
+    g.keys_search_open = cfg_mod.parseChord(kb.search_open);
+    g.keys_search_next = cfg_mod.parseChord(kb.search_next);
+    g.keys_search_prev = cfg_mod.parseChord(kb.search_prev);
 }
 
 fn onTick() void {
@@ -302,7 +307,32 @@ fn handleTabKey(mods: keys.Mods, cp: u21) bool {
             return true;
         };
     }
+    if (g.keys_search_open) |chd| if (chordMatches(chd, mods, cp)) {
+        openSearch();
+        return true;
+    };
+    if (g.keys_search_next) |chd| if (chordMatches(chd, mods, cp)) {
+        if (!g.search_open) openSearch();
+        g.search.next();
+        scrollToCurrentMatch();
+        g.dirty = true;
+        return true;
+    };
+    if (g.keys_search_prev) |chd| if (chordMatches(chd, mods, cp)) {
+        if (!g.search_open) openSearch();
+        g.search.prev();
+        scrollToCurrentMatch();
+        g.dirty = true;
+        return true;
+    };
     return false;
+}
+
+/// Scroll the active tab so the current search match is visible.
+fn scrollToCurrentMatch() void {
+    if (g.search.currentMatch()) |m| {
+        g.tabs.current().terminal.scrollToLine(m.row);
+    }
 }
 
 /// The active tab's cwd (OSC 7), or null if unknown.
@@ -314,6 +344,7 @@ fn currentCwd() ?[]const u8 {
 /// Create a new tab sized for the current window; the 1->2 transition makes the
 /// bar appear, so resize every tab afterward.
 fn addTab(cwd: ?[]const u8) void {
+    closeSearch();
     const b = g.view.msgSend(CGRect, "bounds", .{});
     const dw: usize = @intFromFloat(@max(b.size.width * g.scale, 1));
     const dh: usize = @intFromFloat(@max(b.size.height * g.scale, 1));
@@ -346,6 +377,43 @@ fn onKeyDown(event: objc.Object) void {
             if (handleTabKey(mods, cp)) return;
         }
         return; // other ⌘ combos still go to the system
+    }
+
+    // (after the ⌘-combo block, before extractKey for normal keys)
+    if (g.search_open) {
+        const p = extractKey(event) orelse return;
+        switch (p.key) {
+            .escape => closeSearch(),
+            .enter => {
+                g.search.next();
+                scrollToCurrentMatch();
+                g.dirty = true;
+            },
+            .backspace => {
+                // Drop the last UTF-8 codepoint from the query.
+                var qlen = g.search.query_len;
+                while (qlen > 0 and (g.search.query_buf[qlen - 1] & 0xC0) == 0x80) qlen -= 1;
+                if (qlen > 0) qlen -= 1;
+                const q = g.search.query_buf[0..qlen];
+                g.search.setQuery(&g.tabs.current().terminal, q);
+                scrollToCurrentMatch();
+                g.dirty = true;
+            },
+            .text => |cp| {
+                // Append the codepoint's UTF-8 to the query and re-scan.
+                var tmp: [256]u8 = undefined;
+                const base = g.search.query();
+                if (base.len + 4 <= tmp.len) {
+                    @memcpy(tmp[0..base.len], base);
+                    const n = std.unicode.utf8Encode(cp, tmp[base.len..]) catch 0;
+                    g.search.setQuery(&g.tabs.current().terminal, tmp[0 .. base.len + n]);
+                    scrollToCurrentMatch();
+                    g.dirty = true;
+                }
+            },
+            else => {}, // arrows etc. ignored while searching
+        }
+        return; // search swallows the key — never reaches the shell
     }
 
     const p = extractKey(event) orelse return;
