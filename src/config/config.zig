@@ -45,6 +45,7 @@ pub const Config = struct {
     theme: []const u8 = "mineral-dark",
     theme_overrides: Overrides = .{},
     keybindings: Keybindings = .{},
+    shell_integration: bool = true,
 
     pub const FontCfg = struct {
         family: []const u8 = "IBM Plex Mono",
@@ -431,4 +432,14 @@ test "config parses a search keybinding override" {
     defer loaded.deinit();
     try testing.expectEqualStrings("ctrl+s", loaded.config.keybindings.search_open);
     try testing.expectEqualStrings("cmd+g", loaded.config.keybindings.search_next); // default
+}
+
+test "config parses shell_integration" {
+    var on = try parseSlice(testing.allocator, ".{ .scrollback = 100 }");
+    defer on.deinit();
+    try testing.expectEqual(true, on.config.shell_integration); // default
+
+    var off = try parseSlice(testing.allocator, ".{ .shell_integration = false }");
+    defer off.deinit();
+    try testing.expectEqual(false, off.config.shell_integration);
 }
