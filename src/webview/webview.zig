@@ -70,6 +70,7 @@ pub const Webview = struct {
         const no = objc.getClass("NSNumber").?
             .msgSend(objc.Object, "numberWithBool:", .{false});
         webview.msgSend(void, "setValue:forKey:", .{ no, nsString("drawsBackground") });
+        webview.msgSend(void, "setOpaque:", .{false});
         webview.msgSend(void, "setHidden:", .{true});
 
         container.msgSend(void, "addSubview:", .{webview});
