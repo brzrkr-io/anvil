@@ -239,13 +239,20 @@ fn firstCodepoint(nsstr: objc.Object) ?u21 {
     return std.unicode.utf8Decode(s[0..len]) catch null;
 }
 
+/// Lowercase an ASCII letter codepoint. Non-ASCII codepoints are returned
+/// unchanged. Avoids the `& 0x7f` truncation that would misidentify high
+/// codepoints as ASCII characters.
+fn asciiLowerCp(cp: u21) u21 {
+    return if (cp >= 'A' and cp <= 'Z') cp + 32 else cp;
+}
+
 /// Does this AppKit key event match `chord`?
 fn chordMatches(chord: cfg_mod.Chord, mods: keys.Mods, cp: u21) bool {
     return chord.cmd == mods.command and
         chord.shift == mods.shift and
         chord.ctrl == mods.control and
         chord.opt == mods.option and
-        chord.key == std.ascii.toLower(@intCast(cp & 0x7f));
+        chord.key == asciiLowerCp(cp);
 }
 
 /// If the event triggers a tab action, run it and return true (consume it).

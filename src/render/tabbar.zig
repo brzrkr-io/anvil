@@ -8,7 +8,8 @@ const TabManager = @import("../app/tab.zig").TabManager;
 
 /// Draw the tab bar across raster row 0. Each tab gets an equal-width segment;
 /// the active segment is filled with the theme accent, others with ansi[8]
-/// (a muted surface). Labels are drawn in the theme foreground.
+/// (a muted surface). Active-segment labels use theme.background for contrast;
+/// inactive-segment labels use theme.foreground.
 pub fn drawTabBar(raster: *Raster, font: Font, theme: Theme, tabs: *TabManager) void {
     const n = tabs.count();
     if (n < 2) return; // low-profile: no bar with a single tab
