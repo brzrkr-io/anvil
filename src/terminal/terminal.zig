@@ -236,6 +236,43 @@ pub const Terminal = struct {
         return g.rowConst(grid_y);
     }
 
+    // --- content-line access (for search) ---------------------------------
+
+    /// Total content rows: scrollback length + active grid height.
+    pub fn lineCount(self: *const Terminal) usize {
+        return self.history.len() + self.activeConst().height;
+    }
+
+    /// Borrow content row `i`: 0..history.len() are scrollback rows (possibly
+    /// shorter than grid width); the rest are active-grid rows (full width).
+    /// Out-of-range returns an empty slice.
+    pub fn line(self: *const Terminal, i: usize) []const Cell {
+        const hist = self.history.len();
+        if (i < hist) return self.history.get(i);
+        const g = self.activeConst();
+        const gy = i - hist;
+        if (gy >= g.height) return &.{};
+        return g.rowConst(gy);
+    }
+
+    /// The content row currently shown at viewport position `y`.
+    pub fn contentRowOfViewport(self: *const Terminal, y: usize) usize {
+        if (self.viewport_offset > y)
+            return self.history.len() - self.viewport_offset + y;
+        return self.history.len() + (y - self.viewport_offset);
+    }
+
+    /// Scroll the viewport so content row `target` is visible. Grid rows are
+    /// always visible at offset 0; a scrollback row is brought near the top.
+    pub fn scrollToLine(self: *Terminal, target: usize) void {
+        const hist = self.history.len();
+        if (target >= hist) {
+            self.viewport_offset = 0;
+        } else {
+            self.viewport_offset = @min(hist - target, hist);
+        }
+    }
+
     // --- title / cwd / clipboard accessors ---------------------------------
 
     pub fn title(self: *const Terminal) []const u8 {
@@ -547,13 +584,13 @@ pub const Terminal = struct {
             'D' => .command_done,
             else => return,
         };
-        const line = self.evicted_lines + self.history.len() + self.active().cur_y;
+        const line_num = self.evicted_lines + self.history.len() + self.active().cur_y;
         if (self.mark_count == max_marks) {
             // Drop the oldest mark to make room.
             std.mem.copyForwards(PromptMark, self.marks[0 .. max_marks - 1], self.marks[1..]);
             self.mark_count -= 1;
         }
-        self.marks[self.mark_count] = .{ .kind = kind, .line = line };
+        self.marks[self.mark_count] = .{ .kind = kind, .line = line_num };
         self.mark_count += 1;
     }
 
@@ -1208,4 +1245,25 @@ test "OSC 133 marks evict the oldest past the cap" {
     }
     // The ring is capped; the most recent max_marks are retained.
     try testing.expectEqual(@as(usize, max_marks), term.promptMarks().len);
+}
+
+test "lineCount and line span scrollback then grid" {
+    var t = try makeTerminal(10, 3);
+    defer t.deinit();
+    // Fresh terminal: no scrollback, grid height 3.
+    try testing.expectEqual(@as(usize, 3), t.lineCount());
+    // Feed enough newlines to push rows into scrollback.
+    t.feed("a\r\nb\r\nc\r\nd\r\ne\r\n");
+    try testing.expect(t.lineCount() > 3);
+    // The oldest content row is a scrollback row; the last is a grid row.
+    const last = t.line(t.lineCount() - 1);
+    try testing.expectEqual(@as(usize, 10), last.len); // grid row is full width
+}
+
+test "contentRowOfViewport matches viewport composition" {
+    var t = try makeTerminal(10, 3);
+    defer t.deinit();
+    t.feed("1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n");
+    // At offset 0, viewport row 0 is the first grid row.
+    try testing.expectEqual(t.history.len(), t.contentRowOfViewport(0));
 }
