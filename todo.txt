@@ -56,7 +56,11 @@ NEXT UP
           (⌘T new, ⌘W close, ⌘⇧]/⌘⇧[ next/prev, ⌘1–9 jump); per-tab shells with
           independent PTY reader threads; mouse tab-switching; live-reloadable
           keybindings. 173 tests pass. See wiki/concepts/tab-system.md.
-      [ ] In-terminal search (search the grid + scrollback)
+      [x] In-terminal search (search the grid + scrollback)
+          Done 2026-05-21. Incremental highlight-all search over grid + scrollback;
+          smart-case; ⌘F open, ⌘G/⌘⇧G/Enter navigate, Esc close; bottom search bar
+          with find:/current/total display; viewport scrolls to current match.
+          187 tests pass. See wiki/concepts/search-system.md.
       [ ] Shell integration scripts (emit OSC 133, report cwd)
       [x] Config file + theme system — apply BRAND.md tokens
           (brand/tokens.json), IBM Plex Mono, configurable scrollback size
