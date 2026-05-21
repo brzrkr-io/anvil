@@ -452,6 +452,7 @@ test {
     _ = @import("render/raster.zig");
     _ = @import("app/keys.zig");
     _ = @import("app/tab.zig");
+    _ = @import("render/tabbar.zig");
     _ = @import("terminal/terminal.zig");
     _ = @import("pty/pty.zig");
 }
