@@ -36,16 +36,16 @@ DONE
 
 NEXT UP
 -------
-[ ] BRAND ALIGNMENT — reconcile the M1 renderer with BRAND.md
+[x] BRAND ALIGNMENT — reconcile the M1 renderer with BRAND.md
     M1 shipped before BRAND.md existed; the brand gate flags these divergences:
-      [ ] Font: M1 uses "Menlo" — BRAND.md mandates "IBM Plex Mono"
+      [x] Font: M1 uses "Menlo" — BRAND.md mandates "IBM Plex Mono"
           (fallback: SFMono-Regular, Consolas, Liberation Mono)
-      [ ] Background: M1 uses #0c0d10 — brand canvas is graphite #0b0d0e
-      [ ] Accent/cursor: M1 uses #2bb8b0 — brand mineral accent is #2f7f86
-      [ ] ANSI 16-color palette was invented — align with brand semantic
+      [x] Background: M1 uses #0c0d10 — brand canvas is graphite #0b0d0e
+      [x] Accent/cursor: M1 uses #2bb8b0 — brand mineral accent is #2f7f86
+      [x] ANSI 16-color palette was invented — align with brand semantic
           status colors (verified #3f8a5b, attention #b07a14, failure #b13a30,
           agent #6a5fa3, risk #a8623a, info/trace #2f7f86)
-    Cleanest done as part of M2's config/theme work.
+    Done 2026-05-21. See wiki/log.md for palette mapping decisions.
 
 [ ] WIKI RECONCILE — wiki/index.md "Current State" still says "M1 in progress";
     update to M1 complete and append wiki/log.md (per the AGENTS.md session loop)

@@ -341,7 +341,9 @@ pub fn main() void {
 
     const scale = window.msgSend(f64, "backingScaleFactor", .{});
 
-    const font = Font.init("Menlo", font_point_size * scale) catch |e| fail("font", e);
+    // Brand font stack: IBM Plex Mono primary, SFMono-Regular fallback, Menlo last resort.
+    const font_names = [_][:0]const u8{ "IBMPlexMono", "SFMono-Regular", "Menlo" };
+    const font = Font.initFirstAvailable(&font_names, font_point_size * scale) catch |e| fail("font", e);
     const dw: usize = @intFromFloat(init_win_w_pt * scale);
     const dh: usize = @intFromFloat(init_win_h_pt * scale);
     const cw: usize = @intFromFloat(font.metrics.cell_w);

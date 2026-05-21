@@ -58,6 +58,17 @@ pub const Font = struct {
         capi.CFRelease(self.ct);
     }
 
+    /// Try each name in order; return the first that loads with non-zero cell width.
+    /// Falls back to `"Menlo"` as the last resort (always present on macOS).
+    pub fn initFirstAvailable(names: []const [:0]const u8, pixel_size: f64) !Font {
+        for (names) |name| {
+            const f = init(name, pixel_size) catch continue;
+            if (f.metrics.cell_w > 0) return f;
+            f.deinit();
+        }
+        return error.NoFontAvailable;
+    }
+
     /// The glyph index for a Unicode codepoint. Returns 0 (the font's missing
     /// glyph) when the font has no glyph for it.
     pub fn glyph(self: Font, cp: u21) capi.CGGlyph {
@@ -77,8 +88,11 @@ pub const Font = struct {
     }
 };
 
-test "Menlo loads with sane metrics" {
-    const f = try Font.init("Menlo", 26.0);
+test "brand mono font stack loads with sane metrics" {
+    // IBM Plex Mono is the brand primary; SFMono-Regular is the first fallback.
+    // Menlo is the last-resort (always present on macOS).
+    const names = [_][:0]const u8{ "IBMPlexMono", "SFMono-Regular", "Menlo" };
+    const f = try Font.initFirstAvailable(&names, 26.0);
     defer f.deinit();
     try std.testing.expect(f.metrics.cell_w > 0);
     try std.testing.expect(f.metrics.cell_h > 0);
@@ -89,7 +103,8 @@ test "Menlo loads with sane metrics" {
 }
 
 test "glyph lookup resolves common characters" {
-    const f = try Font.init("Menlo", 26.0);
+    const names = [_][:0]const u8{ "IBMPlexMono", "SFMono-Regular", "Menlo" };
+    const f = try Font.initFirstAvailable(&names, 26.0);
     defer f.deinit();
     try std.testing.expect(f.glyph('A') != 0);
     try std.testing.expect(f.glyph('z') != 0);
