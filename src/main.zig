@@ -8,6 +8,20 @@ const c = objc.c;
 const win_w: f64 = 1024;
 const win_h: f64 = 640;
 
+/// The Caldera brand mark, embedded so the binary is self-contained.
+const app_icon_png = @embedFile("assets/app-icon.png");
+
+/// Set the Dock / app-switcher icon to the Caldera brand mark.
+fn setApplicationIcon(app: objc.Object) void {
+    const data = objc.getClass("NSData").?.msgSend(objc.Object, "dataWithBytes:length:", .{
+        app_icon_png, @as(c_ulong, app_icon_png.len),
+    });
+    const image = objc.getClass("NSImage").?
+        .msgSend(objc.Object, "alloc", .{})
+        .msgSend(objc.Object, "initWithData:", .{data});
+    app.msgSend(void, "setApplicationIconImage:", .{image});
+}
+
 /// App-delegate method: quit the process once the last window closes.
 fn appShouldTerminateAfterLastWindowClosed(
     self: c.id,
@@ -26,6 +40,7 @@ pub fn main() void {
 
     // NSApplicationActivationPolicyRegular = 0 — dock icon, activatable.
     app.msgSend(void, "setActivationPolicy:", .{@as(c_long, 0)});
+    setApplicationIcon(app);
 
     // Minimal app delegate so closing the window terminates the process.
     const Delegate = objc.allocateClassPair(objc.getClass("NSObject").?, "CalderaAppDelegate").?;
