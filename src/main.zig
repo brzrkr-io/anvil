@@ -45,6 +45,11 @@ const App = struct {
     blink_ticks: u32 = 0,
     config: cfg_mod.Loaded,
     watcher: cfg_mod.Watcher,
+    keys_new: ?cfg_mod.Chord = null,
+    keys_close: ?cfg_mod.Chord = null,
+    keys_next: ?cfg_mod.Chord = null,
+    keys_prev: ?cfg_mod.Chord = null,
+    keys_jump: [9]?cfg_mod.Chord = [_]?cfg_mod.Chord{null} ** 9,
 };
 var g: App = undefined;
 
@@ -82,9 +87,23 @@ fn applyConfig(new_loaded: cfg_mod.Loaded) void {
     g.theme = theme_mod.resolve(nc.theme, nc.theme_overrides);
     g.renderer.setClearColor(g.theme.background); // keep the GPU clear in sync
     g.cursor_cfg = nc.cursor;
+    loadKeybindings(nc.keybindings);
     g.dirty = true;
     g.config.deinit(); // free the previous config's arena
     g.config = nl; // the new arena owns the strings resolve() just read
+}
+
+/// Parse the config's keybinding strings into matchable chords.
+fn loadKeybindings(kb: cfg_mod.Keybindings) void {
+    g.keys_new = cfg_mod.parseChord(kb.new_tab);
+    g.keys_close = cfg_mod.parseChord(kb.close_tab);
+    g.keys_next = cfg_mod.parseChord(kb.next_tab);
+    g.keys_prev = cfg_mod.parseChord(kb.prev_tab);
+    const strs = [9][]const u8{
+        kb.tab_1, kb.tab_2, kb.tab_3, kb.tab_4, kb.tab_5,
+        kb.tab_6, kb.tab_7, kb.tab_8, kb.tab_9,
+    };
+    for (strs, 0..) |s, i| g.keys_jump[i] = cfg_mod.parseChord(s);
 }
 
 fn onTick() void {
@@ -127,6 +146,7 @@ fn onTick() void {
 
 /// Close any tab whose shell has exited. Terminates the app if none remain.
 fn closeDeadTabs() void {
+    const bar_before = barRows();
     var i: usize = 0;
     while (i < g.tabs.count()) {
         if (g.tabs.tabs.items[i].isDead()) {
@@ -137,7 +157,7 @@ fn closeDeadTabs() void {
             // The list shifted; do not advance i.
         } else i += 1;
     }
-    resizeAllTabs();
+    if (barRows() != bar_before) resizeAllTabs();
     g.dirty = true;
 }
 
@@ -215,7 +235,97 @@ fn firstCodepoint(nsstr: objc.Object) ?u21 {
     return std.unicode.utf8Decode(s[0..len]) catch null;
 }
 
+/// Does this AppKit key event match `chord`?
+fn chordMatches(chord: cfg_mod.Chord, mods: keys.Mods, cp: u21) bool {
+    return chord.cmd == mods.command and
+        chord.shift == mods.shift and
+        chord.ctrl == mods.control and
+        chord.opt == mods.option and
+        chord.key == std.ascii.toLower(@intCast(cp & 0x7f));
+}
+
+/// If the event triggers a tab action, run it and return true (consume it).
+fn handleTabKey(mods: keys.Mods, cp: u21) bool {
+    if (g.keys_new) |ch| if (chordMatches(ch, mods, cp)) {
+        addTab(currentCwd());
+        return true;
+    };
+    if (g.keys_close) |ch| if (chordMatches(ch, mods, cp)) {
+        const bar_before = barRows();
+        if (!g.tabs.closeActive()) {
+            g.nsapp.msgSend(void, "terminate:", .{@as(c.id, null)});
+        } else {
+            // Only reflow when bar visibility actually changed (2->1 tabs).
+            // Closing among 3+ tabs leaves the grid size unchanged — an
+            // unconditional resize would SIGWINCH every surviving shell.
+            if (barRows() != bar_before) resizeAllTabs();
+            g.dirty = true;
+        }
+        return true;
+    };
+    if (g.keys_next) |ch| if (chordMatches(ch, mods, cp)) {
+        g.tabs.next();
+        g.dirty = true;
+        return true;
+    };
+    if (g.keys_prev) |ch| if (chordMatches(ch, mods, cp)) {
+        g.tabs.prev();
+        g.dirty = true;
+        return true;
+    };
+    for (g.keys_jump, 0..) |maybe, i| {
+        if (maybe) |ch| if (chordMatches(ch, mods, cp)) {
+            g.tabs.switchTo(i);
+            g.dirty = true;
+            return true;
+        };
+    }
+    return false;
+}
+
+/// The active tab's cwd (OSC 7), or null if unknown.
+fn currentCwd() ?[]const u8 {
+    const cwd = g.tabs.current().terminal.cwd();
+    return if (cwd.len > 0) cwd else null;
+}
+
+/// Create a new tab sized for the current window; the 1->2 transition makes the
+/// bar appear, so resize every tab afterward.
+fn addTab(cwd: ?[]const u8) void {
+    const b = g.view.msgSend(CGRect, "bounds", .{});
+    const dw: usize = @intFromFloat(@max(b.size.width * g.scale, 1));
+    const dh: usize = @intFromFloat(@max(b.size.height * g.scale, 1));
+    const cw: usize = @intFromFloat(g.font.metrics.cell_w);
+    const ch: usize = @intFromFloat(g.font.metrics.cell_h);
+    const cols = @max(dw / cw, 1);
+    // New tab will make the bar visible (>=2 tabs): reserve its row.
+    const rows = @max((dh / ch) -| 1, 1);
+    g.tabs.newTab(cols, rows, g.config.config.scrollback, cwd) catch |e| {
+        std.debug.print("caldera-console: new tab failed: {s}\n", .{@errorName(e)});
+        return;
+    };
+    resizeAllTabs();
+    g.dirty = true;
+}
+
 fn onKeyDown(event: objc.Object) void {
+    // Tab shortcuts (⌘…) are checked before the normal key path, which
+    // deliberately ignores ⌘ combos.
+    const flags = event.msgSend(c_ulong, "modifierFlags", .{});
+    const mods: keys.Mods = .{
+        .shift = flags & (1 << 17) != 0,
+        .control = flags & (1 << 18) != 0,
+        .option = flags & (1 << 19) != 0,
+        .command = flags & (1 << 20) != 0,
+    };
+    if (mods.command) {
+        const src = event.msgSend(objc.Object, "charactersIgnoringModifiers", .{});
+        if (firstCodepoint(src)) |cp| {
+            if (handleTabKey(mods, cp)) return;
+        }
+        return; // other ⌘ combos still go to the system
+    }
+
     const p = extractKey(event) orelse return;
     var buf: [16]u8 = undefined;
     const bytes = keys.encode(p.key, p.mods, false, &buf);
@@ -431,6 +541,7 @@ pub fn main() void {
         .watcher = cfg_mod.Watcher.init(config_path orelse ""),
     };
     g.renderer.setClearColor(active_theme.background);
+    loadKeybindings(cfg.keybindings);
 
     renderFrame();
 
