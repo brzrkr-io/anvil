@@ -54,8 +54,12 @@ NEXT UP
       [ ] Multiple terminal tabs (tab bar + switching, per-tab Terminal + Pty)
       [ ] In-terminal search (search the grid + scrollback)
       [ ] Shell integration scripts (emit OSC 133, report cwd)
-      [ ] Config file + theme system — apply BRAND.md tokens
+      [x] Config file + theme system — apply BRAND.md tokens
           (brand/tokens.json), IBM Plex Mono, configurable scrollback size
+          Done 2026-05-21. ZON config at ~/.config/caldera-console/config.zon;
+          theme/cursor live-reload on 60 Hz tick; font/scrollback/window at
+          startup. Two built-in themes: mineral-dark (default), mineral-light.
+          See wiki/concepts/config-system.md.
 
 
 ROADMAP  (docs/product/console-rebuild-plan.md, section 6)
