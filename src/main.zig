@@ -597,5 +597,6 @@ test {
     _ = @import("app/tab.zig");
     _ = @import("render/tabbar.zig");
     _ = @import("terminal/terminal.zig");
+    _ = @import("terminal/search.zig");
     _ = @import("pty/pty.zig");
 }
