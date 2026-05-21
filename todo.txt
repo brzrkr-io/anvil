@@ -51,7 +51,11 @@ NEXT UP
     update to M1 complete and append wiki/log.md (per the AGENTS.md session loop)
 
 [ ] M2 — Multi-tab, search, shell integration, config/theme
-      [ ] Multiple terminal tabs (tab bar + switching, per-tab Terminal + Pty)
+      [x] Multiple terminal tabs (tab bar + switching, per-tab Terminal + Pty)
+          Done 2026-05-21. Tab bar auto-hides at 1 tab; configurable ⌘ shortcuts
+          (⌘T new, ⌘W close, ⌘⇧]/⌘⇧[ next/prev, ⌘1–9 jump); per-tab shells with
+          independent PTY reader threads; mouse tab-switching; live-reloadable
+          keybindings. 173 tests pass. See wiki/concepts/tab-system.md.
       [ ] In-terminal search (search the grid + scrollback)
       [ ] Shell integration scripts (emit OSC 133, report cwd)
       [x] Config file + theme system — apply BRAND.md tokens
