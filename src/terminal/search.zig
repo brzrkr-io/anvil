@@ -64,7 +64,8 @@ pub const Search = struct {
         var q: [256]u21 = undefined;
         var qn: usize = 0;
         var case_sensitive = false;
-        var it = std.unicode.Utf8View.initUnchecked(self.query()).iterator();
+        var view = std.unicode.Utf8View.init(self.query()) catch return;
+        var it = view.iterator();
         while (it.nextCodepoint()) |cp| {
             if (qn >= q.len) break;
             if (cp >= 'A' and cp <= 'Z') case_sensitive = true;
@@ -162,4 +163,24 @@ test "finds multiple matches left-to-right" {
     defer s.deinit();
     s.setQuery(&t, "aa");
     try testing.expectEqual(@as(usize, 3), s.count());
+}
+
+test "finds a match in scrollback" {
+    // 20-wide, 3 visible rows, 1000-row scrollback capacity.
+    // Feed "findme" then 5 more newline-terminated lines so "findme"
+    // scrolls out of the grid into history.
+    var t = try Terminal.init(testing.allocator, 20, 3, 1000);
+    defer t.deinit();
+    t.feed("findme\r\n");
+    t.feed("x\r\n");
+    t.feed("x\r\n");
+    t.feed("x\r\n");
+    t.feed("x\r\n");
+    t.feed("x\r\n");
+    var s = Search.init(testing.allocator);
+    defer s.deinit();
+    s.setQuery(&t, "findme");
+    try testing.expectEqual(@as(usize, 1), s.count());
+    const m = s.currentMatch().?;
+    try testing.expect(m.row < t.history.len());
 }
