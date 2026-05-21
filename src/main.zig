@@ -357,7 +357,7 @@ pub fn main() void {
 
     g = .{
         .alloc = alloc,
-        .terminal = term.Terminal.init(alloc, cols, rows) catch |e| fail("terminal", e),
+        .terminal = term.Terminal.init(alloc, cols, rows, 100_000) catch |e| fail("terminal", e),
         .pty = Pty.spawnShell(alloc, @intCast(cols), @intCast(rows)) catch |e| fail("pty", e),
         .font = font,
         .raster = Raster.init(alloc, dw, dh) catch |e| fail("raster", e),

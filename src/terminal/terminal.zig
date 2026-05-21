@@ -99,13 +99,14 @@ pub const Terminal = struct {
     /// row — one row wide, reallocated on resize.
     compose_buf: []Cell,
 
-    /// Create a terminal with a `width x height` screen and deep scrollback.
-    pub fn init(alloc: std.mem.Allocator, width: usize, height: usize) !Terminal {
+    /// Create a terminal with a `width x height` screen and a scrollback ring
+    /// of `scrollback_capacity` rows.
+    pub fn init(alloc: std.mem.Allocator, width: usize, height: usize, scrollback_capacity: usize) !Terminal {
         var primary = try grid.Grid.init(alloc, width, height);
         errdefer primary.deinit();
         var alternate = try grid.Grid.init(alloc, width, height);
         errdefer alternate.deinit();
-        var history = try scrollback.Scrollback.init(alloc, scrollback.default_capacity);
+        var history = try scrollback.Scrollback.init(alloc, scrollback_capacity);
         errdefer history.deinit();
         const compose_buf = try alloc.alloc(Cell, primary.width);
         errdefer alloc.free(compose_buf);
@@ -649,7 +650,7 @@ test {
 
 /// Build a terminal of `cols_n x rows_n`. Caller deinits.
 fn makeTerminal(cols_n: usize, rows_n: usize) !Terminal {
-    return Terminal.init(testing.allocator, cols_n, rows_n);
+    return Terminal.init(testing.allocator, cols_n, rows_n, scrollback.default_capacity);
 }
 
 /// Render viewport row `y` to a UTF-8 string in `buf`.
