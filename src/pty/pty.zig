@@ -23,9 +23,13 @@ pub const Pty = struct {
     master: posix.fd_t,
     child: posix.pid_t,
 
-    /// Spawn `argv` in a new pseudo-terminal sized cols x rows.
-    pub fn spawn(
+    /// Spawn a pseudo-terminal running the program at `path` with the given
+    /// `argv`. `argv[0]` is the conventional program name passed to the
+    /// process — it may differ from `path` (e.g. a login shell whose `argv[0]`
+    /// is `-zsh` while `path` is `/bin/zsh`).
+    pub fn spawnExec(
         alloc: std.mem.Allocator,
+        path: []const u8,
         argv: []const []const u8,
         cols: u16,
         rows: u16,
@@ -50,7 +54,7 @@ pub const Pty = struct {
         const pid = c.fork();
         if (pid < 0) return error.ForkFailed;
         if (pid == 0) {
-            childExec(slave, argv[0], argv_z, env_z);
+            childExec(slave, path, argv_z, env_z);
         }
 
         // Parent: the slave fd belongs to the child now.
@@ -58,14 +62,27 @@ pub const Pty = struct {
         return .{ .master = master, .child = pid };
     }
 
-    /// Spawn the user's login shell (`$SHELL`, fallback `/bin/zsh`) as a
-    /// login shell — argv[0] is prefixed with `-` per convention.
+    /// Spawn `argv` in a new pseudo-terminal sized cols x rows. The executed
+    /// program is `argv[0]`.
+    pub fn spawn(
+        alloc: std.mem.Allocator,
+        argv: []const []const u8,
+        cols: u16,
+        rows: u16,
+    ) !Pty {
+        std.debug.assert(argv.len > 0);
+        return spawnExec(alloc, argv[0], argv, cols, rows);
+    }
+
+    /// Spawn the user's login shell (`$SHELL`, fallback `/bin/zsh`). A login
+    /// shell is signalled by a single `argv[0]` of `-` + the shell basename
+    /// (e.g. `-zsh`); the executable path stays the real path.
     pub fn spawnShell(alloc: std.mem.Allocator, cols: u16, rows: u16) !Pty {
         const shell = lookupEnv("SHELL") orelse default_shell;
-        const login_arg0 = try std.fmt.allocPrint(alloc, "-{s}", .{shell});
-        defer alloc.free(login_arg0);
+        const arg0 = try std.fmt.allocPrint(alloc, "-{s}", .{std.fs.path.basename(shell)});
+        defer alloc.free(arg0);
 
-        return spawn(alloc, &.{ shell, login_arg0 }, cols, rows);
+        return spawnExec(alloc, shell, &.{arg0}, cols, rows);
     }
 
     /// Read available output from the child. Blocking. Returns bytes read;
@@ -256,16 +273,21 @@ test "resize does not crash" {
     pty.resize(80, 24);
 }
 
-test "spawnShell starts the user's login shell" {
+test "spawnShell starts an interactive login shell" {
     const alloc = std.testing.allocator;
     var pty = try Pty.spawnShell(alloc, 80, 24);
     defer pty.deinit();
 
-    // exit the shell cleanly so the read loop terminates promptly.
+    // An interactive shell stays alive and runs the commands we send it.
+    // (A misformed login argv makes the shell exit before this runs.)
+    _ = try pty.write("printf CALDERA_PTY_OK\n");
     _ = try pty.write("exit\n");
 
-    var buf: [4096]u8 = undefined;
-    _ = drainToEof(&pty, &buf);
+    var buf: [16384]u8 = undefined;
+    const total = drainToEof(&pty, &buf);
+    try std.testing.expect(
+        std.mem.indexOf(u8, buf[0..total], "CALDERA_PTY_OK") != null,
+    );
 }
 
 test "child environment advertises xterm-256color" {
