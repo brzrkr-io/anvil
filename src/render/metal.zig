@@ -26,6 +26,10 @@ pub const Renderer = struct {
         layer.msgSend(void, "setDevice:", .{device});
         // MTLPixelFormatBGRA8Unorm = 80
         layer.msgSend(void, "setPixelFormat:", .{@as(c_ulong, 80)});
+        // Fixed drawable size. On window resize, CoreAnimation scales this
+        // solid-color drawable to fill the layer, so the clear survives a
+        // resize untouched. A resize-driven re-render arrives in M1, once
+        // there is real content whose sharpness depends on drawable size.
         layer.msgSend(void, "setDrawableSize:", .{CGSize{ .width = width, .height = height }});
 
         const cc = try color.hexToClearColor(color.mineral_dark_bg);
