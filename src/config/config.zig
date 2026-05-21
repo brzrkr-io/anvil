@@ -244,6 +244,9 @@ pub const Keybindings = struct {
     tab_7: []const u8 = "cmd+7",
     tab_8: []const u8 = "cmd+8",
     tab_9: []const u8 = "cmd+9",
+    search_open: []const u8 = "cmd+f",
+    search_next: []const u8 = "cmd+g",
+    search_prev: []const u8 = "cmd+shift+g",
 };
 
 const testing = std.testing;
@@ -421,4 +424,11 @@ test "config parses a keybindings override" {
     defer loaded.deinit();
     try testing.expectEqualStrings("ctrl+n", loaded.config.keybindings.new_tab);
     try testing.expectEqualStrings("cmd+w", loaded.config.keybindings.close_tab); // default
+}
+
+test "config parses a search keybinding override" {
+    var loaded = try parseSlice(testing.allocator, ".{ .keybindings = .{ .search_open = \"ctrl+s\" } }");
+    defer loaded.deinit();
+    try testing.expectEqualStrings("ctrl+s", loaded.config.keybindings.search_open);
+    try testing.expectEqualStrings("cmd+g", loaded.config.keybindings.search_next); // default
 }
