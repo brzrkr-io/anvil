@@ -13,6 +13,7 @@ const Raster = @import("render/raster.zig").Raster;
 const Renderer = @import("render/metal.zig").Renderer;
 const Theme = @import("config/theme.zig").Theme;
 const theme_mod = @import("config/theme.zig");
+const cfg_mod = @import("config/config.zig");
 const keys = @import("app/keys.zig");
 
 const CGPoint = extern struct { x: f64, y: f64 };
@@ -54,6 +55,9 @@ const App = struct {
     scale: f64,
     dirty: bool,
     theme: Theme,
+    cursor_cfg: cfg_mod.Config.CursorCfg,
+    blink_on: bool = true,
+    blink_ticks: u32 = 0,
 };
 var g: App = undefined;
 
@@ -97,6 +101,17 @@ fn onTick() void {
 
     if (n > 0) {
         g.terminal.feed(feed_scratch[0..n]);
+        g.dirty = true;
+    }
+    if (g.cursor_cfg.blink) {
+        g.blink_ticks += 1;
+        if (g.blink_ticks >= 32) {
+            g.blink_ticks = 0;
+            g.blink_on = !g.blink_on;
+            g.dirty = true;
+        }
+    } else if (!g.blink_on) {
+        g.blink_on = true;
         g.dirty = true;
     }
     if (g.dirty) {
@@ -208,8 +223,7 @@ fn renderFrame() void {
 
     const cur = g.terminal.cursor();
     if (cur.visible and g.terminal.viewportOffset() == 0 and cur.y < rows and cur.x < cols) {
-        const line = g.terminal.viewportRow(cur.y);
-        if (cur.x < line.len) drawCell(cur.x, cur.y, line[cur.x], true);
+        drawCursor(cur.x, cur.y);
     }
 
     g.renderer.present(g.raster.bytes());
@@ -232,6 +246,27 @@ fn drawCell(x: usize, y: usize, cell: term.Cell, is_cursor: bool) void {
     }
     if (cell.cp != ' ' and cell.cp != 0) {
         g.raster.cellGlyph(g.font, x, y, g.font.glyph(cell.cp), fg);
+    }
+}
+
+fn drawCursor(x: usize, y: usize) void {
+    const line = g.terminal.viewportRow(y);
+    const cell: term.Cell = if (x < line.len) line[x] else .{};
+    if (g.cursor_cfg.blink and !g.blink_on) {
+        // Blinked off: draw the cell with no cursor styling.
+        drawCell(x, y, cell, false);
+        return;
+    }
+    switch (g.cursor_cfg.style) {
+        .block => drawCell(x, y, cell, true),
+        .bar => {
+            drawCell(x, y, cell, false);
+            g.raster.cellInset(g.font, x, y, g.theme.accent, 0.0, 0.0, 0.15, 1.0);
+        },
+        .underline => {
+            drawCell(x, y, cell, false);
+            g.raster.cellInset(g.font, x, y, g.theme.accent, 0.0, 0.0, 1.0, 0.12);
+        },
     }
 }
 
@@ -367,6 +402,7 @@ pub fn main() void {
         .scale = scale,
         .dirty = true,
         .theme = active_theme,
+        .cursor_cfg = .{},
     };
 
     _ = std.Thread.spawn(.{}, ptyReaderThread, .{}) catch |e| fail("thread", e);

@@ -77,6 +77,28 @@ pub const Raster = struct {
         capi.CGContextFillRect(self.ctx, self.cellRect(font, col, row));
     }
 
+    /// Fill a sub-rectangle of a cell, insetting from the cell edges by the
+    /// given fractions of cell width/height. Used for bar/underline cursors.
+    /// `fx`,`fy` are the left/top inset fractions; `fw`,`fh` the size fractions.
+    pub fn cellInset(
+        self: *Raster,
+        font: Font,
+        col: usize,
+        row: usize,
+        rgb: [3]u8,
+        fx: f64,
+        fy: f64,
+        fw: f64,
+        fh: f64,
+    ) void {
+        const r = self.cellRect(font, col, row);
+        setFill(self.ctx, rgb);
+        capi.CGContextFillRect(self.ctx, .{
+            .origin = .{ .x = r.origin.x + r.size.width * fx, .y = r.origin.y + r.size.height * fy },
+            .size = .{ .width = r.size.width * fw, .height = r.size.height * fh },
+        });
+    }
+
     /// Draw one glyph in a cell. `glyph` of 0 (missing glyph) draws nothing.
     pub fn cellGlyph(self: *Raster, font: Font, col: usize, row: usize, glyph: u16, rgb: [3]u8) void {
         if (glyph == 0) return;
@@ -164,4 +186,20 @@ test "resize keeps a usable context" {
     try std.testing.expectEqual(@as(usize, 128), r.width);
     r.clear(.{ 7, 7, 7 });
     try std.testing.expectEqual([3]u8{ 7, 7, 7 }, pixelAt(&r, 100, 50));
+}
+
+test "cellInset fills a sub-rectangle of a cell" {
+    const f = try Font.init("Menlo", 26.0);
+    defer f.deinit();
+    var r = try Raster.init(std.testing.allocator, 400, 200);
+    defer r.deinit();
+    r.clear(.{ 0, 0, 0 });
+    // A left bar: 15% width, full height, of cell (2,1).
+    r.cellInset(f, 2, 1, .{ 90, 0, 0 }, 0.0, 0.0, 0.15, 1.0);
+    const lx: usize = @intFromFloat(f.metrics.cell_w * 2.0 + 1);
+    const ly: usize = @intFromFloat(f.metrics.cell_h * 1.5);
+    try std.testing.expectEqual([3]u8{ 90, 0, 0 }, pixelAt(&r, lx, ly));
+    // The cell's right half stays clear.
+    const rx: usize = @intFromFloat(f.metrics.cell_w * 2.8);
+    try std.testing.expectEqual([3]u8{ 0, 0, 0 }, pixelAt(&r, rx, ly));
 }
