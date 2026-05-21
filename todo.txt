@@ -76,7 +76,14 @@ NEXT UP
           startup. Two built-in themes: mineral-dark (default), mineral-light.
           See wiki/concepts/config-system.md.
 
-[ ] M3 — Webview host + typed IPC bridge; first web surface (overlays / HUD)
+[x] M3 — Webview host + typed IPC bridge; first web surface (overlays / HUD)
+    COMPLETE 2026-05-21. Transparent WKWebView layered above the Metal terminal
+    view; typed JSON IPC bridge (Inbound/Outbound, WKScriptMessageHandler +
+    evaluateJavaScript); command-palette overlay summoned by ⌘K. New modules:
+    `src/ipc/bridge.zig`, `src/app/palette.zig`, `src/webview/webview.zig`,
+    `ui/palette/index.html`. WebKit framework linked. 210 tests pass.
+
+[ ] M4 — Built-in browser surface
     See docs/product/console-rebuild-plan.md for sub-tasks.
 
 
@@ -85,8 +92,8 @@ ROADMAP  (docs/product/console-rebuild-plan.md, section 6)
 M0  Zig scaffold ......................................... DONE
 M1  Terminal core (usable single-pane terminal) .......... DONE
 M2  Multi-tab, search, shell integration, config/theme ... DONE
-M3  Webview host + typed IPC bridge; first web surface (overlays / HUD) ... NEXT
-M4  Built-in browser surface
+M3  Webview host + typed IPC bridge; first web surface (overlays / HUD) ... DONE
+M4  Built-in browser surface ............................. NEXT
 M5  Editor + file explorer (web surfaces)
 M6  Agent orchestration (Claude Code, Codex, etc.)
 M7  Plugin backplane (write the spec before the code)
