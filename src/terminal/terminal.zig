@@ -60,8 +60,9 @@ pub const Terminal = struct {
 
     primary: grid.Grid,
     alternate: grid.Grid,
-    /// Points at `primary` or `alternate` — the grid currently being drawn to.
-    active: *grid.Grid,
+    /// True when the alternate grid is the active one. Modeled as a flag —
+    /// not a self-pointer — so a `Terminal` value can be moved/copied freely.
+    on_alt: bool = false,
 
     history: scrollback.Scrollback,
 
@@ -109,20 +110,14 @@ pub const Terminal = struct {
         const compose_buf = try alloc.alloc(Cell, primary.width);
         errdefer alloc.free(compose_buf);
 
-        var self = Terminal{
+        return Terminal{
             .alloc = alloc,
             .primary = primary,
             .alternate = alternate,
-            .active = undefined,
             .history = history,
             .parser = parser.Parser.init(),
             .compose_buf = compose_buf,
         };
-        // `active` must point into the struct's own storage; fixed up by the
-        // caller-visible value after the struct is returned. We cannot take a
-        // stable pointer here, so the caller-facing fix happens in `reseat`.
-        self.active = &self.primary;
-        return self;
     }
 
     pub fn deinit(self: *Terminal) void {
@@ -133,12 +128,13 @@ pub const Terminal = struct {
         self.* = undefined;
     }
 
-    /// Re-point `active` at the correct grid after the `Terminal` value has
-    /// been moved/copied (e.g. returned from `init`). Pointers into a struct
-    /// returned by value are invalidated by the move; callers that store a
-    /// `Terminal` by value must call this once before use.
-    pub fn reseat(self: *Terminal) void {
-        self.active = if (self.modes.alt_screen) &self.alternate else &self.primary;
+    /// The grid currently being drawn to — `primary` or `alternate`.
+    fn active(self: *Terminal) *grid.Grid {
+        return if (self.on_alt) &self.alternate else &self.primary;
+    }
+
+    fn activeConst(self: *const Terminal) *const grid.Grid {
+        return if (self.on_alt) &self.alternate else &self.primary;
     }
 
     // --- dimensions --------------------------------------------------------
@@ -152,9 +148,10 @@ pub const Terminal = struct {
     }
 
     pub fn cursor(self: *const Terminal) Cursor {
+        const g = self.activeConst();
         return .{
-            .x = self.active.cur_x,
-            .y = self.active.cur_y,
+            .x = g.cur_x,
+            .y = g.cur_y,
             .visible = self.modes.cursor_visible,
         };
     }
@@ -219,8 +216,8 @@ pub const Terminal = struct {
     /// rows come from scrollback (short rows padded into `compose_buf`); the
     /// rest come from the active grid.
     pub fn viewportRow(self: *Terminal, y: usize) []const Cell {
-        const width = self.active.width;
-        if (y >= self.active.height) return self.active.rowConst(0);
+        const g = self.active();
+        if (y >= g.height) return g.rowConst(0);
 
         if (self.viewport_offset > y) {
             // This row is sourced from scrollback. The newest scrollback row
@@ -228,14 +225,14 @@ pub const Terminal = struct {
             const from_oldest = self.history.len() - self.viewport_offset + y;
             const src = self.history.get(from_oldest);
             @memset(self.compose_buf, Cell{});
-            const n = @min(src.len, width);
+            const n = @min(src.len, g.width);
             @memcpy(self.compose_buf[0..n], src[0..n]);
             return self.compose_buf;
         }
 
         // Sourced from the active grid, shifted up by the remaining offset.
         const grid_y = y - self.viewport_offset;
-        return self.active.rowConst(grid_y);
+        return g.rowConst(grid_y);
     }
 
     // --- title / cwd / clipboard accessors ---------------------------------
@@ -262,26 +259,26 @@ pub const Terminal = struct {
 
     /// A printable Unicode scalar. Applies G0 line-drawing translation.
     pub fn print(self: *Terminal, cp: u21) void {
-        self.active.print(if (self.g0_line_drawing) translateLineDrawing(cp) else cp);
+        self.active().print(if (self.g0_line_drawing) translateLineDrawing(cp) else cp);
     }
 
     /// A C0/C1 control byte.
     pub fn execute(self: *Terminal, byte: u8) void {
         switch (byte) {
             0x07 => {}, // BEL — no audible bell in the model
-            0x08 => self.active.backspace(), // BS
-            0x09 => self.active.tab(), // HT
+            0x08 => self.active().backspace(), // BS
+            0x09 => self.active().tab(), // HT
             0x0A, 0x0B, 0x0C => self.lineFeed(), // LF, VT, FF
-            0x0D => self.active.carriageReturn(), // CR
+            0x0D => self.active().carriageReturn(), // CR
             else => {},
         }
     }
 
     /// Apply a line feed, archiving any scrolled-off primary row.
     fn lineFeed(self: *Terminal) void {
-        const scrolled = self.active.lineFeed();
+        const scrolled = self.active().lineFeed();
         if (scrolled) |row| {
-            if (self.active == &self.primary) self.archive(row);
+            if (!self.on_alt) self.archive(row);
         }
     }
 
@@ -304,7 +301,7 @@ pub const Terminal = struct {
     }
 
     fn csiStandard(self: *Terminal, params: []const u16, final: u8) void {
-        const g = self.active;
+        const g = self.active();
         const p0 = param(params, 0, 1);
         switch (final) {
             'A' => g.cursorUp(p0),
@@ -361,13 +358,13 @@ pub const Terminal = struct {
             return;
         }
         switch (final) {
-            '7' => self.active.saveCursor(), // DECSC
-            '8' => self.active.restoreCursor(), // DECRC
+            '7' => self.active().saveCursor(), // DECSC
+            '8' => self.active().restoreCursor(), // DECRC
             'c' => self.reset(), // RIS
             'D' => self.lineFeed(), // IND — index
             'M' => self.reverseIndex(), // RI — reverse index
             'E' => { // NEL — next line
-                self.active.carriageReturn();
+                self.active().carriageReturn();
                 self.lineFeed();
             },
             else => {},
@@ -399,7 +396,7 @@ pub const Terminal = struct {
     fn setStandardModes(self: *Terminal, params: []const u16, on: bool) void {
         for (params) |p| {
             // SM/RM mode 4 = insert/replace.
-            if (p == 4) self.active.modes.insert = on;
+            if (p == 4) self.active().modes.insert = on;
         }
     }
 
@@ -434,10 +431,10 @@ pub const Terminal = struct {
             self.primary.saveCursor();
             self.alternate.cursorTo(0, 0);
             self.alternate.eraseDisplay(2);
-            self.active = &self.alternate;
+            self.on_alt = true;
             self.modes.alt_screen = true;
         } else {
-            self.active = &self.primary;
+            self.on_alt = false;
             self.primary.restoreCursor();
             self.modes.alt_screen = false;
         }
@@ -447,7 +444,7 @@ pub const Terminal = struct {
 
     /// Apply a Select Graphic Rendition sequence to the active grid's pen.
     fn applySgr(self: *Terminal, params: []const u16) void {
-        const pen = &self.active.pen;
+        const pen = &self.active().pen;
         if (params.len == 0) {
             resetPen(pen);
             return;
@@ -549,7 +546,7 @@ pub const Terminal = struct {
             'D' => .command_done,
             else => return,
         };
-        const line = self.evicted_lines + self.history.len() + self.active.cur_y;
+        const line = self.evicted_lines + self.history.len() + self.active().cur_y;
         if (self.mark_count == max_marks) {
             // Drop the oldest mark to make room.
             std.mem.copyForwards(PromptMark, self.marks[0 .. max_marks - 1], self.marks[1..]);
@@ -563,7 +560,7 @@ pub const Terminal = struct {
 
     /// Reverse index: move up one line, scrolling the region down at the top.
     fn reverseIndex(self: *Terminal) void {
-        const g = self.active;
+        const g = self.active();
         if (g.cur_y == g.region.top) {
             g.scrollDown(1);
         } else if (g.cur_y > 0) {
@@ -583,7 +580,7 @@ pub const Terminal = struct {
         self.alternate.pen = Cell{};
         self.modes = .{};
         self.g0_line_drawing = false;
-        self.active = &self.primary;
+        self.on_alt = false;
         self.viewport_offset = 0;
     }
 };
@@ -650,11 +647,9 @@ test {
     _ = @import("scrollback.zig");
 }
 
-/// Build a terminal and reseat it so `active` is valid. Caller deinits.
+/// Build a terminal of `cols_n x rows_n`. Caller deinits.
 fn makeTerminal(cols_n: usize, rows_n: usize) !Terminal {
-    var term = try Terminal.init(testing.allocator, cols_n, rows_n);
-    term.reseat();
-    return term;
+    return Terminal.init(testing.allocator, cols_n, rows_n);
 }
 
 /// Render viewport row `y` to a UTF-8 string in `buf`.
