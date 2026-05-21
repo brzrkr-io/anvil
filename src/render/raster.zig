@@ -77,9 +77,11 @@ pub const Raster = struct {
         capi.CGContextFillRect(self.ctx, self.cellRect(font, col, row));
     }
 
-    /// Fill a sub-rectangle of a cell, insetting from the cell edges by the
-    /// given fractions of cell width/height. Used for bar/underline cursors.
-    /// `fx`,`fy` are the left/top inset fractions; `fw`,`fh` the size fractions.
+    /// Fill a sub-rectangle of a cell. Used for bar/underline cursors.
+    /// `fx` is the offset from the cell's left edge as a fraction of cell width;
+    /// `fy` is the offset from the cell's BOTTOM edge as a fraction of cell height
+    /// (CG context is y-up, so `fy=0` is the bottom of the cell, not the top).
+    /// `fw`,`fh` are the width/height size fractions.
     pub fn cellInset(
         self: *Raster,
         font: Font,
@@ -202,4 +204,28 @@ test "cellInset fills a sub-rectangle of a cell" {
     // The cell's right half stays clear.
     const rx: usize = @intFromFloat(f.metrics.cell_w * 2.8);
     try std.testing.expectEqual([3]u8{ 0, 0, 0 }, pixelAt(&r, rx, ly));
+}
+
+test "cellInset underline fills the cell bottom" {
+    const f = try Font.init("Menlo", 26.0);
+    defer f.deinit();
+    var r = try Raster.init(std.testing.allocator, 400, 200);
+    defer r.deinit();
+    r.clear(.{ 0, 0, 0 });
+    // Underline: full width, bottom 12% of cell height, at cell (2, 1).
+    // fy=0 is the cell bottom in CG (y-up), so this fills the lowest strip.
+    r.cellInset(f, 2, 1, .{ 0, 0, 200 }, 0.0, 0.0, 1.0, 0.12);
+
+    // The bitmap is y-down: the cell's bottom (CG) maps to the LARGEST
+    // bitmap-y rows of the cell. Cell (2,1) occupies bitmap rows [ch, 2*ch).
+    // A pixel one row from the cell's bottom edge (bitmap row 2*ch - 2)
+    // should carry the fill color.
+    const ux: usize = @intFromFloat(f.metrics.cell_w * 2.5);
+    const bot_y: usize = @intFromFloat(f.metrics.cell_h * 2.0 - 2);
+    try std.testing.expectEqual([3]u8{ 0, 0, 200 }, pixelAt(&r, ux, bot_y));
+
+    // A pixel in the upper half of the same cell (bitmap row ~1.5*ch)
+    // should still be clear — it is above the underline strip.
+    const mid_y: usize = @intFromFloat(f.metrics.cell_h * 1.5);
+    try std.testing.expectEqual([3]u8{ 0, 0, 0 }, pixelAt(&r, ux, mid_y));
 }
