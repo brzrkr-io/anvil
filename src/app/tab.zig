@@ -198,6 +198,86 @@ fn spawnIn(alloc: std.mem.Allocator, cols: u16, rows: u16, cwd: ?[]const u8) !Pt
     return Pty.spawnShell(alloc, cols, rows);
 }
 
+/// A hard cap on tabs — bounds the per-tab thread + 256 KiB buffer cost.
+pub const max_tabs = 32;
+
+/// File-scope alias used by TabManager.barVisible to avoid the ambiguous-reference
+/// error that arises when the struct method and the module function share a name.
+const barVisibleFn = barVisible;
+
+pub const TabManager = struct {
+    alloc: std.mem.Allocator,
+    tabs: std.ArrayList(*Tab),
+    active: usize = 0,
+
+    pub fn init(alloc: std.mem.Allocator) TabManager {
+        return .{ .alloc = alloc, .tabs = std.ArrayList(*Tab).empty };
+    }
+
+    /// Deinit and free every tab, then the list.
+    pub fn deinit(self: *TabManager) void {
+        for (self.tabs.items) |tab| tab.deinit();
+        self.tabs.deinit(self.alloc);
+    }
+
+    pub fn count(self: *const TabManager) usize {
+        return self.tabs.items.len;
+    }
+
+    pub fn current(self: *TabManager) *Tab {
+        return self.tabs.items[self.active];
+    }
+
+    pub fn barVisible(self: *const TabManager) bool {
+        return barVisibleFn(self.tabs.items.len);
+    }
+
+    /// Create a tab, start its reader thread, append it, and make it active.
+    /// A no-op (logged) once `max_tabs` is reached. The reader starts *before*
+    /// the append so a failed append/startReader never leaves a freed tab in
+    /// the list (the heap pointer from `create` is already stable).
+    pub fn newTab(self: *TabManager, cols: usize, rows: usize, scrollback: usize, cwd: ?[]const u8) !void {
+        if (self.tabs.items.len >= max_tabs) {
+            std.debug.print("caldera-console: tab limit ({d}) reached\n", .{max_tabs});
+            return;
+        }
+        const tab = try Tab.create(self.alloc, cols, rows, scrollback, cwd);
+        errdefer tab.deinit();
+        try tab.startReader();
+        try self.tabs.append(self.alloc, tab);
+        self.active = self.tabs.items.len - 1;
+    }
+
+    /// Close the active tab. Returns true if tabs remain, false if the list is
+    /// now empty (the caller should then terminate the app).
+    pub fn closeActive(self: *TabManager) bool {
+        return self.closeAt(self.active);
+    }
+
+    /// Close the tab at `index`. Returns true if tabs remain.
+    pub fn closeAt(self: *TabManager, index: usize) bool {
+        if (index >= self.tabs.items.len) return self.tabs.items.len > 0;
+        const old_count = self.tabs.items.len;
+        const tab = self.tabs.orderedRemove(index);
+        tab.deinit();
+        if (self.tabs.items.len == 0) return false;
+        self.active = nextActiveAfterClose(old_count, index, self.active);
+        return true;
+    }
+
+    pub fn switchTo(self: *TabManager, index: usize) void {
+        self.active = clampIndex(self.tabs.items.len, index);
+    }
+
+    pub fn next(self: *TabManager) void {
+        self.active = wrapIndex(self.tabs.items.len, self.active, 1);
+    }
+
+    pub fn prev(self: *TabManager) void {
+        self.active = wrapIndex(self.tabs.items.len, self.active, -1);
+    }
+};
+
 fn copyTrunc(out: []u8, src: []const u8) []const u8 {
     const n = @min(out.len, src.len);
     @memcpy(out[0..n], src[0..n]);
@@ -259,4 +339,31 @@ test "label falls back to \"shell\" with no title or cwd" {
     var tab = Tab{ .alloc = testing.allocator, .terminal = t, .pty = undefined };
     var buf: [64]u8 = undefined;
     try testing.expectEqualStrings("shell", tab.label(&buf));
+}
+
+test "TabManager index logic: switch, next, prev, close" {
+    // Build a manager with 3 placeholder tab pointers (never started, never
+    // PTY-backed) so only the index bookkeeping is exercised.
+    var mgr = TabManager.init(testing.allocator);
+    defer mgr.tabs.deinit(testing.allocator); // free the list only, not the fakes
+
+    var fake: [3]Tab = undefined; // addresses only; fields never read
+    for (&fake) |*f| try mgr.tabs.append(testing.allocator, f);
+    mgr.active = 0;
+
+    mgr.next();
+    try testing.expectEqual(@as(usize, 1), mgr.active);
+    mgr.prev();
+    mgr.prev();
+    try testing.expectEqual(@as(usize, 2), mgr.active); // wrapped
+    mgr.switchTo(99);
+    try testing.expectEqual(@as(usize, 2), mgr.active); // clamped
+    mgr.switchTo(0);
+    try testing.expectEqual(@as(usize, 0), mgr.active);
+
+    // Removing index 0 while active=0: helper says stay at slot 0.
+    _ = mgr.tabs.orderedRemove(0);
+    mgr.active = nextActiveAfterClose(3, 0, 0);
+    try testing.expectEqual(@as(usize, 0), mgr.active);
+    try testing.expectEqual(@as(usize, 2), mgr.count());
 }
