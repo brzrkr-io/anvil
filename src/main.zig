@@ -16,6 +16,9 @@ const cfg_mod = @import("config/config.zig");
 const keys = @import("app/keys.zig");
 const tabs_mod = @import("app/tab.zig");
 const tabbar = @import("render/tabbar.zig");
+const Search = @import("terminal/search.zig").Search;
+const SearchMod = @import("terminal/search.zig");
+const searchbar = @import("render/searchbar.zig");
 
 const CGPoint = extern struct { x: f64, y: f64 };
 const CGSize = extern struct { width: f64, height: f64 };
@@ -50,6 +53,8 @@ const App = struct {
     keys_next: ?cfg_mod.Chord = null,
     keys_prev: ?cfg_mod.Chord = null,
     keys_jump: [9]?cfg_mod.Chord = [_]?cfg_mod.Chord{null} ** 9,
+    search: Search,
+    search_open: bool = false,
 };
 var g: App = undefined;
 
@@ -123,7 +128,10 @@ fn onTick() void {
         const bytes = tab.drain(&feed_scratch);
         if (bytes.len > 0) {
             tab.terminal.feed(bytes);
-            if (i == g.tabs.active) g.dirty = true;
+            if (i == g.tabs.active) {
+                g.dirty = true;
+                if (g.search_open) g.search.rescan(&g.tabs.current().terminal);
+            }
         }
         if (tab.isDead()) any_dead = true;
     }
@@ -150,7 +158,7 @@ fn onTick() void {
 
 /// Close any tab whose shell has exited. Terminates the app if none remain.
 fn closeDeadTabs() void {
-    const bar_before = barRows();
+    const bar_before = topBarRows();
     var i: usize = 0;
     while (i < g.tabs.count()) {
         if (g.tabs.tabs.items[i].isDead()) {
@@ -161,7 +169,7 @@ fn closeDeadTabs() void {
             // The list shifted; do not advance i.
         } else i += 1;
     }
-    if (barRows() != bar_before) resizeAllTabs();
+    if (topBarRows() != bar_before) resizeAllTabs();
     g.dirty = true;
 }
 
@@ -174,7 +182,7 @@ fn resizeAllTabs() void {
     const ch: usize = @intFromFloat(g.font.metrics.cell_h);
     const cols = @max(dw / cw, 1);
     const total_rows = @max(dh / ch, 1);
-    const rows = @max(total_rows -| barRows(), 1);
+    const rows = @max(total_rows -| topBarRows() -| bottomBarRows(), 1);
 
     for (g.tabs.tabs.items) |tab| {
         tab.terminal.resize(cols, rows);
@@ -262,30 +270,33 @@ fn handleTabKey(mods: keys.Mods, cp: u21) bool {
         return true;
     };
     if (g.keys_close) |ch| if (chordMatches(ch, mods, cp)) {
-        const bar_before = barRows();
+        const bar_before = topBarRows();
         if (!g.tabs.closeActive()) {
             g.nsapp.msgSend(void, "terminate:", .{@as(c.id, null)});
         } else {
             // Only reflow when bar visibility actually changed (2->1 tabs).
             // Closing among 3+ tabs leaves the grid size unchanged — an
             // unconditional resize would SIGWINCH every surviving shell.
-            if (barRows() != bar_before) resizeAllTabs();
+            if (topBarRows() != bar_before) resizeAllTabs();
             g.dirty = true;
         }
         return true;
     };
     if (g.keys_next) |ch| if (chordMatches(ch, mods, cp)) {
+        closeSearch();
         g.tabs.next();
         g.dirty = true;
         return true;
     };
     if (g.keys_prev) |ch| if (chordMatches(ch, mods, cp)) {
+        closeSearch();
         g.tabs.prev();
         g.dirty = true;
         return true;
     };
     for (g.keys_jump, 0..) |maybe, i| {
         if (maybe) |ch| if (chordMatches(ch, mods, cp)) {
+            closeSearch();
             g.tabs.switchTo(i);
             g.dirty = true;
             return true;
@@ -376,9 +387,29 @@ fn onMouseDown(event: objc.Object) void {
 
 // --- rendering -----------------------------------------------------------
 
-/// Rows consumed by the tab bar at the top (0 or 1).
-fn barRows() usize {
+/// Open the search bar (re-scanning the active tab) and reflow for the row.
+fn openSearch() void {
+    if (g.search_open) return;
+    g.search_open = true;
+    g.search.setQuery(&g.tabs.current().terminal, g.search.query());
+    resizeAllTabs();
+    g.dirty = true;
+}
+/// Close the search bar and reflow.
+fn closeSearch() void {
+    if (!g.search_open) return;
+    g.search_open = false;
+    resizeAllTabs();
+    g.dirty = true;
+}
+
+/// Rows taken by the tab bar at the top (0 or 1).
+fn topBarRows() usize {
     return if (g.tabs.barVisible()) 1 else 0;
+}
+/// Rows taken by the search bar at the bottom (0 or 1).
+fn bottomBarRows() usize {
+    return if (g.search_open) 1 else 0;
 }
 
 fn renderFrame() void {
@@ -406,6 +437,12 @@ fn renderFrame() void {
         drawCursor(cur.x, cur.y);
     }
 
+    if (g.search_open) {
+        const ch: usize = @intFromFloat(g.font.metrics.cell_h);
+        const total_rows = @max(g.raster.height / ch, 1);
+        searchbar.drawSearchBar(&g.raster, g.font, g.theme, &g.search, total_rows - 1);
+    }
+
     g.renderer.present(g.raster.bytes());
 }
 
@@ -421,7 +458,15 @@ fn drawCell(x: usize, y: usize, cell: term.Cell, is_cursor: bool) void {
         bg = g.theme.accent;
         fg = g.theme.background;
     }
-    const ry = y + barRows(); // raster row: offset by bar when visible
+    if (g.search_open and !is_cursor) {
+        const crow = g.tabs.current().terminal.contentRowOfViewport(y);
+        switch (g.search.classify(crow, x)) {
+            .current => bg = g.theme.accent,
+            .other => bg = g.theme.ansi[8],
+            .none => {},
+        }
+    }
+    const ry = y + topBarRows(); // raster row: offset by top bar when visible
     if (is_cursor or !std.mem.eql(u8, &bg, &g.theme.background)) {
         g.raster.cellBg(g.font, x, ry, bg);
     }
@@ -439,7 +484,7 @@ fn drawCursor(x: usize, y: usize) void {
         drawCell(x, y, cell, false);
         return;
     }
-    const ry = y + barRows(); // raster row: offset by bar when visible
+    const ry = y + topBarRows(); // raster row: offset by top bar when visible
     switch (g.cursor_cfg.style) {
         .block => drawCell(x, y, cell, true),
         .bar => {
@@ -571,6 +616,7 @@ pub fn main() void {
         .cursor_cfg = cfg.cursor,
         .config = loaded,
         .watcher = cfg_mod.Watcher.init(config_path orelse ""),
+        .search = Search.init(alloc),
     };
     g.renderer.setClearColor(active_theme.background);
     loadKeybindings(cfg.keybindings);
