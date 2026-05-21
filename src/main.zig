@@ -79,6 +79,10 @@ fn imScrollWheel(_: c.id, _: c.SEL, ev: c.id) callconv(.c) void {
     onScroll(.{ .value = ev });
 }
 
+fn imMouseDown(_: c.id, _: c.SEL, ev: c.id) callconv(.c) void {
+    onMouseDown(.{ .value = ev });
+}
+
 // --- event handling ------------------------------------------------------
 
 fn applyConfig(new_loaded: cfg_mod.Loaded) void {
@@ -343,6 +347,26 @@ fn onScroll(event: objc.Object) void {
     g.dirty = true;
 }
 
+fn onMouseDown(event: objc.Object) void {
+    if (!g.tabs.barVisible()) return;
+
+    const win_pt = event.msgSend(CGPoint, "locationInWindow", .{});
+    const view_pt = g.view.msgSend(CGPoint, "convertPoint:fromView:", .{
+        win_pt, @as(c.id, null),
+    });
+    const b = g.view.msgSend(CGRect, "bounds", .{});
+    // bounds/point are bottom-left origin: the bar occupies the top.
+    const ch_pt = g.font.metrics.cell_h / g.scale; // bar height in points
+    if (view_pt.y < b.size.height - ch_pt) return; // click below the bar
+
+    const n = g.tabs.count();
+    if (n == 0) return;
+    const frac = std.math.clamp(view_pt.x / b.size.width, 0.0, 0.999);
+    const idx: usize = @intFromFloat(frac * @as(f64, @floatFromInt(n)));
+    g.tabs.switchTo(idx);
+    g.dirty = true;
+}
+
 // --- rendering -----------------------------------------------------------
 
 /// Rows consumed by the tab bar at the top (0 or 1).
@@ -472,6 +496,7 @@ pub fn main() void {
     _ = View.addMethod("acceptsFirstResponder", imAcceptsFirstResponder);
     _ = View.addMethod("keyDown:", imKeyDown);
     _ = View.addMethod("scrollWheel:", imScrollWheel);
+    _ = View.addMethod("mouseDown:", imMouseDown);
     objc.registerClassPair(View);
 
     const delegate = Delegate.msgSend(objc.Object, "alloc", .{})
