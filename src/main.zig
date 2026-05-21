@@ -22,9 +22,7 @@ const CGRect = extern struct { origin: CGPoint, size: CGSize };
 
 const app_icon_png = @embedFile("assets/app-icon.png");
 
-const font_point_size: f64 = 14.0;
-const init_win_w_pt: f64 = 1024.0;
-const init_win_h_pt: f64 = 640.0;
+var config_path_buf: [std.fs.max_path_bytes]u8 = undefined;
 
 // --- PTY -> main-thread handoff ------------------------------------------
 // The reader thread appends bytes here; the 60 Hz tick drains them.
@@ -58,6 +56,8 @@ const App = struct {
     cursor_cfg: cfg_mod.Config.CursorCfg,
     blink_on: bool = true,
     blink_ticks: u32 = 0,
+    config: cfg_mod.Loaded,
+    watcher: cfg_mod.Watcher,
 };
 var g: App = undefined;
 
@@ -89,7 +89,23 @@ fn imScrollWheel(_: c.id, _: c.SEL, ev: c.id) callconv(.c) void {
 
 // --- event handling ------------------------------------------------------
 
+fn applyConfig(new_loaded: cfg_mod.Loaded) void {
+    const nl = new_loaded;
+    const nc = nl.config;
+    g.theme = theme_mod.resolve(nc.theme, nc.theme_overrides);
+    g.renderer.setClearColor(g.theme.background); // keep the GPU clear in sync
+    g.cursor_cfg = nc.cursor;
+    g.dirty = true;
+    g.config.deinit(); // free the previous config's arena
+    g.config = nl; // the new arena owns the strings resolve() just read
+}
+
 fn onTick() void {
+    if (g.watcher.path.len > 0) {
+        if (g.watcher.poll(g.alloc)) |new_loaded| {
+            applyConfig(new_loaded);
+        }
+    }
     lockPty();
     const n = pty_len;
     if (n > 0) {
@@ -352,9 +368,14 @@ pub fn main() void {
     const delegate = Delegate.msgSend(objc.Object, "alloc", .{})
         .msgSend(objc.Object, "init", .{});
 
+    // Load config early so window size can be driven by the configured values.
+    const config_path: ?[]const u8 = cfg_mod.resolvePath(&config_path_buf);
+    var loaded: cfg_mod.Loaded = if (config_path) |p| cfg_mod.load(alloc, p) else cfg_mod.defaults(alloc);
+    const cfg = loaded.config;
+
     const rect: CGRect = .{
         .origin = .{ .x = 0, .y = 0 },
-        .size = .{ .width = init_win_w_pt, .height = init_win_h_pt },
+        .size = .{ .width = cfg.window.width, .height = cfg.window.height },
     };
     const style: c_ulong = 1 | 2 | 4 | 8; // titled|closable|miniaturizable|resizable
     const window = objc.getClass("NSWindow").?.msgSend(objc.Object, "alloc", .{})
@@ -378,21 +399,23 @@ pub fn main() void {
 
     const scale = window.msgSend(f64, "backingScaleFactor", .{});
 
-    // Brand font stack: IBM Plex Mono primary, SFMono-Regular fallback, Menlo last resort.
-    const font_names = [_][:0]const u8{ "IBMPlexMono", "SFMono-Regular", "Menlo" };
-    const font = Font.initFirstAvailable(&font_names, font_point_size * scale) catch |e| fail("font", e);
-    const dw: usize = @intFromFloat(init_win_w_pt * scale);
-    const dh: usize = @intFromFloat(init_win_h_pt * scale);
+    const active_theme = theme_mod.resolve(cfg.theme, cfg.theme_overrides);
+
+    // Font: configured family first, then fallbacks. dupeZ into the config
+    // arena so the slice outlives this stack frame (font stack needs [:0]const u8).
+    const fam_z = loaded.arena.allocator().dupeZ(u8, cfg.font.family) catch "IBMPlexMono";
+    const font_names = [_][:0]const u8{ fam_z, "SFMono-Regular", "Menlo" };
+    const font = Font.initFirstAvailable(&font_names, cfg.font.size * scale) catch |e| fail("font", e);
+    const dw: usize = @intFromFloat(cfg.window.width * scale);
+    const dh: usize = @intFromFloat(cfg.window.height * scale);
     const cw: usize = @intFromFloat(font.metrics.cell_w);
     const ch: usize = @intFromFloat(font.metrics.cell_h);
     const cols = @max(dw / cw, 1);
     const rows = @max(dh / ch, 1);
 
-    const active_theme = theme_mod.byName("mineral-dark");
-
     g = .{
         .alloc = alloc,
-        .terminal = term.Terminal.init(alloc, cols, rows, 100_000) catch |e| fail("terminal", e),
+        .terminal = term.Terminal.init(alloc, cols, rows, cfg.scrollback) catch |e| fail("terminal", e),
         .pty = Pty.spawnShell(alloc, @intCast(cols), @intCast(rows)) catch |e| fail("pty", e),
         .font = font,
         .raster = Raster.init(alloc, dw, dh) catch |e| fail("raster", e),
@@ -402,8 +425,11 @@ pub fn main() void {
         .scale = scale,
         .dirty = true,
         .theme = active_theme,
-        .cursor_cfg = .{},
+        .cursor_cfg = cfg.cursor,
+        .config = loaded,
+        .watcher = cfg_mod.Watcher.init(config_path orelse ""),
     };
+    g.renderer.setClearColor(active_theme.background);
 
     _ = std.Thread.spawn(.{}, ptyReaderThread, .{}) catch |e| fail("thread", e);
     renderFrame();

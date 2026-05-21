@@ -85,6 +85,17 @@ pub const Renderer = struct {
         };
     }
 
+    /// Update the GPU clear color. It sits behind the full-screen texture, so
+    /// this only matters on resize flashes — but it must track the theme.
+    pub fn setClearColor(self: *Renderer, rgb: [3]u8) void {
+        self.clear = .{
+            .red = @as(f64, @floatFromInt(rgb[0])) / 255.0,
+            .green = @as(f64, @floatFromInt(rgb[1])) / 255.0,
+            .blue = @as(f64, @floatFromInt(rgb[2])) / 255.0,
+            .alpha = 1.0,
+        };
+    }
+
     /// Recreate the texture (and update the layer drawable) for a new size.
     pub fn resize(self: *Renderer, width: usize, height: usize) void {
         if (width == self.width and height == self.height) return;
