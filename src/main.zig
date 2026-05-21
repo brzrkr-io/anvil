@@ -14,6 +14,7 @@ const Theme = @import("config/theme.zig").Theme;
 const theme_mod = @import("config/theme.zig");
 const cfg_mod = @import("config/config.zig");
 const keys = @import("app/keys.zig");
+const shell_integration = @import("app/shell_integration.zig");
 const tabs_mod = @import("app/tab.zig");
 const tabbar = @import("render/tabbar.zig");
 const Search = @import("terminal/search.zig").Search;
@@ -666,6 +667,8 @@ pub fn main() void {
     const ch: usize = @intFromFloat(font.metrics.cell_h);
     const cols = @max(dw / cw, 1);
     const rows = @max(dh / ch, 1);
+
+    shell_integration.setup(cfg.shell_integration);
 
     var tabs = tabs_mod.TabManager.init(alloc);
     tabs.newTab(cols, rows, cfg.scrollback, null) catch |e| fail("tab", e);
