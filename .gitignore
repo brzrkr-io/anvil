@@ -2,3 +2,5 @@
 zig-out/
 .DS_Store
 docs/superpowers/
+*.o
+.obsidian/
