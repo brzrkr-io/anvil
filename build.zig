@@ -21,6 +21,9 @@ pub fn build(b: *std.Build) void {
     exe_mod.linkFramework("AppKit", .{});
     exe_mod.linkFramework("Metal", .{});
     exe_mod.linkFramework("QuartzCore", .{});
+    exe_mod.linkFramework("CoreText", .{});
+    exe_mod.linkFramework("CoreGraphics", .{});
+    exe_mod.linkFramework("CoreFoundation", .{});
 
     const exe = b.addExecutable(.{
         .name = "caldera-console",
