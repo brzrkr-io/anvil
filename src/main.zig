@@ -596,6 +596,7 @@ test {
     _ = @import("app/keys.zig");
     _ = @import("app/tab.zig");
     _ = @import("render/tabbar.zig");
+    _ = @import("render/searchbar.zig");
     _ = @import("terminal/terminal.zig");
     _ = @import("terminal/search.zig");
     _ = @import("pty/pty.zig");
