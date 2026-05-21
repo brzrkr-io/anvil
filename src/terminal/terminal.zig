@@ -1,0 +1,1011 @@
+//! The terminal model: the public face of the terminal core.
+//!
+//! A `Terminal` owns a primary grid, an alternate grid, the scrollback ring,
+//! and a VT/ANSI parser. It implements the parser's handler interface,
+//! translating parsed events into grid mutations. It also tracks a render
+//! viewport that can be scrolled up into scrollback history.
+//!
+//! Pure Zig — no platform dependencies. The renderer reads `viewportRow`,
+//! `cursor`, `cols`/`rows`, the window title, and the OSC-133 marks.
+
+const std = @import("std");
+const cell = @import("cell.zig");
+const grid = @import("grid.zig");
+const scrollback = @import("scrollback.zig");
+const parser = @import("parser.zig");
+
+pub const Cell = cell.Cell;
+pub const Color = cell.Color;
+pub const Attrs = cell.Attrs;
+
+/// The cursor position and visibility, as the renderer needs it.
+pub const Cursor = struct {
+    x: usize,
+    y: usize,
+    visible: bool,
+};
+
+/// An OSC-133 semantic prompt mark, keyed to an absolute output line so the
+/// command and output regions of the session are machine-identifiable.
+pub const PromptMark = struct {
+    /// Which `OSC 133` sub-command produced this mark.
+    kind: enum { prompt_start, command_start, output_start, command_done },
+    /// The absolute line index: scrollback rows ever evicted + scrollback
+    /// length + the cursor's grid row at the time the mark was emitted.
+    /// Monotonic for the session; survives scrollback eviction.
+    line: usize,
+};
+
+/// DEC private modes the terminal records. Only modes that affect the model
+/// are acted on; the rest are stored as flags for input handling / the host.
+pub const PrivateModes = struct {
+    autowrap: bool = true,
+    cursor_visible: bool = true,
+    alt_screen: bool = false,
+    bracketed_paste: bool = false,
+    /// ?1 application cursor keys.
+    app_cursor_keys: bool = false,
+    /// ?1000 / ?1002 / ?1006 mouse reporting flags.
+    mouse_x10: bool = false,
+    mouse_button: bool = false,
+    mouse_sgr: bool = false,
+};
+
+/// Upper bound on retained OSC-133 marks. The session can outlive this; the
+/// oldest marks are dropped first (they describe long-evicted history).
+const max_marks = 4096;
+
+pub const Terminal = struct {
+    alloc: std.mem.Allocator,
+
+    primary: grid.Grid,
+    alternate: grid.Grid,
+    /// Points at `primary` or `alternate` — the grid currently being drawn to.
+    active: *grid.Grid,
+
+    history: scrollback.Scrollback,
+
+    parser: parser.Parser,
+
+    /// 0 = viewport pinned to the live bottom; >0 = scrolled up into history.
+    viewport_offset: usize = 0,
+
+    modes: PrivateModes = .{},
+
+    /// G0 charset selection — true selects the DEC special line-drawing set.
+    g0_line_drawing: bool = false,
+
+    /// Window title from OSC 0 / OSC 2.
+    title_buf: [256]u8 = undefined,
+    title_len: usize = 0,
+
+    /// Working directory from OSC 7.
+    cwd_buf: [1024]u8 = undefined,
+    cwd_len: usize = 0,
+
+    /// Clipboard payload from OSC 52.
+    clipboard_buf: [4096]u8 = undefined,
+    clipboard_len: usize = 0,
+
+    /// OSC-133 semantic prompt marks, oldest first.
+    marks: [max_marks]PromptMark = undefined,
+    mark_count: usize = 0,
+    /// Count of scrollback rows evicted over the session's lifetime, so
+    /// absolute line numbers in `marks` stay stable as history scrolls away.
+    evicted_lines: usize = 0,
+
+    /// Reusable buffer backing `viewportRow` when it pads a short scrollback
+    /// row — one row wide, reallocated on resize.
+    compose_buf: []Cell,
+
+    /// Create a terminal with a `width x height` screen and deep scrollback.
+    pub fn init(alloc: std.mem.Allocator, width: usize, height: usize) !Terminal {
+        var primary = try grid.Grid.init(alloc, width, height);
+        errdefer primary.deinit();
+        var alternate = try grid.Grid.init(alloc, width, height);
+        errdefer alternate.deinit();
+        var history = try scrollback.Scrollback.init(alloc, scrollback.default_capacity);
+        errdefer history.deinit();
+        const compose_buf = try alloc.alloc(Cell, primary.width);
+        errdefer alloc.free(compose_buf);
+
+        var self = Terminal{
+            .alloc = alloc,
+            .primary = primary,
+            .alternate = alternate,
+            .active = undefined,
+            .history = history,
+            .parser = parser.Parser.init(),
+            .compose_buf = compose_buf,
+        };
+        // `active` must point into the struct's own storage; fixed up by the
+        // caller-visible value after the struct is returned. We cannot take a
+        // stable pointer here, so the caller-facing fix happens in `reseat`.
+        self.active = &self.primary;
+        return self;
+    }
+
+    pub fn deinit(self: *Terminal) void {
+        self.primary.deinit();
+        self.alternate.deinit();
+        self.history.deinit();
+        self.alloc.free(self.compose_buf);
+        self.* = undefined;
+    }
+
+    /// Re-point `active` at the correct grid after the `Terminal` value has
+    /// been moved/copied (e.g. returned from `init`). Pointers into a struct
+    /// returned by value are invalidated by the move; callers that store a
+    /// `Terminal` by value must call this once before use.
+    pub fn reseat(self: *Terminal) void {
+        self.active = if (self.modes.alt_screen) &self.alternate else &self.primary;
+    }
+
+    // --- dimensions --------------------------------------------------------
+
+    pub fn cols(self: *const Terminal) usize {
+        return self.primary.width;
+    }
+
+    pub fn rows(self: *const Terminal) usize {
+        return self.primary.height;
+    }
+
+    pub fn cursor(self: *const Terminal) Cursor {
+        return .{
+            .x = self.active.cur_x,
+            .y = self.active.cur_y,
+            .visible = self.modes.cursor_visible,
+        };
+    }
+
+    // --- feeding bytes -----------------------------------------------------
+
+    /// Parse `bytes` and apply them to the active grid. Any new output pins
+    /// the viewport back to the live bottom.
+    pub fn feed(self: *Terminal, bytes: []const u8) void {
+        if (bytes.len == 0) return;
+        self.parser.feed(self, bytes);
+        self.viewport_offset = 0;
+    }
+
+    // --- resize ------------------------------------------------------------
+
+    /// Resize both grids to `cols x rows`. Content anchors to the top-left.
+    pub fn resize(self: *Terminal, new_cols: usize, new_rows: usize) void {
+        const w = @max(new_cols, 1);
+        self.primary.resize(w, new_rows);
+        self.alternate.resize(w, new_rows);
+        if (self.compose_buf.len != w) {
+            const fresh = self.alloc.alloc(Cell, w) catch return;
+            self.alloc.free(self.compose_buf);
+            self.compose_buf = fresh;
+        }
+        self.viewport_offset = @min(self.viewport_offset, self.history.len());
+    }
+
+    // --- viewport ----------------------------------------------------------
+
+    pub fn scrollbackLen(self: *const Terminal) usize {
+        return self.history.len();
+    }
+
+    pub fn viewportOffset(self: *const Terminal) usize {
+        return self.viewport_offset;
+    }
+
+    /// Scroll the viewport by `delta` rows: positive moves up into history,
+    /// negative moves down toward the live bottom. Clamped to valid range.
+    pub fn scrollViewport(self: *Terminal, delta: isize) void {
+        const max_offset = self.history.len();
+        if (delta >= 0) {
+            const up: usize = @intCast(delta);
+            self.viewport_offset = @min(self.viewport_offset + up, max_offset);
+        } else {
+            const down: usize = @intCast(-delta);
+            self.viewport_offset = if (self.viewport_offset > down)
+                self.viewport_offset - down
+            else
+                0;
+        }
+    }
+
+    pub fn scrollToBottom(self: *Terminal) void {
+        self.viewport_offset = 0;
+    }
+
+    /// The row at viewport position `y` (0 = top of the viewport), always
+    /// exactly `cols` cells wide. When the viewport is scrolled up, the top
+    /// rows come from scrollback (short rows padded into `compose_buf`); the
+    /// rest come from the active grid.
+    pub fn viewportRow(self: *Terminal, y: usize) []const Cell {
+        const width = self.active.width;
+        if (y >= self.active.height) return self.active.rowConst(0);
+
+        if (self.viewport_offset > y) {
+            // This row is sourced from scrollback. The newest scrollback row
+            // sits just above the grid's top.
+            const from_oldest = self.history.len() - self.viewport_offset + y;
+            const src = self.history.get(from_oldest);
+            @memset(self.compose_buf, Cell{});
+            const n = @min(src.len, width);
+            @memcpy(self.compose_buf[0..n], src[0..n]);
+            return self.compose_buf;
+        }
+
+        // Sourced from the active grid, shifted up by the remaining offset.
+        const grid_y = y - self.viewport_offset;
+        return self.active.rowConst(grid_y);
+    }
+
+    // --- title / cwd / clipboard accessors ---------------------------------
+
+    pub fn title(self: *const Terminal) []const u8 {
+        return self.title_buf[0..self.title_len];
+    }
+
+    pub fn cwd(self: *const Terminal) []const u8 {
+        return self.cwd_buf[0..self.cwd_len];
+    }
+
+    pub fn clipboard(self: *const Terminal) []const u8 {
+        return self.clipboard_buf[0..self.clipboard_len];
+    }
+
+    /// The OSC-133 semantic prompt marks recorded so far, oldest first.
+    pub fn promptMarks(self: *const Terminal) []const PromptMark {
+        return self.marks[0..self.mark_count];
+    }
+
+    // === parser handler ====================================================
+    // The methods below satisfy the `anytype` handler contract of `Parser`.
+
+    /// A printable Unicode scalar. Applies G0 line-drawing translation.
+    pub fn print(self: *Terminal, cp: u21) void {
+        self.active.print(if (self.g0_line_drawing) translateLineDrawing(cp) else cp);
+    }
+
+    /// A C0/C1 control byte.
+    pub fn execute(self: *Terminal, byte: u8) void {
+        switch (byte) {
+            0x07 => {}, // BEL — no audible bell in the model
+            0x08 => self.active.backspace(), // BS
+            0x09 => self.active.tab(), // HT
+            0x0A, 0x0B, 0x0C => self.lineFeed(), // LF, VT, FF
+            0x0D => self.active.carriageReturn(), // CR
+            else => {},
+        }
+    }
+
+    /// Apply a line feed, archiving any scrolled-off primary row.
+    fn lineFeed(self: *Terminal) void {
+        const scrolled = self.active.lineFeed();
+        if (scrolled) |row| {
+            if (self.active == &self.primary) self.archive(row);
+        }
+    }
+
+    /// Push a scrolled-off row into scrollback, tracking eviction so absolute
+    /// line numbers stay stable.
+    fn archive(self: *Terminal, row: []const Cell) void {
+        const was_full = self.history.len() == self.history.capacity();
+        self.history.push(row);
+        if (was_full) self.evicted_lines += 1;
+    }
+
+    /// A CSI sequence: `intermediates` may carry a private marker (`?` etc.).
+    pub fn csiDispatch(self: *Terminal, intermediates: []const u8, params: []const u16, final: u8) void {
+        const private = intermediates.len > 0 and intermediates[0] == '?';
+        if (private) {
+            self.csiPrivate(params, final);
+            return;
+        }
+        self.csiStandard(params, final);
+    }
+
+    fn csiStandard(self: *Terminal, params: []const u16, final: u8) void {
+        const g = self.active;
+        const p0 = param(params, 0, 1);
+        switch (final) {
+            'A' => g.cursorUp(p0),
+            'B', 'e' => g.cursorDown(p0),
+            'C', 'a' => g.cursorForward(p0),
+            'D' => g.cursorBack(p0),
+            'E' => { // CNL — cursor next line
+                g.carriageReturn();
+                g.cursorDown(p0);
+            },
+            'F' => { // CPL — cursor previous line
+                g.carriageReturn();
+                g.cursorUp(p0);
+            },
+            'G', '`' => g.cursorToColumn(oneBased(param(params, 0, 1))),
+            'd' => g.cursorToRow(oneBased(param(params, 0, 1))),
+            'H', 'f' => g.cursorTo(
+                oneBased(param(params, 1, 1)),
+                oneBased(param(params, 0, 1)),
+            ),
+            'J' => g.eraseDisplay(param(params, 0, 0)),
+            'K' => g.eraseLine(param(params, 0, 0)),
+            '@' => g.insertChars(p0),
+            'P' => g.deleteChars(p0),
+            'L' => g.insertLines(p0),
+            'M' => g.deleteLines(p0),
+            'X' => g.eraseChars(p0),
+            'S' => _ = g.scrollUp(p0),
+            'T' => g.scrollDown(p0),
+            'r' => g.setScrollRegion(param(params, 0, 0), param(params, 1, 0)),
+            'm' => self.applySgr(params),
+            'h' => self.setStandardModes(params, true),
+            'l' => self.setStandardModes(params, false),
+            's' => g.saveCursor(),
+            'u' => g.restoreCursor(),
+            else => {},
+        }
+    }
+
+    fn csiPrivate(self: *Terminal, params: []const u16, final: u8) void {
+        switch (final) {
+            'h' => for (params) |p| self.setPrivateMode(p, true),
+            'l' => for (params) |p| self.setPrivateMode(p, false),
+            else => {},
+        }
+    }
+
+    /// An ESC sequence (no CSI). `intermediates` carries `(`/`)` charset
+    /// designators and similar.
+    pub fn escDispatch(self: *Terminal, intermediates: []const u8, final: u8) void {
+        if (intermediates.len > 0 and intermediates[0] == '(') {
+            // G0 charset: `0` = DEC line drawing, `B` = ASCII.
+            self.g0_line_drawing = (final == '0');
+            return;
+        }
+        switch (final) {
+            '7' => self.active.saveCursor(), // DECSC
+            '8' => self.active.restoreCursor(), // DECRC
+            'c' => self.reset(), // RIS
+            'D' => self.lineFeed(), // IND — index
+            'M' => self.reverseIndex(), // RI — reverse index
+            'E' => { // NEL — next line
+                self.active.carriageReturn();
+                self.lineFeed();
+            },
+            else => {},
+        }
+    }
+
+    /// An OSC string: `code;payload`.
+    pub fn oscDispatch(self: *Terminal, data: []const u8) void {
+        const semi = std.mem.indexOfScalar(u8, data, ';') orelse {
+            // OSC with no payload separator — ignore.
+            return;
+        };
+        const code = data[0..semi];
+        const payload = data[semi + 1 ..];
+
+        if (eql(code, "0") or eql(code, "2")) {
+            self.setTitle(payload);
+        } else if (eql(code, "7")) {
+            self.setCwd(payload);
+        } else if (eql(code, "52")) {
+            self.setClipboard(payload);
+        } else if (eql(code, "133")) {
+            self.recordPromptMark(payload);
+        }
+    }
+
+    // --- mode handling -----------------------------------------------------
+
+    fn setStandardModes(self: *Terminal, params: []const u16, on: bool) void {
+        for (params) |p| {
+            // SM/RM mode 4 = insert/replace.
+            if (p == 4) self.active.modes.insert = on;
+        }
+    }
+
+    fn setPrivateMode(self: *Terminal, mode: u16, on: bool) void {
+        switch (mode) {
+            1 => self.modes.app_cursor_keys = on,
+            7 => {
+                self.modes.autowrap = on;
+                self.primary.modes.autowrap = on;
+                self.alternate.modes.autowrap = on;
+            },
+            25 => {
+                self.modes.cursor_visible = on;
+                self.primary.modes.cursor_visible = on;
+                self.alternate.modes.cursor_visible = on;
+            },
+            1000 => self.modes.mouse_button = on,
+            1002 => self.modes.mouse_button = on,
+            1006 => self.modes.mouse_sgr = on,
+            2004 => self.modes.bracketed_paste = on,
+            1049 => self.setAltScreen(on),
+            else => {},
+        }
+    }
+
+    /// Enter (`on`) or leave the alternate screen. Entering saves the primary
+    /// cursor and clears the alt grid; it never feeds scrollback. Leaving
+    /// restores the primary cursor.
+    fn setAltScreen(self: *Terminal, on: bool) void {
+        if (on == self.modes.alt_screen) return;
+        if (on) {
+            self.primary.saveCursor();
+            self.alternate.cursorTo(0, 0);
+            self.alternate.eraseDisplay(2);
+            self.active = &self.alternate;
+            self.modes.alt_screen = true;
+        } else {
+            self.active = &self.primary;
+            self.primary.restoreCursor();
+            self.modes.alt_screen = false;
+        }
+    }
+
+    // --- SGR ---------------------------------------------------------------
+
+    /// Apply a Select Graphic Rendition sequence to the active grid's pen.
+    fn applySgr(self: *Terminal, params: []const u16) void {
+        const pen = &self.active.pen;
+        if (params.len == 0) {
+            resetPen(pen);
+            return;
+        }
+        var i: usize = 0;
+        while (i < params.len) : (i += 1) {
+            i += applySgrAt(pen, params, i);
+        }
+    }
+
+    /// Apply the SGR code at `params[i]`, returning how many *extra* params
+    /// were consumed (for 38/48 extended-color sequences).
+    fn applySgrAt(pen: *Cell, params: []const u16, i: usize) usize {
+        switch (params[i]) {
+            0 => resetPen(pen),
+            1 => pen.attrs.bold = true,
+            2 => pen.attrs.dim = true,
+            3 => pen.attrs.italic = true,
+            4 => pen.attrs.underline = true,
+            5 => pen.attrs.blink = true,
+            7 => pen.attrs.inverse = true,
+            8 => pen.attrs.invisible = true,
+            9 => pen.attrs.strikethrough = true,
+            21, 22 => {
+                pen.attrs.bold = false;
+                pen.attrs.dim = false;
+            },
+            23 => pen.attrs.italic = false,
+            24 => pen.attrs.underline = false,
+            25 => pen.attrs.blink = false,
+            27 => pen.attrs.inverse = false,
+            28 => pen.attrs.invisible = false,
+            29 => pen.attrs.strikethrough = false,
+            30...37 => pen.fg = .{ .palette = @intCast(params[i] - 30) },
+            39 => pen.fg = .default,
+            40...47 => pen.bg = .{ .palette = @intCast(params[i] - 40) },
+            49 => pen.bg = .default,
+            90...97 => pen.fg = .{ .palette = @intCast(params[i] - 90 + 8) },
+            100...107 => pen.bg = .{ .palette = @intCast(params[i] - 100 + 8) },
+            38 => return applyExtendedColor(&pen.fg, params, i),
+            48 => return applyExtendedColor(&pen.bg, params, i),
+            else => {},
+        }
+        return 0;
+    }
+
+    /// Parse a `38`/`48` extended color: `;5;n` palette or `;2;r;g;b` rgb.
+    /// Returns the count of extra params consumed beyond the `38`/`48` itself.
+    fn applyExtendedColor(target: *Color, params: []const u16, i: usize) usize {
+        if (i + 1 >= params.len) return 0;
+        switch (params[i + 1]) {
+            5 => {
+                if (i + 2 >= params.len) return 1;
+                target.* = .{ .palette = @intCast(params[i + 2] & 0xFF) };
+                return 2;
+            },
+            2 => {
+                if (i + 4 >= params.len) return @min(params.len - i - 1, 3);
+                target.* = .{ .rgb = .{
+                    @intCast(params[i + 2] & 0xFF),
+                    @intCast(params[i + 3] & 0xFF),
+                    @intCast(params[i + 4] & 0xFF),
+                } };
+                return 4;
+            },
+            else => return 1,
+        }
+    }
+
+    fn resetPen(pen: *Cell) void {
+        pen.* = Cell{};
+    }
+
+    // --- OSC payload handling ----------------------------------------------
+
+    fn setTitle(self: *Terminal, text: []const u8) void {
+        self.title_len = copyInto(&self.title_buf, text);
+    }
+
+    fn setCwd(self: *Terminal, text: []const u8) void {
+        self.cwd_len = copyInto(&self.cwd_buf, text);
+    }
+
+    fn setClipboard(self: *Terminal, text: []const u8) void {
+        // OSC 52 payload is `selection;base64data`; store the raw payload.
+        const semi = std.mem.indexOfScalar(u8, text, ';');
+        const data = if (semi) |s| text[s + 1 ..] else text;
+        self.clipboard_len = copyInto(&self.clipboard_buf, data);
+    }
+
+    /// Record an OSC-133 semantic prompt mark keyed to the absolute line of
+    /// the cursor at emit time.
+    fn recordPromptMark(self: *Terminal, payload: []const u8) void {
+        if (payload.len == 0) return;
+        const kind: @TypeOf(@as(PromptMark, undefined).kind) = switch (payload[0]) {
+            'A' => .prompt_start,
+            'B' => .command_start,
+            'C' => .output_start,
+            'D' => .command_done,
+            else => return,
+        };
+        const line = self.evicted_lines + self.history.len() + self.active.cur_y;
+        if (self.mark_count == max_marks) {
+            // Drop the oldest mark to make room.
+            std.mem.copyForwards(PromptMark, self.marks[0 .. max_marks - 1], self.marks[1..]);
+            self.mark_count -= 1;
+        }
+        self.marks[self.mark_count] = .{ .kind = kind, .line = line };
+        self.mark_count += 1;
+    }
+
+    // --- misc control ------------------------------------------------------
+
+    /// Reverse index: move up one line, scrolling the region down at the top.
+    fn reverseIndex(self: *Terminal) void {
+        const g = self.active;
+        if (g.cur_y == g.region.top) {
+            g.scrollDown(1);
+        } else if (g.cur_y > 0) {
+            g.cur_y -= 1;
+        }
+    }
+
+    /// Full reset (RIS): blank both grids, clear modes, drop the viewport to
+    /// the live bottom. Scrollback and recorded marks are preserved.
+    fn reset(self: *Terminal) void {
+        self.primary.cursorTo(0, 0);
+        self.primary.eraseDisplay(2);
+        self.primary.pen = Cell{};
+        self.primary.region = .{ .top = 0, .bottom = self.primary.height - 1 };
+        self.alternate.cursorTo(0, 0);
+        self.alternate.eraseDisplay(2);
+        self.alternate.pen = Cell{};
+        self.modes = .{};
+        self.g0_line_drawing = false;
+        self.active = &self.primary;
+        self.viewport_offset = 0;
+    }
+};
+
+// --- free helpers ----------------------------------------------------------
+
+/// Fetch parameter `idx`, returning `default_value` when absent or zero.
+/// VT semantics treat a zero/omitted numeric param as its default.
+fn param(params: []const u16, idx: usize, default_value: u16) u16 {
+    if (idx >= params.len) return default_value;
+    return if (params[idx] == 0) default_value else params[idx];
+}
+
+/// Convert a 1-based VT coordinate to a 0-based grid index (min 0).
+fn oneBased(value: u16) usize {
+    return if (value == 0) 0 else value - 1;
+}
+
+fn eql(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+
+/// Copy `src` into the start of `dst`, truncating to fit. Returns byte count.
+fn copyInto(dst: []u8, src: []const u8) usize {
+    const n = @min(dst.len, src.len);
+    @memcpy(dst[0..n], src[0..n]);
+    return n;
+}
+
+/// Map a codepoint through the DEC special graphics (line-drawing) set.
+/// Only the box-drawing range `_`..`~` differs from ASCII.
+fn translateLineDrawing(cp: u21) u21 {
+    return switch (cp) {
+        'j' => 0x2518, // ┘
+        'k' => 0x2510, // ┐
+        'l' => 0x250C, // ┌
+        'm' => 0x2514, // └
+        'n' => 0x253C, // ┼
+        'q' => 0x2500, // ─
+        't' => 0x251C, // ├
+        'u' => 0x2524, // ┤
+        'v' => 0x2534, // ┴
+        'w' => 0x252C, // ┬
+        'x' => 0x2502, // │
+        '`' => 0x25C6, // ◆
+        'a' => 0x2592, // ▒
+        'f' => 0x00B0, // °
+        'g' => 0x00B1, // ±
+        '~' => 0x00B7, // ·
+        else => cp,
+    };
+}
+
+// === tests =================================================================
+
+const testing = std.testing;
+
+// Run every terminal-core module's tests through this file, so
+// `zig test src/terminal/terminal.zig` exercises the whole core.
+test {
+    _ = @import("cell.zig");
+    _ = @import("parser.zig");
+    _ = @import("grid.zig");
+    _ = @import("scrollback.zig");
+}
+
+/// Build a terminal and reseat it so `active` is valid. Caller deinits.
+fn makeTerminal(cols_n: usize, rows_n: usize) !Terminal {
+    var term = try Terminal.init(testing.allocator, cols_n, rows_n);
+    term.reseat();
+    return term;
+}
+
+/// Render viewport row `y` to a UTF-8 string in `buf`.
+fn viewportText(term: *Terminal, y: usize, buf: []u8) []const u8 {
+    var n: usize = 0;
+    for (term.viewportRow(y)) |c| {
+        n += std.unicode.utf8Encode(c.cp, buf[n..]) catch 0;
+    }
+    return buf[0..n];
+}
+
+test "init reports its dimensions" {
+    var term = try makeTerminal(80, 24);
+    defer term.deinit();
+    try testing.expectEqual(@as(usize, 80), term.cols());
+    try testing.expectEqual(@as(usize, 24), term.rows());
+}
+
+test "feeding plain text fills the first row" {
+    var term = try makeTerminal(10, 3);
+    defer term.deinit();
+    term.feed("hello");
+    var buf: [16]u8 = undefined;
+    try testing.expectEqualStrings("hello     ", viewportText(&term, 0, &buf));
+    try testing.expectEqual(@as(usize, 5), term.cursor().x);
+}
+
+test "CR and LF reposition the cursor" {
+    var term = try makeTerminal(10, 4);
+    defer term.deinit();
+    term.feed("ab\r\ncd");
+    var buf: [16]u8 = undefined;
+    try testing.expectEqualStrings("ab        ", viewportText(&term, 0, &buf));
+    try testing.expectEqualStrings("cd        ", viewportText(&term, 1, &buf));
+    try testing.expectEqual(@as(usize, 1), term.cursor().y);
+}
+
+test "CSI cursor position then print" {
+    var term = try makeTerminal(10, 5);
+    defer term.deinit();
+    term.feed("\x1B[3;5HX");
+    var buf: [16]u8 = undefined;
+    try testing.expectEqualStrings("    X     ", viewportText(&term, 2, &buf));
+}
+
+test "CSI cursor moves clamp at bounds" {
+    var term = try makeTerminal(10, 5);
+    defer term.deinit();
+    term.feed("\x1B[99;99H");
+    try testing.expectEqual(@as(usize, 9), term.cursor().x);
+    try testing.expectEqual(@as(usize, 4), term.cursor().y);
+    term.feed("\x1B[99A");
+    try testing.expectEqual(@as(usize, 0), term.cursor().y);
+}
+
+test "ED clears from cursor to end of screen" {
+    var term = try makeTerminal(4, 3);
+    defer term.deinit();
+    term.feed("AAAA\r\nBBBB\r\nCC");
+    term.feed("\x1B[0J");
+    var buf: [8]u8 = undefined;
+    try testing.expectEqualStrings("AAAA", viewportText(&term, 0, &buf));
+    try testing.expectEqualStrings("CC  ", viewportText(&term, 2, &buf));
+}
+
+test "EL clears the current line" {
+    var term = try makeTerminal(6, 2);
+    defer term.deinit();
+    term.feed("abcdef\x1B[1G\x1B[0K");
+    var buf: [8]u8 = undefined;
+    try testing.expectEqualStrings("      ", viewportText(&term, 0, &buf));
+}
+
+test "SGR sets bold and a palette color" {
+    var term = try makeTerminal(10, 2);
+    defer term.deinit();
+    term.feed("\x1B[1;32mX");
+    const c = term.viewportRow(0)[0];
+    try testing.expect(c.attrs.bold);
+    try testing.expectEqual(Color{ .palette = 2 }, c.fg);
+}
+
+test "SGR reset clears the pen" {
+    var term = try makeTerminal(10, 2);
+    defer term.deinit();
+    term.feed("\x1B[1;31mA\x1B[0mB");
+    const a = term.viewportRow(0)[0];
+    const b = term.viewportRow(0)[1];
+    try testing.expect(a.attrs.bold);
+    try testing.expect(!b.attrs.bold);
+    try testing.expectEqual(Color.default, b.fg);
+}
+
+test "SGR 256-color palette via 38;5;n" {
+    var term = try makeTerminal(10, 2);
+    defer term.deinit();
+    term.feed("\x1B[38;5;200mX");
+    try testing.expectEqual(Color{ .palette = 200 }, term.viewportRow(0)[0].fg);
+}
+
+test "SGR truecolor via 48;2;r;g;b" {
+    var term = try makeTerminal(10, 2);
+    defer term.deinit();
+    term.feed("\x1B[48;2;10;20;30mX");
+    try testing.expectEqual(Color{ .rgb = .{ 10, 20, 30 } }, term.viewportRow(0)[0].bg);
+}
+
+test "SGR truecolor mixed with other codes in one sequence" {
+    var term = try makeTerminal(10, 2);
+    defer term.deinit();
+    // bold, then fg truecolor, then underline — all in one CSI m.
+    term.feed("\x1B[1;38;2;1;2;3;4mX");
+    const c = term.viewportRow(0)[0];
+    try testing.expect(c.attrs.bold);
+    try testing.expect(c.attrs.underline);
+    try testing.expectEqual(Color{ .rgb = .{ 1, 2, 3 } }, c.fg);
+}
+
+test "line feed past the bottom pushes rows into scrollback" {
+    var term = try makeTerminal(4, 2);
+    defer term.deinit();
+    term.feed("L1\r\nL2\r\nL3");
+    // A 2-row screen: feeding three lines pushes "L1" into scrollback.
+    try testing.expectEqual(@as(usize, 1), term.scrollbackLen());
+    var buf: [8]u8 = undefined;
+    try testing.expectEqualStrings("L2  ", viewportText(&term, 0, &buf));
+    try testing.expectEqualStrings("L3  ", viewportText(&term, 1, &buf));
+}
+
+test "viewport scrolls up into scrollback history" {
+    var term = try makeTerminal(4, 2);
+    defer term.deinit();
+    term.feed("L1\r\nL2\r\nL3\r\nL4");
+    // Screen shows L3,L4; scrollback holds L1,L2.
+    try testing.expectEqual(@as(usize, 2), term.scrollbackLen());
+
+    term.scrollViewport(1); // up one row into history
+    try testing.expectEqual(@as(usize, 1), term.viewportOffset());
+    var buf: [8]u8 = undefined;
+    // Top row now shows the newest scrollback row, L2.
+    try testing.expectEqualStrings("L2  ", viewportText(&term, 0, &buf));
+    try testing.expectEqualStrings("L3  ", viewportText(&term, 1, &buf));
+
+    term.scrollViewport(1); // up one more
+    try testing.expectEqualStrings("L1  ", viewportText(&term, 0, &buf));
+    try testing.expectEqualStrings("L2  ", viewportText(&term, 1, &buf));
+}
+
+test "viewport scroll clamps and scrollToBottom resets it" {
+    var term = try makeTerminal(4, 2);
+    defer term.deinit();
+    term.feed("L1\r\nL2\r\nL3\r\nL4");
+    term.scrollViewport(999); // clamps to scrollback length
+    try testing.expectEqual(@as(usize, 2), term.viewportOffset());
+    term.scrollViewport(-999); // clamps to zero
+    try testing.expectEqual(@as(usize, 0), term.viewportOffset());
+    term.scrollViewport(2);
+    term.scrollToBottom();
+    try testing.expectEqual(@as(usize, 0), term.viewportOffset());
+}
+
+test "new output snaps the viewport back to the live bottom" {
+    var term = try makeTerminal(4, 2);
+    defer term.deinit();
+    term.feed("L1\r\nL2\r\nL3");
+    term.scrollViewport(1);
+    try testing.expect(term.viewportOffset() > 0);
+    term.feed("X");
+    try testing.expectEqual(@as(usize, 0), term.viewportOffset());
+}
+
+test "alternate screen isolates scrollback and restores on exit" {
+    var term = try makeTerminal(4, 2);
+    defer term.deinit();
+    term.feed("L1\r\nL2\r\nL3"); // pushes L1 to scrollback
+    try testing.expectEqual(@as(usize, 1), term.scrollbackLen());
+
+    term.feed("\x1B[?1049h"); // enter alt screen
+    // Filling and scrolling the alt screen must NOT touch scrollback.
+    term.feed("A1\r\nA2\r\nA3\r\nA4");
+    try testing.expectEqual(@as(usize, 1), term.scrollbackLen());
+
+    term.feed("\x1B[?1049l"); // leave alt screen
+    // The primary grid is intact.
+    var buf: [8]u8 = undefined;
+    try testing.expectEqualStrings("L2  ", viewportText(&term, 0, &buf));
+    try testing.expectEqualStrings("L3  ", viewportText(&term, 1, &buf));
+}
+
+test "cursor visibility toggles via DECSET ?25" {
+    var term = try makeTerminal(10, 2);
+    defer term.deinit();
+    try testing.expect(term.cursor().visible);
+    term.feed("\x1B[?25l");
+    try testing.expect(!term.cursor().visible);
+    term.feed("\x1B[?25h");
+    try testing.expect(term.cursor().visible);
+}
+
+test "bracketed paste flag follows DECSET ?2004" {
+    var term = try makeTerminal(10, 2);
+    defer term.deinit();
+    try testing.expect(!term.modes.bracketed_paste);
+    term.feed("\x1B[?2004h");
+    try testing.expect(term.modes.bracketed_paste);
+}
+
+test "autowrap can be disabled via DECRST ?7" {
+    var term = try makeTerminal(4, 2);
+    defer term.deinit();
+    term.feed("\x1B[?7l");
+    term.feed("abcdef"); // 6 chars into a 4-wide grid, no wrap
+    try testing.expectEqual(@as(usize, 0), term.cursor().y);
+    var buf: [8]u8 = undefined;
+    try testing.expectEqualStrings("abcf", viewportText(&term, 0, &buf));
+}
+
+test "OSC 0 sets the window title" {
+    var term = try makeTerminal(10, 2);
+    defer term.deinit();
+    term.feed("\x1B]0;Caldera Console\x07");
+    try testing.expectEqualStrings("Caldera Console", term.title());
+}
+
+test "OSC 7 records the working directory" {
+    var term = try makeTerminal(10, 2);
+    defer term.deinit();
+    term.feed("\x1B]7;file:///home/dev\x07");
+    try testing.expectEqualStrings("file:///home/dev", term.cwd());
+}
+
+test "OSC 133 prompt marks are recorded with absolute lines" {
+    var term = try makeTerminal(6, 3);
+    defer term.deinit();
+    term.feed("\x1B]133;A\x07"); // prompt start at line 0
+    term.feed("$ ls\r\n"); // move to line 1
+    term.feed("\x1B]133;B\x07"); // command start at line 1
+    term.feed("\x1B]133;C\x07"); // output start at line 1
+    term.feed("out\r\n"); // move to line 2
+    term.feed("\x1B]133;D\x07"); // command done at line 2
+
+    const marks = term.promptMarks();
+    try testing.expectEqual(@as(usize, 4), marks.len);
+    try testing.expectEqual(@as(usize, 0), marks[0].line);
+    try testing.expect(marks[0].kind == .prompt_start);
+    try testing.expectEqual(@as(usize, 1), marks[1].line);
+    try testing.expect(marks[1].kind == .command_start);
+    try testing.expect(marks[2].kind == .output_start);
+    try testing.expectEqual(@as(usize, 2), marks[3].line);
+    try testing.expect(marks[3].kind == .command_done);
+}
+
+test "OSC 133 absolute line survives scrollback eviction" {
+    var term = try makeTerminal(4, 2);
+    defer term.deinit();
+    // Fill so the screen is at the bottom, then mark and scroll past it.
+    term.feed("L1\r\nL2"); // cursor at row 1
+    term.feed("\x1B]133;A\x07"); // mark at absolute line 1
+    try testing.expectEqual(@as(usize, 1), term.promptMarks()[0].line);
+    // Scroll several lines; the mark's absolute line stays fixed.
+    term.feed("\r\nL3\r\nL4\r\nL5");
+    try testing.expectEqual(@as(usize, 1), term.promptMarks()[0].line);
+}
+
+test "ESC c performs a full reset" {
+    var term = try makeTerminal(4, 2);
+    defer term.deinit();
+    term.feed("\x1B[1;31mABCD");
+    term.feed("\x1Bc");
+    var buf: [8]u8 = undefined;
+    try testing.expectEqualStrings("    ", viewportText(&term, 0, &buf));
+    try testing.expectEqual(@as(usize, 0), term.cursor().x);
+    // The pen was reset, so fresh output is unstyled.
+    term.feed("Z");
+    try testing.expect(!term.viewportRow(0)[0].attrs.bold);
+}
+
+test "DEC line-drawing charset maps lowercase letters to box glyphs" {
+    var term = try makeTerminal(6, 2);
+    defer term.deinit();
+    term.feed("\x1B(0qqq\x1B(Bqq");
+    // First three q's are line-drawing horizontals; last two are ASCII 'q'.
+    const r = term.viewportRow(0);
+    try testing.expectEqual(@as(u21, 0x2500), r[0].cp);
+    try testing.expectEqual(@as(u21, 0x2500), r[2].cp);
+    try testing.expectEqual(@as(u21, 'q'), r[3].cp);
+}
+
+test "insert and delete lines via CSI L and M" {
+    var term = try makeTerminal(4, 4);
+    defer term.deinit();
+    term.feed("11\r\n22\r\n33\r\n44");
+    term.feed("\x1B[2;1H"); // row index 1
+    term.feed("\x1B[L"); // insert one blank line
+    var buf: [8]u8 = undefined;
+    try testing.expectEqualStrings("11  ", viewportText(&term, 0, &buf));
+    try testing.expectEqualStrings("    ", viewportText(&term, 1, &buf));
+    try testing.expectEqualStrings("22  ", viewportText(&term, 2, &buf));
+}
+
+test "DECSTBM scroll region limits line feeds" {
+    var term = try makeTerminal(4, 4);
+    defer term.deinit();
+    term.feed("11\r\n22\r\n33\r\n44");
+    term.feed("\x1B[2;3r"); // region = rows index 1..2
+    term.feed("\x1B[3;1H"); // bottom of region
+    term.feed("\r\nXX"); // line feed scrolls only the region
+    var buf: [8]u8 = undefined;
+    try testing.expectEqualStrings("11  ", viewportText(&term, 0, &buf)); // untouched
+    try testing.expectEqualStrings("33  ", viewportText(&term, 1, &buf));
+    try testing.expectEqualStrings("XX  ", viewportText(&term, 2, &buf));
+    try testing.expectEqualStrings("44  ", viewportText(&term, 3, &buf)); // untouched
+}
+
+test "resize keeps content and re-clamps the viewport" {
+    var term = try makeTerminal(6, 3);
+    defer term.deinit();
+    term.feed("hello\r\nworld");
+    term.resize(3, 2);
+    try testing.expectEqual(@as(usize, 3), term.cols());
+    try testing.expectEqual(@as(usize, 2), term.rows());
+    var buf: [8]u8 = undefined;
+    try testing.expectEqualStrings("hel", viewportText(&term, 0, &buf));
+}
+
+test "autowrap moves to the next line at the right edge" {
+    var term = try makeTerminal(3, 3);
+    defer term.deinit();
+    term.feed("abcdef"); // 6 chars wrap across 3-wide rows
+    var buf: [8]u8 = undefined;
+    try testing.expectEqualStrings("abc", viewportText(&term, 0, &buf));
+    try testing.expectEqualStrings("def", viewportText(&term, 1, &buf));
+}
+
+test "save and restore cursor via ESC 7 / ESC 8" {
+    var term = try makeTerminal(10, 4);
+    defer term.deinit();
+    term.feed("\x1B[3;5H"); // row 2, col 4
+    term.feed("\x1B7"); // save
+    term.feed("\x1B[1;1H"); // home
+    term.feed("\x1B8"); // restore
+    try testing.expectEqual(@as(usize, 4), term.cursor().x);
+    try testing.expectEqual(@as(usize, 2), term.cursor().y);
+}
+
+test "viewportRow always returns exactly cols cells" {
+    var term = try makeTerminal(8, 2);
+    defer term.deinit();
+    term.feed("hi\r\nthere\r\nmore"); // forces scrollback
+    term.scrollViewport(1);
+    // The composed scrollback row is padded to the full width.
+    try testing.expectEqual(@as(usize, 8), term.viewportRow(0).len);
+    try testing.expectEqual(@as(usize, 8), term.viewportRow(1).len);
+}
