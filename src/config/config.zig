@@ -101,6 +101,89 @@ pub fn parseSlice(backing: std.mem.Allocator, source: [:0]const u8) error{ParseF
     return .{ .arena = arena, .config = cfg };
 }
 
+/// Write the absolute config path into `buf`. Returns the slice, or null when
+/// `$HOME` is unset (then the app simply runs on defaults).
+pub fn resolvePath(buf: []u8) ?[]const u8 {
+    const home_ptr = std.c.getenv("HOME") orelse return null;
+    const home = std.mem.sliceTo(home_ptr, 0);
+    return std.fmt.bufPrint(buf, "{s}/.config/caldera-console/config.zon", .{home}) catch null;
+}
+
+/// Read and parse the config file at `path`. A missing file or any read/parse
+/// error yields `defaults` — running the app is never blocked by a bad config.
+pub fn load(backing: std.mem.Allocator, path: []const u8) Loaded {
+    // Need a null-terminated path for std.c.open.
+    var path_z_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
+    if (path.len >= path_z_buf.len) return defaults(backing);
+    @memcpy(path_z_buf[0..path.len], path);
+    path_z_buf[path.len] = 0;
+    const path_z: [*:0]const u8 = path_z_buf[0..path.len :0];
+
+    const fd = std.c.open(path_z, .{}, @as(c_uint, 0));
+    if (fd < 0) {
+        const e = std.posix.errno(fd);
+        if (e != .NOENT)
+            std.debug.print("caldera-console: cannot open config: {s}\n", .{@tagName(e)});
+        return defaults(backing);
+    }
+    defer _ = std.c.close(fd);
+
+    var buf: [1 << 20]u8 = undefined;
+    var total: usize = 0;
+    while (total < buf.len) {
+        const n = std.c.read(fd, buf[total..].ptr, buf.len - total);
+        if (n < 0) return defaults(backing);
+        if (n == 0) break;
+        total += @intCast(n);
+    }
+    if (total >= buf.len) {
+        std.debug.print("caldera-console: config file too large, using defaults\n", .{});
+        return defaults(backing);
+    }
+    buf[total] = 0;
+    return parseSlice(backing, buf[0..total :0]) catch defaults(backing);
+}
+
+/// Polls the config file's modification time so the render loop can reload it
+/// without a file-watcher thread. Cheap: one `stat` per poll.
+pub const Watcher = struct {
+    path: []const u8, // borrowed; must outlive the Watcher
+    last_mtime: i128 = 0, // 0 = nothing seen yet (or no file)
+
+    pub fn init(path: []const u8) Watcher {
+        return .{ .path = path };
+    }
+
+    /// Current mtime of the file in nanoseconds, or 0 if it cannot be stat'd.
+    fn mtime(self: *const Watcher) i128 {
+        var path_z_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
+        if (self.path.len >= path_z_buf.len) return 0;
+        @memcpy(path_z_buf[0..self.path.len], self.path);
+        path_z_buf[self.path.len] = 0;
+        const path_z: [*:0]const u8 = path_z_buf[0..self.path.len :0];
+
+        const fd = std.c.open(path_z, .{}, @as(c_uint, 0));
+        if (fd < 0) return 0;
+        defer _ = std.c.close(fd);
+
+        var st: std.c.Stat = undefined;
+        if (std.c.fstat(fd, &st) != 0) return 0;
+        const ts = st.mtime();
+        return @as(i128, ts.sec) * 1_000_000_000 + @as(i128, ts.nsec);
+    }
+
+    /// If the file changed since the last call, load and return the new config;
+    /// otherwise return null. A parse failure still advances the recorded mtime
+    /// so the error is reported once, not every poll.
+    pub fn poll(self: *Watcher, backing: std.mem.Allocator) ?Loaded {
+        const m = self.mtime();
+        if (m == self.last_mtime) return null;
+        self.last_mtime = m;
+        if (m == 0) return defaults(backing); // file was removed -> defaults
+        return load(backing, self.path);
+    }
+};
+
 const testing = std.testing;
 
 test "parses a full config" {
@@ -154,4 +237,33 @@ test "defaults has an empty config" {
     var loaded = defaults(testing.allocator);
     defer loaded.deinit();
     try testing.expectEqual(@as(usize, 100_000), loaded.config.scrollback);
+}
+
+test "load of a missing file yields defaults" {
+    var loaded = load(testing.allocator, "/nonexistent/caldera-test-config.zon");
+    defer loaded.deinit();
+    try testing.expectEqual(@as(usize, 100_000), loaded.config.scrollback);
+}
+
+test "Watcher detects a change and reloads" {
+    const io = std.testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path_len = try tmp.dir.realPath(io, &path_buf);
+    const dir_path = path_buf[0..path_len];
+
+    var full_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const full = try std.fmt.bufPrint(&full_buf, "{s}/config.zon", .{dir_path});
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "config.zon", .data = ".{ .scrollback = 11 }" });
+    var w = Watcher.init(full);
+
+    var first = w.poll(testing.allocator) orelse return error.ExpectedReload;
+    defer first.deinit();
+    try testing.expectEqual(@as(usize, 11), first.config.scrollback);
+
+    // No change -> no reload.
+    try testing.expect(w.poll(testing.allocator) == null);
 }
