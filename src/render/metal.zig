@@ -72,7 +72,7 @@ pub const Renderer = struct {
         const pipeline = try buildPipeline(device);
         const texture = makeTexture(device, width, height);
 
-        const cc = try color.hexToClearColor(color.mineral_dark_bg);
+        const cc = try color.hexToClearColor("#0b0d0e");
         return .{
             .device = device,
             .queue = queue,

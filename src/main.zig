@@ -11,7 +11,8 @@ const Pty = @import("pty/pty.zig").Pty;
 const Font = @import("render/font.zig").Font;
 const Raster = @import("render/raster.zig").Raster;
 const Renderer = @import("render/metal.zig").Renderer;
-const color = @import("render/color.zig");
+const Theme = @import("config/theme.zig").Theme;
+const theme_mod = @import("config/theme.zig");
 const keys = @import("app/keys.zig");
 
 const CGPoint = extern struct { x: f64, y: f64 };
@@ -52,6 +53,7 @@ const App = struct {
     view: objc.Object,
     scale: f64,
     dirty: bool,
+    theme: Theme,
 };
 var g: App = undefined;
 
@@ -191,7 +193,7 @@ fn onScroll(event: objc.Object) void {
 // --- rendering -----------------------------------------------------------
 
 fn renderFrame() void {
-    g.raster.clear(color.default_bg);
+    g.raster.clear(g.theme.background);
     const rows = g.terminal.rows();
     const cols = g.terminal.cols();
 
@@ -214,18 +216,18 @@ fn renderFrame() void {
 }
 
 fn drawCell(x: usize, y: usize, cell: term.Cell, is_cursor: bool) void {
-    var fg = resolve(cell.fg, color.default_fg);
-    var bg = resolve(cell.bg, color.default_bg);
+    var fg = resolve(cell.fg, g.theme.foreground);
+    var bg = resolve(cell.bg, g.theme.background);
     if (cell.attrs.inverse) {
         const t = fg;
         fg = bg;
         bg = t;
     }
     if (is_cursor) {
-        bg = color.palette256(6); // Mineral accent
-        fg = color.default_bg;
+        bg = g.theme.accent;
+        fg = g.theme.background;
     }
-    if (is_cursor or !std.mem.eql(u8, &bg, &color.default_bg)) {
+    if (is_cursor or !std.mem.eql(u8, &bg, &g.theme.background)) {
         g.raster.cellBg(g.font, x, y, bg);
     }
     if (cell.cp != ' ' and cell.cp != 0) {
@@ -236,7 +238,7 @@ fn drawCell(x: usize, y: usize, cell: term.Cell, is_cursor: bool) void {
 fn resolve(col: term.Color, default: [3]u8) [3]u8 {
     return switch (col) {
         .default => default,
-        .palette => |p| color.palette256(p),
+        .palette => |p| g.theme.palette256(p),
         .rgb => |v| v,
     };
 }
@@ -351,6 +353,8 @@ pub fn main() void {
     const cols = @max(dw / cw, 1);
     const rows = @max(dh / ch, 1);
 
+    const active_theme = theme_mod.byName("mineral-dark");
+
     g = .{
         .alloc = alloc,
         .terminal = term.Terminal.init(alloc, cols, rows) catch |e| fail("terminal", e),
@@ -362,6 +366,7 @@ pub fn main() void {
         .view = view,
         .scale = scale,
         .dirty = true,
+        .theme = active_theme,
     };
 
     _ = std.Thread.spawn(.{}, ptyReaderThread, .{}) catch |e| fail("thread", e);
