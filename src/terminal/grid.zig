@@ -259,7 +259,7 @@ pub const Grid = struct {
         const r = self.row(self.cur_y);
         switch (mode) {
             0 => self.blankCells(r[self.cur_x..]),
-            1 => self.blankCells(r[0 .. @min(self.cur_x + 1, self.width)]),
+            1 => self.blankCells(r[0..@min(self.cur_x + 1, self.width)]),
             else => self.blankCells(r),
         }
     }

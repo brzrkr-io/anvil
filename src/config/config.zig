@@ -224,8 +224,7 @@ test "malformed ZON returns ParseFailed" {
 }
 
 test "out-of-range values are clamped" {
-    var loaded = try parseSlice(testing.allocator,
-        ".{ .scrollback = 0, .font = .{ .size = 0.0 }, .window = .{ .width = 1.0, .height = 1.0 } }");
+    var loaded = try parseSlice(testing.allocator, ".{ .scrollback = 0, .font = .{ .size = 0.0 }, .window = .{ .width = 1.0, .height = 1.0 } }");
     defer loaded.deinit();
     try testing.expectEqual(@as(usize, 1), loaded.config.scrollback);
     try testing.expectEqual(@as(f64, 14.0), loaded.config.font.size);
