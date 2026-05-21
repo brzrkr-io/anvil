@@ -19,12 +19,16 @@ const tabs_mod = @import("app/tab.zig");
 const tabbar = @import("render/tabbar.zig");
 const Search = @import("terminal/search.zig").Search;
 const searchbar = @import("render/searchbar.zig");
+const webview_mod = @import("webview/webview.zig");
+const palette_mod = @import("app/palette.zig");
+const bridge = @import("ipc/bridge.zig");
 
 const CGPoint = extern struct { x: f64, y: f64 };
 const CGSize = extern struct { width: f64, height: f64 };
 const CGRect = extern struct { origin: CGPoint, size: CGSize };
 
 const app_icon_png = @embedFile("assets/app-icon.png");
+const palette_html: [:0]const u8 = @embedFile("palette_html");
 
 var config_path_buf: [std.fs.max_path_bytes]u8 = undefined;
 
@@ -58,6 +62,8 @@ const App = struct {
     keys_search_prev: ?cfg_mod.Chord = null,
     search: Search,
     search_open: bool = false,
+    webview: webview_mod.Webview,
+    palette: palette_mod.Palette = .{},
 };
 var g: App = undefined;
 
@@ -119,6 +125,111 @@ fn loadKeybindings(kb: cfg_mod.Keybindings) void {
     g.keys_search_open = cfg_mod.parseChord(kb.search_open);
     g.keys_search_next = cfg_mod.parseChord(kb.search_next);
     g.keys_search_prev = cfg_mod.parseChord(kb.search_prev);
+}
+
+// --- command palette -----------------------------------------------------
+
+fn formatHex(buf: *[8]u8, rgb: [3]u8) []const u8 {
+    return std.fmt.bufPrint(buf, "#{x:0>2}{x:0>2}{x:0>2}", .{ rgb[0], rgb[1], rgb[2] }) catch "#000000";
+}
+
+fn sendShow() void {
+    var cmds: [palette_mod.catalog.len]bridge.Command = undefined;
+    for (palette_mod.catalog, 0..) |e, i| {
+        cmds[i] = .{ .id = e.id, .title = e.title, .subtitle = e.subtitle };
+    }
+    var bg: [8]u8 = undefined;
+    var fg: [8]u8 = undefined;
+    var ac: [8]u8 = undefined;
+    const json = bridge.encode(g.alloc, .{ .show = .{
+        .commands = &cmds,
+        .theme = .{
+            .background = formatHex(&bg, g.theme.background),
+            .foreground = formatHex(&fg, g.theme.foreground),
+            .accent = formatHex(&ac, g.theme.accent),
+        },
+    } }) catch return;
+    defer g.alloc.free(json);
+    const js = std.fmt.allocPrintSentinel(g.alloc, "window.caldera.receive({s});", .{json}, 0) catch return;
+    defer g.alloc.free(js);
+    g.webview.evalJS(js);
+}
+
+fn summonPalette() void {
+    if (g.palette.summon()) {
+        sendShow();
+        g.webview.show();
+    }
+    // Not ready yet: handleReady() will send `show` and reveal the webview.
+}
+
+fn handleReady() void {
+    if (g.palette.onReady()) {
+        sendShow();
+        g.webview.show();
+    }
+}
+
+fn hidePalette() void {
+    g.palette.dismiss();
+    const json = bridge.encode(g.alloc, .hide) catch return;
+    defer g.alloc.free(json);
+    const js = std.fmt.allocPrintSentinel(g.alloc, "window.caldera.receive({s});", .{json}, 0) catch return;
+    defer g.alloc.free(js);
+    g.webview.evalJS(js);
+    g.webview.hide(g.view);
+}
+
+fn setTheme(name: []const u8) void {
+    g.theme = theme_mod.byName(name);
+    g.renderer.setClearColor(g.theme.background);
+    g.dirty = true;
+}
+
+fn runAction(action: palette_mod.Action) void {
+    switch (action) {
+        .theme_dark => setTheme("mineral-dark"),
+        .theme_light => setTheme("mineral-light"),
+        .config_reload => {
+            if (g.watcher.path.len > 0) {
+                applyConfig(cfg_mod.load(g.alloc, g.watcher.path));
+            }
+        },
+        .clear_screen => {
+            g.tabs.current().terminal.feed("\x1b[H\x1b[2J");
+            g.dirty = true;
+        },
+        .scroll_top => {
+            const t = &g.tabs.current().terminal;
+            t.scrollViewport(@intCast(t.scrollbackLen()));
+            g.dirty = true;
+        },
+        .scroll_bottom => {
+            g.tabs.current().terminal.scrollToBottom();
+            g.dirty = true;
+        },
+        .app_quit => g.nsapp.msgSend(void, "terminate:", .{@as(c.id, null)}),
+    }
+}
+
+fn handleWebMessage(json: []const u8) void {
+    const msg = bridge.decode(g.alloc, json) catch |e| {
+        std.debug.print("caldera-console: webview message decode failed: {s}\n", .{@errorName(e)});
+        return;
+    };
+    defer msg.deinit(g.alloc);
+    switch (msg) {
+        .ready => handleReady(),
+        .dismiss => hidePalette(),
+        .invoke => |id| {
+            if (palette_mod.actionForId(id)) |action| {
+                hidePalette();
+                runAction(action);
+            } else {
+                std.debug.print("caldera-console: unknown command id: {s}\n", .{id});
+            }
+        },
+    }
 }
 
 fn onTick() void {
@@ -201,6 +312,8 @@ fn resizeAllTabs() void {
 
 fn onResize() void {
     resizeAllTabs();
+    const b = g.view.msgSend(CGRect, "bounds", .{});
+    g.webview.setFrame(b.size.width, b.size.height);
     renderFrame();
 }
 
@@ -377,6 +490,11 @@ fn onKeyDown(event: objc.Object) void {
         const src = event.msgSend(objc.Object, "charactersIgnoringModifiers", .{});
         if (firstCodepoint(src)) |cp| {
             if (handleTabKey(mods, cp)) return;
+            // ⌘K — summon the command palette.
+            if (asciiLowerCp(cp) == 'k' and !mods.shift and !mods.control and !mods.option) {
+                summonPalette();
+                return;
+            }
         }
         return; // other ⌘ combos still go to the system
     }
@@ -674,6 +792,8 @@ pub fn main() void {
     var tabs = tabs_mod.TabManager.init(alloc);
     tabs.newTab(cols, rows, cfg.scrollback, null) catch |e| fail("tab", e);
 
+    const wv = webview_mod.Webview.init(window, view, cfg.window.width, cfg.window.height, palette_html);
+
     g = .{
         .alloc = alloc,
         .tabs = tabs,
@@ -689,9 +809,11 @@ pub fn main() void {
         .config = loaded,
         .watcher = cfg_mod.Watcher.init(config_path orelse ""),
         .search = Search.init(alloc),
+        .webview = wv,
     };
     g.renderer.setClearColor(active_theme.background);
     loadKeybindings(cfg.keybindings);
+    webview_mod.on_message = handleWebMessage;
 
     renderFrame();
 
