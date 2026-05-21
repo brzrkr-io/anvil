@@ -137,6 +137,39 @@ test "setup writes the scripts and exports markers" {
     // Markers exported.
     try testing.expect(std.c.getenv("CALDERA_CONSOLE") != null);
     try testing.expect(std.c.getenv("ZDOTDIR") != null);
+    try testing.expect(std.c.getenv("CALDERA_SHELL_INTEGRATION") != null);
+    try testing.expect(std.c.getenv("CALDERA_SHELL_INTEGRATION_ZSH") != null);
+
+    // At least one written file has non-empty content.
+    const zsh_path = try std.fmt.bufPrintZ(&pbuf, "{s}/caldera-integration.zsh", .{dir});
+    const fz = std.c.open(zsh_path.ptr, .{ .ACCMODE = .RDONLY }, @as(c_uint, 0));
+    try testing.expect(fz >= 0);
+    defer _ = std.c.close(fz);
+    var rbuf: [256]u8 = undefined;
+    const n = std.c.read(fz, &rbuf, rbuf.len);
+    try testing.expect(n > 0);
+}
+
+test "setup preserves a pre-existing ZDOTDIR" {
+    const saved_home = std.c.getenv("HOME");
+    _ = setenv("HOME", "/tmp/caldera-zdotdir-test", 1);
+    defer if (saved_home) |s| {
+        _ = setenv("HOME", s, 1);
+    };
+    const saved_zdotdir = std.c.getenv("ZDOTDIR");
+    _ = setenv("ZDOTDIR", "/tmp/my-zdotdir", 1);
+    defer {
+        if (saved_zdotdir) |s| {
+            _ = setenv("ZDOTDIR", s, 1);
+        } else {
+            _ = unsetenv("ZDOTDIR");
+        }
+    }
+
+    setup(true);
+
+    const real = std.c.getenv("CALDERA_REAL_ZDOTDIR") orelse return error.MissingVar;
+    try testing.expectEqualStrings("/tmp/my-zdotdir", std.mem.span(real));
 }
 
 test "setup(false) does not export ZDOTDIR" {
