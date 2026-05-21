@@ -49,6 +49,48 @@ pub fn decode(allocator: std.mem.Allocator, json: []const u8) DecodeError!Inboun
     return error.UnknownType;
 }
 
+// --- native -> web -------------------------------------------------------
+
+/// One selectable command shown in the palette.
+pub const Command = struct {
+    id: []const u8,
+    title: []const u8,
+    subtitle: ?[]const u8 = null,
+};
+
+/// The theme colors the web surface needs to match the terminal. Hex strings.
+pub const ThemeTokens = struct {
+    background: []const u8,
+    foreground: []const u8,
+    accent: []const u8,
+};
+
+/// A message sent to the web surface.
+pub const Outbound = union(enum) {
+    show: struct {
+        commands: []const Command,
+        theme: ThemeTokens,
+    },
+    hide,
+};
+
+/// Serialize an outbound message to a JSON string owned by `allocator`.
+pub fn encode(allocator: std.mem.Allocator, msg: Outbound) std.mem.Allocator.Error![]u8 {
+    switch (msg) {
+        .hide => return allocator.dupe(u8, "{\"type\":\"hide\"}"),
+        .show => |s| {
+            const Wire = struct {
+                type: []const u8 = "show",
+                commands: []const Command,
+                theme: ThemeTokens,
+            };
+            return std.fmt.allocPrint(allocator, "{f}", .{
+                std.json.fmt(Wire{ .commands = s.commands, .theme = s.theme }, .{}),
+            });
+        },
+    }
+}
+
 test "decode ready" {
     const msg = try decode(std.testing.allocator, "{\"type\":\"ready\"}");
     defer msg.deinit(std.testing.allocator);
@@ -84,4 +126,34 @@ test "decode unknown type fails" {
 
 test "decode malformed json fails" {
     try std.testing.expectError(error.InvalidJson, decode(std.testing.allocator, "{not json"));
+}
+
+test "encode hide" {
+    const json = try encode(std.testing.allocator, .hide);
+    defer std.testing.allocator.free(json);
+    try std.testing.expectEqualStrings("{\"type\":\"hide\"}", json);
+}
+
+test "encode show" {
+    const cmds = [_]Command{.{ .id = "x", .title = "X" }};
+    const json = try encode(std.testing.allocator, .{ .show = .{
+        .commands = &cmds,
+        .theme = .{ .background = "#000000", .foreground = "#ffffff", .accent = "#2f7f86" },
+    } });
+    defer std.testing.allocator.free(json);
+    try std.testing.expectEqualStrings(
+        "{\"type\":\"show\",\"commands\":[{\"id\":\"x\",\"title\":\"X\",\"subtitle\":null}]," ++
+            "\"theme\":{\"background\":\"#000000\",\"foreground\":\"#ffffff\",\"accent\":\"#2f7f86\"}}",
+        json,
+    );
+}
+
+test "encode show emits a subtitle when present" {
+    const cmds = [_]Command{.{ .id = "x", .title = "X", .subtitle = "hint" }};
+    const json = try encode(std.testing.allocator, .{ .show = .{
+        .commands = &cmds,
+        .theme = .{ .background = "#000000", .foreground = "#ffffff", .accent = "#2f7f86" },
+    } });
+    defer std.testing.allocator.free(json);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"subtitle\":\"hint\"") != null);
 }
