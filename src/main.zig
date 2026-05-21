@@ -7,7 +7,6 @@ const objc = @import("objc");
 const c = objc.c;
 
 const term = @import("terminal/terminal.zig");
-const Pty = @import("pty/pty.zig").Pty;
 const Font = @import("render/font.zig").Font;
 const Raster = @import("render/raster.zig").Raster;
 const Renderer = @import("render/metal.zig").Renderer;
@@ -15,6 +14,8 @@ const Theme = @import("config/theme.zig").Theme;
 const theme_mod = @import("config/theme.zig");
 const cfg_mod = @import("config/config.zig");
 const keys = @import("app/keys.zig");
+const tabs_mod = @import("app/tab.zig");
+const tabbar = @import("render/tabbar.zig");
 
 const CGPoint = extern struct { x: f64, y: f64 };
 const CGSize = extern struct { width: f64, height: f64 };
@@ -24,27 +25,13 @@ const app_icon_png = @embedFile("assets/app-icon.png");
 
 var config_path_buf: [std.fs.max_path_bytes]u8 = undefined;
 
-// --- PTY -> main-thread handoff ------------------------------------------
-// The reader thread appends bytes here; the 60 Hz tick drains them.
-var pty_buf: [1 << 20]u8 = undefined;
-var pty_len: usize = 0;
-var pty_mutex: std.atomic.Mutex = .unlocked;
-var pty_dead: bool = false;
-var feed_scratch: [1 << 20]u8 = undefined;
-
-/// Brief spin-lock around the PTY handoff buffer — critical sections are just
-/// memcpys, so spinning (with a yield) is cheaper than a futex.
-fn lockPty() void {
-    while (!pty_mutex.tryLock()) std.Thread.yield() catch {};
-}
-fn unlockPty() void {
-    pty_mutex.unlock();
-}
+// Reused scratch buffer for draining per-tab PTY bytes each tick.
+// One tab is drained at a time, so this is safe as a module global.
+var feed_scratch: [256 * 1024]u8 = undefined;
 
 const App = struct {
     alloc: std.mem.Allocator,
-    terminal: term.Terminal,
-    pty: Pty,
+    tabs: tabs_mod.TabManager,
     font: Font,
     raster: Raster,
     renderer: Renderer,
@@ -102,23 +89,22 @@ fn applyConfig(new_loaded: cfg_mod.Loaded) void {
 
 fn onTick() void {
     if (g.watcher.path.len > 0) {
-        if (g.watcher.poll(g.alloc)) |new_loaded| {
-            applyConfig(new_loaded);
-        }
+        if (g.watcher.poll(g.alloc)) |new_loaded| applyConfig(new_loaded);
     }
-    lockPty();
-    const n = pty_len;
-    if (n > 0) {
-        @memcpy(feed_scratch[0..n], pty_buf[0..n]);
-        pty_len = 0;
-    }
-    const dead = pty_dead;
-    unlockPty();
 
-    if (n > 0) {
-        g.terminal.feed(feed_scratch[0..n]);
-        g.dirty = true;
+    // Drain every tab so background tabs stay current; render only the active.
+    var i: usize = 0;
+    var any_dead = false;
+    while (i < g.tabs.count()) : (i += 1) {
+        const tab = g.tabs.tabs.items[i];
+        const bytes = tab.drain(&feed_scratch);
+        if (bytes.len > 0) {
+            tab.terminal.feed(bytes);
+            if (i == g.tabs.active) g.dirty = true;
+        }
+        if (tab.isDead()) any_dead = true;
     }
+
     if (g.cursor_cfg.blink) {
         g.blink_ticks += 1;
         if (g.blink_ticks >= 32) {
@@ -130,27 +116,53 @@ fn onTick() void {
         g.blink_on = true;
         g.dirty = true;
     }
+
     if (g.dirty) {
         renderFrame();
         g.dirty = false;
     }
-    if (dead) g.nsapp.msgSend(void, "terminate:", .{@as(c.id, null)});
+
+    if (any_dead) closeDeadTabs();
 }
 
-fn onResize() void {
+/// Close any tab whose shell has exited. Terminates the app if none remain.
+fn closeDeadTabs() void {
+    var i: usize = 0;
+    while (i < g.tabs.count()) {
+        if (g.tabs.tabs.items[i].isDead()) {
+            if (!g.tabs.closeAt(i)) {
+                g.nsapp.msgSend(void, "terminate:", .{@as(c.id, null)});
+                return;
+            }
+            // The list shifted; do not advance i.
+        } else i += 1;
+    }
+    resizeAllTabs();
+    g.dirty = true;
+}
+
+/// Size every tab's terminal + pty to the current window, minus the bar row.
+fn resizeAllTabs() void {
     const b = g.view.msgSend(CGRect, "bounds", .{});
     const dw: usize = @intFromFloat(@max(b.size.width * g.scale, 1));
     const dh: usize = @intFromFloat(@max(b.size.height * g.scale, 1));
     const cw: usize = @intFromFloat(g.font.metrics.cell_w);
     const ch: usize = @intFromFloat(g.font.metrics.cell_h);
     const cols = @max(dw / cw, 1);
-    const rows = @max(dh / ch, 1);
+    const total_rows = @max(dh / ch, 1);
+    const rows = @max(total_rows -| barRows(), 1);
 
-    g.terminal.resize(cols, rows);
-    g.pty.resize(@intCast(cols), @intCast(rows));
+    for (g.tabs.tabs.items) |tab| {
+        tab.terminal.resize(cols, rows);
+        tab.pty.resize(@intCast(cols), @intCast(rows));
+    }
     g.raster.resize(dw, dh) catch {};
     g.renderer.resize(dw, dh);
     g.dirty = true;
+}
+
+fn onResize() void {
+    resizeAllTabs();
     renderFrame();
 }
 
@@ -207,8 +219,8 @@ fn onKeyDown(event: objc.Object) void {
     const p = extractKey(event) orelse return;
     var buf: [16]u8 = undefined;
     const bytes = keys.encode(p.key, p.mods, false, &buf);
-    _ = g.pty.write(bytes) catch {};
-    g.terminal.scrollToBottom();
+    _ = g.tabs.current().pty.write(bytes) catch {};
+    g.tabs.current().terminal.scrollToBottom();
     g.dirty = true;
 }
 
@@ -217,28 +229,39 @@ fn onScroll(event: objc.Object) void {
     if (dy == 0) return;
     const mag: f64 = @max(@abs(dy) / 8.0, 1.0);
     const lines: isize = @intFromFloat(mag);
-    g.terminal.scrollViewport(if (dy > 0) lines else -lines);
+    g.tabs.current().terminal.scrollViewport(if (dy > 0) lines else -lines);
     g.dirty = true;
 }
 
 // --- rendering -----------------------------------------------------------
 
+/// Rows consumed by the tab bar at the top (0 or 1).
+fn barRows() usize {
+    return if (g.tabs.barVisible()) 1 else 0;
+}
+
 fn renderFrame() void {
     g.raster.clear(g.theme.background);
-    const rows = g.terminal.rows();
-    const cols = g.terminal.cols();
+
+    if (g.tabs.barVisible()) {
+        tabbar.drawTabBar(&g.raster, g.font, g.theme, &g.tabs);
+    }
+
+    const t = g.tabs.current();
+    const rows = t.terminal.rows();
+    const cols = t.terminal.cols();
 
     var y: usize = 0;
     while (y < rows) : (y += 1) {
-        const line = g.terminal.viewportRow(y);
+        const line = t.terminal.viewportRow(y);
         var x: usize = 0;
         while (x < cols and x < line.len) : (x += 1) {
             drawCell(x, y, line[x], false);
         }
     }
 
-    const cur = g.terminal.cursor();
-    if (cur.visible and g.terminal.viewportOffset() == 0 and cur.y < rows and cur.x < cols) {
+    const cur = t.terminal.cursor();
+    if (cur.visible and t.terminal.viewportOffset() == 0 and cur.y < rows and cur.x < cols) {
         drawCursor(cur.x, cur.y);
     }
 
@@ -257,31 +280,34 @@ fn drawCell(x: usize, y: usize, cell: term.Cell, is_cursor: bool) void {
         bg = g.theme.accent;
         fg = g.theme.background;
     }
+    const ry = y + barRows(); // raster row: offset by bar when visible
     if (is_cursor or !std.mem.eql(u8, &bg, &g.theme.background)) {
-        g.raster.cellBg(g.font, x, y, bg);
+        g.raster.cellBg(g.font, x, ry, bg);
     }
     if (cell.cp != ' ' and cell.cp != 0) {
-        g.raster.cellGlyph(g.font, x, y, g.font.glyph(cell.cp), fg);
+        g.raster.cellGlyph(g.font, x, ry, g.font.glyph(cell.cp), fg);
     }
 }
 
 fn drawCursor(x: usize, y: usize) void {
-    const line = g.terminal.viewportRow(y);
+    const t = g.tabs.current();
+    const line = t.terminal.viewportRow(y);
     const cell: term.Cell = if (x < line.len) line[x] else .{};
     if (g.cursor_cfg.blink and !g.blink_on) {
         // Blinked off: draw the cell with no cursor styling.
         drawCell(x, y, cell, false);
         return;
     }
+    const ry = y + barRows(); // raster row: offset by bar when visible
     switch (g.cursor_cfg.style) {
         .block => drawCell(x, y, cell, true),
         .bar => {
             drawCell(x, y, cell, false);
-            g.raster.cellInset(g.font, x, y, g.theme.accent, 0.0, 0.0, 0.15, 1.0);
+            g.raster.cellInset(g.font, x, ry, g.theme.accent, 0.0, 0.0, 0.15, 1.0);
         },
         .underline => {
             drawCell(x, y, cell, false);
-            g.raster.cellInset(g.font, x, y, g.theme.accent, 0.0, 0.0, 1.0, 0.12);
+            g.raster.cellInset(g.font, x, ry, g.theme.accent, 0.0, 0.0, 1.0, 0.12);
         },
     }
 }
@@ -292,33 +318,6 @@ fn resolve(col: term.Color, default: [3]u8) [3]u8 {
         .palette => |p| g.theme.palette256(p),
         .rgb => |v| v,
     };
-}
-
-// --- PTY reader thread ---------------------------------------------------
-
-fn ptyReaderThread() void {
-    var local: [64 << 10]u8 = undefined;
-    while (true) {
-        const n = g.pty.read(&local) catch break;
-        if (n == 0) break;
-        var off: usize = 0;
-        while (off < n) {
-            lockPty();
-            const space = pty_buf.len - pty_len;
-            if (space == 0) {
-                unlockPty();
-                continue; // tick will drain shortly
-            }
-            const take = @min(space, n - off);
-            @memcpy(pty_buf[pty_len..][0..take], local[off..][0..take]);
-            pty_len += take;
-            unlockPty();
-            off += take;
-        }
-    }
-    lockPty();
-    pty_dead = true;
-    unlockPty();
 }
 
 // --- setup ---------------------------------------------------------------
@@ -413,10 +412,12 @@ pub fn main() void {
     const cols = @max(dw / cw, 1);
     const rows = @max(dh / ch, 1);
 
+    var tabs = tabs_mod.TabManager.init(alloc);
+    tabs.newTab(cols, rows, cfg.scrollback, null) catch |e| fail("tab", e);
+
     g = .{
         .alloc = alloc,
-        .terminal = term.Terminal.init(alloc, cols, rows, cfg.scrollback) catch |e| fail("terminal", e),
-        .pty = Pty.spawnShell(alloc, @intCast(cols), @intCast(rows)) catch |e| fail("pty", e),
+        .tabs = tabs,
         .font = font,
         .raster = Raster.init(alloc, dw, dh) catch |e| fail("raster", e),
         .renderer = Renderer.init(layer, dw, dh) catch |e| fail("renderer", e),
@@ -431,7 +432,6 @@ pub fn main() void {
     };
     g.renderer.setClearColor(active_theme.background);
 
-    _ = std.Thread.spawn(.{}, ptyReaderThread, .{}) catch |e| fail("thread", e);
     renderFrame();
 
     _ = objc.getClass("NSTimer").?.msgSend(
