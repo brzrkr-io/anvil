@@ -379,7 +379,7 @@ fn onKeyDown(event: objc.Object) void {
         return; // other ⌘ combos still go to the system
     }
 
-    // (after the ⌘-combo block, before extractKey for normal keys)
+    // While the search bar is open, keystrokes edit the query, not the shell.
     if (g.search_open) {
         const p = extractKey(event) orelse return;
         switch (p.key) {

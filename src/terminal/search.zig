@@ -102,12 +102,21 @@ pub const Search = struct {
     }
 
     /// How the cell at content (`row`,`col`) should be tinted.
+    /// `.current` always wins over `.other` when a cell is covered by both
+    /// the current match and another match (e.g. overlapping matches from a
+    /// repeated-character query such as "aa" in "aaa").
     pub fn classify(self: *const Search, row: usize, col: usize) MatchKind {
+        if (self.matches.items.len == 0) return .none;
+        // Pass 1: check the current match first so it always wins.
+        const cur = self.matches.items[self.current];
+        if (cur.row == row and col >= cur.col and col < cur.col + cur.len) {
+            return .current;
+        }
+        // Pass 2: check all other matches.
         for (self.matches.items, 0..) |m, i| {
+            if (i == self.current) continue;
             if (m.row != row) continue;
-            if (col >= m.col and col < m.col + m.len) {
-                return if (i == self.current) .current else .other;
-            }
+            if (col >= m.col and col < m.col + m.len) return .other;
         }
         return .none;
     }
@@ -251,4 +260,23 @@ test "classify tags current, other, and none" {
     try testing.expectEqual(MatchKind.current, s.classify(r0, 1));
     try testing.expectEqual(MatchKind.other, s.classify(r0, 3));
     try testing.expectEqual(MatchKind.none, s.classify(r0, 2)); // the space
+}
+
+test "classify: current match wins on overlap" {
+    // "aaa" with query "aa" produces two overlapping matches: col 0 and col 1.
+    // After next(), current == 1 (col 1). Col 1 is covered by both match 0
+    // (col 0, len 2) and match 1 (col 1, len 2). classify must return .current.
+    var t = try Terminal.init(testing.allocator, 40, 5, 1000);
+    defer t.deinit();
+    t.feed("aaa");
+    var s = Search.init(testing.allocator);
+    defer s.deinit();
+    s.setQuery(&t, "aa");
+    try testing.expectEqual(@as(usize, 2), s.count()); // matches at col 0 and col 1
+    s.next(); // current is now index 1 (col 1)
+    try testing.expectEqual(@as(usize, 1), s.current);
+    const r0 = t.contentRowOfViewport(0);
+    // Col 1 is covered by both match 0 (col 0..1) and match 1 (col 1..2).
+    // current (match 1) must win.
+    try testing.expectEqual(MatchKind.current, s.classify(r0, 1));
 }
