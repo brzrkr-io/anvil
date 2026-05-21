@@ -27,8 +27,8 @@ preexec_functions+=(__caldera_preexec)
 # as a zero-width segment. Done from a one-shot precmd so it runs *after* the
 # user's .zshrc has set PS1, then removes itself.
 __caldera_mark_prompt() {
-  if [[ "$PS1" != *'133;B'* ]]; then
-    PS1="${PS1}%{$'\e]133;B\a'%}"
+  if [[ "$PS1" != *$'\e]133;B'* ]]; then
+    PS1="${PS1}%{"$'\e]133;B\a'"%}"
   fi
   precmd_functions=(${precmd_functions:#__caldera_mark_prompt})
 }
