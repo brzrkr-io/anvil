@@ -15,3 +15,4 @@ anvil-workspace  = { workspace = true }
 anvil-theme      = { workspace = true }
 anvil-config     = { workspace = true }
 anvil-agent      = { workspace = true }
+anvil-control    = { workspace = true }

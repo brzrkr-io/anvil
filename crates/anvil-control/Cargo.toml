@@ -8,3 +8,5 @@ rust-version.workspace = true
 anvil-term      = { workspace = true }
 anvil-workspace = { workspace = true }
 anvil-agent     = { workspace = true }
+anvil-caldera   = { workspace = true }
+thiserror       = { workspace = true }
