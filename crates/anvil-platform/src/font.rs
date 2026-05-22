@@ -214,15 +214,15 @@ impl<'a> CoreTextPainter<'a> {
 }
 
 impl GlyphPainter for CoreTextPainter<'_> {
-    /// Draw `glyph_id` into the BGRA8 `pixels` buffer at the cell described
-    /// by `dest` (top-down bitmap coordinates).
+    /// Draw the glyph for Unicode `codepoint` into the BGRA8 `pixels` buffer
+    /// at the cell described by `dest` (top-down bitmap coordinates).
     ///
     /// The CoreText context is y-up, so we convert `dest.y` (top-down) to
     /// CG y-up before calling `CTFontDrawGlyphs`.
     #[allow(clippy::too_many_arguments)]
     fn draw_glyph(
         &mut self,
-        glyph_id: u32,
+        codepoint: u32,
         dest: PixelRect,
         fg: [u8; 3],
         metrics: FontMetrics,
@@ -230,10 +230,17 @@ impl GlyphPainter for CoreTextPainter<'_> {
         bitmap_width: usize,
         bitmap_height: usize,
     ) {
-        if glyph_id == 0 || glyph_id > u16::MAX as u32 {
+        // `codepoint` is the cell's Unicode scalar. The GlyphPainter contract
+        // passes codepoints, not pre-resolved glyph indices — resolve it
+        // through the font cmap (this also handles astral-plane codepoints via
+        // the surrogate path in `Font::glyph`).
+        if codepoint == 0 {
             return;
         }
-        let glyph: u16 = glyph_id as u16;
+        let glyph: u16 = self.font.glyph(codepoint);
+        if glyph == 0 {
+            return; // the font has no glyph for this codepoint
+        }
 
         let space = match CGColorSpace::new_device_rgb() {
             Some(s) => s,
@@ -349,5 +356,40 @@ mod tests {
     fn init_first_available_empty_returns_error() {
         let result = Font::init_first_available(&[], 26.0);
         assert!(matches!(result, Err(FontError::NoFontAvailable)));
+    }
+
+    /// `draw_glyph` receives a Unicode codepoint and must resolve it through
+    /// the font cmap. Regression: it once used the codepoint directly as a
+    /// glyph index, so every character drew the wrong glyph.
+    #[test]
+    fn draw_glyph_resolves_codepoint_through_the_cmap() {
+        let names = &["IBMPlexMono", "SFMono-Regular", "Menlo"];
+        let font = Font::init_first_available(names, 26.0).unwrap();
+        let mut painter = CoreTextPainter::new(&font);
+        let w = font.metrics.cell_w.ceil() as usize;
+        let h = font.metrics.cell_h.ceil() as usize;
+        let metrics = font.metrics;
+        let dest = PixelRect {
+            x: 0.0,
+            y: 0.0,
+            w: w as f64,
+            h: h as f64,
+        };
+
+        let mut ink = |cp: u32| -> usize {
+            let mut buf = vec![0u8; w * h * 4];
+            painter.draw_glyph(cp, dest, [255, 255, 255], metrics, &mut buf, w, h);
+            buf.iter().filter(|&&b| b != 0).count()
+        };
+
+        // 'M' is a dense glyph — it must ink a substantial number of pixels.
+        assert!(ink('M' as u32) > 0, "drawing 'M' inked no pixels");
+        // The space glyph is blank — it must ink nothing. With the
+        // codepoint-as-glyph-index bug, U+0020 drew glyph #32 (a letter).
+        let space_ink = ink(' ' as u32);
+        assert_eq!(
+            space_ink, 0,
+            "drawing space inked {space_ink} pixels — codepoint was not resolved through the cmap"
+        );
     }
 }

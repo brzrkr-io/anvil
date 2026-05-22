@@ -42,12 +42,14 @@ pub struct PixelRect {
 /// a stub.
 ///
 /// # Contract
-/// The implementor receives the glyph id, the destination rectangle in
-/// top-down bitmap pixels, the foreground RGB color, and the font metrics.
-/// It must write BGRA8 pixels into the provided buffer slice, which covers
+/// The implementor receives the cell's Unicode codepoint, the destination
+/// rectangle in top-down bitmap pixels, the foreground RGB color, and the
+/// font metrics. It must resolve the codepoint to a glyph through the font
+/// cmap, then write BGRA8 pixels into the provided buffer slice, which covers
 /// exactly `stride * height_pixels` bytes where `stride = full_bitmap_width * 4`.
 pub trait GlyphPainter {
-    /// Draw `glyph_id` (CoreText/CG glyph index) into the pixel buffer.
+    /// Draw the glyph for Unicode `codepoint` into the pixel buffer. The
+    /// implementor resolves the codepoint to a font glyph index itself.
     ///
     /// `dest` is the cell rectangle in top-down bitmap coordinates.
     /// `fg` is the foreground color as `[R, G, B]`.
@@ -57,7 +59,7 @@ pub trait GlyphPainter {
     #[allow(clippy::too_many_arguments)]
     fn draw_glyph(
         &mut self,
-        glyph_id: u32,
+        codepoint: u32,
         dest: PixelRect,
         fg: [u8; 3],
         metrics: FontMetrics,
