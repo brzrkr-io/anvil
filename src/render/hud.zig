@@ -10,21 +10,17 @@ const std = @import("std");
 const Raster = @import("raster.zig").Raster;
 const Font = @import("font.zig").Font;
 const Theme = @import("../config/theme.zig").Theme;
-const color = @import("color.zig");
-
 /// Width of the HUD card in terminal columns.
 pub const hud_cols: usize = 30;
 
 /// Height of the HUD card in terminal rows (tall enough for all sections with
-/// a couple of blank rows in reserve).
-const card_rows: usize = 11;
+/// a couple of blank rows in reserve, plus 1 top padding row).
+const card_rows: usize = 13;
 
 // --- Brand color constants (Mineral palette, hex → RGB) ------------------
 
 /// alloy: muted labels / metadata (#86919a)
 const alloy: [3]u8 = .{ 0x86, 0x91, 0x9a };
-/// ash: border hairline (#374046)
-const ash: [3]u8 = .{ 0x37, 0x40, 0x46 };
 /// status.verified: success / passing (#3f8a5b)
 const verified: [3]u8 = .{ 0x3f, 0x8a, 0x5b };
 /// status.failure: failed check (#b13a30)
@@ -166,23 +162,23 @@ pub fn draw(
     const card_w_px = @as(f64, @floatFromInt(hud_cols)) * cw;
     const card_h_px = @as(f64, @floatFromInt(actual_card_rows)) * ch;
 
-    // Fill with alpha so the terminal content behind shows through faintly.
-    const panel_bg = color.mix(theme.background, theme.foreground, 0.08);
-    raster.fillPixelRectAlpha(left_px, top_px, card_w_px, card_h_px, panel_bg, 0.85);
+    // Frosted card: surface tone at 0.92 so it reads as a clearly raised panel.
+    raster.fillPixelRectAlpha(left_px, top_px, card_w_px, card_h_px, theme.surface, 0.92);
 
     // --- Border (1-device-pixel strips around the card) -------------------
     const border: f64 = 1.0;
     // Top edge
-    raster.fillPixelRect(left_px, top_px, card_w_px, border, ash);
+    raster.fillPixelRect(left_px, top_px, card_w_px, border, theme.border);
     // Bottom edge
-    raster.fillPixelRect(left_px, top_px + card_h_px - border, card_w_px, border, ash);
+    raster.fillPixelRect(left_px, top_px + card_h_px - border, card_w_px, border, theme.border);
     // Left edge
-    raster.fillPixelRect(left_px, top_px, border, card_h_px, ash);
+    raster.fillPixelRect(left_px, top_px, border, card_h_px, theme.border);
     // Right edge
-    raster.fillPixelRect(left_px + card_w_px - border, top_px, border, card_h_px, ash);
+    raster.fillPixelRect(left_px + card_w_px - border, top_px, border, card_h_px, theme.border);
 
     // --- Content rows (top-to-bottom inside card) --------------------------
-    var row = card_row;
+    // Start one row into the card for top breathing room.
+    var row = card_row + 1;
     const max_row = card_row + actual_card_rows;
 
     // --- cwd section -------------------------------------------------------
@@ -284,14 +280,14 @@ fn drawSectionDot(
     dot_color: [3]u8,
 ) usize {
     _ = theme;
-    // U+25CF BLACK CIRCLE — the status bullet, in the section's status color.
-    raster.cellGlyph(font, start_col, row, font.glyph(0x25CF), dot_color);
-    // Label in alloy, two cols in (bullet, gap, label).
-    drawText(raster, font, start_col + 2, row, label, alloy, start_col + hud_cols);
+    // U+25CF BLACK CIRCLE — the status bullet, 1 col inner padding from panel edge.
+    raster.cellGlyph(font, start_col + 1, row, font.glyph(0x25CF), dot_color);
+    // Label in alloy, three cols in (pad, bullet, gap, label).
+    drawText(raster, font, start_col + 3, row, label, alloy, start_col + hud_cols - 1);
     return row + 1;
 }
 
-/// Draw one value row, indented two cols to align under the section label.
+/// Draw one value row, indented to align under the section label.
 /// Returns the next row index.
 fn drawValueRow(
     raster: *Raster,
@@ -303,7 +299,7 @@ fn drawValueRow(
     color_: [3]u8,
 ) usize {
     _ = theme;
-    drawText(raster, font, start_col + 2, row, text, color_, start_col + hud_cols);
+    drawText(raster, font, start_col + 3, row, text, color_, start_col + hud_cols - 1);
     return row + 1;
 }
 

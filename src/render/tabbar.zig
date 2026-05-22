@@ -7,14 +7,15 @@ const Theme = @import("../config/theme.zig").Theme;
 const TabManager = @import("../app/tab.zig").TabManager;
 
 /// Draw the tab bar across raster row 0. Each tab gets an equal-width segment;
-/// the active segment is filled with the theme accent, others with ansi[8]
-/// (a muted surface). Active-segment labels use theme.background for contrast;
-/// inactive-segment labels use theme.foreground.
+/// the active segment is filled with theme.surface (clearly raised); inactive
+/// segments use theme.background (flat canvas). A thin theme.border line runs
+/// along the bottom of the whole bar. Labels have 2-col inner left padding.
 pub fn drawTabBar(raster: *Raster, font: Font, theme: Theme, tabs: *TabManager) void {
     const n = tabs.count();
     if (n < 2) return; // low-profile: no bar with a single tab
 
     const cell_w = font.metrics.cell_w;
+    const cell_h = font.metrics.cell_h;
     // Match the padded grid width: the bar spans the inset region, not the
     // raw bitmap. cellRect applies the same pad to each column it draws.
     const usable_w = @as(f64, @floatFromInt(raster.width)) - 2 * raster.pad_x;
@@ -27,21 +28,29 @@ pub fn drawTabBar(raster: *Raster, font: Font, theme: Theme, tabs: *TabManager) 
     while (t < n) : (t += 1) {
         const start_col = t * seg_cols;
         const is_active = (t == tabs.active);
-        const bg = if (is_active) theme.accent else theme.ansi[8];
+        // Active tab: raised surface. Inactive: flat canvas.
+        const bg = if (is_active) theme.surface else theme.background;
         // Fill the segment background across row 0.
         var col = start_col;
         const end_col = if (t == n - 1) total_cols else start_col + seg_cols;
         while (col < end_col) : (col += 1) {
             raster.cellBg(font, col, 0, bg);
         }
-        // Draw the label, truncated to the segment width minus a 1-cell pad.
+        // Draw the label, truncated to the segment width minus a 2-col pad.
+        // Active labels in foreground (high contrast on surface); inactive dimmed.
         const label = tabs.tabs.items[t].label(&label_buf);
-        const fg = if (is_active) theme.background else theme.foreground;
+        const fg = if (is_active) theme.foreground else theme.ansi[8];
         var i: usize = 0;
-        while (i < label.len and i + 1 < end_col - start_col) : (i += 1) {
-            raster.cellGlyph(font, start_col + 1 + i, 0, font.glyph(label[i]), fg);
+        while (i < label.len and i + 2 < end_col - start_col) : (i += 1) {
+            raster.cellGlyph(font, start_col + 2 + i, 0, font.glyph(label[i]), fg);
         }
     }
+
+    // Thin border line along the bottom of the tab bar (bottom of row 0).
+    const bar_bottom_px = raster.pad_y + cell_h - 1.0;
+    const bar_left_px = raster.pad_x;
+    const bar_w_px = @as(f64, @floatFromInt(total_cols)) * cell_w;
+    raster.fillPixelRect(bar_left_px, bar_bottom_px, bar_w_px, 1.0, theme.border);
 }
 
 const testing = std.testing;

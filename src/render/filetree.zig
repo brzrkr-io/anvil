@@ -1,28 +1,23 @@
 //! File-tree panel renderer. Draws the left-edge panel in absolute pixel space
 //! (independent of raster.x_offset, which must be 0 when this is called).
 //!
-//! Brand: Mineral palette — charcoal panel bg, ash separator, alloy-grey file
-//! names, foreground for dir names, info-teal icons.
+//! Brand: Mineral palette — theme.surface panel bg, theme.border separator,
+//! alloy-grey file names, foreground for dir names, info-teal icons.
 
 const std = @import("std");
 const Raster = @import("raster.zig").Raster;
 const Font = @import("font.zig").Font;
 const Theme = @import("../config/theme.zig").Theme;
-const color = @import("color.zig");
 const FileTree = @import("../app/filetree.zig").FileTree;
 
 /// Number of terminal columns the tree panel occupies.
 pub const tree_cols: usize = 26;
 
 // Brand color constants (Mineral palette).
-/// ash: separator (#374046)
-const ash: [3]u8 = .{ 0x37, 0x40, 0x46 };
 /// alloy: muted text / file names (#86919a)
 const alloy: [3]u8 = .{ 0x86, 0x91, 0x9a };
 /// info/trace teal for dir icons (#2f7f86)
 const info_teal: [3]u8 = .{ 0x2f, 0x7f, 0x86 };
-/// charcoal: panel background (#161a1c)
-const charcoal: [3]u8 = .{ 0x16, 0x1a, 0x1c };
 
 // Nerd Font icon codepoints.
 const icon_folder_closed: u21 = 0xf07b;
@@ -53,12 +48,11 @@ pub fn draw(
     const panel_top_px = pad_y + @as(f64, @floatFromInt(top_offset)) * ch;
     const panel_h_px = @as(f64, @floatFromInt(total_rows -| top_offset)) * ch;
 
-    // Panel background: slightly lighter than background.
-    const panel_bg = color.mix(theme.background, theme.foreground, 0.04);
-    raster.fillPixelRect(pad_x, panel_top_px, panel_w_px, panel_h_px, panel_bg);
+    // Panel background: solid surface tone — a clearly defined sidebar.
+    raster.fillPixelRect(pad_x, panel_top_px, panel_w_px, panel_h_px, theme.surface);
 
     // 1px right-edge border.
-    raster.fillPixelRect(pad_x + panel_w_px - 1.0, panel_top_px, 1.0, panel_h_px, ash);
+    raster.fillPixelRect(pad_x + panel_w_px - 1.0, panel_top_px, 1.0, panel_h_px, theme.border);
 
     // Draw entries.
     const content_rows = total_rows -| top_offset;
@@ -68,8 +62,8 @@ pub fn draw(
         const e = &tree.entries[entry_idx];
         const raster_row = top_offset + row_idx;
 
-        // Indent: 1 col for each depth level, then icon at that col.
-        const indent_cols: usize = @as(usize, e.depth) * 2;
+        // Indent: 1 col inner left padding, then depth, then icon.
+        const indent_cols: usize = 1 + @as(usize, e.depth) * 2;
 
         // Icon codepoint and color.
         const icon_cp: u21 = if (e.is_dir)
@@ -86,7 +80,7 @@ pub fn draw(
 
         // Draw name starting one col after the icon.
         const name_start_col = indent_cols + 2;
-        const name_max_col = tree_cols; // stop at panel edge
+        const name_max_col = tree_cols - 1; // leave 1-col right margin
         if (name_start_col < name_max_col) {
             const name_color: [3]u8 = if (e.is_dir) theme.foreground else alloy;
             drawText(raster, font, name_start_col, raster_row, e.nameSlice(), name_color, name_max_col);
@@ -94,8 +88,6 @@ pub fn draw(
 
         row_idx += 1;
     }
-
-    _ = charcoal; // referenced in doc comment; kept for future use
 }
 
 /// Draw a UTF-8 string from cell `col`, one codepoint per cell, stopping at `max_col`.

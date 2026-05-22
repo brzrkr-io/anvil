@@ -1,8 +1,8 @@
 //! Keyboard-shortcut cheatsheet overlay. Draws a centered modal card listing
 //! every shortcut grouped by category.
 //!
-//! Brand: Mineral palette — near-opaque charcoal card, ash border, alloy group
-//! headers, accent (mineral teal) chords, foreground descriptions. No decoration.
+//! Brand: Mineral palette — near-opaque theme.surface card, theme.border edges,
+//! alloy group headers, accent (mineral teal) chords, foreground descriptions.
 //!
 //! Call `draw` from renderFrame *last* (on top of grid, HUD, tree, tab bar).
 
@@ -13,8 +13,6 @@ const Theme = @import("../config/theme.zig").Theme;
 
 // --- Brand color constants (Mineral palette) --------------------------------
 
-/// ash: border hairline (#374046)
-const ash: [3]u8 = .{ 0x37, 0x40, 0x46 };
 /// alloy: muted labels / group headers (#86919a)
 const alloy: [3]u8 = .{ 0x86, 0x91, 0x9a };
 
@@ -85,26 +83,27 @@ pub fn draw(
     const card_w_px = @as(f64, @floatFromInt(card_cols)) * cw;
     const card_h_px = @as(f64, @floatFromInt(card_rows)) * ch;
 
-    // Near-opaque panel background — this is a focused modal.
-    raster.fillPixelRectAlpha(left_px, top_px, card_w_px, card_h_px, theme.background, 0.96);
+    // Near-opaque surface panel — clearly raised modal card.
+    raster.fillPixelRectAlpha(left_px, top_px, card_w_px, card_h_px, theme.surface, 0.97);
 
-    // 1px ash border on all four edges.
+    // 1px border on all four edges.
     const b: f64 = 1.0;
-    raster.fillPixelRect(left_px, top_px, card_w_px, b, ash);
-    raster.fillPixelRect(left_px, top_px + card_h_px - b, card_w_px, b, ash);
-    raster.fillPixelRect(left_px, top_px, b, card_h_px, ash);
-    raster.fillPixelRect(left_px + card_w_px - b, top_px, b, card_h_px, ash);
+    raster.fillPixelRect(left_px, top_px, card_w_px, b, theme.border);
+    raster.fillPixelRect(left_px, top_px + card_h_px - b, card_w_px, b, theme.border);
+    raster.fillPixelRect(left_px, top_px, b, card_h_px, theme.border);
+    raster.fillPixelRect(left_px + card_w_px - b, top_px, b, card_h_px, theme.border);
 
     // Content rows inside the card.
-    const max_col = card_col + card_cols - 1; // leave 1-col right margin
+    // 3-col inner left margin; 2-col right margin.
+    const max_col = card_col + card_cols - 2;
 
     // Row 0: title.
     const title = "Keyboard Shortcuts";
-    drawText(raster, font, card_col + 2, card_row, title, theme.foreground, max_col);
+    drawText(raster, font, card_col + 3, card_row, title, theme.foreground, max_col);
 
     // Row 1: dim hint.
     const hint = "Cmd / or Esc to close";
-    drawText(raster, font, card_col + 2, card_row + 1, hint, alloy, max_col);
+    drawText(raster, font, card_col + 3, card_row + 1, hint, alloy, max_col);
 
     // Row 2: blank separator before content.
     // (nothing drawn)
@@ -114,15 +113,16 @@ pub fn draw(
     for (rows) |row| {
         switch (row) {
             .header => |label| {
-                drawText(raster, font, card_col + 2, r, label, alloy, max_col);
+                drawText(raster, font, card_col + 3, r, label, alloy, max_col);
                 r += 1;
             },
             .shortcut => |s| {
-                // Chord: left-aligned in accent color at col+2.
-                drawText(raster, font, card_col + 2, r, s.chord, theme.accent, max_col);
+                // Chord: left-aligned in accent color at col+3.
+                drawText(raster, font, card_col + 3, r, s.chord, theme.accent, max_col);
                 // Description: starts at a fixed column in foreground, clear
-                // of the widest chord ("Ctrl Shift Tab").
-                const desc_col = card_col + 19;
+                // of the widest chord ("Ctrl Shift Tab"). Shifted right by 1
+                // to match the new inner padding.
+                const desc_col = card_col + 20;
                 if (desc_col < max_col) {
                     drawText(raster, font, desc_col, r, s.desc, theme.foreground, max_col);
                 }
