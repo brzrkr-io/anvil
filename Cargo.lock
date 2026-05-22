@@ -8,6 +8,7 @@ version = "0.1.0"
 dependencies = [
  "anvil-agent",
  "anvil-config",
+ "anvil-control",
  "anvil-platform",
  "anvil-term",
  "anvil-theme",
@@ -48,8 +49,10 @@ name = "anvil-control"
 version = "0.1.0"
 dependencies = [
  "anvil-agent",
+ "anvil-caldera",
  "anvil-term",
  "anvil-workspace",
+ "thiserror",
 ]
 
 [[package]]
