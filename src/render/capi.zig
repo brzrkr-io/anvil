@@ -52,8 +52,16 @@ pub extern fn CGContextClearRect(ctx: Ref, rect: CGRect) void;
 pub extern fn CGContextSetShouldAntialias(ctx: Ref, on: bool) void;
 pub extern fn CGContextSetTextMatrix(ctx: Ref, t: CGAffineTransform) void;
 
+// Register an in-memory font with CoreText so CTFontCreateWithName can find it.
+pub extern fn CGDataProviderCreateWithData(info: ?*anyopaque, data: *const anyopaque, size: usize, release: ?*const anyopaque) Ref;
+pub extern fn CGFontCreateWithDataProvider(provider: Ref) Ref;
+pub extern fn CGFontRelease(Ref) void;
+pub extern fn CGDataProviderRelease(Ref) void;
+pub extern fn CGFontCopyFullName(font: Ref) Ref;
+
 // --- CoreText ---
 pub const kCTFontOrientationDefault: u32 = 0;
+pub extern fn CTFontManagerRegisterGraphicsFont(font: Ref, err: ?*Ref) bool;
 pub extern fn CTFontCreateWithName(name: Ref, size: CGFloat, matrix: ?*const CGAffineTransform) Ref;
 pub extern fn CTFontGetAscent(font: Ref) CGFloat;
 pub extern fn CTFontGetDescent(font: Ref) CGFloat;

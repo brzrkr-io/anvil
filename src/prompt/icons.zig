@@ -1,6 +1,6 @@
-//! Prompt icon glyphs. `rich` glyphs are well-formed Unicode chosen to render
-//! in common monospace fonts; `ascii` fallbacks render anywhere. The two-form
-//! table is the single swap point if a bundled icon font is added later.
+//! Prompt icon glyphs. `rich` glyphs are Nerd Font v3 codepoints, carried by
+//! the bundled BlexMono Nerd Font Mono; `ascii` fallbacks render anywhere. The
+//! two-form table is the single swap point for icon rendering.
 
 const std = @import("std");
 
@@ -21,17 +21,17 @@ pub const Icon = enum {
 /// The glyph for `icon`. When `rich` is false, returns a plain-ASCII fallback.
 pub fn glyph(icon: Icon, rich: bool) []const u8 {
     return switch (icon) {
-        .repo => if (rich) "\u{25c8}" else "#", // ◈
-        .branch => if (rich) "\u{2387}" else "@", // ⎇
-        .dirty => if (rich) "\u{25cf}" else "*", // ●
-        .ahead => if (rich) "\u{2191}" else "^", // ↑
-        .behind => if (rich) "\u{2193}" else "v", // ↓
-        .toolchain => if (rich) "\u{25c6}" else "=", // ◆
-        .container => if (rich) "\u{25a3}" else "[]", // ▣
-        .cluster => if (rich) "\u{2b22}" else "{}", // ⬢
-        .ok => if (rich) "\u{2713}" else "ok", // ✓
-        .err => if (rich) "\u{2717}" else "x", // ✗
-        .clock => if (rich) "\u{25f7}" else "@", // ◷
+        .repo => if (rich) "\u{f07b}" else "#", // nf-fa-folder
+        .branch => if (rich) "\u{e0a0}" else "@", // nf-pl-branch
+        .dirty => if (rich) "\u{f111}" else "*", // nf-fa-circle
+        .ahead => if (rich) "\u{f062}" else "^", // nf-fa-arrow_up
+        .behind => if (rich) "\u{f063}" else "v", // nf-fa-arrow_down
+        .toolchain => if (rich) "\u{f085}" else "=", // nf-fa-cogs
+        .container => if (rich) "\u{f308}" else "[]", // nf-linux-docker
+        .cluster => if (rich) "\u{f10fe}" else "{}", // nf-md-kubernetes
+        .ok => if (rich) "\u{f00c}" else "ok", // nf-fa-check
+        .err => if (rich) "\u{f00d}" else "x", // nf-fa-close
+        .clock => if (rich) "\u{f017}" else "@", // nf-fa-clock_o
     };
 }
 

@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const seg = @import("segments.zig");
+const icons = @import("icons.zig");
 
 pub const Shell = enum { plain, zsh, bash };
 
@@ -105,6 +106,11 @@ pub fn full(a: std.mem.Allocator, segments: []const seg.Segment, opts: Options) 
     for (segments, 0..) |s, idx| {
         if (idx != 0) try buf.appendSlice(a, "   ");
         try esc(&buf, a, sh, segColor(s));
+        // In rich mode the segment leads with its icon glyph (segment colour).
+        if (opts.rich) {
+            try buf.appendSlice(a, icons.glyph(s.icon, true));
+            try buf.appendSlice(a, " ");
+        }
         try buf.appendSlice(a, s.text);
         try esc(&buf, a, sh, reset);
     }

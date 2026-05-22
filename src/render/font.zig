@@ -14,6 +14,39 @@ pub const Metrics = struct {
     descent: f64,
 };
 
+/// The IBM Plex Mono build patched with developer icon glyphs (Nerd Font).
+/// Bundled so the prompt's icons have glyphs regardless of system fonts.
+const bundled_font = @embedFile("../assets/BlexMonoNerdFontMono-Regular.ttf");
+
+/// Register the bundled Nerd Font with CoreText so `CTFontCreateWithName` can
+/// resolve it by family name. Best-effort: on any failure the app falls back
+/// to system fonts — never fatal.
+pub fn registerBundled() void {
+    const provider = capi.CGDataProviderCreateWithData(
+        null,
+        bundled_font.ptr,
+        bundled_font.len,
+        null,
+    ) orelse {
+        std.log.warn("bundled font: CGDataProvider creation failed", .{});
+        return;
+    };
+    defer capi.CGDataProviderRelease(provider);
+
+    const cg_font = capi.CGFontCreateWithDataProvider(provider) orelse {
+        std.log.warn("bundled font: CGFont creation failed", .{});
+        return;
+    };
+    defer capi.CGFontRelease(cg_font);
+
+    var err: capi.Ref = null;
+    if (!capi.CTFontManagerRegisterGraphicsFont(cg_font, &err)) {
+        if (err) |e| capi.CFRelease(e);
+        std.log.warn("bundled font: CoreText registration failed", .{});
+        return;
+    }
+}
+
 pub const Font = struct {
     ct: capi.Ref, // CTFontRef
     metrics: Metrics,

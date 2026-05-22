@@ -811,10 +811,12 @@ pub fn main() void {
 
     const active_theme = theme_mod.resolve(effectiveThemeName(nsapp, cfg.theme), cfg.theme_overrides);
 
-    // Font: configured family first, then fallbacks. dupeZ into the config
-    // arena so the slice outlives this stack frame (font stack needs [:0]const u8).
+    // Font: the bundled Nerd Font first (IBM Plex Mono plus icon glyphs), then
+    // configured family, then fallbacks. dupeZ into the config arena so the
+    // slice outlives this stack frame (font stack needs [:0]const u8).
+    @import("render/font.zig").registerBundled();
     const fam_z = loaded.arena.allocator().dupeZ(u8, cfg.font.family) catch "IBMPlexMono";
-    const font_names = [_][:0]const u8{ fam_z, "SFMono-Regular", "Menlo" };
+    const font_names = [_][:0]const u8{ "BlexMono Nerd Font Mono", fam_z, "SFMono-Regular", "Menlo" };
     const font = Font.initFirstAvailable(&font_names, cfg.font.size * scale) catch |e| fail("font", e);
     const dw: usize = @intFromFloat(cfg.window.width * scale);
     const dh: usize = @intFromFloat(cfg.window.height * scale);
