@@ -144,10 +144,18 @@ fn imMouseDown(_: c.id, _: c.SEL, ev: c.id) callconv(.c) void {
 
 // --- event handling ------------------------------------------------------
 
+/// True when the theme's background is perceptually light (Rec. 601 luma > 0.5).
+fn themeIsLight(t: Theme) bool {
+    const bg = t.background;
+    const luma = (@as(u32, bg[0]) * 299 + @as(u32, bg[1]) * 587 + @as(u32, bg[2]) * 114) / 1000;
+    return luma > 128;
+}
+
 fn applyConfig(new_loaded: cfg_mod.Loaded) void {
     const nl = new_loaded;
     const nc = nl.config;
     g.theme = theme_mod.resolve(effectiveThemeName(g.nsapp, nc.theme), nc.theme_overrides);
+    shell_integration.writeThemeHint(themeIsLight(g.theme));
     g.renderer.setClearColor(g.theme.background); // keep the GPU clear in sync
     g.cursor_cfg = nc.cursor;
     loadKeybindings(nc.keybindings);
@@ -227,6 +235,7 @@ fn hidePalette() void {
 
 fn setTheme(name: []const u8) void {
     g.theme = theme_mod.byName(name);
+    shell_integration.writeThemeHint(themeIsLight(g.theme));
     g.renderer.setClearColor(g.theme.background);
     g.dirty = true;
 }
@@ -290,6 +299,7 @@ fn onTick() void {
                 effectiveThemeName(g.nsapp, "system"),
                 g.config.config.theme_overrides,
             );
+            shell_integration.writeThemeHint(themeIsLight(g.theme));
             g.renderer.setClearColor(g.theme.background);
             g.dirty = true;
         }
@@ -944,6 +954,7 @@ pub fn main() void {
         .webview = wv,
     };
     g.system_dark = systemIsDark(nsapp);
+    shell_integration.writeThemeHint(themeIsLight(g.theme));
     g.renderer.setClearColor(active_theme.background);
     g.raster.pad_x = @floatFromInt(grid_pad);
     g.raster.pad_y = @floatFromInt(grid_pad);
