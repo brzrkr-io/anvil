@@ -38,7 +38,7 @@ esac
 if [[ -n "$CALDERA_PROMPT" && -x "$CALDERA_PROMPT" ]]; then
   __caldera_prompt() {
     local last=$?
-    PS1="$("$CALDERA_PROMPT" --exit "$last" --width "${COLUMNS:-80}" 2>/dev/null)"
+    PS1="$("$CALDERA_PROMPT" --exit "$last" --width "${COLUMNS:-80}" --shell bash 2>/dev/null)"
   }
   PROMPT_COMMAND="__caldera_prompt${PROMPT_COMMAND:+; $PROMPT_COMMAND}"
 fi

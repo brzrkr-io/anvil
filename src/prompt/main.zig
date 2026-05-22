@@ -12,6 +12,7 @@ const Args = struct {
     transient: bool = false,
     rule: bool = false,
     width: usize = 0,
+    shell: render.Shell = .plain,
 };
 
 fn parseArgs(p: std.process.Init.Minimal) Args {
@@ -27,6 +28,14 @@ fn parseArgs(p: std.process.Init.Minimal) Args {
             if (it.next()) |v| a.exit_code = std.fmt.parseInt(u8, v, 10) catch 0;
         } else if (std.mem.eql(u8, arg, "--width")) {
             if (it.next()) |v| a.width = std.fmt.parseInt(usize, v, 10) catch 0;
+        } else if (std.mem.eql(u8, arg, "--shell")) {
+            if (it.next()) |v| {
+                if (std.mem.eql(u8, v, "zsh")) {
+                    a.shell = .zsh;
+                } else if (std.mem.eql(u8, v, "bash")) {
+                    a.shell = .bash;
+                }
+            }
         }
     }
     return a;
@@ -56,10 +65,10 @@ pub fn main(p: std.process.Init.Minimal) void {
     const args = parseArgs(p);
     // Rich glyphs only inside Caldera.
     const rich = std.c.getenv("CALDERA_CONSOLE") != null;
-    const opts = render.Options{ .rich = rich, .failed = args.exit_code != 0, .width = args.width };
+    const opts = render.Options{ .rich = rich, .failed = args.exit_code != 0, .width = args.width, .shell = args.shell };
 
     if (args.rule) {
-        const s = render.rule(alloc, args.width) catch return;
+        const s = render.rule(alloc, args.width, args.shell) catch return;
         writeAll(s);
         return;
     }

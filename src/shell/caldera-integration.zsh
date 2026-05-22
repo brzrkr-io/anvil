@@ -39,7 +39,7 @@ precmd_functions+=(__caldera_mark_prompt)
 if [[ -n "$CALDERA_PROMPT" && -x "$CALDERA_PROMPT" ]]; then
   setopt prompt_subst
   __caldera_prompt() {
-    PROMPT="$("$CALDERA_PROMPT" --exit ${CALDERA_EXIT:-0} --width "${COLUMNS:-80}" 2>/dev/null)"
+    PROMPT="$("$CALDERA_PROMPT" --exit ${CALDERA_EXIT:-0} --width "${COLUMNS:-80}" --shell zsh 2>/dev/null)"
   }
   precmd_functions+=(__caldera_prompt)
 fi
