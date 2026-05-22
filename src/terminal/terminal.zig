@@ -236,6 +236,29 @@ pub const Terminal = struct {
         return g.rowConst(grid_y);
     }
 
+    /// Like `viewportRow`, but for an explicit `offset` and a `y` that may equal
+    /// `rows()` (one row past the viewport bottom). Used by smooth scrolling to
+    /// render an in-between offset. Out-of-range rows return a blank row.
+    pub fn viewportRowAt(self: *Terminal, offset: usize, y: usize) []const Cell {
+        const g = self.active();
+        if (offset > y) {
+            const oldest = @as(isize, @intCast(self.history.len())) -
+                @as(isize, @intCast(offset)) + @as(isize, @intCast(y));
+            @memset(self.compose_buf, Cell{});
+            if (oldest < 0) return self.compose_buf;
+            const src = self.history.get(@intCast(oldest));
+            const n = @min(src.len, g.width);
+            @memcpy(self.compose_buf[0..n], src[0..n]);
+            return self.compose_buf;
+        }
+        const grid_y = y - offset;
+        if (grid_y >= g.height) {
+            @memset(self.compose_buf, Cell{});
+            return self.compose_buf;
+        }
+        return g.rowConst(grid_y);
+    }
+
     // --- content-line access (for search) ---------------------------------
 
     /// Total content rows: scrollback length + active grid height.
@@ -1313,4 +1336,36 @@ test "contentRowOfViewport matches viewport composition" {
     t.feed("1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n");
     // At offset 0, viewport row 0 is the first grid row.
     try testing.expectEqual(t.history.len(), t.contentRowOfViewport(0));
+}
+
+test "viewportRowAt matches viewportRow when offset equals viewportOffset" {
+    var term = try makeTerminal(4, 2);
+    defer term.deinit();
+    // Feed lines to push some into scrollback.
+    term.feed("L1\r\nL2\r\nL3\r\nL4");
+    // Screen shows L3, L4; scrollback has L1, L2.
+    term.scrollViewport(1); // offset = 1
+    const off = term.viewportOffset();
+    // viewportRowAt with the same offset must return the same cells as viewportRow.
+    for (0..term.rows()) |y| {
+        const via_row = term.viewportRow(y);
+        const via_at = term.viewportRowAt(off, y);
+        try testing.expectEqual(via_row.len, via_at.len);
+        for (0..via_row.len) |x| {
+            try testing.expectEqual(via_row[x].cp, via_at[x].cp);
+        }
+    }
+}
+
+test "viewportRowAt returns a blank row for out-of-range y" {
+    var term = try makeTerminal(4, 2);
+    defer term.deinit();
+    term.feed("L1\r\nL2\r\nL3");
+    // y == rows() is one past the viewport bottom — should yield a blank row.
+    const off = term.viewportOffset();
+    const extra = term.viewportRowAt(off, term.rows());
+    for (extra) |c| {
+        // A blank cell has cp = ' ' (space); no non-space content expected.
+        try testing.expect(c.cp == ' ' or c.cp == 0);
+    }
 }

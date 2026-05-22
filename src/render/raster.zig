@@ -17,6 +17,7 @@ pub const Raster = struct {
     height: usize,
     pad_x: f64 = 0, // inset margin in device pixels, applied by cellRect
     pad_y: f64 = 0,
+    y_shift_px: f64 = 0, // vertical pixel offset added to every cell (smooth scroll)
 
     pub fn init(alloc: std.mem.Allocator, width: usize, height: usize) !Raster {
         const space = capi.CGColorSpaceCreateDeviceRGB() orelse return error.ColorSpaceFailed;
@@ -76,7 +77,7 @@ pub const Raster = struct {
     /// Fill one cell's background.
     pub fn cellBg(self: *Raster, font: Font, col: usize, row: usize, rgb: [3]u8) void {
         setFill(self.ctx, rgb);
-        capi.CGContextFillRect(self.ctx, self.cellRect(font, col, row));
+        capi.CGContextFillRect(self.ctx, self.cellRect(font, @floatFromInt(col), @floatFromInt(row)));
     }
 
     /// Fill a sub-rectangle of a cell. Used for bar/underline cursors.
@@ -84,11 +85,12 @@ pub const Raster = struct {
     /// `fy` is the offset from the cell's BOTTOM edge as a fraction of cell height
     /// (CG context is y-up, so `fy=0` is the bottom of the cell, not the top).
     /// `fw`,`fh` are the width/height size fractions.
+    /// `col` and `row` are fractional cell coordinates for sub-cell animation.
     pub fn cellInset(
         self: *Raster,
         font: Font,
-        col: usize,
-        row: usize,
+        col: f64,
+        row: f64,
         rgb: [3]u8,
         fx: f64,
         fy: f64,
@@ -106,7 +108,7 @@ pub const Raster = struct {
     /// Draw one glyph in a cell. `glyph` of 0 (missing glyph) draws nothing.
     pub fn cellGlyph(self: *Raster, font: Font, col: usize, row: usize, glyph: u16, rgb: [3]u8) void {
         if (glyph == 0) return;
-        const rect = self.cellRect(font, col, row);
+        const rect = self.cellRect(font, @floatFromInt(col), @floatFromInt(row));
         setFill(self.ctx, rgb);
         var g = [_]capi.CGGlyph{glyph};
         var pos = [_]capi.CGPoint{.{
@@ -116,13 +118,13 @@ pub const Raster = struct {
         capi.CTFontDrawGlyphs(font.ct, &g, &pos, 1, self.ctx);
     }
 
-    fn cellRect(self: *Raster, font: Font, col: usize, row: usize) capi.CGRect {
+    fn cellRect(self: *Raster, font: Font, col: f64, row: f64) capi.CGRect {
         const cw = font.metrics.cell_w;
         const ch = font.metrics.cell_h;
         return .{
             .origin = .{
-                .x = self.pad_x + @as(f64, @floatFromInt(col)) * cw,
-                .y = @as(f64, @floatFromInt(self.height)) - self.pad_y - @as(f64, @floatFromInt(row + 1)) * ch,
+                .x = self.pad_x + col * cw,
+                .y = @as(f64, @floatFromInt(self.height)) - self.pad_y - (row + 1.0) * ch + self.y_shift_px,
             },
             .size = .{ .width = cw, .height = ch },
         };
@@ -199,7 +201,7 @@ test "cellInset fills a sub-rectangle of a cell" {
     defer r.deinit();
     r.clear(.{ 0, 0, 0 });
     // A left bar: 15% width, full height, of cell (2,1).
-    r.cellInset(f, 2, 1, .{ 90, 0, 0 }, 0.0, 0.0, 0.15, 1.0);
+    r.cellInset(f, 2.0, 1.0, .{ 90, 0, 0 }, 0.0, 0.0, 0.15, 1.0);
     const lx: usize = @intFromFloat(f.metrics.cell_w * 2.0 + 1);
     const ly: usize = @intFromFloat(f.metrics.cell_h * 1.5);
     try std.testing.expectEqual([3]u8{ 90, 0, 0 }, pixelAt(&r, lx, ly));
@@ -216,7 +218,7 @@ test "cellInset underline fills the cell bottom" {
     r.clear(.{ 0, 0, 0 });
     // Underline: full width, bottom 12% of cell height, at cell (2, 1).
     // fy=0 is the cell bottom in CG (y-up), so this fills the lowest strip.
-    r.cellInset(f, 2, 1, .{ 0, 0, 200 }, 0.0, 0.0, 1.0, 0.12);
+    r.cellInset(f, 2.0, 1.0, .{ 0, 0, 200 }, 0.0, 0.0, 1.0, 0.12);
 
     // The bitmap is y-down: the cell's bottom (CG) maps to the LARGEST
     // bitmap-y rows of the cell. Cell (2,1) occupies bitmap rows [ch, 2*ch).
@@ -230,4 +232,41 @@ test "cellInset underline fills the cell bottom" {
     // should still be clear — it is above the underline strip.
     const mid_y: usize = @intFromFloat(f.metrics.cell_h * 1.5);
     try std.testing.expectEqual([3]u8{ 0, 0, 0 }, pixelAt(&r, ux, mid_y));
+}
+
+test "y_shift_px shifts cellBg upward in the bitmap" {
+    const f = try Font.init("Menlo", 26.0);
+    defer f.deinit();
+    const w: usize = 400;
+    const h: usize = 200;
+    var r_base = try Raster.init(std.testing.allocator, w, h);
+    defer r_base.deinit();
+    var r_shift = try Raster.init(std.testing.allocator, w, h);
+    defer r_shift.deinit();
+
+    // Sample near the vertical center of cell (1, 1) with no shift.
+    r_base.clear(.{ 0, 0, 0 });
+    r_base.cellBg(f, 1, 1, .{ 255, 0, 0 });
+    const cx: usize = @intFromFloat(f.metrics.cell_w * 1.5);
+    // Use a row near the BOTTOM of cell (1,1): bitmap-y ≈ 1.9 * cell_h.
+    // Without shift this is inside the cell; with a full-cell shift upward
+    // the cell moves entirely out of this region.
+    const cy: usize = @intFromFloat(f.metrics.cell_h * 1.9);
+    const base_px = pixelAt(&r_base, cx, cy);
+
+    // Same cell with a positive shift equal to a full cell height: the cell
+    // moves UP by one full cell so it now occupies bitmap rows [0, cell_h).
+    // The previously sampled row (at ~1.9 * cell_h) is now well below the
+    // shifted cell and should be clear (background).
+    const shift: f64 = f.metrics.cell_h; // shift a full cell upward
+    r_shift.clear(.{ 0, 0, 0 });
+    r_shift.y_shift_px = shift;
+    r_shift.cellBg(f, 1, 1, .{ 255, 0, 0 });
+    r_shift.y_shift_px = 0;
+    const shift_px = pixelAt(&r_shift, cx, cy);
+
+    // Without shift the sample row is inside the cell; with the cell shifted
+    // up by a full cell height, that row is now outside the cell.
+    try std.testing.expectEqual([3]u8{ 255, 0, 0 }, base_px);
+    try std.testing.expectEqual([3]u8{ 0, 0, 0 }, shift_px);
 }

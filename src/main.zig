@@ -7,6 +7,7 @@ const objc = @import("objc");
 const c = objc.c;
 
 const term = @import("terminal/terminal.zig");
+const color = @import("render/color.zig");
 const Font = @import("render/font.zig").Font;
 const Raster = @import("render/raster.zig").Raster;
 const Renderer = @import("render/metal.zig").Renderer;
@@ -32,6 +33,43 @@ const palette_html: [:0]const u8 = @embedFile("palette_html");
 
 var config_path_buf: [std.fs.max_path_bytes]u8 = undefined;
 
+// --- animation helpers ---------------------------------------------------
+
+/// Exponential approach: move `cur` a fraction `rate` toward `target`.
+fn approach(cur: f32, target: f32, rate: f32) f32 {
+    return cur + (target - cur) * rate;
+}
+
+fn smoothstep(t: f32) f32 {
+    const clamped = std.math.clamp(t, 0.0, 1.0);
+    return clamped * clamped * (3.0 - 2.0 * clamped);
+}
+
+/// Cursor opacity for blink phase `p` in [0,1): solid, fade out, dim hold,
+/// fade in — a soft blink rather than a hard on/off toggle.
+fn cursorOpacity(p: f32) f32 {
+    if (p < 0.50) return 1.0;
+    if (p < 0.62) return 1.0 - smoothstep((p - 0.50) / 0.12);
+    if (p < 0.88) return 0.0;
+    return smoothstep((p - 0.88) / 0.12);
+}
+
+fn windowIsKey() bool {
+    const win = g.view.msgSend(objc.Object, "window", .{});
+    if (win.value == null) return false;
+    return win.msgSend(bool, "isKeyWindow", .{});
+}
+
+/// Snap all animation state to the active tab's current values — used on tab
+/// switch, resize, and startup so those discontinuities never animate.
+fn snapAnim() void {
+    const t = g.tabs.current();
+    const cur = t.terminal.cursor();
+    g.cursor_ax = @floatFromInt(cur.x);
+    g.cursor_ay = @floatFromInt(cur.y);
+    g.scroll_anim = @floatFromInt(t.terminal.viewportOffset());
+}
+
 // Uniform inset (device pixels) between the window edge and the terminal grid.
 // The margin shows the background color; the grid simply has fewer cells.
 const grid_pad: usize = 22;
@@ -52,8 +90,10 @@ const App = struct {
     dirty: bool,
     theme: Theme,
     cursor_cfg: cfg_mod.Config.CursorCfg,
-    blink_on: bool = true,
-    blink_ticks: u32 = 0,
+    blink_phase: f32 = 0, // 0..1 cursor blink-fade phase
+    cursor_ax: f32 = 0, // animated cursor column (viewport cells)
+    cursor_ay: f32 = 0, // animated cursor row (viewport cells)
+    scroll_anim: f32 = 0, // animated viewport offset (rows)
     config: cfg_mod.Loaded,
     watcher: cfg_mod.Watcher,
     keys_new: ?cfg_mod.Chord = null,
@@ -271,15 +311,40 @@ fn onTick() void {
         if (tab.isDead()) any_dead = true;
     }
 
-    if (g.cursor_cfg.blink) {
-        g.blink_ticks += 1;
-        if (g.blink_ticks >= 32) {
-            g.blink_ticks = 0;
-            g.blink_on = !g.blink_on;
-            g.dirty = true;
+    // Blink fade — only while the window is focused, so an unfocused window
+    // does not burn 60fps. When blink is off in config, the cursor is solid.
+    if (g.cursor_cfg.blink and windowIsKey()) {
+        g.blink_phase += 1.0 / 64.0;
+        if (g.blink_phase >= 1.0) g.blink_phase -= 1.0;
+        g.dirty = true;
+    } else if (g.blink_phase != 0) {
+        g.blink_phase = 0;
+        g.dirty = true;
+    }
+
+    // Cursor glide.
+    const t = g.tabs.current();
+    const cur = t.terminal.cursor();
+    const tx: f32 = @floatFromInt(cur.x);
+    const ty: f32 = @floatFromInt(cur.y);
+    if (@abs(tx - g.cursor_ax) > 0.002 or @abs(ty - g.cursor_ay) > 0.002) {
+        g.cursor_ax = approach(g.cursor_ax, tx, 0.45);
+        g.cursor_ay = approach(g.cursor_ay, ty, 0.45);
+        if (@abs(tx - g.cursor_ax) <= 0.002) g.cursor_ax = tx;
+        if (@abs(ty - g.cursor_ay) <= 0.002) g.cursor_ay = ty;
+        g.dirty = true;
+    }
+
+    // Smooth scroll. Snap instantly when the jump is larger than a screen
+    // (e.g. scroll-to-bottom from deep history) — animating that looks slow.
+    const so: f32 = @floatFromInt(t.terminal.viewportOffset());
+    if (@abs(so - g.scroll_anim) > 0.01) {
+        if (@abs(so - g.scroll_anim) > @as(f32, @floatFromInt(t.terminal.rows()))) {
+            g.scroll_anim = so;
+        } else {
+            g.scroll_anim = approach(g.scroll_anim, so, 0.30);
+            if (@abs(so - g.scroll_anim) <= 0.01) g.scroll_anim = so;
         }
-    } else if (!g.blink_on) {
-        g.blink_on = true;
         g.dirty = true;
     }
 
@@ -305,6 +370,7 @@ fn closeDeadTabs() void {
         } else i += 1;
     }
     if (topBarRows() != bar_before) resizeAllTabs();
+    snapAnim();
     g.dirty = true;
 }
 
@@ -325,6 +391,7 @@ fn resizeAllTabs() void {
     }
     g.raster.resize(dw, dh) catch {};
     g.renderer.resize(dw, dh);
+    snapAnim();
     g.dirty = true;
 }
 
@@ -440,12 +507,14 @@ fn handleTabKey(mods: keys.Mods, cp: u21) bool {
     if (g.keys_next) |ch| if (chordMatches(ch, mods, cp)) {
         closeSearch();
         g.tabs.next();
+        snapAnim();
         g.dirty = true;
         return true;
     };
     if (g.keys_prev) |ch| if (chordMatches(ch, mods, cp)) {
         closeSearch();
         g.tabs.prev();
+        snapAnim();
         g.dirty = true;
         return true;
     };
@@ -453,6 +522,7 @@ fn handleTabKey(mods: keys.Mods, cp: u21) bool {
         if (maybe) |ch| if (chordMatches(ch, mods, cp)) {
             closeSearch();
             g.tabs.switchTo(i);
+            snapAnim();
             g.dirty = true;
             return true;
         };
@@ -509,6 +579,7 @@ fn addTab(cwd: ?[]const u8) void {
         return;
     };
     resizeAllTabs();
+    snapAnim();
     g.dirty = true;
 }
 
@@ -606,6 +677,7 @@ fn onMouseDown(event: objc.Object) void {
     const frac = std.math.clamp(view_pt.x / b.size.width, 0.0, 0.999);
     const idx: usize = @intFromFloat(frac * @as(f64, @floatFromInt(n)));
     g.tabs.switchTo(idx);
+    snapAnim();
     g.dirty = true;
 }
 
@@ -639,26 +711,44 @@ fn bottomBarRows() usize {
 fn renderFrame() void {
     g.raster.clear(g.theme.background);
 
+    const t = g.tabs.current();
+    const rows = t.terminal.rows();
+    const cols = t.terminal.cols();
+    const off: f32 = @floatFromInt(t.terminal.viewportOffset());
+
+    if (g.scroll_anim == off) {
+        var y: usize = 0;
+        while (y < rows) : (y += 1) {
+            const line = t.terminal.viewportRow(y);
+            var x: usize = 0;
+            while (x < cols and x < line.len) : (x += 1) drawCell(x, y, line[x]);
+        }
+    } else {
+        // Displayed offset = scroll_anim. Render the integer offset (base+1)
+        // and slide the grid UP by (1-frac) cells so it interpolates toward
+        // base. Rows 0..=rows are drawn (the extra bottom row fills the gap).
+        const base: usize = @intFromFloat(@floor(g.scroll_anim));
+        const frac: f64 = @as(f64, g.scroll_anim) - @floor(@as(f64, g.scroll_anim));
+        g.raster.y_shift_px = (1.0 - frac) * g.font.metrics.cell_h;
+        var y: usize = 0;
+        while (y <= rows) : (y += 1) {
+            const line = t.terminal.viewportRowAt(base + 1, y);
+            var x: usize = 0;
+            while (x < cols and x < line.len) : (x += 1) drawCell(x, y, line[x]);
+        }
+        g.raster.y_shift_px = 0;
+    }
+
+    // Tab bar on top of the grid so a gliding top row cannot bleed into it.
     if (g.tabs.barVisible()) {
         tabbar.drawTabBar(&g.raster, g.font, g.theme, &g.tabs);
     }
 
-    const t = g.tabs.current();
-    const rows = t.terminal.rows();
-    const cols = t.terminal.cols();
-
-    var y: usize = 0;
-    while (y < rows) : (y += 1) {
-        const line = t.terminal.viewportRow(y);
-        var x: usize = 0;
-        while (x < cols and x < line.len) : (x += 1) {
-            drawCell(x, y, line[x], false);
-        }
-    }
-
     const cur = t.terminal.cursor();
-    if (cur.visible and t.terminal.viewportOffset() == 0 and cur.y < rows and cur.x < cols) {
-        drawCursor(cur.x, cur.y);
+    if (cur.visible and t.terminal.viewportOffset() == 0 and g.scroll_anim == off and
+        cur.x < cols and cur.y < rows)
+    {
+        drawCursor();
     }
 
     if (g.search_open) {
@@ -670,7 +760,7 @@ fn renderFrame() void {
     g.renderer.present(g.raster.bytes());
 }
 
-fn drawCell(x: usize, y: usize, cell: term.Cell, is_cursor: bool) void {
+fn drawCell(x: usize, y: usize, cell: term.Cell) void {
     var fg = resolve(cell.fg, g.theme.foreground);
     var bg = resolve(cell.bg, g.theme.background);
     if (cell.attrs.inverse) {
@@ -678,11 +768,7 @@ fn drawCell(x: usize, y: usize, cell: term.Cell, is_cursor: bool) void {
         fg = bg;
         bg = t;
     }
-    if (is_cursor) {
-        bg = g.theme.accent;
-        fg = g.theme.background;
-    }
-    if (g.search_open and !is_cursor) {
+    if (g.search_open) {
         const crow = g.tabs.current().terminal.contentRowOfViewport(y);
         switch (g.search.classify(crow, x)) {
             .current => bg = g.theme.accent,
@@ -691,7 +777,7 @@ fn drawCell(x: usize, y: usize, cell: term.Cell, is_cursor: bool) void {
         }
     }
     const ry = y + topBarRows(); // raster row: offset by top bar when visible
-    if (is_cursor or !std.mem.eql(u8, &bg, &g.theme.background)) {
+    if (!std.mem.eql(u8, &bg, &g.theme.background)) {
         g.raster.cellBg(g.font, x, ry, bg);
     }
     if (cell.cp != ' ' and cell.cp != 0) {
@@ -699,26 +785,34 @@ fn drawCell(x: usize, y: usize, cell: term.Cell, is_cursor: bool) void {
     }
 }
 
-fn drawCursor(x: usize, y: usize) void {
-    const t = g.tabs.current();
-    const line = t.terminal.viewportRow(y);
-    const cell: term.Cell = if (x < line.len) line[x] else .{};
-    if (g.cursor_cfg.blink and !g.blink_on) {
-        // Blinked off: draw the cell with no cursor styling.
-        drawCell(x, y, cell, false);
-        return;
-    }
-    const ry = y + topBarRows(); // raster row: offset by top bar when visible
+fn drawCursor() void {
+    const opacity: f32 = if (g.cursor_cfg.blink) cursorOpacity(g.blink_phase) else 1.0;
+    const ax: f64 = g.cursor_ax;
+    const ay: f64 = @as(f64, g.cursor_ay) + @as(f64, @floatFromInt(topBarRows()));
+    const cursor_rgb = color.mix(g.theme.background, g.theme.accent, opacity);
+
     switch (g.cursor_cfg.style) {
-        .block => drawCell(x, y, cell, true),
-        .bar => {
-            drawCell(x, y, cell, false);
-            g.raster.cellInset(g.font, x, ry, g.theme.accent, 0.0, 0.0, 0.15, 1.0);
+        .block => {
+            g.raster.cellInset(g.font, ax, ay, cursor_rgb, 0.0, 0.0, 1.0, 1.0);
+            // Re-draw the glyph of the cell the cursor rect mostly covers, in
+            // the inverted color, on top of the accent rect.
+            const ic: usize = @intFromFloat(@round(g.cursor_ax));
+            const ir: usize = @intFromFloat(@round(g.cursor_ay));
+            const t = g.tabs.current();
+            if (ir < t.terminal.rows() and ic < t.terminal.cols()) {
+                const line = t.terminal.viewportRow(ir);
+                if (ic < line.len) {
+                    const cell = line[ic];
+                    if (cell.cp != ' ' and cell.cp != 0) {
+                        const base_fg = resolve(cell.fg, g.theme.foreground);
+                        const glyph_fg = color.mix(base_fg, g.theme.background, opacity);
+                        g.raster.cellGlyph(g.font, ic, ir + topBarRows(), g.font.glyph(cell.cp), glyph_fg);
+                    }
+                }
+            }
         },
-        .underline => {
-            drawCell(x, y, cell, false);
-            g.raster.cellInset(g.font, x, ry, g.theme.accent, 0.0, 0.0, 1.0, 0.12);
-        },
+        .bar => g.raster.cellInset(g.font, ax, ay, cursor_rgb, 0.0, 0.0, 0.15, 1.0),
+        .underline => g.raster.cellInset(g.font, ax, ay, cursor_rgb, 0.0, 0.0, 1.0, 0.12),
     }
 }
 
@@ -857,6 +951,7 @@ pub fn main() void {
     webview_mod.on_message = handleWebMessage;
 
     renderFrame();
+    snapAnim();
 
     _ = objc.getClass("NSTimer").?.msgSend(
         objc.Object,
