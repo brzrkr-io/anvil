@@ -130,6 +130,10 @@ const App = struct {
     keys_split_right: ?cfg_mod.Chord = null,
     keys_split_down: ?cfg_mod.Chord = null,
     keys_close_pane: ?cfg_mod.Chord = null,
+    keys_focus_left: ?cfg_mod.Chord = null,
+    keys_focus_right: ?cfg_mod.Chord = null,
+    keys_focus_up: ?cfg_mod.Chord = null,
+    keys_focus_down: ?cfg_mod.Chord = null,
     divider_drag: ?DividerDrag = null,
     search: Search,
     cheatsheet_visible: bool = false,
@@ -231,6 +235,10 @@ fn loadKeybindings(kb: cfg_mod.Keybindings) void {
     g.keys_split_right = cfg_mod.parseChord(kb.split_right);
     g.keys_split_down = cfg_mod.parseChord(kb.split_down);
     g.keys_close_pane = cfg_mod.parseChord(kb.close_pane);
+    g.keys_focus_left = cfg_mod.parseChord(kb.focus_left);
+    g.keys_focus_right = cfg_mod.parseChord(kb.focus_right);
+    g.keys_focus_up = cfg_mod.parseChord(kb.focus_up);
+    g.keys_focus_down = cfg_mod.parseChord(kb.focus_down);
 }
 
 // --- command palette -----------------------------------------------------
@@ -504,6 +512,19 @@ fn resizeSurface() void {
     g.raster.resize(dw, dh) catch {};
     g.renderer.resize(dw, dh);
     g.webview.setFrame(b.size.width, b.size.height);
+}
+
+/// Move focus to the neighboring pane in `dir`. No-op at an edge.
+/// `dir` must be a value matching the enum expected by `PaneTree.neighbor`:
+/// `.left`, `.right`, `.up`, or `.down`.
+fn focusNeighbor(comptime dir: anytype) void {
+    const tab = g.tabs.current();
+    const ir = innerRect();
+    const div = workspace_mod.divider_px;
+    const next = tab.tree.neighbor(dir, ir, div, g.alloc) orelse return;
+    tab.tree.focused = next;
+    snapAnim();
+    g.dirty = true;
 }
 
 /// Split the focused pane of the current tab in the given direction.
@@ -793,6 +814,22 @@ fn handleTabKey(mods: keys.Mods, cp: u21) bool {
             if (topBarRows() != bar_before) resizeAllTabs();
             g.dirty = true;
         }
+        return true;
+    };
+    if (g.keys_focus_left) |ch| if (chordMatches(ch, mods, cp)) {
+        focusNeighbor(.left);
+        return true;
+    };
+    if (g.keys_focus_right) |ch| if (chordMatches(ch, mods, cp)) {
+        focusNeighbor(.right);
+        return true;
+    };
+    if (g.keys_focus_up) |ch| if (chordMatches(ch, mods, cp)) {
+        focusNeighbor(.up);
+        return true;
+    };
+    if (g.keys_focus_down) |ch| if (chordMatches(ch, mods, cp)) {
+        focusNeighbor(.down);
         return true;
     };
     if (g.keys_split_right) |ch| if (chordMatches(ch, mods, cp)) {

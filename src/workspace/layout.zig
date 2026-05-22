@@ -871,6 +871,59 @@ test "neighbor: directional nav on 2x2-ish tree, edges return null" {
     try testing.expectEqual(@as(?PaneId, null), tree.neighbor(.left, outer, div, testing.allocator));
 }
 
+test "focus navigation: neighbor sequence updates focused, edge returns null" {
+    // Layout: horizontal split [1, [2, 3]] (inner vertical split on right).
+    // Pane 1: left half. Pane 2: right-top quarter. Pane 3: right-bottom quarter.
+    var tree = try PaneTree.initSingle(testing.allocator, 1);
+    defer tree.deinit();
+
+    try tree.split(.horizontal, 2); // [1, 2], focused=2
+    try tree.split(.vertical, 3); // [1, [2,3]], focused=3
+
+    const outer: Rect = .{ .x = 0, .y = 0, .w = 400, .h = 300 };
+    const div = 4.0;
+
+    // Simulate focus-nav sequence: 3 -> up -> 2.
+    tree.focused = 3;
+    const up_from_3 = tree.neighbor(.up, outer, div, testing.allocator);
+    try testing.expectEqual(@as(?PaneId, 2), up_from_3);
+    tree.focused = up_from_3.?; // apply the move
+    try testing.expectEqual(@as(PaneId, 2), tree.focused);
+
+    // 2 -> down -> 3.
+    const down_from_2 = tree.neighbor(.down, outer, div, testing.allocator);
+    try testing.expectEqual(@as(?PaneId, 3), down_from_2);
+    tree.focused = down_from_2.?;
+    try testing.expectEqual(@as(PaneId, 3), tree.focused);
+
+    // 2 -> left -> 1.
+    tree.focused = 2;
+    const left_from_2 = tree.neighbor(.left, outer, div, testing.allocator);
+    try testing.expectEqual(@as(?PaneId, 1), left_from_2);
+    tree.focused = left_from_2.?;
+    try testing.expectEqual(@as(PaneId, 1), tree.focused);
+
+    // 1 -> left -> null (edge); focused stays at 1.
+    const edge = tree.neighbor(.left, outer, div, testing.allocator);
+    try testing.expectEqual(@as(?PaneId, null), edge);
+    // Caller does nothing on null — focused is unchanged.
+    try testing.expectEqual(@as(PaneId, 1), tree.focused);
+
+    // 1 -> right -> one of {2, 3} (nearest in right column).
+    const right_from_1 = tree.neighbor(.right, outer, div, testing.allocator);
+    try testing.expect(right_from_1 != null);
+    try testing.expect(right_from_1.? == 2 or right_from_1.? == 3);
+    tree.focused = right_from_1.?;
+
+    // From whichever right pane, up from the topmost (2) gives null.
+    tree.focused = 2;
+    try testing.expectEqual(@as(?PaneId, null), tree.neighbor(.up, outer, div, testing.allocator));
+
+    // Down from the bottommost (3) gives null.
+    tree.focused = 3;
+    try testing.expectEqual(@as(?PaneId, null), tree.neighbor(.down, outer, div, testing.allocator));
+}
+
 test "adjustRatio: keeps sum at 1.0, every ratio >= min_ratio" {
     var tree = try PaneTree.initSingle(testing.allocator, 1);
     defer tree.deinit();

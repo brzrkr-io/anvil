@@ -100,6 +100,9 @@ pub fn defaults(backing: std.mem.Allocator) Loaded {
 /// is printed to stderr and `error.ParseFailed` is returned (the caller then
 /// falls back to `defaults`).
 pub fn parseSlice(backing: std.mem.Allocator, source: [:0]const u8) error{ParseFailed}!Loaded {
+    // std.zon.parse uses inline-for over struct fields at comptime.
+    // Raise the branch quota so the larger Keybindings struct can be parsed.
+    @setEvalBranchQuota(4000);
     var arena = std.heap.ArenaAllocator.init(backing);
     errdefer arena.deinit();
     const a = arena.allocator();
@@ -266,6 +269,10 @@ pub const Keybindings = struct {
     split_right: []const u8 = "cmd+d",
     split_down: []const u8 = "cmd+shift+d",
     close_pane: []const u8 = "cmd+w",
+    focus_left: []const u8 = "cmd+shift+h",
+    focus_right: []const u8 = "cmd+shift+l",
+    focus_up: []const u8 = "cmd+shift+k",
+    focus_down: []const u8 = "cmd+shift+j",
 };
 
 const testing = std.testing;
