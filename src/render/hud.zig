@@ -162,8 +162,10 @@ pub fn draw(
     const card_w_px = @as(f64, @floatFromInt(hud_cols)) * cw;
     const card_h_px = @as(f64, @floatFromInt(actual_card_rows)) * ch;
 
-    // Frosted card: surface tone at 0.92 so it reads as a clearly raised panel.
-    raster.fillPixelRectAlpha(left_px, top_px, card_w_px, card_h_px, theme.surface, 0.92);
+    // Blur the backdrop before compositing the translucent surface — frosted glass.
+    raster.blurRegion(left_px, top_px, card_w_px, card_h_px, 8);
+    // Frosted card: lower alpha now that the blurred backdrop reads as depth.
+    raster.fillPixelRectAlpha(left_px, top_px, card_w_px, card_h_px, theme.surface, 0.80);
 
     // --- Border (1-device-pixel strips around the card) -------------------
     const border: f64 = 1.0;

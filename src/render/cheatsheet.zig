@@ -83,8 +83,10 @@ pub fn draw(
     const card_w_px = @as(f64, @floatFromInt(card_cols)) * cw;
     const card_h_px = @as(f64, @floatFromInt(card_rows)) * ch;
 
-    // Near-opaque surface panel — clearly raised modal card.
-    raster.fillPixelRectAlpha(left_px, top_px, card_w_px, card_h_px, theme.surface, 0.97);
+    // Blur the backdrop before compositing the translucent surface — frosted glass.
+    raster.blurRegion(left_px, top_px, card_w_px, card_h_px, 8);
+    // Near-opaque frosted surface — stays readable as a modal, frost shows through.
+    raster.fillPixelRectAlpha(left_px, top_px, card_w_px, card_h_px, theme.surface, 0.86);
 
     // 1px border on all four edges.
     const b: f64 = 1.0;
