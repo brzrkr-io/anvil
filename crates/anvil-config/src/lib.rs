@@ -37,7 +37,7 @@ pub enum CursorStyle {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct FontCfg {
     pub family: String,
     pub size: f64,
@@ -53,7 +53,7 @@ impl Default for FontCfg {
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct CursorCfg {
     pub style: CursorStyle,
     pub blink: bool,
@@ -71,7 +71,7 @@ impl CursorCfg {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct WindowCfg {
     pub width: f64,
     pub height: f64,
@@ -88,13 +88,14 @@ impl Default for WindowCfg {
 
 /// A single custom prompt segment: a label and a shell command.
 #[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CustomPromptSegment {
     pub label: String,
     pub command: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct PromptCfg {
     pub enabled: bool,
     pub transient: bool,
@@ -115,7 +116,7 @@ impl Default for PromptCfg {
 /// Each string is parsed via [`parse_chord`]; an unparseable string falls
 /// back to that field's default.
 #[derive(Clone, Debug, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Keybindings {
     pub new_tab: String,
     pub close_tab: String,
@@ -183,7 +184,7 @@ impl Default for Keybindings {
 /// Top-level configuration. Every field is optional in TOML; missing fields
 /// keep their defaults.
 #[derive(Clone, Debug, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub scrollback: usize,
     pub font: FontCfg,
@@ -448,15 +449,10 @@ accent = "#3aa0a8"
 
     #[test]
     fn unknown_field_returns_parse_error() {
-        // TOML serde: unknown fields are rejected by default (no deny_unknown_fields
-        // needed — toml crate denies unknown fields by default unless
-        // #[serde(deny_unknown_fields)] is absent AND the struct uses deny_unknown_fields).
-        // Actually toml ignores unknown fields by default. Port the intent:
-        // the Zig test asserted `.nonsense = 1` fails; in TOML unknown fields
-        // are silently ignored, so we verify the parse succeeds and the known
-        // field keeps its default.
-        let cfg = parse_str("nonsense = 1").unwrap();
-        assert_eq!(cfg.scrollback, 100_000);
+        // Restores Zig behavior: unknown keys are rejected, catching user typos.
+        assert!(parse_str("nonsense = 1").is_err());
+        // Unknown key inside a sub-table is also rejected.
+        assert!(parse_str("[font]\ntypo_key = 1").is_err());
     }
 
     #[test]

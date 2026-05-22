@@ -253,23 +253,28 @@ pub fn draw_viewport(
         // Live bottom: no fractional offset.
         for y in 0..rows {
             let crow = terminal.content_row_of_viewport(y);
-            // Gather cells first (terminal.viewport_row takes &mut self).
-            let line: Vec<Cell> = terminal.viewport_row(y).to_vec();
-            for (x, &cell) in line.iter().enumerate().take(cols.min(line.len())) {
-                draw_cell(
-                    raster,
-                    painter,
-                    metrics,
-                    theme,
-                    x,
-                    y,
-                    crow,
-                    cell,
-                    top_bar_rows,
-                    selection,
-                    search,
-                );
-            }
+            // Draw all cells while the row-slice borrow is live, then let it
+            // drop so the &self prompt-rule calls below can proceed.  Cell is
+            // Copy so each loop iteration clones the value out of the slice.
+            // No heap allocation occurs: the borrow ends at the closing '}'.
+            {
+                let row = terminal.viewport_row(y);
+                for (x, &cell) in row.iter().enumerate().take(cols.min(row.len())) {
+                    draw_cell(
+                        raster,
+                        painter,
+                        metrics,
+                        theme,
+                        x,
+                        y,
+                        crow,
+                        cell,
+                        top_bar_rows,
+                        selection,
+                        search,
+                    );
+                }
+            } // row borrow ends here
             let abs = terminal.absolute_line_of_content(crow);
             if terminal.is_prompt_start(abs) {
                 let ry = (y + top_bar_rows) as f64;
@@ -291,22 +296,24 @@ pub fn draw_viewport(
             } else {
                 hist + y - off
             };
-            let line: Vec<Cell> = terminal.viewport_row_at(off, y).to_vec();
-            for (x, &cell) in line.iter().enumerate().take(cols.min(line.len())) {
-                draw_cell(
-                    raster,
-                    painter,
-                    metrics,
-                    theme,
-                    x,
-                    y,
-                    crow,
-                    cell,
-                    top_bar_rows,
-                    selection,
-                    search,
-                );
-            }
+            {
+                let row = terminal.viewport_row_at(off, y);
+                for (x, &cell) in row.iter().enumerate().take(cols.min(row.len())) {
+                    draw_cell(
+                        raster,
+                        painter,
+                        metrics,
+                        theme,
+                        x,
+                        y,
+                        crow,
+                        cell,
+                        top_bar_rows,
+                        selection,
+                        search,
+                    );
+                }
+            } // row borrow ends here
             let abs = terminal.absolute_line_of_content(crow);
             if terminal.is_prompt_start(abs) {
                 let ry = (y + top_bar_rows) as f64;
@@ -350,9 +357,13 @@ pub fn draw_viewport(
                     let ic = cp.ax.round() as usize;
                     let ir = cp.ay.round() as usize;
                     if ir < rows && ic < cols {
-                        let row: Vec<Cell> = terminal.viewport_row(ir).to_vec();
-                        if ic < row.len() {
-                            let cell = row[ic];
+                        // Extract the cell fields (all Copy) while the row borrow
+                        // is live, then let the borrow drop before the raster call.
+                        let cell_under = {
+                            let row = terminal.viewport_row(ir);
+                            if ic < row.len() { Some(row[ic]) } else { None }
+                        }; // row borrow ends here
+                        if let Some(cell) = cell_under {
                             if cell.cp != ' ' && cell.cp != '\0' {
                                 let base_fg = resolve_color(cell.fg, theme.foreground, theme);
                                 let glyph_fg = mix(base_fg, theme.background, opacity);
@@ -483,15 +494,11 @@ mod tests {
 
     // ── draw_viewport zero-allocation guarantee (by-construction note)
     //
-    // The Zig CountingAllocator test is noted for a follow-up phase; it needs
-    // a global-allocator probe.  The draw loop is allocation-free by construction:
+    // The draw loop is allocation-free by construction:
     // - Raster writes into its pre-allocated Vec<u8>.
-    // - The only per-frame allocations are the temporary `line: Vec<Cell>` snapshots.
-    //
-    // TODO(zero-alloc): If per-frame allocation must be zero, the Terminal API
-    // needs to expose &[Cell] with a shorter borrow lifetime, or draw_viewport
-    // must receive a pre-allocated scratch slice for compose_buf snapshots.
-    // For now, document and defer.
+    // - Each row is drawn fully while its &[Cell] borrow from terminal is live;
+    //   the borrow ends before the next viewport_row call, so no Vec snapshot
+    //   is needed.  No per-frame heap allocation occurs.
 
     // ── draw_viewport smoke test
 

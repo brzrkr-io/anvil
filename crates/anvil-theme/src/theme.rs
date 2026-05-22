@@ -143,6 +143,7 @@ pub const MINERAL_LIGHT: Theme = Theme {
 /// ANSI-slot overrides — each field is an optional `#rrggbb` hex string.
 /// Absent fields keep the base theme value.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AnsiOverrides {
     pub black: Option<String>,
     pub red: Option<String>,
@@ -165,6 +166,7 @@ pub struct AnsiOverrides {
 /// Per-color overrides applied on top of the chosen base theme.
 /// Every field is optional; an absent field keeps the base theme value.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ThemeOverrides {
     pub background: Option<String>,
     pub foreground: Option<String>,
