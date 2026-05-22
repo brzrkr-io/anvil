@@ -91,7 +91,7 @@ NEXT UP
     Two-line rich prompt + single-line transient mode; rich Unicode glyphs gated on
     `$CALDERA_CONSOLE`, ASCII fallback otherwise. `config.zon` gains a `prompt`
     section (`enabled`, `transient`, `custom`). Shell integration wires PROMPT/PS1
-    from `caldera-prompt --exit $?`; transient hook on zle-line-finish. 212 tests
+    from `caldera-prompt --exit $?`; transient hook on zle-line-finish. 232 tests
     pass. Deferred: bundled icon font (one-file swap in `icons.zig`); Phase 2
     interactive hover layer.
 
