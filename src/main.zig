@@ -1658,4 +1658,5 @@ test {
     _ = @import("app/filetree.zig");
     _ = @import("app/interact.zig");
     _ = @import("testing/counting_allocator.zig");
+    _ = @import("workspace/layout.zig");
 }
