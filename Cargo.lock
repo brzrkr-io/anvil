@@ -10,9 +10,16 @@ dependencies = [
  "anvil-config",
  "anvil-control",
  "anvil-platform",
+ "anvil-prompt-core",
+ "anvil-render",
  "anvil-term",
  "anvil-theme",
  "anvil-workspace",
+ "anyhow",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "objc2-quartz-core",
 ]
 
 [[package]]

@@ -12,7 +12,14 @@ path = "src/main.rs"
 anvil-platform   = { workspace = true }
 anvil-term       = { workspace = true }
 anvil-workspace  = { workspace = true }
+anvil-render     = { workspace = true }
 anvil-theme      = { workspace = true }
 anvil-config     = { workspace = true }
 anvil-agent      = { workspace = true }
 anvil-control    = { workspace = true }
+anvil-prompt-core = { path = "../../crates/anvil-prompt-core" }
+anyhow           = { workspace = true }
+objc2            = { workspace = true }
+objc2-app-kit    = { workspace = true, features = ["NSApplication", "NSAppearance", "NSPasteboard"] }
+objc2-foundation    = { workspace = true, features = ["NSString"] }
+objc2-quartz-core   = { workspace = true, features = ["CAMetalLayer"] }

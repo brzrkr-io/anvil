@@ -1,55 +1,2337 @@
-use std::path::Path;
+//! Anvil binary — P10 capstone: wires all ported crates into a running app.
+//!
+//! `App` implements `anvil_platform::appkit::AppHandler` and owns:
+//!   - `TabManager` (workspace layout + pure pane state)
+//!   - `HashMap<PaneId, Pty>` (PTY seam owned here, not in workspace)
+//!   - Metal `Renderer` + `Raster`
+//!   - `CoreTextPainter` (glyph painter, holds &Font so lives alongside Font)
+//!   - `Config` / `Theme` / `Watcher`
+//!   - `Webview` (command palette bridge)
+//!   - Agent `Snapshot` + `LocalContext`
+//!   - Git worker via `std::sync::mpsc`
 
-use anvil_control::AiSessionBroker;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::sync::mpsc;
+use std::thread;
 
-fn main() {
-    prepare_caldera_session_on_repo_open();
+use anyhow::Result;
+
+use anvil_agent::Snapshot as AgentSnapshot;
+use anvil_config::{Chord, Config, Watcher, parse_chord};
+use anvil_platform::appkit::{AppHandler, AppKitApp, KeyEvent, KeyInput, Modifiers, MouseLocation};
+use anvil_platform::font::{Font, register_bundled};
+use anvil_platform::metal::{PresentMode, Renderer, present_mode};
+use anvil_platform::pty::Pty;
+use anvil_platform::shell_integration;
+use anvil_platform::webview::{Webview, WebviewConfig};
+use anvil_prompt_core::git;
+use anvil_render::agent_panel::{
+    GitState, LocalContext, Placement, RunState, draw as draw_agent_panel,
+};
+use anvil_render::cheatsheet::draw as draw_cheatsheet;
+use anvil_render::draw::CursorConfig;
+use anvil_render::filetree::{TREE_COLS, draw as draw_filetree};
+use anvil_render::raster::Raster;
+use anvil_render::searchbar::draw_search_bar;
+use anvil_render::tabbar::draw_tab_bar;
+use anvil_render::workspace::{DIVIDER_PX, draw_workspace};
+use anvil_theme::{Theme, resolve as resolve_theme};
+use anvil_workspace::filetree::FileTree;
+use anvil_workspace::interact;
+use anvil_workspace::keys::{Key, Mods, encode as encode_key, encode_mouse};
+use anvil_workspace::layout::{NavDir, PaneId, Rect, SplitDir};
+use anvil_workspace::palette::{Action, CATALOG, Palette, action_for_id};
+use anvil_workspace::tab::{Tab, TabManager};
+
+use anvil_control::bridge::{
+    Command as BridgeCmd, Inbound, Outbound, ThemeTokens, decode as bridge_decode,
+    encode as bridge_encode,
+};
+
+use objc2_foundation::MainThreadMarker;
+
+// ── Embedded assets ──────────────────────────────────────────────────────────
+
+const PALETTE_HTML: &str = include_str!("../../../ui/palette/index.html");
+
+// ── Constants ────────────────────────────────────────────────────────────────
+
+/// Uniform inset in device pixels between the window edge and the terminal grid.
+const GRID_PAD: usize = 24;
+
+/// HUD refresh: once every N ticks (~60 fps → ~1 s).
+const HUD_REFRESH_TICKS: u32 = 60;
+
+/// Maximum panes per tab.
+const MAX_PANES_PER_TAB: usize = 8;
+
+// ── Git worker ───────────────────────────────────────────────────────────────
+
+struct GitResult {
+    state: GitState,
+    branch: String,
+    dirty: u32,
+    ahead: u32,
+    behind: u32,
 }
 
-fn prepare_caldera_session_on_repo_open() {
-    let Ok(cwd) = std::env::current_dir() else {
-        return;
-    };
-    if !is_caldera_enabled_repo(&cwd) {
-        return;
+// ── Keybindings ───────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy)]
+struct Keybindings {
+    new_tab: Option<Chord>,
+    close_tab: Option<Chord>,
+    next_tab: Option<Chord>,
+    prev_tab: Option<Chord>,
+    jump: [Option<Chord>; 9],
+    search_open: Option<Chord>,
+    search_next: Option<Chord>,
+    search_prev: Option<Chord>,
+    hud_toggle: Option<Chord>,
+    tree_toggle: Option<Chord>,
+    cheatsheet: Option<Chord>,
+    split_right: Option<Chord>,
+    split_down: Option<Chord>,
+    close_pane: Option<Chord>,
+    focus_left: Option<Chord>,
+    focus_right: Option<Chord>,
+    focus_up: Option<Chord>,
+    focus_down: Option<Chord>,
+}
+
+impl Keybindings {
+    fn from_config(kb: &anvil_config::Keybindings) -> Self {
+        let jump_strs = [
+            &kb.tab_1, &kb.tab_2, &kb.tab_3, &kb.tab_4, &kb.tab_5, &kb.tab_6, &kb.tab_7, &kb.tab_8,
+            &kb.tab_9,
+        ];
+        let mut jump = [None; 9];
+        for (i, s) in jump_strs.iter().enumerate() {
+            jump[i] = parse_chord(s);
+        }
+        Self {
+            new_tab: parse_chord(&kb.new_tab),
+            close_tab: parse_chord(&kb.close_tab),
+            next_tab: parse_chord(&kb.next_tab),
+            prev_tab: parse_chord(&kb.prev_tab),
+            jump,
+            search_open: parse_chord(&kb.search_open),
+            search_next: parse_chord(&kb.search_next),
+            search_prev: parse_chord(&kb.search_prev),
+            hud_toggle: parse_chord(&kb.hud_toggle),
+            tree_toggle: parse_chord(&kb.tree_toggle),
+            cheatsheet: parse_chord(&kb.cheatsheet_toggle),
+            split_right: parse_chord(&kb.split_right),
+            split_down: parse_chord(&kb.split_down),
+            close_pane: parse_chord(&kb.close_pane),
+            focus_left: parse_chord(&kb.focus_left),
+            focus_right: parse_chord(&kb.focus_right),
+            focus_up: parse_chord(&kb.focus_up),
+            focus_down: parse_chord(&kb.focus_down),
+        }
+    }
+}
+
+// ── App ───────────────────────────────────────────────────────────────────────
+
+/// The whole application state.  Implements [`AppHandler`] via [`AppShell`].
+pub struct App {
+    // -- workspace ---
+    tabs: TabManager,
+    /// PTY handles keyed by PaneId (all panes across all tabs).
+    ptys: HashMap<PaneId, Pty>,
+
+    // -- render ---
+    /// `None` only during initialization, before the Metal layer is available.
+    renderer: Option<Renderer>,
+    raster: Raster,
+    /// Heap-allocated so its address is stable; `AppShell.painter` borrows it.
+    font: Box<Font>,
+    dirty: bool,
+
+    // -- theme / config ---
+    theme: Theme,
+    cursor_cfg: CursorConfig,
+    config: Config,
+    watcher: Option<Watcher>,
+    keybindings: Keybindings,
+    system_dark: bool,
+    window_scale: f64,
+
+    // -- UI state ---
+    blink_phase: f32,
+    last_blink_opacity: f32,
+    search: anvil_term::Search,
+    search_open: bool,
+    hud_visible: bool,
+    hud_tick: u32,
+    cheatsheet_visible: bool,
+    tree_visible: bool,
+    tree: FileTree,
+    focused: bool, // window is key window
+
+    // -- agent panel ---
+    agent_snap: AgentSnapshot,
+    local_ctx: LocalContext,
+
+    // -- git worker ---
+    git_tx: mpsc::SyncSender<PathBuf>,
+    git_rx: mpsc::Receiver<GitResult>,
+
+    // -- command palette ---
+    palette: Palette,
+
+    // -- window geometry (view-point size, updated on resize) ---
+    view_width_pt: f64,
+    view_height_pt: f64,
+}
+
+// ── App helpers ───────────────────────────────────────────────────────────────
+
+impl App {
+    /// The current focused pane id.
+    fn focused_pane_id(&self) -> PaneId {
+        self.tabs.current().map(|t| t.focused_id()).unwrap_or(0)
     }
 
-    let agent = std::env::var("ANVIL_CALDERA_AGENT").unwrap_or_else(|_| "codex".to_string());
-    let task = std::env::var("ANVIL_CALDERA_TASK")
-        .unwrap_or_else(|_| "Open this repo in Anvil and prepare safe AI context".to_string());
+    /// The cwd of the focused pane (OSC 7 path), or `None` if unset.
+    fn current_cwd(&self) -> Option<String> {
+        let tab = self.tabs.current()?;
+        let id = tab.focused_id();
+        let pane = tab.registry.get(id)?;
+        let cwd = pane.terminal.cwd_path();
+        if cwd.is_empty() {
+            None
+        } else {
+            Some(cwd.to_string())
+        }
+    }
 
-    match AiSessionBroker::localhost().prepare_repo_session(task, agent) {
-        Ok(session) => {
-            eprintln!(
-                "anvil: prepared Caldera session {} ({})",
-                session.session_id, session.handoff_path
+    /// Device-pixel dimensions of the content area.
+    fn device_size(&self) -> (usize, usize) {
+        let dw = ((self.view_width_pt * self.window_scale) as usize).max(1);
+        let dh = ((self.view_height_pt * self.window_scale) as usize).max(1);
+        (dw, dh)
+    }
+
+    /// Inner content rect in device pixels: window minus bars and padding.
+    fn inner_rect(&self) -> Rect {
+        let (dw, dh) = self.device_size();
+        let pad = GRID_PAD as f64;
+        let cw = self.font.metrics.cell_w;
+        let ch = self.font.metrics.cell_h;
+        let tree_offset = if self.tree_visible {
+            TREE_COLS as f64 * cw
+        } else {
+            0.0
+        };
+        let top_bar_px = self.top_bar_rows() as f64 * ch;
+        let bot_bar_px = self.bottom_bar_rows() as f64 * ch;
+        Rect {
+            x: pad + tree_offset,
+            y: pad + top_bar_px,
+            w: dw as f64 - 2.0 * pad - tree_offset,
+            h: dh as f64 - 2.0 * pad - top_bar_px - bot_bar_px,
+        }
+    }
+
+    fn top_bar_rows(&self) -> usize {
+        if self.tabs.bar_visible() { 1 } else { 0 }
+    }
+
+    fn bottom_bar_rows(&self) -> usize {
+        if self.search_open { 1 } else { 0 }
+    }
+
+    /// Snap cursor + scroll animation state to current terminal values.
+    fn snap_anim(&mut self) {
+        let Some(tab) = self.tabs.current_mut() else {
+            return;
+        };
+        let id = tab.focused_id();
+        let Some(pane) = tab.registry.get_mut(id) else {
+            return;
+        };
+        let cur = pane.terminal.cursor();
+        pane.cursor_ax = cur.x as f32;
+        pane.cursor_ay = cur.y as f32;
+        pane.scroll_pos = pane.terminal.viewport_offset() as f32;
+        pane.overscroll = 0.0;
+        pane.overscroll_target = 0.0;
+    }
+
+    /// Resize every pane in every tab to reflect the current window size.
+    fn resize_all_tabs(&mut self) {
+        let ir = self.inner_rect();
+        let cw = self.font.metrics.cell_w;
+        let ch = self.font.metrics.cell_h;
+        let div = DIVIDER_PX;
+
+        for tab in &mut self.tabs.tabs {
+            let entries = tab.tree.layout(ir, div);
+            for e in &entries {
+                let cols = ((e.rect.w / cw) as usize).max(1);
+                let rows = ((e.rect.h / ch) as usize).max(1);
+                if let Some(pane) = tab.registry.get_mut(e.id) {
+                    pane.terminal.resize(cols, rows);
+                }
+                if let Some(pty) = self.ptys.get(&e.id) {
+                    pty.resize(cols as u16, rows as u16);
+                }
+            }
+        }
+        // Clear selection in focused pane.
+        if let Some(tab) = self.tabs.current_mut() {
+            let id = tab.focused_id();
+            if let Some(pane) = tab.registry.get_mut(id) {
+                pane.selection.clear();
+            }
+        }
+        self.snap_anim();
+        self.dirty = true;
+    }
+
+    /// Resize the raster and renderer to match the current window device size.
+    fn resize_surface(&mut self) {
+        let (dw, dh) = self.device_size();
+        self.raster.resize(dw, dh);
+        if let Some(r) = &mut self.renderer {
+            r.resize(dw, dh);
+        }
+    }
+
+    /// Apply a freshly loaded config.
+    fn apply_config(&mut self, cfg: Config) {
+        let effective = effective_theme_name(self.system_dark, &cfg.theme);
+        self.theme = resolve_theme(effective, &cfg.theme_overrides);
+        if let Some(r) = &mut self.renderer {
+            r.set_clear_color(self.theme.background);
+        }
+        self.cursor_cfg = cursor_cfg_from_config(&cfg);
+        self.last_blink_opacity = -1.0;
+        self.keybindings = Keybindings::from_config(&cfg.keybindings);
+        self.config = cfg;
+        self.dirty = true;
+    }
+
+    fn open_search(&mut self) {
+        if self.search_open {
+            return;
+        }
+        self.search_open = true;
+        // Re-run query against current focused pane terminal.
+        let q = self.search.query().to_string();
+        if let Some(tab) = self.tabs.current_mut() {
+            let id = tab.focused_id();
+            if let Some(pane) = tab.registry.get_mut(id) {
+                self.search.set_query(&pane.terminal, &q);
+            }
+        }
+        self.resize_all_tabs();
+        self.dirty = true;
+    }
+
+    fn close_search(&mut self) {
+        if !self.search_open {
+            return;
+        }
+        self.search_open = false;
+        self.resize_all_tabs();
+        self.dirty = true;
+    }
+
+    fn scroll_to_current_match(&mut self) {
+        if let Some(m) = self.search.current_match() {
+            if let Some(tab) = self.tabs.current_mut() {
+                let id = tab.focused_id();
+                if let Some(pane) = tab.registry.get_mut(id) {
+                    pane.terminal.scroll_to_line(m.row);
+                    pane.scroll_pos = pane.terminal.viewport_offset() as f32;
+                }
+            }
+        }
+    }
+
+    fn bounce_impulse(&self) -> f32 {
+        (self.font.metrics.cell_h * 0.5) as f32
+    }
+
+    fn focus_neighbor(&mut self, dir: NavDir) {
+        let ir = self.inner_rect();
+        let div = DIVIDER_PX;
+        let next = self
+            .tabs
+            .current()
+            .and_then(|tab| tab.tree.neighbor(dir, ir, div));
+        if let Some(next_id) = next {
+            if let Some(tab) = self.tabs.current_mut() {
+                tab.tree.focused = next_id;
+            }
+            self.snap_anim();
+            self.dirty = true;
+        }
+    }
+
+    fn split_focused_pane(&mut self, dir: SplitDir) {
+        let tab = match self.tabs.current() {
+            Some(t) => t,
+            None => return,
+        };
+        if tab.tree.leaf_count() >= MAX_PANES_PER_TAB {
+            eprintln!("anvil: max pane count ({MAX_PANES_PER_TAB}) reached");
+            return;
+        }
+
+        let focused_id = tab.focused_id();
+        let ir = self.inner_rect();
+        let div = DIVIDER_PX;
+        let cw = self.font.metrics.cell_w;
+        let ch = self.font.metrics.cell_h;
+        let entries = tab.tree.layout(ir, div);
+        let focused_rect = entries
+            .iter()
+            .find(|e| e.id == focused_id)
+            .map(|e| e.rect)
+            .unwrap_or(ir);
+
+        let cols = match dir {
+            SplitDir::Horizontal => ((((focused_rect.w - div) * 0.5) / cw) as usize).max(1),
+            SplitDir::Vertical => ((focused_rect.w / cw) as usize).max(1),
+        };
+        let rows = match dir {
+            SplitDir::Horizontal => ((focused_rect.h / ch) as usize).max(1),
+            SplitDir::Vertical => ((((focused_rect.h - div) * 0.5) / ch) as usize).max(1),
+        };
+
+        let cwd = self.current_cwd();
+        let scrollback = self.config.scrollback;
+
+        let new_id = match self
+            .tabs
+            .current_mut()
+            .map(|t| t.split(dir, cols, rows, scrollback))
+        {
+            Some(Ok(id)) => id,
+            Some(Err(e)) => {
+                eprintln!("anvil: pane split failed: {e}");
+                return;
+            }
+            None => return,
+        };
+
+        // Spawn PTY for the new pane.
+        match Pty::spawn_shell(cols as u16, rows as u16) {
+            Ok(pty) => {
+                self.ptys.insert(new_id, pty);
+            }
+            Err(e) => {
+                eprintln!("anvil: pane pty failed: {e}");
+                // Remove the pane from the tree/registry.
+                if let Some(tab) = self.tabs.current_mut() {
+                    tab.tree.close_leaf(new_id);
+                    tab.registry.remove(new_id);
+                }
+                return;
+            }
+        }
+        let _ = cwd; // cwd inheritance handled via shell integration
+        self.resize_all_tabs();
+        self.snap_anim();
+        self.dirty = true;
+    }
+
+    fn close_focused_pane(&mut self) {
+        let (focused_id, next_id) = {
+            let tab = match self.tabs.current_mut() {
+                Some(t) => t,
+                None => return,
+            };
+            let focused_id = tab.focused_id();
+            let next_id = tab.tree.close_leaf(focused_id);
+            tab.registry.remove(focused_id);
+            (focused_id, next_id)
+        };
+        self.ptys.remove(&focused_id);
+
+        if let Some(nid) = next_id {
+            if let Some(tab) = self.tabs.current_mut() {
+                tab.tree.focused = nid;
+            }
+            self.resize_all_tabs();
+            self.snap_anim();
+            self.dirty = true;
+        } else {
+            // Last pane — close the tab.
+            let bar_before = self.top_bar_rows();
+            if !self.tabs.close_active() {
+                terminate_app();
+            } else {
+                if self.top_bar_rows() != bar_before {
+                    self.resize_all_tabs();
+                }
+                self.snap_anim();
+                self.dirty = true;
+            }
+        }
+    }
+
+    fn add_tab(&mut self) {
+        self.close_search();
+        let (dw, dh) = self.device_size();
+        let cw = self.font.metrics.cell_w as usize;
+        let ch = self.font.metrics.cell_h as usize;
+        let cols = ((dw.saturating_sub(2 * GRID_PAD)) / cw).max(1);
+        // Bar will appear (>=2 tabs): subtract one row.
+        let rows = (((dh.saturating_sub(2 * GRID_PAD)) / ch).saturating_sub(1)).max(1);
+        let scrollback = self.config.scrollback;
+
+        let tab = Tab::new_single_pane(cols, rows, scrollback);
+        let first_id = tab.focused_id();
+        match Pty::spawn_shell(cols as u16, rows as u16) {
+            Ok(pty) => {
+                self.ptys.insert(first_id, pty);
+            }
+            Err(e) => {
+                eprintln!("anvil: new tab pty failed: {e}");
+                return;
+            }
+        }
+        self.tabs.push(tab);
+        self.resize_all_tabs();
+        self.snap_anim();
+        self.dirty = true;
+    }
+
+    fn close_active_tab(&mut self) {
+        let bar_before = self.top_bar_rows();
+        if !self.tabs.close_active() {
+            terminate_app();
+        } else {
+            if self.top_bar_rows() != bar_before {
+                self.resize_all_tabs();
+            }
+            self.dirty = true;
+        }
+    }
+
+    /// Close panes whose PTY has gone away (EOF), then close tabs with no panes.
+    fn close_dead_panes(&mut self) {
+        let bar_before = self.top_bar_rows();
+        let mut any_closed = false;
+
+        let mut tab_i = 0;
+        while tab_i < self.tabs.tabs.len() {
+            // Collect pane ids that no longer have a PTY.
+            let dead: Vec<PaneId> = {
+                let tab = &self.tabs.tabs[tab_i];
+                all_pane_ids_in_tree(tab)
+                    .into_iter()
+                    .filter(|id| !self.ptys.contains_key(id))
+                    .collect()
+            };
+
+            if dead.is_empty() {
+                tab_i += 1;
+                continue;
+            }
+            any_closed = true;
+            let mut close_tab = false;
+            for id in dead {
+                let next = self.tabs.tabs[tab_i].tree.close_leaf(id);
+                self.tabs.tabs[tab_i].registry.remove(id);
+                if let Some(nid) = next {
+                    self.tabs.tabs[tab_i].tree.focused = nid;
+                } else {
+                    close_tab = true;
+                    break;
+                }
+            }
+            if close_tab {
+                if !self.tabs.close_at(tab_i) {
+                    terminate_app();
+                    return;
+                }
+                // tab_i stays the same (the next tab is now at tab_i)
+            } else {
+                tab_i += 1;
+            }
+        }
+
+        if any_closed {
+            if self.top_bar_rows() != bar_before {
+                self.resize_all_tabs();
+            }
+            self.snap_anim();
+            self.dirty = true;
+        }
+    }
+
+    fn toggle_tree(&mut self) {
+        self.tree_visible = !self.tree_visible;
+        if self.tree_visible {
+            if let Some(cwd) = self.current_cwd() {
+                self.tree.set_root(Path::new(&cwd));
+            }
+        }
+        self.resize_all_tabs();
+        self.dirty = true;
+    }
+
+    fn jump_to_prev_prompt(&mut self) {
+        let bounce = self.bounce_impulse();
+        let Some(tab) = self.tabs.current_mut() else {
+            return;
+        };
+        let id = tab.focused_id();
+        let Some(pane) = tab.registry.get_mut(id) else {
+            return;
+        };
+        let t = &mut pane.terminal;
+        let marks = t.prompt_marks().to_vec();
+        let top_content = t.content_row_of_viewport(0);
+        let ev = t.evicted_lines;
+        let mut best: Option<usize> = None;
+        for m in &marks {
+            use anvil_term::PromptMarkKind;
+            if m.kind != PromptMarkKind::PromptStart {
+                continue;
+            }
+            if m.line < ev {
+                continue;
+            }
+            let cr = m.line - ev;
+            if cr < top_content && best.is_none_or(|b| cr > b) {
+                best = Some(cr);
+            }
+        }
+        if let Some(cr) = best {
+            t.scroll_to_line(cr);
+            pane.scroll_pos = pane.terminal.viewport_offset() as f32;
+            pane.overscroll_target = bounce;
+            self.dirty = true;
+        }
+    }
+
+    fn jump_to_next_prompt(&mut self) {
+        let bounce = self.bounce_impulse();
+        let Some(tab) = self.tabs.current_mut() else {
+            return;
+        };
+        let id = tab.focused_id();
+        let Some(pane) = tab.registry.get_mut(id) else {
+            return;
+        };
+        let t = &mut pane.terminal;
+        let marks = t.prompt_marks().to_vec();
+        let top_content = t.content_row_of_viewport(0);
+        let ev = t.evicted_lines;
+        let mut best: Option<usize> = None;
+        for m in &marks {
+            use anvil_term::PromptMarkKind;
+            if m.kind != PromptMarkKind::PromptStart {
+                continue;
+            }
+            if m.line < ev {
+                continue;
+            }
+            let cr = m.line - ev;
+            if cr > top_content && best.is_none_or(|b| cr < b) {
+                best = Some(cr);
+            }
+        }
+        if let Some(cr) = best {
+            t.scroll_to_line(cr);
+            pane.scroll_pos = pane.terminal.viewport_offset() as f32;
+            pane.overscroll_target = -bounce;
+        } else {
+            t.scroll_to_bottom();
+            pane.scroll_pos = 0.0;
+            pane.overscroll_target = -bounce;
+        }
+        self.dirty = true;
+    }
+
+    fn write_to_focused_pty(&self, bytes: &[u8]) {
+        if let Some(tab) = self.tabs.current() {
+            let id = tab.focused_id();
+            if let Some(pty) = self.ptys.get(&id) {
+                let _ = pty.write(bytes);
+            }
+        }
+    }
+
+    fn pty_write_open_file(&self, path: &str) {
+        self.write_to_focused_pty(b"\x15${EDITOR:-open} '");
+        let bytes = path.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if let Some(j) = bytes[i..].iter().position(|&b| b == b'\'') {
+                self.write_to_focused_pty(&bytes[i..i + j]);
+                self.write_to_focused_pty(b"'\\''");
+                i += j + 1;
+            } else {
+                self.write_to_focused_pty(&bytes[i..]);
+                break;
+            }
+        }
+        self.write_to_focused_pty(b"'\n");
+    }
+
+    fn pty_write_open_url(&self, url: &str) {
+        self.write_to_focused_pty(b"\x15open '");
+        let bytes = url.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if let Some(j) = bytes[i..].iter().position(|&b| b == b'\'') {
+                self.write_to_focused_pty(&bytes[i..i + j]);
+                self.write_to_focused_pty(b"'\\''");
+                i += j + 1;
+            } else {
+                self.write_to_focused_pty(&bytes[i..]);
+                break;
+            }
+        }
+        self.write_to_focused_pty(b"'\n");
+    }
+
+    fn write_mouse_event(&self, button: u8, col: usize, row: usize, press: bool) {
+        let sgr = self
+            .tabs
+            .current()
+            .and_then(|t| t.registry.get(t.focused_id()))
+            .map(|p| p.terminal.modes.mouse_sgr)
+            .unwrap_or(false);
+        let id = self.focused_pane_id();
+        let mut buf = [0u8; 32];
+        let bytes = encode_mouse(button, col + 1, row + 1, press, sgr, &mut buf);
+        if let Some(pty) = self.ptys.get(&id) {
+            let _ = pty.write(bytes);
+        }
+    }
+
+    /// Convert a view-point mouse location to a device-pixel raster position.
+    fn view_pt_to_raster_px(&self, loc: MouseLocation) -> (f64, f64) {
+        let s = self.window_scale;
+        let dh = self.view_height_pt * s;
+        let rx = loc.x * s;
+        let ry = dh - loc.y * s; // flip y: view is y-up, raster is y-down
+        (rx, ry)
+    }
+
+    /// Hit-test the pointer position to a (row, col) cell in the focused pane.
+    fn event_cell(&self, loc: MouseLocation, clamp: bool) -> Option<(usize, usize)> {
+        let (rx, ry) = self.view_pt_to_raster_px(loc);
+        let tab = self.tabs.current()?;
+        let ir = self.inner_rect();
+        let div = DIVIDER_PX;
+
+        let pane_id = tab
+            .tree
+            .hit_test(ir, div, rx, ry)
+            .or_else(|| if clamp { Some(tab.focused_id()) } else { None })?;
+
+        let entries = tab.tree.layout(ir, div);
+        let pr = entries.iter().find(|e| e.id == pane_id)?.rect;
+        let pane = tab.registry.get(pane_id)?;
+        let cw = self.font.metrics.cell_w;
+        let ch = self.font.metrics.cell_h;
+        let rows = pane.terminal.rows() as f64;
+        let cols = pane.terminal.cols() as f64;
+
+        let rel_x = rx - pr.x;
+        let rel_y = ry - pr.y;
+
+        if !clamp {
+            if rel_y < 0.0 || rel_x < 0.0 {
+                return None;
+            }
+            if rel_y >= rows * ch || rel_x >= cols * cw {
+                return None;
+            }
+        }
+
+        let raw_row = (rel_y / ch).clamp(0.0, rows - 1.0);
+        let raw_col = (rel_x / cw).clamp(0.0, cols - 1.0);
+        Some((raw_row as usize, raw_col as usize))
+    }
+
+    fn refresh_hud(&mut self) {
+        if let Some(cwd) = self.current_cwd() {
+            self.local_ctx.cwd = cwd.clone();
+            // Collect git results (non-blocking).
+            while let Ok(result) = self.git_rx.try_recv() {
+                self.local_ctx.git = result.state;
+                self.local_ctx.branch = result.branch;
+                self.local_ctx.git_dirty = result.dirty;
+                self.local_ctx.git_ahead = result.ahead;
+                self.local_ctx.git_behind = result.behind;
+            }
+            // Kick off git worker (try_send is non-blocking; drop if channel full).
+            let _ = self.git_tx.try_send(PathBuf::from(&cwd));
+        }
+
+        // last-run from focused pane
+        if let Some(tab) = self.tabs.current() {
+            let id = tab.focused_id();
+            if let Some(pane) = tab.registry.get(id) {
+                let lr = pane.terminal.last_run();
+                if lr.running || (lr.duration_ms == 0 && lr.exit_code == 0) {
+                    self.local_ctx.run = RunState::Idle;
+                } else {
+                    self.local_ctx.run = if lr.exit_code == 0 {
+                        RunState::Ok
+                    } else {
+                        RunState::Failed
+                    };
+                    self.local_ctx.run_exit = lr.exit_code;
+                    self.local_ctx.run_duration_ms = lr.duration_ms;
+                }
+            }
+        }
+
+        self.dirty = true;
+    }
+
+    fn render_frame(&mut self, painter: &mut dyn anvil_render::GlyphPainter) {
+        self.raster.clear(self.theme.background);
+
+        let cw = self.font.metrics.cell_w;
+        let ch = self.font.metrics.cell_h;
+        let pad = GRID_PAD as f64;
+        let tree_offset = if self.tree_visible {
+            TREE_COLS as f64 * cw
+        } else {
+            0.0
+        };
+        let (dw, dh) = self.device_size();
+
+        let inner = Rect {
+            x: self.raster.pad_x + tree_offset,
+            y: self.raster.pad_y + self.top_bar_rows() as f64 * ch,
+            w: dw as f64 - 2.0 * pad - tree_offset,
+            h: dh as f64
+                - 2.0 * pad
+                - self.top_bar_rows() as f64 * ch
+                - self.bottom_bar_rows() as f64 * ch,
+        };
+
+        let search_ref: Option<&anvil_term::Search> = if self.search_open {
+            Some(&self.search)
+        } else {
+            None
+        };
+        let metrics = self.font.metrics;
+
+        if let Some(tab) = self.tabs.current_mut() {
+            let focused_id = tab.focused_id();
+            draw_workspace(
+                &mut self.raster,
+                painter,
+                &tab.tree,
+                &mut tab.registry,
+                inner,
+                DIVIDER_PX,
+                metrics,
+                &self.theme,
+                search_ref,
+                focused_id,
+                self.blink_phase,
+                self.cursor_cfg,
             );
         }
-        Err(error) => {
-            eprintln!("anvil: Caldera session preparation skipped: {error}");
+
+        // Tab bar.
+        if self.tabs.bar_visible() {
+            draw_tab_bar(&mut self.raster, painter, metrics, &self.theme, &self.tabs);
+        }
+
+        // Search bar.
+        if self.search_open {
+            let total_rows = (((dh.saturating_sub(2 * GRID_PAD)) as f64 / ch) as usize).max(1);
+            draw_search_bar(
+                &mut self.raster,
+                painter,
+                metrics,
+                &self.theme,
+                &self.search,
+                total_rows - 1,
+            );
+        }
+
+        // HUD / agent panel.
+        if self.hud_visible {
+            let total_rows = (((dh.saturating_sub(2 * GRID_PAD)) as f64 / ch) as usize).max(1);
+            let total_cols = (((dw.saturating_sub(2 * GRID_PAD)) as f64 / cw) as usize).max(1);
+            let top_offset = self.top_bar_rows();
+            draw_agent_panel(
+                &mut self.raster,
+                painter,
+                metrics,
+                &self.theme,
+                &self.agent_snap,
+                &self.local_ctx,
+                &Placement::Floating {
+                    total_cols,
+                    total_rows,
+                    top_offset,
+                },
+                false,
+            );
+        }
+
+        // File tree.
+        if self.tree_visible {
+            let total_rows = (((dh.saturating_sub(2 * GRID_PAD)) as f64 / ch) as usize).max(1);
+            let top_bar = self.top_bar_rows();
+            draw_filetree(
+                &mut self.raster,
+                painter,
+                metrics,
+                &self.theme,
+                &self.tree,
+                total_rows,
+                top_bar,
+            );
+        }
+
+        // Cheatsheet overlay.
+        if self.cheatsheet_visible {
+            let total_rows = (((dh.saturating_sub(2 * GRID_PAD)) as f64 / ch) as usize).max(1);
+            let total_cols = (((dw.saturating_sub(2 * GRID_PAD)) as f64 / cw) as usize).max(1);
+            draw_cheatsheet(
+                &mut self.raster,
+                painter,
+                metrics,
+                &self.theme,
+                total_cols,
+                total_rows,
+            );
+        }
+
+        // Present.
+        if let Some(r) = &mut self.renderer {
+            let sync = present_mode(false) == PresentMode::Sync;
+            r.present(self.raster.bytes(), sync);
+        }
+    }
+
+    // ── Palette helpers ──────────────────────────────────────────────────────
+
+    fn send_palette_show(&self, webview: &Webview) {
+        let cmds: Vec<BridgeCmd> = CATALOG
+            .iter()
+            .map(|e| BridgeCmd {
+                id: e.id.to_string(),
+                title: e.title.to_string(),
+                subtitle: e.subtitle.map(|s| s.to_string()),
+            })
+            .collect();
+        let theme_tokens = ThemeTokens {
+            background: format_hex(self.theme.background),
+            foreground: format_hex(self.theme.foreground),
+            accent: format_hex(self.theme.accent),
+        };
+        let outbound = Outbound::Show {
+            commands: cmds,
+            theme: theme_tokens,
+        };
+        if let Ok(json) = bridge_encode(&outbound) {
+            webview.eval_js(&format!("window.anvil.receive({json});"));
+        }
+    }
+
+    fn dismiss_palette(&mut self, webview: &Webview) {
+        self.palette.dismiss();
+        if let Ok(json) = bridge_encode(&Outbound::Hide) {
+            webview.eval_js(&format!("window.anvil.receive({json});"));
+        }
+        webview.hide();
+    }
+
+    fn handle_palette_action(&mut self, action: Action, webview: &Webview) {
+        match action {
+            Action::ThemeDark => {
+                self.theme = resolve_theme("mineral-dark", &anvil_theme::ThemeOverrides::default());
+                if let Some(r) = &mut self.renderer {
+                    r.set_clear_color(self.theme.background);
+                }
+                self.dirty = true;
+            }
+            Action::ThemeLight => {
+                self.theme =
+                    resolve_theme("mineral-light", &anvil_theme::ThemeOverrides::default());
+                if let Some(r) = &mut self.renderer {
+                    r.set_clear_color(self.theme.background);
+                }
+                self.dirty = true;
+            }
+            Action::ConfigReload => {
+                if let Some(ref w) = self.watcher {
+                    let cfg = anvil_config::load(&w.path);
+                    self.apply_config(cfg);
+                }
+            }
+            Action::ClearScreen => {
+                if let Some(tab) = self.tabs.current_mut() {
+                    let id = tab.focused_id();
+                    if let Some(pane) = tab.registry.get_mut(id) {
+                        pane.terminal.feed(b"\x1b[H\x1b[2J");
+                    }
+                }
+                self.dirty = true;
+            }
+            Action::ScrollTop => {
+                let bounce = self.bounce_impulse();
+                if let Some(tab) = self.tabs.current_mut() {
+                    let id = tab.focused_id();
+                    if let Some(pane) = tab.registry.get_mut(id) {
+                        let len = pane.terminal.scrollback_len() as isize;
+                        pane.terminal.scroll_viewport(len);
+                        pane.scroll_pos = pane.terminal.viewport_offset() as f32;
+                        pane.overscroll_target = bounce;
+                    }
+                }
+                self.dirty = true;
+            }
+            Action::ScrollBottom => {
+                let bounce = self.bounce_impulse();
+                if let Some(tab) = self.tabs.current_mut() {
+                    let id = tab.focused_id();
+                    if let Some(pane) = tab.registry.get_mut(id) {
+                        pane.terminal.scroll_to_bottom();
+                        pane.scroll_pos = 0.0;
+                        pane.overscroll_target = -bounce;
+                    }
+                }
+                self.dirty = true;
+            }
+            Action::AppQuit => {
+                terminate_app();
+                return;
+            }
+            Action::HudToggle => {
+                self.hud_visible = !self.hud_visible;
+                self.dirty = true;
+            }
+            Action::TreeToggle => self.toggle_tree(),
+            Action::CheatsheetShow => {
+                self.cheatsheet_visible = true;
+                self.dirty = true;
+            }
+        }
+        self.dismiss_palette(webview);
+    }
+
+    // ── Chord matching ───────────────────────────────────────────────────────
+
+    fn chord_matches(chord: Chord, mods: Modifiers, ch: char) -> bool {
+        let lo = ascii_lower(ch);
+        chord.cmd == mods.command
+            && chord.shift == mods.shift
+            && chord.ctrl == mods.control
+            && chord.opt == mods.option
+            && chord.key == lo
+    }
+
+    /// Handle ⌘ keybindings. Returns true if consumed.
+    fn handle_cmd_chord(&mut self, mods: Modifiers, ch: char, webview: &Webview) -> bool {
+        let kb = self.keybindings; // Copy
+
+        macro_rules! test {
+            ($field:expr, $body:block) => {
+                if let Some(chord) = $field {
+                    if Self::chord_matches(chord, mods, ch) $body
+                }
+            };
+        }
+
+        test!(kb.new_tab, {
+            self.add_tab();
+            return true;
+        });
+        test!(kb.close_pane, {
+            self.close_focused_pane();
+            return true;
+        });
+        test!(kb.close_tab, {
+            self.close_search();
+            self.close_active_tab();
+            return true;
+        });
+        test!(kb.focus_left, {
+            self.focus_neighbor(NavDir::Left);
+            return true;
+        });
+        test!(kb.focus_right, {
+            self.focus_neighbor(NavDir::Right);
+            return true;
+        });
+        test!(kb.focus_up, {
+            self.focus_neighbor(NavDir::Up);
+            return true;
+        });
+        test!(kb.focus_down, {
+            self.focus_neighbor(NavDir::Down);
+            return true;
+        });
+        test!(kb.split_right, {
+            self.split_focused_pane(SplitDir::Horizontal);
+            return true;
+        });
+        test!(kb.split_down, {
+            self.split_focused_pane(SplitDir::Vertical);
+            return true;
+        });
+        test!(kb.next_tab, {
+            self.close_search();
+            self.tabs.next();
+            self.snap_anim();
+            self.dirty = true;
+            return true;
+        });
+        test!(kb.prev_tab, {
+            self.close_search();
+            self.tabs.prev();
+            self.snap_anim();
+            self.dirty = true;
+            return true;
+        });
+        for (i, maybe) in kb.jump.iter().enumerate() {
+            if let Some(chord) = maybe {
+                if Self::chord_matches(*chord, mods, ch) {
+                    self.close_search();
+                    self.tabs.switch_to(i);
+                    self.snap_anim();
+                    self.dirty = true;
+                    return true;
+                }
+            }
+        }
+        test!(kb.search_open, {
+            self.open_search();
+            return true;
+        });
+        test!(kb.search_next, {
+            if !self.search_open {
+                self.open_search();
+            }
+            self.search.next();
+            self.scroll_to_current_match();
+            self.dirty = true;
+            return true;
+        });
+        test!(kb.search_prev, {
+            if !self.search_open {
+                self.open_search();
+            }
+            self.search.prev();
+            self.scroll_to_current_match();
+            self.dirty = true;
+            return true;
+        });
+        test!(kb.hud_toggle, {
+            self.hud_visible = !self.hud_visible;
+            self.dirty = true;
+            return true;
+        });
+        test!(kb.tree_toggle, {
+            self.toggle_tree();
+            return true;
+        });
+        test!(kb.cheatsheet, {
+            self.cheatsheet_visible = !self.cheatsheet_visible;
+            self.dirty = true;
+            return true;
+        });
+
+        // ⌘K — command palette.
+        if ascii_lower(ch) == 'k' && !mods.shift && !mods.control && !mods.option {
+            if self.palette.summon() {
+                self.send_palette_show(webview);
+                webview.show();
+            }
+            return true;
+        }
+
+        // ⌘C — copy selection (TODO: clipboard write via NSPasteboard).
+        if ascii_lower(ch) == 'c' && !mods.shift && !mods.control && !mods.option {
+            // stub — selection data is tracked; pasteboard write is P11.
+            return false;
+        }
+
+        false
+    }
+}
+
+// ── AppShell — holds App + Webview + Font + Painter, impls AppHandler ────────
+
+/// Holds all state that requires the main thread or has lifetimes that depend
+/// on the window (Webview, Font, Painter).
+///
+/// `app.font` is heap-allocated (`Box<Font>`) so its address is stable even as
+/// `AppShell` moves.  `painter` holds a `&'static Font` produced via an unsafe
+/// lifetime extension; this is sound because `painter` is dropped before
+/// `app.font` (struct fields drop in declaration order, and `painter` is
+/// declared after `app`).
+pub struct AppShell {
+    app: App,
+    webview: Webview,
+    painter: anvil_platform::font::CoreTextPainter<'static>,
+}
+
+impl AppShell {
+    fn new(app: App, webview: Webview) -> Self {
+        // SAFETY: `app.font` is a `Box<Font>` — the heap allocation is stable.
+        // `painter` borrows the Font inside the box; the box (and its allocation)
+        // lives inside `app` which lives inside `AppShell`.  Drop order is
+        // `painter` first (declared last), then `webview`, then `app` (with the
+        // Box).  So the allocation outlives `painter`.
+        let painter = unsafe {
+            let font_ref: &'static Font = &*(app.font.as_ref() as *const Font);
+            anvil_platform::font::CoreTextPainter::new(font_ref)
+        };
+        Self {
+            app,
+            webview,
+            painter,
         }
     }
 }
 
-fn is_caldera_enabled_repo(cwd: &Path) -> bool {
-    cwd.join(".caldera/project.json").exists()
+impl AppHandler for AppShell {
+    fn tick(&mut self) {
+        let app = &mut self.app;
+
+        // Config watcher poll.
+        if let Some(ref mut w) = app.watcher {
+            if let Some(new_cfg) = w.poll() {
+                app.apply_config(new_cfg);
+            }
+        }
+
+        // System dark-mode check (when theme = "system").
+        if app.config.theme == "system" {
+            let now_dark = system_is_dark();
+            if now_dark != app.system_dark {
+                app.system_dark = now_dark;
+                let effective = effective_theme_name(now_dark, &app.config.theme);
+                app.theme = resolve_theme(effective, &app.config.theme_overrides);
+                if let Some(r) = &mut app.renderer {
+                    r.set_clear_color(app.theme.background);
+                }
+                app.dirty = true;
+            }
+        }
+
+        // Drain every pane's PTY output.
+        let mut any_dead = false;
+        let mut feed_buf = vec![0u8; 64 * 1024];
+        let tab_count = app.tabs.tabs.len();
+
+        for ti in 0..tab_count {
+            // Collect pane ids for this tab by walking the layout tree.
+            let pane_ids = all_pane_ids_in_tree(&app.tabs.tabs[ti]);
+            for pid in pane_ids {
+                let result = app.ptys.get(&pid).map(|pty| pty.read(&mut feed_buf));
+                match result {
+                    Some(Ok(n)) if n > 0 => {
+                        let bytes = feed_buf[..n].to_vec();
+                        if let Some(pane) = app.tabs.tabs[ti].registry.get_mut(pid) {
+                            pane.terminal.feed(&bytes);
+                        }
+                        let active = app.tabs.active;
+                        if ti == active {
+                            let focused = app.tabs.tabs[ti].focused_id();
+                            if pid == focused {
+                                app.dirty = true;
+                                if app.search_open {
+                                    if let Some(pane) = app.tabs.tabs[ti].registry.get_mut(pid) {
+                                        app.search.rescan(&pane.terminal);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Some(Ok(_)) => {}
+                    Some(Err(_)) | None => {
+                        app.ptys.remove(&pid);
+                        any_dead = true;
+                    }
+                }
+            }
+        }
+
+        // Blink.
+        let (effective_blink, app_blink_cfg) = {
+            let tab = app.tabs.current();
+            let pane = tab.and_then(|t| t.registry.get(t.focused_id()));
+            (
+                pane.and_then(|p| p.terminal.app_cursor_blink),
+                app.cursor_cfg.blink,
+            )
+        };
+        let blink_on = effective_blink.unwrap_or(app_blink_cfg);
+        if blink_on && app.focused {
+            app.blink_phase += 1.0 / 64.0;
+            if app.blink_phase >= 1.0 {
+                app.blink_phase -= 1.0;
+            }
+            let new_op = anvil_render::draw::cursor_opacity(app.blink_phase);
+            if new_op != app.last_blink_opacity {
+                app.last_blink_opacity = new_op;
+                app.dirty = true;
+            }
+        } else if app.blink_phase != 0.0 {
+            app.blink_phase = 0.0;
+            app.last_blink_opacity = -1.0;
+            app.dirty = true;
+        }
+
+        // Cursor glide + rubber-band overscroll (focused pane only).
+        let approach = |cur: f32, target: f32, rate: f32| -> f32 { cur + (target - cur) * rate };
+        if let Some(tab) = app.tabs.current_mut() {
+            let id = tab.focused_id();
+            if let Some(pane) = tab.registry.get_mut(id) {
+                let cur = pane.terminal.cursor();
+                let tx = cur.x as f32;
+                let ty = cur.y as f32;
+                if (tx - pane.cursor_ax).abs() > 0.002 || (ty - pane.cursor_ay).abs() > 0.002 {
+                    pane.cursor_ax = approach(pane.cursor_ax, tx, 0.30);
+                    pane.cursor_ay = approach(pane.cursor_ay, ty, 0.30);
+                    if (tx - pane.cursor_ax).abs() <= 0.002 {
+                        pane.cursor_ax = tx;
+                    }
+                    if (ty - pane.cursor_ay).abs() <= 0.002 {
+                        pane.cursor_ay = ty;
+                    }
+                    app.dirty = true;
+                }
+                if pane.overscroll != 0.0 || pane.overscroll_target != 0.0 {
+                    pane.overscroll_target = approach(pane.overscroll_target, 0.0, 0.32);
+                    pane.overscroll = approach(pane.overscroll, pane.overscroll_target, 0.55);
+                    if pane.overscroll_target.abs() < 0.5 {
+                        pane.overscroll_target = 0.0;
+                    }
+                    if pane.overscroll.abs() < 0.5 && pane.overscroll_target == 0.0 {
+                        pane.overscroll = 0.0;
+                    }
+                    app.dirty = true;
+                }
+            }
+        }
+
+        // HUD refresh throttle.
+        if app.hud_visible {
+            app.hud_tick += 1;
+            if app.hud_tick >= HUD_REFRESH_TICKS {
+                app.hud_tick = 0;
+                app.refresh_hud();
+            }
+        }
+
+        if app.dirty {
+            app.render_frame(&mut self.painter);
+            app.dirty = false;
+        }
+
+        if any_dead {
+            app.close_dead_panes();
+        }
+    }
+
+    fn key_down(&mut self, event: KeyEvent) {
+        let mods = event.mods;
+
+        // ⌘ key combos.
+        if mods.command {
+            match event.key {
+                KeyInput::Up if !mods.shift && !mods.control && !mods.option => {
+                    self.app.jump_to_prev_prompt();
+                    return;
+                }
+                KeyInput::Down if !mods.shift && !mods.control && !mods.option => {
+                    self.app.jump_to_next_prompt();
+                    return;
+                }
+                KeyInput::Char(ch) if self.app.handle_cmd_chord(mods, ch, &self.webview) => {
+                    return;
+                }
+                _ => {}
+            }
+            return; // other ⌘ combos pass to system
+        }
+
+        // Cheatsheet: any key closes it.
+        if self.app.cheatsheet_visible {
+            self.app.cheatsheet_visible = false;
+            self.app.dirty = true;
+            return;
+        }
+
+        // Search bar handling.
+        if self.app.search_open {
+            match event.key {
+                KeyInput::Escape => self.app.close_search(),
+                KeyInput::Enter => {
+                    self.app.search.next();
+                    self.app.scroll_to_current_match();
+                    self.app.dirty = true;
+                }
+                KeyInput::Backspace => {
+                    let q = self.app.search.query().to_string();
+                    // Drop the last UTF-8 codepoint.
+                    let mut qbytes = q.into_bytes();
+                    while !qbytes.is_empty() && (qbytes[qbytes.len() - 1] & 0xC0) == 0x80 {
+                        qbytes.pop();
+                    }
+                    qbytes.pop();
+                    let new_q = String::from_utf8_lossy(&qbytes).into_owned();
+                    // We need a terminal ref to set_query; borrow carefully.
+                    if let Some(tab) = self.app.tabs.current_mut() {
+                        let id = tab.focused_id();
+                        if let Some(pane) = tab.registry.get_mut(id) {
+                            self.app.search.set_query(&pane.terminal, &new_q);
+                        }
+                    }
+                    self.app.scroll_to_current_match();
+                    self.app.dirty = true;
+                }
+                KeyInput::Char(ch) => {
+                    let q = self.app.search.query().to_string();
+                    let new_q = format!("{q}{ch}");
+                    if let Some(tab) = self.app.tabs.current_mut() {
+                        let id = tab.focused_id();
+                        if let Some(pane) = tab.registry.get_mut(id) {
+                            self.app.search.set_query(&pane.terminal, &new_q);
+                        }
+                    }
+                    self.app.scroll_to_current_match();
+                    self.app.dirty = true;
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // Normal key → encode and write to PTY.
+        let app_cursor = self
+            .app
+            .tabs
+            .current()
+            .and_then(|t| t.registry.get(t.focused_id()))
+            .map(|p| p.terminal.modes.app_cursor_keys)
+            .unwrap_or(false);
+
+        if let Some(k) = platform_key_to_zig_key(event.key) {
+            let zig_mods = platform_mods_to_zig_mods(mods);
+            let mut buf = [0u8; 16];
+            let bytes = encode_key(k, zig_mods, app_cursor, &mut buf);
+            self.app.write_to_focused_pty(bytes);
+        }
+
+        // Scroll to bottom and clear selection on key input.
+        if let Some(tab) = self.app.tabs.current_mut() {
+            let id = tab.focused_id();
+            if let Some(pane) = tab.registry.get_mut(id) {
+                pane.terminal.scroll_to_bottom();
+                pane.scroll_pos = 0.0;
+                pane.selection.clear();
+            }
+        }
+        self.app.dirty = true;
+    }
+
+    fn perform_key_equivalent(&mut self, event: KeyEvent) -> bool {
+        // Ctrl+Tab / Ctrl+Shift+Tab for tab cycling.
+        if event.mods.control && !event.mods.command && event.key == KeyInput::Tab {
+            self.app.close_search();
+            if event.mods.shift {
+                self.app.tabs.prev();
+            } else {
+                self.app.tabs.next();
+            }
+            self.app.snap_anim();
+            self.app.dirty = true;
+            return true;
+        }
+        false
+    }
+
+    fn mouse_down(&mut self, loc: MouseLocation, mods: Modifiers, view_bounds: (f64, f64)) {
+        let app = &mut self.app;
+        let (view_w, view_h) = view_bounds;
+
+        let ch_pt = app.font.metrics.cell_h / app.window_scale;
+
+        // Tab bar click (top row of view, y near top = large value in AppKit).
+        if app.tabs.bar_visible() && loc.y >= view_h - ch_pt {
+            let n = app.tabs.count();
+            if n > 0 {
+                let frac = (loc.x / view_w).clamp(0.0, 0.999);
+                let idx = (frac * n as f64) as usize;
+                app.tabs.switch_to(idx);
+                app.snap_anim();
+                app.dirty = true;
+            }
+            return;
+        }
+
+        // File tree click.
+        if app.tree_visible {
+            let cw_pt = app.font.metrics.cell_w / app.window_scale;
+            let pad_pt = GRID_PAD as f64 / app.window_scale;
+            let panel_w_pt = TREE_COLS as f64 * cw_pt;
+            if loc.x >= pad_pt && loc.x < pad_pt + panel_w_pt {
+                let top_bar_h_pt = app.top_bar_rows() as f64 * ch_pt;
+                let tree_top_pt = top_bar_h_pt + pad_pt;
+                let click_y_from_top = view_h - loc.y;
+                if click_y_from_top >= tree_top_pt {
+                    let row_in_tree = ((click_y_from_top - tree_top_pt) / ch_pt) as usize;
+                    if row_in_tree < app.tree.entries.len() {
+                        let is_dir = app.tree.entries[row_in_tree].is_dir;
+                        let path = app.tree.entries[row_in_tree]
+                            .path
+                            .to_string_lossy()
+                            .into_owned();
+                        app.tree.selected_idx = Some(row_in_tree);
+                        if is_dir {
+                            app.tree.toggle(row_in_tree);
+                        } else {
+                            app.pty_write_open_file(&path);
+                        }
+                        app.dirty = true;
+                    }
+                }
+                return;
+            }
+        }
+
+        // Click-to-focus.
+        {
+            let (rx, ry) = app.view_pt_to_raster_px(loc);
+            let ir = app.inner_rect();
+            let hit_id = app
+                .tabs
+                .current()
+                .and_then(|tab| tab.tree.hit_test(ir, DIVIDER_PX, rx, ry));
+            if let Some(hit_id) = hit_id {
+                if Some(hit_id) != app.tabs.current().map(|t| t.focused_id()) {
+                    if let Some(tab) = app.tabs.current_mut() {
+                        tab.tree.focused = hit_id;
+                    }
+                    app.snap_anim();
+                    app.dirty = true;
+                }
+            }
+        }
+
+        // Mouse reporting.
+        {
+            let (btn_mode, x10_mode) = app
+                .tabs
+                .current()
+                .and_then(|t| t.registry.get(t.focused_id()))
+                .map(|p| (p.terminal.modes.mouse_button, p.terminal.modes.mouse_x10))
+                .unwrap_or((false, false));
+            if btn_mode || x10_mode {
+                if let Some((row, col)) = app.event_cell(loc, false) {
+                    app.write_mouse_event(0, col, row, true);
+                }
+                return;
+            }
+        }
+
+        // ⌘-click: open file/url under cursor.
+        if mods.command {
+            if let Some((row, col)) = app.event_cell(loc, false) {
+                let (content_row, cells): (usize, Vec<anvil_term::Cell>) = {
+                    let tab = app.tabs.current_mut().unwrap();
+                    let id = tab.focused_id();
+                    let pane = tab.registry.get_mut(id).unwrap();
+                    let cr = pane.terminal.content_row_of_viewport(row);
+                    (cr, pane.terminal.line(cr).to_vec())
+                };
+                let _ = content_row;
+                let mut line_buf = String::new();
+                let mut col_to_byte = Vec::with_capacity(cells.len());
+                for cell in &cells {
+                    col_to_byte.push(line_buf.len());
+                    let ch = cell.cp;
+                    line_buf.push(ch);
+                }
+                let byte_col = col_to_byte.get(col).copied().unwrap_or(line_buf.len());
+                let cwd = app.current_cwd().unwrap_or_default();
+                let raw_tok = interact::token_at_col(&line_buf, byte_col);
+                let tok = interact::strip_line_suffix(raw_tok);
+                match interact::classify(tok, &cwd) {
+                    interact::Kind::Url => app.pty_write_open_url(tok),
+                    interact::Kind::Path => app.pty_write_open_file(tok),
+                    interact::Kind::None => {}
+                }
+            }
+            return;
+        }
+
+        // Begin selection.
+        if let Some((row, col)) = app.event_cell(loc, false) {
+            if let Some(tab) = app.tabs.current_mut() {
+                let id = tab.focused_id();
+                if let Some(pane) = tab.registry.get_mut(id) {
+                    let cr = pane.terminal.content_row_of_viewport(row);
+                    use anvil_workspace::selection::{Point, Selection};
+                    pane.selection = Selection {
+                        active: true,
+                        anchor: Point { row: cr, col },
+                        head: Point { row: cr, col },
+                    };
+                }
+            }
+        } else {
+            if let Some(tab) = app.tabs.current_mut() {
+                let id = tab.focused_id();
+                if let Some(pane) = tab.registry.get_mut(id) {
+                    pane.selection.clear();
+                }
+            }
+        }
+        app.dirty = true;
+    }
+
+    fn mouse_up(&mut self, loc: MouseLocation, _mods: Modifiers) {
+        let app = &mut self.app;
+
+        // Mouse reporting: release.
+        let (btn_mode, sgr_mode) = app
+            .tabs
+            .current()
+            .and_then(|t| t.registry.get(t.focused_id()))
+            .map(|p| (p.terminal.modes.mouse_button, p.terminal.modes.mouse_sgr))
+            .unwrap_or((false, false));
+
+        if btn_mode && sgr_mode {
+            if let Some((row, col)) = app.event_cell(loc, false) {
+                app.write_mouse_event(0, col, row, false);
+            }
+            app.dirty = true;
+            return;
+        }
+        if btn_mode {
+            app.dirty = true;
+            return;
+        }
+
+        // Clear zero-length selection.
+        let should_clear = app
+            .tabs
+            .current()
+            .and_then(|t| t.registry.get(t.focused_id()))
+            .map(|p| {
+                p.selection.active
+                    && p.selection.anchor.row == p.selection.head.row
+                    && p.selection.anchor.col == p.selection.head.col
+            })
+            .unwrap_or(false);
+        if should_clear {
+            if let Some(tab) = app.tabs.current_mut() {
+                let id = tab.focused_id();
+                if let Some(pane) = tab.registry.get_mut(id) {
+                    pane.selection.clear();
+                }
+            }
+        }
+        app.dirty = true;
+    }
+
+    fn mouse_dragged(&mut self, loc: MouseLocation) {
+        let app = &mut self.app;
+        let btn_mode = app
+            .tabs
+            .current()
+            .and_then(|t| t.registry.get(t.focused_id()))
+            .map(|p| p.terminal.modes.mouse_button)
+            .unwrap_or(false);
+        if btn_mode {
+            if let Some((row, col)) = app.event_cell(loc, false) {
+                app.write_mouse_event(32, col, row, true); // left drag (button 0 + motion flag 32)
+            }
+            return;
+        }
+        // Extend selection.
+        let active = app
+            .tabs
+            .current()
+            .and_then(|t| t.registry.get(t.focused_id()))
+            .map(|p| p.selection.active)
+            .unwrap_or(false);
+        if !active {
+            return;
+        }
+        if let Some((row, col)) = app.event_cell(loc, true) {
+            if let Some(tab) = app.tabs.current_mut() {
+                let id = tab.focused_id();
+                if let Some(pane) = tab.registry.get_mut(id) {
+                    let cr = pane.terminal.content_row_of_viewport(row);
+                    pane.selection.head = anvil_workspace::selection::Point { row: cr, col };
+                }
+            }
+        }
+        app.dirty = true;
+    }
+
+    fn scroll(&mut self, dy: f64, loc: MouseLocation) {
+        let app = &mut self.app;
+        if dy == 0.0 {
+            return;
+        }
+
+        // Mouse reporting scroll.
+        let (btn_mode, x10_mode) = app
+            .tabs
+            .current()
+            .and_then(|t| t.registry.get(t.focused_id()))
+            .map(|p| (p.terminal.modes.mouse_button, p.terminal.modes.mouse_x10))
+            .unwrap_or((false, false));
+        if btn_mode || x10_mode {
+            if let Some((row, col)) = app.event_cell(loc, false) {
+                let btn: u8 = if dy > 0.0 { 64 } else { 65 };
+                app.write_mouse_event(btn, col, row, true);
+            }
+            return;
+        }
+
+        let d = (dy / 8.0) as f32;
+        let ch = app.font.metrics.cell_h as f32;
+        let limit = ch * 1.5;
+
+        if let Some(tab) = app.tabs.current_mut() {
+            let id = tab.focused_id();
+            if let Some(pane) = tab.registry.get_mut(id) {
+                let max_pos = pane.terminal.scrollback_len() as f32;
+                let mut np = pane.scroll_pos + d;
+                if np > max_pos {
+                    let excess = np - max_pos;
+                    let resist = 1.0 - (pane.overscroll_target.abs() / limit).min(1.0);
+                    pane.overscroll_target =
+                        (pane.overscroll_target + excess * ch * 0.30 * resist).clamp(-limit, limit);
+                    np = max_pos;
+                } else if np < 0.0 {
+                    let excess = np;
+                    let resist = 1.0 - (pane.overscroll_target.abs() / limit).min(1.0);
+                    pane.overscroll_target =
+                        (pane.overscroll_target + excess * ch * 0.30 * resist).clamp(-limit, limit);
+                    np = 0.0;
+                }
+                pane.scroll_pos = np;
+                pane.terminal.set_viewport_offset(np.round() as usize);
+            }
+        }
+        app.dirty = true;
+    }
+
+    fn resize(&mut self, width: f64, height: f64, in_live_resize: bool) {
+        self.app.view_width_pt = width;
+        self.app.view_height_pt = height;
+        self.app.resize_surface();
+        if !in_live_resize {
+            self.app.resize_all_tabs();
+        }
+        self.app.render_frame(&mut self.painter);
+    }
+
+    fn live_resize_ended(&mut self) {
+        self.app.resize_all_tabs();
+        self.app.render_frame(&mut self.painter);
+    }
+
+    fn focus_gained(&mut self) {
+        self.app.focused = true;
+    }
+    fn focus_lost(&mut self) {
+        self.app.focused = false;
+    }
+    fn should_terminate(&mut self) -> bool {
+        true
+    }
+
+    fn webview_message(&mut self, json: String) {
+        match bridge_decode(&json) {
+            Ok(Inbound::Ready) => {
+                if self.app.palette.on_ready() {
+                    self.app.send_palette_show(&self.webview);
+                    self.webview.show();
+                }
+            }
+            Ok(Inbound::Dismiss) => {
+                self.app.dismiss_palette(&self.webview);
+            }
+            Ok(Inbound::Invoke(id)) => {
+                if let Some(action) = action_for_id(&id) {
+                    self.app.handle_palette_action(action, &self.webview);
+                } else {
+                    eprintln!("anvil: unknown command id: {id}");
+                }
+            }
+            Err(e) => eprintln!("anvil: webview message decode failed: {e}"),
+        }
+    }
 }
+
+// ── Key conversion ────────────────────────────────────────────────────────────
+
+fn platform_key_to_zig_key(k: KeyInput) -> Option<Key> {
+    Some(match k {
+        KeyInput::Char(ch) => Key::Text(ch),
+        KeyInput::Enter => Key::Enter,
+        KeyInput::Tab => Key::Tab,
+        KeyInput::Backspace => Key::Backspace,
+        KeyInput::Escape => Key::Escape,
+        KeyInput::Left => Key::Left,
+        KeyInput::Right => Key::Right,
+        KeyInput::Up => Key::Up,
+        KeyInput::Down => Key::Down,
+        KeyInput::Home => Key::Home,
+        KeyInput::End => Key::End,
+        KeyInput::PageUp => Key::PageUp,
+        KeyInput::PageDown => Key::PageDown,
+        KeyInput::Delete => Key::Delete,
+        KeyInput::F(n) => match n {
+            1 => Key::F1,
+            2 => Key::F2,
+            3 => Key::F3,
+            4 => Key::F4,
+            5 => Key::F5,
+            6 => Key::F6,
+            7 => Key::F7,
+            8 => Key::F8,
+            9 => Key::F9,
+            10 => Key::F10,
+            11 => Key::F11,
+            12 => Key::F12,
+            _ => return None,
+        },
+    })
+}
+
+fn platform_mods_to_zig_mods(m: Modifiers) -> Mods {
+    Mods {
+        shift: m.shift,
+        control: m.control,
+        option: m.option,
+        command: m.command,
+    }
+}
+
+fn cursor_cfg_from_config(cfg: &Config) -> CursorConfig {
+    use anvil_config::CursorStyle;
+    use anvil_render::draw::CursorStyle as RCursorStyle;
+    CursorConfig {
+        style: match cfg.cursor.style {
+            CursorStyle::Block => RCursorStyle::Block,
+            CursorStyle::Bar => RCursorStyle::Bar,
+            CursorStyle::Underline => RCursorStyle::Underline,
+        },
+        blink: cfg.cursor.blink,
+    }
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+
+fn ascii_lower(ch: char) -> char {
+    if ch.is_ascii_uppercase() {
+        (ch as u8 + 32) as char
+    } else {
+        ch
+    }
+}
+
+fn format_hex(rgb: [u8; 3]) -> String {
+    format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2])
+}
+
+fn effective_theme_name(system_dark: bool, cfg_theme: &str) -> &str {
+    if cfg_theme == "system" {
+        if system_dark {
+            "mineral-dark"
+        } else {
+            "mineral-light"
+        }
+    } else {
+        cfg_theme
+    }
+}
+
+fn system_is_dark() -> bool {
+    use objc2::msg_send;
+    objc2::rc::autoreleasepool(|_pool| {
+        // SAFETY: standard Cocoa singleton + property accessor on the main thread.
+        unsafe {
+            let cls = objc2::runtime::AnyClass::get(c"NSApplication");
+            let cls = match cls {
+                Some(c) => c,
+                None => return true,
+            };
+            let app: *mut objc2::runtime::AnyObject = msg_send![cls, sharedApplication];
+            if app.is_null() {
+                return true;
+            }
+            let appearance: *mut objc2::runtime::AnyObject = msg_send![app, effectiveAppearance];
+            if appearance.is_null() {
+                return true;
+            }
+            let name: *mut objc2::runtime::AnyObject = msg_send![appearance, name];
+            if name.is_null() {
+                return true;
+            }
+            let cstr: *const std::ffi::c_char = msg_send![name, UTF8String];
+            if cstr.is_null() {
+                return true;
+            }
+            let s = std::ffi::CStr::from_ptr(cstr).to_string_lossy();
+            s.contains("Dark")
+        }
+    })
+}
+
+fn terminate_app() {
+    // SAFETY: terminate: on NSApplication singleton, main thread only.
+    unsafe {
+        use objc2::msg_send;
+        let cls = objc2::runtime::AnyClass::get(c"NSApplication");
+        if let Some(cls) = cls {
+            let app: *mut objc2::runtime::AnyObject = msg_send![cls, sharedApplication];
+            if !app.is_null() {
+                let nil: *const std::ffi::c_void = std::ptr::null();
+                let _: () = msg_send![app, terminate: nil];
+            }
+        }
+    }
+}
+
+/// Collect all PaneIds currently in a PaneRegistry by examining which ids have
+/// Walk a PaneTree to collect all leaf PaneIds.
+fn all_pane_ids_in_tree(tab: &Tab) -> Vec<PaneId> {
+    tab.tree
+        .layout(
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 1e6,
+                h: 1e6,
+            },
+            DIVIDER_PX,
+        )
+        .into_iter()
+        .map(|e| e.id)
+        .collect()
+}
+
+// ── main ──────────────────────────────────────────────────────────────────────
+
+fn main() -> Result<()> {
+    // -- Config ---------------------------------------------------------------
+    let cfg_path = anvil_config::resolve_path();
+    let config: Config = match &cfg_path {
+        Some(p) => anvil_config::load(p),
+        None => Config::default(),
+    };
+
+    // -- Shell integration ----------------------------------------------------
+    shell_integration::setup(config.shell_integration);
+
+    // -- Register bundled font ------------------------------------------------
+    register_bundled();
+
+    // -- Main-thread marker ---------------------------------------------------
+    let mtm = MainThreadMarker::new().expect("main() must be called on the main thread");
+
+    // -- Window geometry -------------------------------------------------------
+    let win_w = config.window.width;
+    let win_h = config.window.height;
+
+    // -- Query screen scale factor (before NSWindow exists) -------------------
+    let window_scale: f64 = {
+        use objc2::msg_send;
+        let scale: f64 = unsafe {
+            let cls = objc2::runtime::AnyClass::get(c"NSScreen");
+            match cls {
+                None => 2.0,
+                Some(cls) => {
+                    let screen: *mut objc2::runtime::AnyObject = msg_send![cls, mainScreen];
+                    if screen.is_null() {
+                        2.0
+                    } else {
+                        msg_send![screen, backingScaleFactor]
+                    }
+                }
+            }
+        };
+        if scale < 1.0 { 2.0 } else { scale }
+    };
+
+    let dw = ((win_w * window_scale) as usize).max(1);
+    let dh = ((win_h * window_scale) as usize).max(1);
+
+    // -- Font -----------------------------------------------------------------
+    let font_names: Vec<&str> = vec![
+        "BlexMono Nerd Font Mono",
+        config.font.family.as_str(),
+        "SFMono-Regular",
+        "Menlo",
+    ];
+    let pixel_size = config.font.size * window_scale;
+    let font: Box<Font> = Box::new(
+        Font::init_first_available(&font_names, pixel_size)
+            .or_else(|_| Font::init("Menlo", pixel_size))
+            .expect("at least Menlo must be available as a system font"),
+    );
+
+    // -- Cell geometry --------------------------------------------------------
+    let cw = font.metrics.cell_w as usize;
+    let ch = font.metrics.cell_h as usize;
+    let cols = ((dw.saturating_sub(2 * GRID_PAD)) / cw).max(1);
+    let rows = ((dh.saturating_sub(2 * GRID_PAD)) / ch).max(1);
+
+    // -- Initial tab + PTY ----------------------------------------------------
+    let tab = Tab::new_single_pane(cols, rows, config.scrollback);
+    let first_id = tab.focused_id();
+    let first_pty =
+        Pty::spawn_shell(cols as u16, rows as u16).expect("failed to spawn login shell");
+
+    let mut ptys = HashMap::new();
+    ptys.insert(first_id, first_pty);
+
+    let mut tabs = TabManager::default();
+    tabs.push(tab);
+
+    // -- Git worker -----------------------------------------------------------
+    let (git_tx, git_work_rx) = mpsc::sync_channel::<PathBuf>(1);
+    let (git_result_tx, git_rx) = mpsc::channel::<GitResult>();
+    thread::spawn(move || {
+        for cwd in git_work_rx {
+            let info = git::query(&cwd);
+            let result = match info {
+                Some(i) => GitResult {
+                    state: if i.dirty > 0 {
+                        GitState::Dirty
+                    } else {
+                        GitState::Ok
+                    },
+                    branch: i.branch,
+                    dirty: i.dirty,
+                    ahead: i.ahead,
+                    behind: i.behind,
+                },
+                None => GitResult {
+                    state: GitState::NoRepo,
+                    branch: String::new(),
+                    dirty: 0,
+                    ahead: 0,
+                    behind: 0,
+                },
+            };
+            let _ = git_result_tx.send(result);
+        }
+    });
+
+    // -- Theme ----------------------------------------------------------------
+    let system_dark = system_is_dark();
+    let effective_name = effective_theme_name(system_dark, &config.theme);
+    let theme = resolve_theme(effective_name, &config.theme_overrides);
+    let cursor_cfg = cursor_cfg_from_config(&config);
+    let keybindings = Keybindings::from_config(&config.keybindings);
+
+    // -- Raster ---------------------------------------------------------------
+    let mut raster = Raster::new(dw, dh);
+    raster.pad_x = GRID_PAD as f64;
+    raster.pad_y = GRID_PAD as f64;
+
+    // -- Build App ------------------------------------------------------------
+    let watcher = cfg_path.map(Watcher::new);
+
+    let app = App {
+        tabs,
+        ptys,
+        renderer: None, // filled after the Metal layer is available
+        raster,
+        font, // Box<Font> — heap-stable
+        dirty: true,
+        theme,
+        cursor_cfg,
+        config,
+        watcher,
+        keybindings,
+        system_dark,
+        window_scale,
+        blink_phase: 0.0,
+        last_blink_opacity: -1.0,
+        search: anvil_term::Search::new(),
+        search_open: false,
+        hud_visible: true,
+        hud_tick: 0,
+        cheatsheet_visible: false,
+        tree_visible: false,
+        tree: FileTree::default(),
+        focused: true,
+        agent_snap: AgentSnapshot::default(),
+        local_ctx: LocalContext::default(),
+        git_tx,
+        git_rx,
+        palette: Palette::default(),
+        view_width_pt: win_w,
+        view_height_pt: win_h,
+    };
+
+    // -- AppKitApp: builds the window, view, timer ----------------------------
+    // Two-phase init: AppKitApp needs a handler Rc now; AppShell needs the
+    // window's CAMetalLayer (only available after AppKitApp::new).
+    //
+    // Pattern: ForwardingHandler holds a shared Rc<RefCell<Option<AppShell>>>.
+    // main() fills the Option after building the layer+renderer+webview.
+    // AppKitApp::run() starts — by then the Option is Some(_).
+
+    let shell_slot: Rc<RefCell<Option<AppShell>>> = Rc::new(RefCell::new(None));
+
+    struct ForwardingHandler(Rc<RefCell<Option<AppShell>>>);
+    impl AppHandler for ForwardingHandler {
+        fn tick(&mut self) {
+            if let Some(h) = &mut *self.0.borrow_mut() {
+                h.tick()
+            }
+        }
+        fn key_down(&mut self, e: KeyEvent) {
+            if let Some(h) = &mut *self.0.borrow_mut() {
+                h.key_down(e)
+            }
+        }
+        fn perform_key_equivalent(&mut self, e: KeyEvent) -> bool {
+            self.0
+                .borrow_mut()
+                .as_mut()
+                .is_some_and(|h| h.perform_key_equivalent(e))
+        }
+        fn mouse_down(&mut self, l: MouseLocation, m: Modifiers, b: (f64, f64)) {
+            if let Some(h) = &mut *self.0.borrow_mut() {
+                h.mouse_down(l, m, b)
+            }
+        }
+        fn mouse_up(&mut self, l: MouseLocation, m: Modifiers) {
+            if let Some(h) = &mut *self.0.borrow_mut() {
+                h.mouse_up(l, m)
+            }
+        }
+        fn mouse_dragged(&mut self, l: MouseLocation) {
+            if let Some(h) = &mut *self.0.borrow_mut() {
+                h.mouse_dragged(l)
+            }
+        }
+        fn scroll(&mut self, dy: f64, l: MouseLocation) {
+            if let Some(h) = &mut *self.0.borrow_mut() {
+                h.scroll(dy, l)
+            }
+        }
+        fn resize(&mut self, w: f64, h: f64, live: bool) {
+            if let Some(sh) = &mut *self.0.borrow_mut() {
+                sh.resize(w, h, live)
+            }
+        }
+        fn live_resize_ended(&mut self) {
+            if let Some(h) = &mut *self.0.borrow_mut() {
+                h.live_resize_ended()
+            }
+        }
+        fn focus_gained(&mut self) {
+            if let Some(h) = &mut *self.0.borrow_mut() {
+                h.focus_gained()
+            }
+        }
+        fn focus_lost(&mut self) {
+            if let Some(h) = &mut *self.0.borrow_mut() {
+                h.focus_lost()
+            }
+        }
+        fn should_terminate(&mut self) -> bool {
+            self.0
+                .borrow_mut()
+                .as_mut()
+                .is_none_or(|h| h.should_terminate())
+        }
+        fn webview_message(&mut self, json: String) {
+            if let Some(h) = &mut *self.0.borrow_mut() {
+                h.webview_message(json)
+            }
+        }
+    }
+
+    let fwd_rc: Rc<RefCell<dyn AppHandler>> =
+        Rc::new(RefCell::new(ForwardingHandler(Rc::clone(&shell_slot))));
+
+    let appkit = AppKitApp::new(Rc::clone(&fwd_rc), win_w, win_h, "Anvil");
+
+    // Get the actual backing scale from the real window.
+    let actual_scale = appkit.backing_scale_factor();
+
+    // -- Renderer: init from the view's CAMetalLayer -------------------------
+    let layer = {
+        use objc2::msg_send;
+        use objc2::rc::Retained;
+        use objc2_quartz_core::CAMetalLayer;
+        // SAFETY: AppKitApp::new set a CAMetalLayer on the view.
+        unsafe {
+            let view_ptr: *const objc2_app_kit::NSView = objc2::rc::Retained::as_ptr(&appkit.view);
+            let layer_raw: *mut objc2::runtime::AnyObject = msg_send![view_ptr, layer];
+            assert!(!layer_raw.is_null(), "view's CAMetalLayer must not be null");
+            Retained::retain(layer_raw as *mut CAMetalLayer)
+                .expect("CAMetalLayer retain must succeed")
+        }
+    };
+
+    let actual_dw = ((win_w * actual_scale) as usize).max(1);
+    let actual_dh = ((win_h * actual_scale) as usize).max(1);
+    let mut renderer =
+        Renderer::init(layer, actual_dw, actual_dh).expect("Metal renderer init failed");
+    renderer.set_clear_color(theme.background);
+
+    // -- Webview: needs handler_ptr for script-message callbacks --------------
+    let webview_box: Box<Rc<RefCell<dyn AppHandler>>> = Box::new(Rc::clone(&fwd_rc));
+    let webview_ptr = Box::into_raw(webview_box);
+
+    let webview = Webview::init(WebviewConfig {
+        window: appkit.window.clone(),
+        container: &appkit.view,
+        terminal_view: appkit.view.clone(),
+        width: win_w,
+        height: win_h,
+        html: PALETTE_HTML,
+        handler_ptr: webview_ptr,
+        mtm,
+    });
+
+    // -- Finish building App: install real renderer, correct scale ------------
+    let mut real_app = app;
+    real_app.renderer = Some(renderer);
+    real_app.window_scale = actual_scale;
+    real_app.raster.resize(actual_dw, actual_dh);
+
+    // Build the AppShell and stash it in the shared slot.
+    let mut shell = AppShell::new(real_app, webview);
+    shell.app.snap_anim();
+    shell.app.render_frame(&mut shell.painter);
+    shell.app.dirty = false;
+    *shell_slot.borrow_mut() = Some(shell);
+
+    // -- Caldera session on repo open (best-effort, background) ---------------
+    if let Ok(cwd) = std::env::current_dir() {
+        if cwd.join(".caldera/project.json").exists() {
+            thread::spawn(move || {
+                use anvil_control::AiSessionBroker;
+                let agent =
+                    std::env::var("ANVIL_CALDERA_AGENT").unwrap_or_else(|_| "codex".to_string());
+                let task = std::env::var("ANVIL_CALDERA_TASK").unwrap_or_else(|_| {
+                    "Open this repo in Anvil and prepare safe AI context".to_string()
+                });
+                match AiSessionBroker::localhost().prepare_repo_session(task, agent) {
+                    Ok(s) => eprintln!(
+                        "anvil: prepared Caldera session {} ({})",
+                        s.session_id, s.handoff_path
+                    ),
+                    Err(e) => eprintln!("anvil: Caldera session preparation skipped: {e}"),
+                }
+            });
+        }
+    }
+
+    appkit.run();
+    Ok(())
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn detects_caldera_enabled_repo() {
-        let dir = std::env::temp_dir().join(format!("anvil-caldera-detect-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        assert!(!is_caldera_enabled_repo(&dir));
+    fn ascii_lower_lowercases_ascii_letters() {
+        assert_eq!(ascii_lower('A'), 'a');
+        assert_eq!(ascii_lower('Z'), 'z');
+        assert_eq!(ascii_lower('a'), 'a');
+        assert_eq!(ascii_lower('5'), '5');
+        assert_eq!(ascii_lower('\u{00C0}'), '\u{00C0}');
+    }
 
-        std::fs::create_dir_all(dir.join(".caldera")).unwrap();
-        std::fs::write(dir.join(".caldera/project.json"), "{}").unwrap();
+    #[test]
+    fn format_hex_produces_lowercase_six_digit_hex() {
+        assert_eq!(format_hex([0x1a, 0x1c, 0x24]), "#1a1c24");
+        assert_eq!(format_hex([0xff, 0x00, 0x80]), "#ff0080");
+        assert_eq!(format_hex([0x00, 0x00, 0x00]), "#000000");
+    }
 
-        assert!(is_caldera_enabled_repo(&dir));
-        let _ = std::fs::remove_dir_all(&dir);
+    #[test]
+    fn effective_theme_name_maps_system_to_dark_or_light() {
+        assert_eq!(effective_theme_name(true, "system"), "mineral-dark");
+        assert_eq!(effective_theme_name(false, "system"), "mineral-light");
+        assert_eq!(effective_theme_name(true, "mineral-light"), "mineral-light");
+    }
+
+    #[test]
+    fn platform_key_to_zig_key_covers_all_named_variants() {
+        assert_eq!(platform_key_to_zig_key(KeyInput::Enter), Some(Key::Enter));
+        assert_eq!(platform_key_to_zig_key(KeyInput::Tab), Some(Key::Tab));
+        assert_eq!(
+            platform_key_to_zig_key(KeyInput::Backspace),
+            Some(Key::Backspace)
+        );
+        assert_eq!(platform_key_to_zig_key(KeyInput::Escape), Some(Key::Escape));
+        assert_eq!(platform_key_to_zig_key(KeyInput::Up), Some(Key::Up));
+        assert_eq!(platform_key_to_zig_key(KeyInput::Down), Some(Key::Down));
+        assert_eq!(platform_key_to_zig_key(KeyInput::Left), Some(Key::Left));
+        assert_eq!(platform_key_to_zig_key(KeyInput::Right), Some(Key::Right));
+        assert_eq!(platform_key_to_zig_key(KeyInput::F(1)), Some(Key::F1));
+        assert_eq!(platform_key_to_zig_key(KeyInput::F(12)), Some(Key::F12));
+        assert_eq!(platform_key_to_zig_key(KeyInput::F(99)), None);
+        assert_eq!(
+            platform_key_to_zig_key(KeyInput::Char('a')),
+            Some(Key::Text('a'))
+        );
+    }
+
+    #[test]
+    fn chord_matching_requires_all_modifiers_and_key() {
+        let chord = anvil_config::Chord {
+            cmd: true,
+            shift: false,
+            ctrl: false,
+            opt: false,
+            key: 't',
+        };
+        let mods_match = Modifiers {
+            command: true,
+            shift: false,
+            control: false,
+            option: false,
+        };
+        let mods_no = Modifiers {
+            command: false,
+            shift: false,
+            control: false,
+            option: false,
+        };
+        assert!(App::chord_matches(chord, mods_match, 't'));
+        assert!(!App::chord_matches(chord, mods_no, 't'));
+        assert!(!App::chord_matches(chord, mods_match, 'x'));
+        // ASCII case-insensitive via ascii_lower.
+        assert!(App::chord_matches(chord, mods_match, 'T'));
+    }
+
+    #[test]
+    fn keybindings_parsed_from_defaults() {
+        let cfg = anvil_config::Keybindings::default();
+        let kb = Keybindings::from_config(&cfg);
+        let nt = kb.new_tab.unwrap();
+        assert!(nt.cmd);
+        assert_eq!(nt.key, 't');
     }
 }
