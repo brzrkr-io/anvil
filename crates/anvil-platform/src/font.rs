@@ -43,7 +43,7 @@ const BGRA8_BITMAP_INFO: u32 =
 
 /// The IBM Plex Mono build patched with developer icon glyphs (Nerd Font).
 /// Bundled so the prompt's icons have glyphs regardless of system fonts.
-static BUNDLED_FONT: &[u8] = include_bytes!("../../../src/assets/BlexMonoNerdFontMono-Regular.ttf");
+static BUNDLED_FONT: &[u8] = include_bytes!("../../../assets/BlexMonoNerdFontMono-Regular.ttf");
 
 /// Font loading errors.
 #[derive(Debug, Error)]

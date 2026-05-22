@@ -1,16 +1,13 @@
 # Anvil
 
-A native Zig rebuild of Anvil — a unified control plane for software
-and devops work. See `docs/product/console-rebuild-plan.md` for the full plan.
-
-Status: **M0** — Zig scaffold (native window + Metal clear).
+A native macOS control plane for software and devops work — Rust, Metal, AppKit.
+See `docs/product/console-rebuild-plan.md` for the full plan.
 
 ## Build
 
 ```sh
-zig build run     # build and launch
-zig build test    # run unit tests
+cargo run -p anvil     # build and launch
+cargo test --workspace # run unit tests
 ```
 
-Requires Zig (see `minimum_zig_version` in `build.zig.zon`) and macOS with
-Xcode Command Line Tools.
+Requires Homebrew Rust (`cargo 1.95.0`) and macOS with Xcode Command Line Tools.

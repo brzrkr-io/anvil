@@ -9,9 +9,9 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-const INTEGRATION_ZSH: &str = include_str!("../../../src/shell/anvil-integration.zsh");
-const INTEGRATION_BASH: &str = include_str!("../../../src/shell/anvil-integration.bash");
-const ZDOTDIR_ZSHENV: &str = include_str!("../../../src/shell/zdotdir-zshenv.zsh");
+const INTEGRATION_ZSH: &str = include_str!("../../../shell/anvil-integration.zsh");
+const INTEGRATION_BASH: &str = include_str!("../../../shell/anvil-integration.bash");
+const ZDOTDIR_ZSHENV: &str = include_str!("../../../shell/zdotdir-zshenv.zsh");
 
 /// Absolute path to the `anvil-prompt` binary, resolved next to this
 /// executable. Returns `None` if the executable path cannot be determined.

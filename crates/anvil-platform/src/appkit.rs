@@ -440,7 +440,7 @@ pub struct AppKitApp {
 }
 
 /// Bytes of the bundled application icon (PNG).
-const APP_ICON_PNG: &[u8] = include_bytes!("../../../src/assets/app-icon.png");
+const APP_ICON_PNG: &[u8] = include_bytes!("../../../assets/app-icon.png");
 
 impl AppKitApp {
     /// Bootstrap the AppKit shell.
