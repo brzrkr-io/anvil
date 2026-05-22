@@ -13,6 +13,7 @@ pub const Action = enum {
     scroll_bottom,
     app_quit,
     hud_toggle,
+    tree_toggle,
 };
 
 pub const Entry = struct {
@@ -32,6 +33,7 @@ pub const catalog = [_]Entry{
     .{ .id = "scroll.bottom", .title = "Scroll to Bottom", .action = .scroll_bottom },
     .{ .id = "app.quit", .title = "Quit Anvil", .action = .app_quit },
     .{ .id = "hud.toggle", .title = "Toggle HUD", .subtitle = "Show or hide the developer context panel", .action = .hud_toggle },
+    .{ .id = "tree.toggle", .title = "Toggle File Tree", .subtitle = "Show or hide the file explorer panel", .action = .tree_toggle },
 };
 
 /// Look up the action for a command id, or null if unknown.

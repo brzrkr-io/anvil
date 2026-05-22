@@ -18,6 +18,7 @@ pub const Raster = struct {
     pad_x: f64 = 0, // inset margin in device pixels, applied by cellRect
     pad_y: f64 = 0,
     y_shift_px: f64 = 0, // vertical pixel offset added to every cell (smooth scroll)
+    x_offset: f64 = 0, // horizontal pixel offset added to every cell (panel shift)
 
     pub fn init(alloc: std.mem.Allocator, width: usize, height: usize) !Raster {
         const space = capi.CGColorSpaceCreateDeviceRGB() orelse return error.ColorSpaceFailed;
@@ -157,7 +158,7 @@ pub const Raster = struct {
         const ch = font.metrics.cell_h;
         return .{
             .origin = .{
-                .x = self.pad_x + col * cw,
+                .x = self.pad_x + col * cw + self.x_offset,
                 .y = @as(f64, @floatFromInt(self.height)) - self.pad_y - (row + 1.0) * ch + self.y_shift_px,
             },
             .size = .{ .width = cw, .height = ch },

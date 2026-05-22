@@ -27,6 +27,8 @@ const palette_mod = @import("app/palette.zig");
 const bridge = @import("ipc/bridge.zig");
 const selection_mod = @import("app/selection.zig");
 const Selection = selection_mod.Selection;
+const filetree_mod = @import("app/filetree.zig");
+const filetree_render = @import("render/filetree.zig");
 
 const CGPoint = extern struct { x: f64, y: f64 };
 const CGSize = extern struct { width: f64, height: f64 };
@@ -116,7 +118,10 @@ const App = struct {
     keys_search_next: ?cfg_mod.Chord = null,
     keys_search_prev: ?cfg_mod.Chord = null,
     keys_hud_toggle: ?cfg_mod.Chord = null,
+    keys_tree_toggle: ?cfg_mod.Chord = null,
     search: Search,
+    tree_visible: bool = false,
+    tree: filetree_mod.FileTree = .{},
     search_open: bool = false,
     hud_visible: bool = true,
     hud: hud_mod.Hud = .{},
@@ -203,6 +208,7 @@ fn loadKeybindings(kb: cfg_mod.Keybindings) void {
     g.keys_search_next = cfg_mod.parseChord(kb.search_next);
     g.keys_search_prev = cfg_mod.parseChord(kb.search_prev);
     g.keys_hud_toggle = cfg_mod.parseChord(kb.hud_toggle);
+    g.keys_tree_toggle = cfg_mod.parseChord(kb.tree_toggle);
 }
 
 // --- command palette -----------------------------------------------------
@@ -295,6 +301,7 @@ fn runAction(action: palette_mod.Action) void {
             g.hud_visible = !g.hud_visible;
             g.dirty = true;
         },
+        .tree_toggle => toggleTree(),
     }
 }
 
@@ -443,7 +450,8 @@ fn resizeAllTabs() void {
     const dh: usize = @intFromFloat(@max(b.size.height * g.scale, 1));
     const cw: usize = @intFromFloat(g.font.metrics.cell_w);
     const ch: usize = @intFromFloat(g.font.metrics.cell_h);
-    const cols = @max((dw -| 2 * grid_pad) / cw, 1);
+    const tree_px = if (g.tree_visible) filetree_render.tree_cols * cw else 0;
+    const cols = @max((dw -| 2 * grid_pad -| tree_px) / cw, 1);
     const total_rows = @max((dh -| 2 * grid_pad) / ch, 1);
     const rows = @max(total_rows -| topBarRows() -| bottomBarRows(), 1);
 
@@ -624,7 +632,22 @@ fn handleTabKey(mods: keys.Mods, cp: u21) bool {
         g.dirty = true;
         return true;
     };
+    if (g.keys_tree_toggle) |chd| if (chordMatches(chd, mods, cp)) {
+        toggleTree();
+        return true;
+    };
     return false;
+}
+
+/// Toggle the file-tree panel: flip visibility, re-root tree when opening,
+/// reflow the terminal grid, and redraw.
+fn toggleTree() void {
+    g.tree_visible = !g.tree_visible;
+    if (g.tree_visible) {
+        if (currentCwd()) |cwd| g.tree.setRoot(cwd);
+    }
+    resizeAllTabs();
+    g.dirty = true;
 }
 
 /// Scroll the active tab so the current search match is visible.
@@ -817,7 +840,12 @@ fn eventCell(event: objc.Object, clamp: bool) ?struct { row: usize, col: usize }
     const pad: f64 = @floatFromInt(grid_pad);
     const top_bar_px: f64 = @floatFromInt(topBarRows());
     const grid_top = pad + top_bar_px * ch;
-    const grid_left = pad;
+    // When the tree panel is visible the terminal grid is shifted right.
+    const tree_offset_px = if (g.tree_visible)
+        @as(f64, @floatFromInt(filetree_render.tree_cols)) * cw
+    else
+        @as(f64, 0);
+    const grid_left = pad + tree_offset_px;
 
     const rel_y = px_y - grid_top;
     const rel_x = px_x - grid_left;
@@ -854,6 +882,38 @@ fn onMouseDown(event: objc.Object) void {
             snapAnim();
             g.dirty = true;
             return;
+        }
+    }
+
+    // Check if the click is inside the tree panel.
+    if (g.tree_visible) {
+        const cw_pt = g.font.metrics.cell_w / g.scale;
+        const pad_pt = @as(f64, @floatFromInt(grid_pad)) / g.scale;
+        const panel_w_pt = @as(f64, @floatFromInt(filetree_render.tree_cols)) * cw_pt;
+        // AppKit view coordinates: x from left, y from bottom.
+        if (view_pt.x >= pad_pt and view_pt.x < pad_pt + panel_w_pt) {
+            // Map click y to a tree entry index.
+            const ch_pt = g.font.metrics.cell_h / g.scale;
+            const top_bar_h_pt = @as(f64, @floatFromInt(topBarRows())) * ch_pt;
+            // View y is 0 at bottom; tree starts at top (below tab bar).
+            const tree_top_pt = top_bar_h_pt + pad_pt;
+            const click_y_from_top = b.size.height - view_pt.y;
+            if (click_y_from_top >= tree_top_pt) {
+                const row_in_tree: usize = @intFromFloat((click_y_from_top - tree_top_pt) / ch_pt);
+                if (row_in_tree < g.tree.count) {
+                    const e = &g.tree.entries[row_in_tree];
+                    if (e.is_dir) {
+                        g.tree.toggle(row_in_tree);
+                    } else {
+                        // File click: write the filename followed by a space to the PTY.
+                        const name = e.nameSlice();
+                        _ = g.tabs.current().pty.write(name) catch {};
+                        _ = g.tabs.current().pty.write(" ") catch {};
+                    }
+                    g.dirty = true;
+                }
+            }
+            return; // tree panel click — do not start text selection
         }
     }
 
@@ -1087,6 +1147,13 @@ fn renderFrame() void {
     // Separator color: a quiet hairline that adapts to the theme.
     const rule_rgb = color.mix(g.theme.background, g.theme.foreground, 0.14);
 
+    // When the tree panel is visible, shift the terminal grid right by the
+    // panel width so it occupies the left edge. The tab bar, HUD, search bar,
+    // and tree panel all draw in absolute space (x_offset = 0).
+    if (g.tree_visible) {
+        g.raster.x_offset = @as(f64, @floatFromInt(filetree_render.tree_cols)) * g.font.metrics.cell_w;
+    }
+
     if (g.scroll_pos == 0 and g.overscroll == 0) {
         var y: usize = 0;
         while (y < rows) : (y += 1) {
@@ -1128,11 +1195,6 @@ fn renderFrame() void {
         g.raster.y_shift_px = 0;
     }
 
-    // Tab bar on top of the grid so a gliding top row cannot bleed into it.
-    if (g.tabs.barVisible()) {
-        tabbar.drawTabBar(&g.raster, g.font, g.theme, &g.tabs);
-    }
-
     const cur = t.terminal.cursor();
     if (cur.visible and t.terminal.viewportOffset() == 0 and
         g.scroll_pos == 0 and cur.x < cols and cur.y < rows)
@@ -1143,6 +1205,14 @@ fn renderFrame() void {
         g.raster.y_shift_px = 0;
     }
 
+    // Reset x_offset before drawing UI elements in absolute space.
+    g.raster.x_offset = 0;
+
+    // Tab bar on top of the grid so a gliding top row cannot bleed into it.
+    if (g.tabs.barVisible()) {
+        tabbar.drawTabBar(&g.raster, g.font, g.theme, &g.tabs);
+    }
+
     if (g.search_open) {
         const ch: usize = @intFromFloat(g.font.metrics.cell_h);
         const total_rows = @max((g.raster.height -| 2 * grid_pad) / ch, 1);
@@ -1151,13 +1221,28 @@ fn renderFrame() void {
 
     if (g.hud_visible) {
         // The HUD floats in the top-right corner; terminal keeps full width.
+        const ch: usize = @intFromFloat(g.font.metrics.cell_h);
+        const total_rows = @max((g.raster.height -| 2 * grid_pad) / ch, 1);
         hud_mod.draw(
             &g.raster,
             g.font,
             g.theme,
             g.hud,
             cols,
-            rows,
+            total_rows,
+            topBarRows(),
+        );
+    }
+
+    if (g.tree_visible) {
+        const ch: usize = @intFromFloat(g.font.metrics.cell_h);
+        const total_rows = @max((g.raster.height -| 2 * grid_pad) / ch, 1);
+        filetree_render.draw(
+            &g.raster,
+            g.font,
+            g.theme,
+            &g.tree,
+            total_rows,
             topBarRows(),
         );
     }
@@ -1392,4 +1477,5 @@ test {
     _ = @import("ipc/bridge.zig");
     _ = @import("app/palette.zig");
     _ = @import("app/selection.zig");
+    _ = @import("app/filetree.zig");
 }
