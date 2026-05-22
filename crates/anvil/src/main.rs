@@ -1275,7 +1275,9 @@ impl AppHandler for AppShell {
         };
         let blink_on = effective_blink.unwrap_or(app_blink_cfg);
         if blink_on && app.focused {
-            app.blink_phase += 1.0 / 64.0;
+            // 1/32 per tick at 60Hz = ~0.53s full blink cycle — modern terminals
+            // sit in the 500–700ms range; 1.07s (the previous 1/64) read as slow.
+            app.blink_phase += 1.0 / 32.0;
             if app.blink_phase >= 1.0 {
                 app.blink_phase -= 1.0;
             }
@@ -1299,8 +1301,10 @@ impl AppHandler for AppShell {
                 let tx = cur.x as f32;
                 let ty = cur.y as f32;
                 if (tx - pane.cursor_ax).abs() > 0.002 || (ty - pane.cursor_ay).abs() > 0.002 {
-                    pane.cursor_ax = approach(pane.cursor_ax, tx, 0.30);
-                    pane.cursor_ay = approach(pane.cursor_ay, ty, 0.30);
+                    // 0.45 approach per tick @ 60Hz settles in ~6 ticks (~100ms);
+                    // 0.30 felt sluggish and laggy in user testing.
+                    pane.cursor_ax = approach(pane.cursor_ax, tx, 0.45);
+                    pane.cursor_ay = approach(pane.cursor_ay, ty, 0.45);
                     if (tx - pane.cursor_ax).abs() <= 0.002 {
                         pane.cursor_ax = tx;
                     }
@@ -2333,5 +2337,140 @@ mod tests {
         let nt = kb.new_tab.unwrap();
         assert!(nt.cmd);
         assert_eq!(nt.key, 't');
+    }
+
+    // ── platform_mods_to_zig_mods ────────────────────────────────────────────
+
+    #[test]
+    fn platform_mods_to_zig_mods_maps_all_fields() {
+        let m = Modifiers {
+            command: true,
+            shift: true,
+            control: false,
+            option: false,
+        };
+        let z = platform_mods_to_zig_mods(m);
+        assert!(z.command);
+        assert!(z.shift);
+        assert!(!z.control);
+        assert!(!z.option);
+    }
+
+    #[test]
+    fn platform_mods_to_zig_mods_all_false() {
+        let m = Modifiers {
+            command: false,
+            shift: false,
+            control: false,
+            option: false,
+        };
+        let z = platform_mods_to_zig_mods(m);
+        assert!(!z.command);
+        assert!(!z.shift);
+        assert!(!z.control);
+        assert!(!z.option);
+    }
+
+    #[test]
+    fn platform_mods_to_zig_mods_ctrl_opt() {
+        let m = Modifiers {
+            command: false,
+            shift: false,
+            control: true,
+            option: true,
+        };
+        let z = platform_mods_to_zig_mods(m);
+        assert!(z.control);
+        assert!(z.option);
+        assert!(!z.command);
+        assert!(!z.shift);
+    }
+
+    // ── cursor_cfg_from_config ────────────────────────────────────────────────
+
+    #[test]
+    fn cursor_cfg_from_config_block_style() {
+        use anvil_config::CursorStyle;
+        use anvil_render::draw::CursorStyle as RCursorStyle;
+        let mut cfg = anvil_config::Config::default();
+        cfg.cursor.style = CursorStyle::Block;
+        cfg.cursor.blink = false;
+        let cc = cursor_cfg_from_config(&cfg);
+        assert_eq!(cc.style, RCursorStyle::Block);
+        assert!(!cc.blink);
+    }
+
+    #[test]
+    fn cursor_cfg_from_config_bar_style() {
+        use anvil_config::CursorStyle;
+        use anvil_render::draw::CursorStyle as RCursorStyle;
+        let mut cfg = anvil_config::Config::default();
+        cfg.cursor.style = CursorStyle::Bar;
+        cfg.cursor.blink = true;
+        let cc = cursor_cfg_from_config(&cfg);
+        assert_eq!(cc.style, RCursorStyle::Bar);
+        assert!(cc.blink);
+    }
+
+    #[test]
+    fn cursor_cfg_from_config_underline_style() {
+        use anvil_config::CursorStyle;
+        use anvil_render::draw::CursorStyle as RCursorStyle;
+        let mut cfg = anvil_config::Config::default();
+        cfg.cursor.style = CursorStyle::Underline;
+        let cc = cursor_cfg_from_config(&cfg);
+        assert_eq!(cc.style, RCursorStyle::Underline);
+    }
+
+    // ── all_pane_ids_in_tree ─────────────────────────────────────────────────
+
+    #[test]
+    fn all_pane_ids_in_tree_single_pane() {
+        let tab = anvil_workspace::tab::Tab::new_single_pane(80, 24, 100);
+        let ids = all_pane_ids_in_tree(&tab);
+        assert_eq!(ids.len(), 1);
+    }
+
+    #[test]
+    fn all_pane_ids_in_tree_after_split() {
+        let mut tab = anvil_workspace::tab::Tab::new_single_pane(80, 24, 100);
+        let new_id = tab
+            .split(anvil_workspace::layout::SplitDir::Horizontal, 40, 24, 100)
+            .unwrap();
+        let ids = all_pane_ids_in_tree(&tab);
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&new_id));
+    }
+
+    // ── platform_key_to_zig_key extended coverage ─────────────────────────────
+
+    #[test]
+    fn platform_key_to_zig_key_home_end_pageup_pagedown_delete() {
+        use anvil_workspace::keys::Key;
+        assert_eq!(platform_key_to_zig_key(KeyInput::Home), Some(Key::Home));
+        assert_eq!(platform_key_to_zig_key(KeyInput::End), Some(Key::End));
+        assert_eq!(platform_key_to_zig_key(KeyInput::PageUp), Some(Key::PageUp));
+        assert_eq!(
+            platform_key_to_zig_key(KeyInput::PageDown),
+            Some(Key::PageDown)
+        );
+        assert_eq!(platform_key_to_zig_key(KeyInput::Delete), Some(Key::Delete));
+    }
+
+    #[test]
+    fn platform_key_to_zig_key_all_function_keys() {
+        use anvil_workspace::keys::Key;
+        let expected = [
+            Key::F1, Key::F2, Key::F3, Key::F4, Key::F5, Key::F6, Key::F7, Key::F8, Key::F9,
+            Key::F10, Key::F11, Key::F12,
+        ];
+        for (n, exp) in expected.iter().enumerate() {
+            let n = n as u8 + 1;
+            assert_eq!(
+                platform_key_to_zig_key(KeyInput::F(n)),
+                Some(*exp),
+                "F{n}"
+            );
+        }
     }
 }

@@ -552,4 +552,83 @@ mod tests {
         // With a full-cell upward shift that row is outside (clear).
         assert_eq!(shift_px, [0, 0, 0]);
     }
+
+    // ── col_rule ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn col_rule_draws_vertical_strip_at_column() {
+        let m = default_metrics(); // 10×20 cells
+        let w = 400usize;
+        let h = 200usize;
+        let mut r = Raster::new(w, h);
+        r.clear([0, 0, 0]);
+        // Draw a col rule at col 3: starts at x=30, width=2px.
+        r.col_rule(m, 3, [0, 200, 0]);
+        // A pixel inside [30, 32) should be painted.
+        assert_eq!(pixel_at(&r, 30, 50), [0, 200, 0]);
+        assert_eq!(pixel_at(&r, 31, 50), [0, 200, 0]);
+        // Pixel just left of the rule should remain clear.
+        assert_eq!(pixel_at(&r, 29, 50), [0, 0, 0]);
+    }
+
+    // ── fill_pixel_rect_alpha ────────────────────────────────────────────────
+
+    #[test]
+    fn fill_pixel_rect_alpha_blends_over_background() {
+        let mut r = Raster::new(100, 100);
+        r.clear([0, 0, 0]); // black background
+        // Paint a 10×10 rect at (10, 10) with 100% alpha red.
+        r.fill_pixel_rect_alpha(10.0, 10.0, 10.0, 10.0, [255, 0, 0], 1.0);
+        // At full alpha the result should be the foreground color.
+        assert_eq!(pixel_at(&r, 15, 15), [255, 0, 0]);
+    }
+
+    #[test]
+    fn fill_pixel_rect_alpha_zero_is_noop() {
+        let mut r = Raster::new(100, 100);
+        r.clear([50, 50, 50]);
+        // 0 alpha: original background should remain.
+        r.fill_pixel_rect_alpha(0.0, 0.0, 50.0, 50.0, [255, 0, 0], 0.0);
+        assert_eq!(pixel_at(&r, 25, 25), [50, 50, 50]);
+    }
+
+    #[test]
+    fn fill_pixel_rect_alpha_half_blends() {
+        let mut r = Raster::new(100, 100);
+        r.clear([0, 0, 0]);
+        // 50% alpha white over black → ~[127, 127, 127] (rounded).
+        r.fill_pixel_rect_alpha(0.0, 0.0, 10.0, 10.0, [255, 255, 255], 0.5);
+        let px = pixel_at(&r, 5, 5);
+        // Each channel should be ~128 (rounding may give 127 or 128).
+        assert!(px[0] >= 127 && px[0] <= 128, "R channel: {}", px[0]);
+        assert!(px[1] >= 127 && px[1] <= 128, "G channel: {}", px[1]);
+        assert!(px[2] >= 127 && px[2] <= 128, "B channel: {}", px[2]);
+    }
+
+    // ── cell_rect ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn cell_rect_maps_fractional_cell_to_pixel_rect() {
+        let m = default_metrics(); // 10×20
+        let r = Raster::new(400, 200);
+        let rect = r.cell_rect(m, 2.0, 3.0);
+        // origin_x=0, origin_y=0, y_shift_px=0 by default.
+        assert!((rect.x - 20.0).abs() < 1e-9); // 2 * 10
+        assert!((rect.y - 60.0).abs() < 1e-9); // 3 * 20
+        assert!((rect.w - 10.0).abs() < 1e-9);
+        assert!((rect.h - 20.0).abs() < 1e-9);
+    }
+
+    // ── fill_pixel_rect ───────────────────────────────────────────────────────
+
+    #[test]
+    fn fill_pixel_rect_paints_region() {
+        let mut r = Raster::new(100, 100);
+        r.clear([0, 0, 0]);
+        r.fill_pixel_rect(10.0, 10.0, 20.0, 20.0, [0, 0, 255]);
+        assert_eq!(pixel_at(&r, 15, 15), [0, 0, 255]);
+        // Outside the rect should remain clear.
+        assert_eq!(pixel_at(&r, 5, 5), [0, 0, 0]);
+        assert_eq!(pixel_at(&r, 35, 35), [0, 0, 0]);
+    }
 }
