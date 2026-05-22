@@ -32,6 +32,10 @@ const palette_html: [:0]const u8 = @embedFile("palette_html");
 
 var config_path_buf: [std.fs.max_path_bytes]u8 = undefined;
 
+// Uniform inset (device pixels) between the window edge and the terminal grid.
+// The margin shows the background color; the grid simply has fewer cells.
+const grid_pad: usize = 22;
+
 // Reused scratch buffer for draining per-tab PTY bytes each tick.
 // One tab is drained at a time, so this is safe as a module global.
 var feed_scratch: [256 * 1024]u8 = undefined;
@@ -297,8 +301,8 @@ fn resizeAllTabs() void {
     const dh: usize = @intFromFloat(@max(b.size.height * g.scale, 1));
     const cw: usize = @intFromFloat(g.font.metrics.cell_w);
     const ch: usize = @intFromFloat(g.font.metrics.cell_h);
-    const cols = @max(dw / cw, 1);
-    const total_rows = @max(dh / ch, 1);
+    const cols = @max((dw -| 2 * grid_pad) / cw, 1);
+    const total_rows = @max((dh -| 2 * grid_pad) / ch, 1);
     const rows = @max(total_rows -| topBarRows() -| bottomBarRows(), 1);
 
     for (g.tabs.tabs.items) |tab| {
@@ -465,9 +469,9 @@ fn addTab(cwd: ?[]const u8) void {
     const dh: usize = @intFromFloat(@max(b.size.height * g.scale, 1));
     const cw: usize = @intFromFloat(g.font.metrics.cell_w);
     const ch: usize = @intFromFloat(g.font.metrics.cell_h);
-    const cols = @max(dw / cw, 1);
+    const cols = @max((dw -| 2 * grid_pad) / cw, 1);
     // New tab will make the bar visible (>=2 tabs): reserve its row.
-    const rows = @max((dh / ch) -| 1, 1);
+    const rows = @max(((dh -| 2 * grid_pad) / ch) -| 1, 1);
     g.tabs.newTab(cols, rows, g.config.config.scrollback, cwd) catch |e| {
         std.debug.print("caldera-console: new tab failed: {s}\n", .{@errorName(e)});
         return;
@@ -627,7 +631,7 @@ fn renderFrame() void {
 
     if (g.search_open) {
         const ch: usize = @intFromFloat(g.font.metrics.cell_h);
-        const total_rows = @max(g.raster.height / ch, 1);
+        const total_rows = @max((g.raster.height -| 2 * grid_pad) / ch, 1);
         searchbar.drawSearchBar(&g.raster, g.font, g.theme, &g.search, total_rows - 1);
     }
 
@@ -784,8 +788,8 @@ pub fn main() void {
     const dh: usize = @intFromFloat(cfg.window.height * scale);
     const cw: usize = @intFromFloat(font.metrics.cell_w);
     const ch: usize = @intFromFloat(font.metrics.cell_h);
-    const cols = @max(dw / cw, 1);
-    const rows = @max(dh / ch, 1);
+    const cols = @max((dw -| 2 * grid_pad) / cw, 1);
+    const rows = @max((dh -| 2 * grid_pad) / ch, 1);
 
     shell_integration.setup(cfg.shell_integration);
 
@@ -812,6 +816,8 @@ pub fn main() void {
         .webview = wv,
     };
     g.renderer.setClearColor(active_theme.background);
+    g.raster.pad_x = @floatFromInt(grid_pad);
+    g.raster.pad_y = @floatFromInt(grid_pad);
     loadKeybindings(cfg.keybindings);
     webview_mod.on_message = handleWebMessage;
 

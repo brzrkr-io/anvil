@@ -15,6 +15,8 @@ pub const Raster = struct {
     space: capi.Ref, // CGColorSpaceRef
     width: usize,
     height: usize,
+    pad_x: f64 = 0, // inset margin in device pixels, applied by cellRect
+    pad_y: f64 = 0,
 
     pub fn init(alloc: std.mem.Allocator, width: usize, height: usize) !Raster {
         const space = capi.CGColorSpaceCreateDeviceRGB() orelse return error.ColorSpaceFailed;
@@ -119,8 +121,8 @@ pub const Raster = struct {
         const ch = font.metrics.cell_h;
         return .{
             .origin = .{
-                .x = @as(f64, @floatFromInt(col)) * cw,
-                .y = @as(f64, @floatFromInt(self.height)) - @as(f64, @floatFromInt(row + 1)) * ch,
+                .x = self.pad_x + @as(f64, @floatFromInt(col)) * cw,
+                .y = @as(f64, @floatFromInt(self.height)) - self.pad_y - @as(f64, @floatFromInt(row + 1)) * ch,
             },
             .size = .{ .width = cw, .height = ch },
         };

@@ -17,7 +17,10 @@ pub fn drawSearchBar(
     bottom_row: usize,
 ) void {
     const cell_w = font.metrics.cell_w;
-    const total_cols: usize = @intFromFloat(@as(f64, @floatFromInt(raster.width)) / cell_w);
+    // Match the padded grid width: the bar spans the inset region, not the
+    // raw bitmap. cellRect applies the same pad to each column it draws.
+    const usable_w = @as(f64, @floatFromInt(raster.width)) - 2 * raster.pad_x;
+    const total_cols: usize = @intFromFloat(@max(usable_w, 0) / cell_w);
     if (total_cols == 0) return;
 
     // Bar background across the whole bottom row.

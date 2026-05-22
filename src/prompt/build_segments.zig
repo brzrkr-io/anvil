@@ -38,7 +38,7 @@ pub fn assemble(in: Inputs) seg.List {
     // git — when in a repo.
     if (in.git_info) |g| {
         const dirty_suffix = if (g.dirty > 0) blk: {
-            if (std.fmt.bufPrint(in.scratch[off..], "{s} \u{25cf}{d}", .{ g.branch, g.dirty })) |s| {
+            if (std.fmt.bufPrint(in.scratch[off..], "{s} {d}", .{ g.branch, g.dirty })) |s| {
                 off += s.len;
                 break :blk s;
             } else |_| {
