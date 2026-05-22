@@ -23,9 +23,15 @@ pub fn drawSearchBar(
     const total_cols: usize = @intFromFloat(@max(usable_w, 0) / cell_w);
     if (total_cols == 0) return;
 
-    // Bar background across the whole bottom row.
+    // Bar background across the whole bottom row (opaque surface tone).
     var c: usize = 0;
-    while (c < total_cols) : (c += 1) raster.cellBg(font, c, bottom_row, theme.ansi[8]);
+    while (c < total_cols) : (c += 1) raster.cellBg(font, c, bottom_row, theme.surface);
+
+    // 1px border rule above the bar (same pattern as the tab bar bottom rule).
+    const bar_top_px = raster.pad_y + @as(f64, @floatFromInt(bottom_row)) * font.metrics.cell_h;
+    const bar_left_px = raster.pad_x;
+    const bar_w_px = @as(f64, @floatFromInt(total_cols)) * cell_w;
+    raster.fillPixelRect(bar_left_px, bar_top_px, bar_w_px, 1.0, theme.border);
 
     // Compose the bar text: "find: <query>" left-aligned, "<cur>/<total>" right.
     // Compute the counter first so its length is known when capping the left text.
@@ -38,10 +44,10 @@ pub fn drawSearchBar(
     // Left text must not reach the counter; leave at least a 1-column gap.
     // Guard against usize underflow when the counter alone fills the window.
     if (counter.len + 1 < total_cols) {
-        const left_limit = total_cols - counter.len - 1;
+        const left_limit = total_cols - counter.len - 1 - 2;
         var i: usize = 0;
         while (i < text.len and i < left_limit) : (i += 1) {
-            raster.cellGlyph(font, i, bottom_row, font.glyph(text[i]), theme.foreground);
+            raster.cellGlyph(font, 2 + i, bottom_row, font.glyph(text[i]), theme.foreground);
         }
     }
 
@@ -71,8 +77,8 @@ test "drawSearchBar fills the bottom row background" {
     const bottom_row: usize = (200 / cell_h) - 1;
     drawSearchBar(&r, f, theme, &s, bottom_row);
 
-    // A pixel inside the bottom row now carries the bar background (ansi[8]).
+    // A pixel inside the bottom row now carries the bar background (surface).
     const px_y: usize = bottom_row * cell_h + cell_h / 2;
     const px = (px_y * r.width + 4) * 4;
-    try testing.expectEqual(theme.ansi[8][2], r.pixels[px + 0]); // B channel == ansi8 blue
+    try testing.expectEqual(theme.surface[2], r.pixels[px + 0]); // B channel == surface blue
 }

@@ -82,7 +82,7 @@ fn snapAnim() void {
 
 // Uniform inset (device pixels) between the window edge and the terminal grid.
 // The margin shows the background color; the grid simply has fewer cells.
-const grid_pad: usize = 22;
+const grid_pad: usize = 24;
 
 // HUD data refresh rate: once every N ticks (≈60fps timer → ~1 s).
 const hud_refresh_ticks: u32 = 60;
@@ -192,6 +192,7 @@ fn applyConfig(new_loaded: cfg_mod.Loaded) void {
     g.theme = theme_mod.resolve(effectiveThemeName(g.nsapp, nc.theme), nc.theme_overrides);
     g.renderer.setClearColor(g.theme.background); // keep the GPU clear in sync
     g.cursor_cfg = nc.cursor;
+    g.last_blink_opacity = -1; // reset so blink invariant holds on live reload
     loadKeybindings(nc.keybindings);
     g.dirty = true;
     g.config.deinit(); // free the previous config's arena
@@ -396,8 +397,8 @@ fn onTick() void {
     const tx: f32 = @floatFromInt(cur.x);
     const ty: f32 = @floatFromInt(cur.y);
     if (@abs(tx - g.cursor_ax) > 0.002 or @abs(ty - g.cursor_ay) > 0.002) {
-        g.cursor_ax = approach(g.cursor_ax, tx, 0.45);
-        g.cursor_ay = approach(g.cursor_ay, ty, 0.45);
+        g.cursor_ax = approach(g.cursor_ax, tx, 0.30);
+        g.cursor_ay = approach(g.cursor_ay, ty, 0.30);
         if (@abs(tx - g.cursor_ax) <= 0.002) g.cursor_ax = tx;
         if (@abs(ty - g.cursor_ay) <= 0.002) g.cursor_ay = ty;
         g.dirty = true;
@@ -918,7 +919,7 @@ fn addOverscroll(excess_rows: f32) void {
 }
 
 fn bounceImpulse() f32 {
-    return @as(f32, @floatCast(g.font.metrics.cell_h)) * 0.9;
+    return @as(f32, @floatCast(g.font.metrics.cell_h)) * 0.5;
 }
 
 fn onScroll(event: objc.Object) void {
@@ -1087,10 +1088,13 @@ fn onMouseDown(event: objc.Object) void {
             // View y is 0 at bottom; tree starts at top (below tab bar).
             const tree_top_pt = top_bar_h_pt + pad_pt;
             const click_y_from_top = b.size.height - view_pt.y;
-            if (click_y_from_top >= tree_top_pt) {
-                const row_in_tree: usize = @intFromFloat((click_y_from_top - tree_top_pt) / ch_pt);
+            if (click_y_from_top >= tree_top_pt + ch_pt) {
+                // Subtract 1 to skip the "FILES" header row rendered at raster_row = top_offset + 0.
+                const raw_row: usize = @intFromFloat((click_y_from_top - tree_top_pt) / ch_pt);
+                const row_in_tree: usize = raw_row - 1;
                 if (row_in_tree < g.tree.count) {
                     const e = &g.tree.entries[row_in_tree];
+                    g.tree.selected_idx = row_in_tree;
                     if (e.is_dir) {
                         g.tree.toggle(row_in_tree);
                     } else {
@@ -1405,14 +1409,22 @@ fn renderFrame() void {
     const cols = t.terminal.cols();
 
     // Separator color: a quiet hairline that adapts to the theme.
-    const rule_rgb = color.mix(g.theme.background, g.theme.foreground, 0.14);
+    const rule_rgb = color.mix(g.theme.background, g.theme.foreground, 0.28);
 
     // When the tree panel is visible, shift the terminal grid right by the
     // panel width so it occupies the left edge. The tab bar, HUD, search bar,
     // and tree panel all draw in absolute space (x_offset = 0).
+    const tree_offset_px: f64 = if (g.tree_visible)
+        @as(f64, @floatFromInt(filetree_render.tree_cols)) * g.font.metrics.cell_w
+    else
+        0;
     if (g.tree_visible) {
-        g.raster.x_offset = @as(f64, @floatFromInt(filetree_render.tree_cols)) * g.font.metrics.cell_w;
+        g.raster.x_offset = tree_offset_px;
     }
+    // Prompt-rule horizontal bounds: start at the terminal content's left edge
+    // (past any panel offset), end at the right inset margin.
+    const rule_x_start = g.raster.pad_x + tree_offset_px;
+    const rule_x_end = @as(f64, @floatFromInt(g.raster.width)) - g.raster.pad_x;
 
     if (g.scroll_pos == 0 and g.overscroll == 0) {
         var y: usize = 0;
@@ -1423,7 +1435,7 @@ fn renderFrame() void {
             while (x < cols and x < line.len) : (x += 1) drawCell(x, y, crow, line[x]);
             if (t.terminal.isPromptStart(t.terminal.absoluteLineOfContent(crow))) {
                 const ry: f64 = @floatFromInt(y + topBarRows());
-                g.raster.rowRule(g.font, ry, rule_rgb);
+                g.raster.rowRule(g.font, ry, rule_rgb, rule_x_start, rule_x_end);
             }
         }
     } else {
@@ -1449,7 +1461,7 @@ fn renderFrame() void {
             while (x < cols and x < line.len) : (x += 1) drawCell(x, y, crow, line[x]);
             if (t.terminal.isPromptStart(t.terminal.absoluteLineOfContent(crow))) {
                 const ry: f64 = @floatFromInt(y + topBarRows());
-                g.raster.rowRule(g.font, ry, rule_rgb);
+                g.raster.rowRule(g.font, ry, rule_rgb, rule_x_start, rule_x_end);
             }
         }
         g.raster.y_shift_px = 0;

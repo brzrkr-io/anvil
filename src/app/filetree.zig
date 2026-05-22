@@ -35,11 +35,14 @@ pub const Entry = struct {
 pub const FileTree = struct {
     entries: [max_entries]Entry = undefined,
     count: usize = 0,
+    /// Index of the currently selected/open entry, or null if none.
+    selected_idx: ?usize = null,
 
     /// Root the tree at `root_path` and load its immediate children.
     /// The root entry itself is not shown; children are at depth 0.
     pub fn setRoot(self: *FileTree, root_path: []const u8) void {
         self.count = 0;
+        self.selected_idx = null;
         loadChildren(self, root_path, 0);
     }
 

@@ -54,7 +54,7 @@ pub const rows: []const Row = &[_]Row{
 };
 
 /// Card width in terminal columns. Wide enough for the longest row.
-pub const card_cols: usize = 52;
+pub const card_cols: usize = 42;
 
 /// Card height in terminal rows (title + blank + all rows + 1 footer + 1 padding).
 pub const card_rows: usize = rows.len + 4;
@@ -86,8 +86,8 @@ pub fn draw(
     // Near-opaque surface panel — clearly raised modal card.
     raster.fillPixelRectAlpha(left_px, top_px, card_w_px, card_h_px, theme.surface, 0.97);
 
-    // 1px border on all four edges.
-    const b: f64 = 1.0;
+    // 2px border on all four edges.
+    const b: f64 = 2.0;
     raster.fillPixelRect(left_px, top_px, card_w_px, b, theme.border);
     raster.fillPixelRect(left_px, top_px + card_h_px - b, card_w_px, b, theme.border);
     raster.fillPixelRect(left_px, top_px, b, card_h_px, theme.border);
@@ -97,23 +97,37 @@ pub fn draw(
     // 3-col inner left margin; 2-col right margin.
     const max_col = card_col + card_cols - 2;
 
-    // Row 0: title.
+    // Row 0: title in accent color.
     const title = "Keyboard Shortcuts";
-    drawText(raster, font, card_col + 3, card_row, title, theme.foreground, max_col);
+    drawText(raster, font, card_col + 3, card_row, title, theme.accent, max_col);
 
     // Row 1: dim hint.
     const hint = "Cmd / or Esc to close";
     drawText(raster, font, card_col + 3, card_row + 1, hint, alloy, max_col);
 
-    // Row 2: blank separator before content.
-    // (nothing drawn)
+    // Row 2: full-width 1px border rule below the hint text.
+    {
+        const rule_px_x = left_px + @as(f64, @floatFromInt(2)) * cw;
+        const rule_px_y = raster.pad_y + @as(f64, @floatFromInt(card_row + 2)) * ch;
+        const rule_w = @as(f64, @floatFromInt(card_cols - 4)) * cw;
+        raster.fillPixelRect(rule_px_x, rule_px_y, rule_w, 1.0, theme.border);
+    }
 
     // Rows 3+: content.
     var r: usize = card_row + 3;
+    var first_header = true;
     for (rows) |row| {
         switch (row) {
             .header => |label| {
-                drawText(raster, font, card_col + 3, r, label, alloy, max_col);
+                // Draw a 1px border rule before each header, skipping the first.
+                if (!first_header) {
+                    const rule_px_x = left_px + @as(f64, @floatFromInt(2)) * cw;
+                    const rule_px_y = raster.pad_y + @as(f64, @floatFromInt(r)) * ch;
+                    const rule_w = @as(f64, @floatFromInt(card_cols - 4)) * cw;
+                    raster.fillPixelRect(rule_px_x, rule_px_y, rule_w, 1.0, theme.border);
+                }
+                first_header = false;
+                drawText(raster, font, card_col + 3, r, label, theme.foreground, max_col);
                 r += 1;
             },
             .shortcut => |s| {
@@ -122,7 +136,7 @@ pub fn draw(
                 // Description: starts at a fixed column in foreground, clear
                 // of the widest chord ("Ctrl Shift Tab"). Shifted right by 1
                 // to match the new inner padding.
-                const desc_col = card_col + 20;
+                const desc_col = card_col + 18;
                 if (desc_col < max_col) {
                     drawText(raster, font, desc_col, r, s.desc, theme.foreground, max_col);
                 }

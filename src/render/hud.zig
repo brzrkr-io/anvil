@@ -144,8 +144,8 @@ pub fn draw(
 ) void {
     if (total_rows == 0 or total_cols < hud_cols + 2) return;
 
-    // Card top-left cell: 1 column margin from the right edge, 1 row below tab bar.
-    const card_col = total_cols - hud_cols - 1;
+    // Card top-left cell: 2 column margin from the right edge, 1 row below tab bar.
+    const card_col = total_cols - hud_cols - 2;
     const card_row = top_offset + 1;
 
     // How many rows are actually available below the tab bar.
@@ -162,11 +162,11 @@ pub fn draw(
     const card_w_px = @as(f64, @floatFromInt(hud_cols)) * cw;
     const card_h_px = @as(f64, @floatFromInt(actual_card_rows)) * ch;
 
-    // Frosted card: surface tone at 0.92 so it reads as a clearly raised panel.
-    raster.fillPixelRectAlpha(left_px, top_px, card_w_px, card_h_px, theme.surface, 0.92);
+    // Fully opaque raised card using surface tone.
+    raster.fillPixelRect(left_px, top_px, card_w_px, card_h_px, theme.surface);
 
-    // --- Border (1-device-pixel strips around the card) -------------------
-    const border: f64 = 1.0;
+    // --- Border (2-device-pixel strips around the card) -------------------
+    const border: f64 = 2.0;
     // Top edge
     raster.fillPixelRect(left_px, top_px, card_w_px, border, theme.border);
     // Bottom edge
@@ -191,7 +191,13 @@ pub fn draw(
         row = drawValueRow(raster, font, theme, card_col, row, cwdtxt, theme.foreground);
     }
 
-    // blank row
+    // blank row with center hairline
+    if (row < max_row) {
+        const sep_y = raster.pad_y + (@as(f64, @floatFromInt(row)) + 0.5) * ch;
+        const sep_x = raster.pad_x + @as(f64, @floatFromInt(card_col + 1)) * cw;
+        const sep_w = @as(f64, @floatFromInt(hud_cols - 2)) * cw;
+        raster.fillPixelRect(sep_x, sep_y, sep_w, 1.0, theme.border);
+    }
     row += 1;
 
     // --- git section -------------------------------------------------------
@@ -224,7 +230,13 @@ pub fn draw(
         },
     }
 
-    // blank row
+    // blank row with center hairline
+    if (row < max_row) {
+        const sep_y = raster.pad_y + (@as(f64, @floatFromInt(row)) + 0.5) * ch;
+        const sep_x = raster.pad_x + @as(f64, @floatFromInt(card_col + 1)) * cw;
+        const sep_w = @as(f64, @floatFromInt(hud_cols - 2)) * cw;
+        raster.fillPixelRect(sep_x, sep_y, sep_w, 1.0, theme.border);
+    }
     row += 1;
 
     // --- last-run section --------------------------------------------------
@@ -287,7 +299,7 @@ fn drawSectionDot(
     return row + 1;
 }
 
-/// Draw one value row, indented to align under the section label.
+/// Draw one value row, indented one extra column under the section label.
 /// Returns the next row index.
 fn drawValueRow(
     raster: *Raster,
@@ -299,7 +311,7 @@ fn drawValueRow(
     color_: [3]u8,
 ) usize {
     _ = theme;
-    drawText(raster, font, start_col + 3, row, text, color_, start_col + hud_cols - 1);
+    drawText(raster, font, start_col + 4, row, text, color_, start_col + hud_cols - 1);
     return row + 1;
 }
 

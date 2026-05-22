@@ -36,13 +36,28 @@ pub fn drawTabBar(raster: *Raster, font: Font, theme: Theme, tabs: *TabManager) 
         while (col < end_col) : (col += 1) {
             raster.cellBg(font, col, 0, bg);
         }
+        // 2px accent bar along the top edge of the active tab segment.
+        if (is_active) {
+            const start_px = raster.pad_x + @as(f64, @floatFromInt(start_col)) * cell_w;
+            const tab_top_px = raster.pad_y;
+            const seg_w_px = @as(f64, @floatFromInt(end_col - start_col)) * cell_w;
+            raster.fillPixelRect(start_px, tab_top_px, seg_w_px, 2.0, theme.accent);
+        }
         // Draw the label, truncated to the segment width minus a 2-col pad.
         // Active labels in foreground (high contrast on surface); inactive dimmed.
         const label = tabs.tabs.items[t].label(&label_buf);
         const fg = if (is_active) theme.foreground else theme.ansi[8];
+        const seg_w = end_col - start_col;
         var i: usize = 0;
-        while (i < label.len and i + 2 < end_col - start_col) : (i += 1) {
-            raster.cellGlyph(font, start_col + 2 + i, 0, font.glyph(label[i]), fg);
+        const lview = std.unicode.Utf8View.init(label) catch blk: {
+            break :blk std.unicode.Utf8View.initUnchecked("");
+        };
+        var lit = lview.iterator();
+        while (lit.nextCodepoint()) |cp| {
+            if (i + 3 < seg_w) {
+                raster.cellGlyph(font, start_col + 2 + i, 0, font.glyph(cp), fg);
+                i += 1;
+            } else break;
         }
     }
 

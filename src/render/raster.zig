@@ -132,10 +132,12 @@ pub const Raster = struct {
         });
     }
 
-    /// Draw a thin full-width horizontal hairline at the TOP edge of cell-row
-    /// `row`. The strip is ≈2 device pixels tall and respects `y_shift_px` so
+    /// Draw a thin horizontal hairline at the TOP edge of cell-row `row`.
+    /// The strip is ≈2 device pixels tall and respects `y_shift_px` so
     /// it scrolls with the grid. Intended for prompt-start separator marks.
-    pub fn rowRule(self: *Raster, font: Font, row: f64, rgb: [3]u8) void {
+    /// `x_start` and `x_end` are device-pixel bounds so the rule can start
+    /// at the terminal content's left edge (past any panel offset).
+    pub fn rowRule(self: *Raster, font: Font, row: f64, rgb: [3]u8, x_start: f64, x_end: f64) void {
         const ch = font.metrics.cell_h;
         // Top edge of the row in CG coordinates (y-up, origin bottom-left).
         // cellRect places the cell at:
@@ -148,8 +150,8 @@ pub const Raster = struct {
             row * ch + self.y_shift_px - strip_h;
         setFill(self.ctx, rgb);
         capi.CGContextFillRect(self.ctx, .{
-            .origin = .{ .x = 0, .y = top_y },
-            .size = .{ .width = @floatFromInt(self.width), .height = strip_h },
+            .origin = .{ .x = x_start, .y = top_y },
+            .size = .{ .width = x_end - x_start, .height = strip_h },
         });
     }
 
@@ -308,7 +310,7 @@ test "rowRule draws a strip at the top of a cell row" {
     defer r.deinit();
     r.clear(.{ 0, 0, 0 });
     // Draw a rule at raster row 1 (the second row from the top of the viewport).
-    r.rowRule(f, 1.0, .{ 200, 100, 50 });
+    r.rowRule(f, 1.0, .{ 200, 100, 50 }, 0, @floatFromInt(w));
     // The strip sits at the top edge of row 1. In the bitmap (y-down), row 1
     // starts at bitmap-y = cell_h (row 0 occupies [0, cell_h)).
     // The rule strip is 2px tall just at that boundary.

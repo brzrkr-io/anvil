@@ -9,6 +9,7 @@ const Raster = @import("raster.zig").Raster;
 const Font = @import("font.zig").Font;
 const Theme = @import("../config/theme.zig").Theme;
 const FileTree = @import("../app/filetree.zig").FileTree;
+const color = @import("color.zig");
 
 /// Number of terminal columns the tree panel occupies.
 pub const tree_cols: usize = 26;
@@ -54,13 +55,29 @@ pub fn draw(
     // 1px right-edge border.
     raster.fillPixelRect(pad_x + panel_w_px - 1.0, panel_top_px, 1.0, panel_h_px, theme.border);
 
-    // Draw entries.
+    // Header row: "FILES" label in info_teal, 2-col left pad; border below.
+    const header_raster_row = top_offset;
+    if (total_rows > top_offset) {
+        drawText(raster, font, 2, header_raster_row, "FILES", info_teal, tree_cols - 1);
+        const header_rule_y = pad_y + @as(f64, @floatFromInt(header_raster_row + 1)) * ch;
+        raster.fillPixelRect(pad_x, header_rule_y, panel_w_px - 1.0, 1.0, theme.border);
+    }
+
+    // Draw entries (start one row below the header).
     const content_rows = total_rows -| top_offset;
-    var row_idx: usize = 0;
+    var row_idx: usize = 1;
     var entry_idx: usize = 0;
     while (entry_idx < tree.count and row_idx < content_rows) : (entry_idx += 1) {
         const e = &tree.entries[entry_idx];
         const raster_row = top_offset + row_idx;
+
+        // Selected row: fill full panel width with a subtle accent tint.
+        if (tree.selected_idx) |sel| {
+            if (entry_idx == sel) {
+                const row_top_px = pad_y + @as(f64, @floatFromInt(raster_row)) * ch;
+                raster.fillPixelRect(pad_x, row_top_px, panel_w_px, ch, color.mix(theme.background, theme.accent, 0.18));
+            }
+        }
 
         // Indent: 1 col inner left padding, then depth, then icon.
         const indent_cols: usize = 1 + @as(usize, e.depth) * 2;

@@ -21,7 +21,7 @@ const anchor = "\x1b[39m"; // default foreground — cwd anchor; flips with them
 const accent = "\x1b[38;5;6m"; // ANSI 6 = mineral/cyan — edge glyph, prompt glyph
 const accent_err = "\x1b[38;5;1m"; // ANSI 1 = red — error state
 const dim = "\x1b[38;5;8m"; // ANSI 8 = readable dim grey
-const git_color = "\x1b[38;5;2m"; // ANSI 2 = green
+const git_color = "\x1b[38;5;6m"; // ANSI 6 = teal/mineral
 const tool_color = "\x1b[38;5;5m"; // ANSI 5 = magenta — toolchain
 const infra_color = "\x1b[38;5;4m"; // ANSI 4 = blue — container/cluster
 const warn_color = "\x1b[38;5;3m"; // ANSI 3 = yellow/amber — attention
