@@ -5,3 +5,6 @@ docs/superpowers/
 *.o
 .obsidian/
 .superpowers/
+
+# tool state
+.forge/
