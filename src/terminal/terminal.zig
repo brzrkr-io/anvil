@@ -443,7 +443,14 @@ pub const Terminal = struct {
                 oneBased(param(params, 1, 1)),
                 oneBased(param(params, 0, 1)),
             ),
-            'J' => g.eraseDisplay(param(params, 0, 0)),
+            'J' => {
+                const mode = param(params, 0, 0);
+                g.eraseDisplay(mode);
+                // Erasing the whole display (`clear`) destroys the content the
+                // grid-region prompt marks described — drop them, or stale
+                // separators litter the blanked screen.
+                if ((mode == 2 or mode == 3) and !self.on_alt) self.invalidateGridMarks();
+            },
             'K' => g.eraseLine(param(params, 0, 0)),
             '@' => g.insertChars(p0),
             'P' => g.deleteChars(p0),
@@ -731,6 +738,22 @@ pub const Terminal = struct {
 
     /// True when the given absolute line index was marked as a prompt start
     /// (OSC 133;A). Used by the renderer to draw a separator hairline.
+    /// Drop prompt marks pointing into the live grid region. Called when the
+    /// display is erased: the rows those marks described are now blank, so
+    /// keeping the marks would draw separators across the cleared screen.
+    /// Marks in scrollback (`line` below the grid's base) stay valid.
+    fn invalidateGridMarks(self: *Terminal) void {
+        const base = self.evicted_lines + self.history.len();
+        var w: usize = 0;
+        for (self.marks[0..self.mark_count]) |m| {
+            if (m.line < base) {
+                self.marks[w] = m;
+                w += 1;
+            }
+        }
+        self.mark_count = w;
+    }
+
     pub fn isPromptStart(self: *const Terminal, abs_line: usize) bool {
         for (self.marks[0..self.mark_count]) |m| {
             if (m.kind == .prompt_start and m.line == abs_line) return true;
@@ -1131,6 +1154,18 @@ test "OSC 133 prompt marks are recorded with absolute lines" {
     try testing.expect(marks[2].kind == .output_start);
     try testing.expectEqual(@as(usize, 2), marks[3].line);
     try testing.expect(marks[3].kind == .command_done);
+}
+
+test "erasing the display drops prompt marks in the grid region" {
+    var term = try makeTerminal(6, 4);
+    defer term.deinit();
+    term.feed("\x1B]133;A\x07"); // prompt start at line 0 (grid region)
+    term.feed("$ x\r\n");
+    try testing.expectEqual(@as(usize, 1), term.promptMarks().len);
+    term.feed("\x1B[2J"); // clear the display
+    // The mark pointed at a now-blank grid row — it must be gone.
+    try testing.expectEqual(@as(usize, 0), term.promptMarks().len);
+    try testing.expect(!term.isPromptStart(0));
 }
 
 test "OSC 133 absolute line survives scrollback eviction" {
