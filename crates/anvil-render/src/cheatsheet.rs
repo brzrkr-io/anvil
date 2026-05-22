@@ -140,8 +140,8 @@ pub fn draw(
     let card_w_px = CARD_COLS as f64 * cw;
     let card_h_px = CARD_ROWS as f64 * ch;
 
-    // Near-opaque surface panel.
-    raster.fill_pixel_rect_alpha(left_px, top_px, card_w_px, card_h_px, theme.surface, 0.97);
+    // Fully opaque surface panel — occludes the terminal beneath it.
+    raster.fill_pixel_rect(left_px, top_px, card_w_px, card_h_px, theme.surface);
 
     // 2px border on all four edges.
     let b = 2.0_f64;

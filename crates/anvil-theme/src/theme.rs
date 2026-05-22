@@ -117,7 +117,7 @@ pub const MINERAL_LIGHT: Theme = Theme {
     foreground: [0x1b, 0x1f, 0x24], // ink
     accent: [0x28, 0x6e, 0x76],     // mineral teal — 5.16:1 on bone
     surface: [0xff, 0xff, 0xff],    // #ffffff — raised light panels (BRAND.md: "white only")
-    border: [0xd4, 0xd9, 0xdc],     // #d4d9dc — panel edges on bone (1.42:1 vs white)
+    border: [0xb8, 0xbe, 0xc3],     // #b8bec3 — panel edges on bone (~1.88:1 vs white)
     ansi: [
         [0x1b, 0x1f, 0x24],
         [0xb5, 0x44, 0x3a],

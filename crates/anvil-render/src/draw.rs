@@ -128,7 +128,7 @@ pub fn draw_cell(
     }
 
     if selection.active && selection.contains(content_row, x) {
-        bg = mix(theme.background, theme.accent, 0.28);
+        bg = mix(theme.background, theme.accent, 0.35);
     }
 
     if let Some(s) = search {
@@ -247,7 +247,7 @@ pub fn draw_viewport(
 ) {
     let rows = terminal.rows();
     let cols = terminal.cols();
-    let rule_rgb = mix(theme.background, theme.foreground, 0.28);
+    let rule_rgb = mix(theme.background, theme.foreground, 0.45);
 
     if scroll_pos == 0.0 && overscroll == 0.0 {
         // Live bottom: no fractional offset.

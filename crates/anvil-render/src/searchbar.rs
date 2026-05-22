@@ -45,20 +45,20 @@ pub fn draw_search_bar(
     let text = format!("find: {}", search.query());
 
     // Left text must not reach the counter; leave at least a 1-column gap.
+    // Prefix chars 0–5 ("find: ") are drawn muted; query chars 6+ use foreground.
+    const PREFIX_LEN: usize = 6; // "find: "
     if counter.len() + 1 < total_cols {
         let left_limit = total_cols - counter.len() - 1 - 2;
         for (i, ch) in text.chars().enumerate() {
             if i >= left_limit {
                 break;
             }
-            raster.cell_glyph(
-                painter,
-                metrics,
-                2 + i,
-                bottom_row,
-                ch as u32,
-                theme.foreground,
-            );
+            let color = if i < PREFIX_LEN {
+                theme.ansi[8]
+            } else {
+                theme.foreground
+            };
+            raster.cell_glyph(painter, metrics, 2 + i, bottom_row, ch as u32, color);
         }
     }
 

@@ -14,7 +14,7 @@ use anvil_workspace::filetree::FileTree;
 use crate::raster::{FontMetrics, GlyphPainter, Raster};
 
 /// Number of terminal columns the tree panel occupies.
-pub const TREE_COLS: usize = 26;
+pub const TREE_COLS: usize = 30;
 
 // Brand color constants (Mineral palette).
 /// alloy: muted text / file names (#86919a)

@@ -38,11 +38,11 @@ pub fn draw_tab_bar(
     for t in 0..n {
         let start_col = t * seg_cols;
         let is_active = t == tabs.active;
-        // Active tab: raised surface. Inactive: flat canvas.
+        // Active tab: raised surface. Inactive: recessed between canvas and surface.
         let bg = if is_active {
             theme.surface
         } else {
-            theme.background
+            anvil_theme::mix(theme.background, theme.surface, 0.4)
         };
         // Fill the segment background across row 0.
         let end_col = if t == n - 1 {
@@ -80,7 +80,7 @@ pub fn draw_tab_bar(
     let bar_bottom_px = raster.pad_y + cell_h - 1.0;
     let bar_left_px = raster.pad_x;
     let bar_w_px = total_cols as f64 * cell_w;
-    raster.fill_pixel_rect(bar_left_px, bar_bottom_px, bar_w_px, 1.0, theme.border);
+    raster.fill_pixel_rect(bar_left_px, bar_bottom_px, bar_w_px, 2.0, theme.border);
 }
 
 /// Derive a display label for tab `t`:

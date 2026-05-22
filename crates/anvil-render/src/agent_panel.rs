@@ -96,8 +96,24 @@ pub enum Placement {
 /// Width of the agent-panel card in terminal columns.
 pub const PANEL_COLS: usize = 36;
 
-/// Height of the card in terminal rows.
-const CARD_ROWS: usize = 13;
+/// Dynamic card height: 4 base rows + up to 3 priority rows.
+fn card_rows(snap: &Snapshot) -> usize {
+    let approvals = snap.approvals.len().min(3);
+    let running = snap
+        .runs
+        .iter()
+        .filter(|r| r.status == RunStatus::Running)
+        .count()
+        .min(3);
+    let failures = snap
+        .findings
+        .iter()
+        .filter(|f| f.severity == FindingSeverity::Failure)
+        .count()
+        .min(3);
+    let priority = (approvals + running + failures).min(3);
+    4 + priority
+}
 
 // --- Formatting helpers (pure, unit-testable) --------------------------------
 
@@ -275,7 +291,7 @@ pub fn draw(
         }
     };
 
-    let actual_rows = CARD_ROWS.min(available);
+    let actual_rows = card_rows(snap).min(available);
     if actual_rows == 0 {
         return;
     }
@@ -288,25 +304,17 @@ pub fn draw(
     let card_w_px = PANEL_COLS as f64 * cw;
     let card_h_px = actual_rows as f64 * ch;
 
+    // 4px filled gutter: draw a slightly larger rect in border color first,
+    // then fill the inner card with surface. This gives a visible halo on
+    // light mode where hairline strokes alone disappear.
+    raster.fill_pixel_rect(
+        left_px - 4.0,
+        top_px - 4.0,
+        card_w_px + 8.0,
+        card_h_px + 8.0,
+        theme.border,
+    );
     raster.fill_pixel_rect(left_px, top_px, card_w_px, card_h_px, theme.surface);
-
-    let border = 2.0_f64;
-    raster.fill_pixel_rect(left_px, top_px, card_w_px, border, theme.border);
-    raster.fill_pixel_rect(
-        left_px,
-        top_px + card_h_px - border,
-        card_w_px,
-        border,
-        theme.border,
-    );
-    raster.fill_pixel_rect(left_px, top_px, border, card_h_px, theme.border);
-    raster.fill_pixel_rect(
-        left_px + card_w_px - border,
-        top_px,
-        border,
-        card_h_px,
-        theme.border,
-    );
 
     // --- Content rows --------------------------------------------------------
     let mut row = card_row + 1; // one row breathing room at the top
@@ -320,6 +328,7 @@ pub fn draw(
             raster,
             painter,
             metrics,
+            theme,
             card_col,
             row,
             bullet_color,
@@ -421,6 +430,7 @@ fn draw_agent_header(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
     metrics: FontMetrics,
+    theme: &Theme,
     start_col: usize,
     row: usize,
     bullet_color: [u8; 3],
@@ -449,7 +459,7 @@ fn draw_agent_header(
         start_col + 10,
         row,
         summary,
-        ALLOY,
+        theme.foreground,
         max_col,
     );
 }
