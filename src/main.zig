@@ -69,6 +69,7 @@ fn snapAnim() void {
     g.cursor_ay = @floatFromInt(cur.y);
     g.scroll_pos = @floatFromInt(t.terminal.viewportOffset());
     g.overscroll = 0;
+    g.overscroll_target = 0;
 }
 
 // Uniform inset (device pixels) between the window edge and the terminal grid.
@@ -96,6 +97,7 @@ const App = struct {
     cursor_ay: f32 = 0, // animated cursor row (viewport cells)
     scroll_pos: f32 = 0, // displayed viewport offset, fractional, driven by the gesture
     overscroll: f32 = 0, // rubber-band pull past a history edge, in device pixels
+    overscroll_target: f32 = 0, // where the rubber-band is easing toward
     config: cfg_mod.Loaded,
     watcher: cfg_mod.Watcher,
     keys_new: ?cfg_mod.Chord = null,
@@ -259,13 +261,13 @@ fn runAction(action: palette_mod.Action) void {
             const t = &g.tabs.current().terminal;
             t.scrollViewport(@intCast(t.scrollbackLen()));
             g.scroll_pos = @floatFromInt(t.viewportOffset());
-            g.overscroll = bounceImpulse();
+            g.overscroll_target = bounceImpulse();
             g.dirty = true;
         },
         .scroll_bottom => {
             g.tabs.current().terminal.scrollToBottom();
             g.scroll_pos = 0;
-            g.overscroll = -bounceImpulse();
+            g.overscroll_target = -bounceImpulse();
             g.dirty = true;
         },
         .app_quit => g.nsapp.msgSend(void, "terminate:", .{@as(c.id, null)}),
@@ -351,10 +353,13 @@ fn onTick() void {
         g.dirty = true;
     }
 
-    // Rubber-band: spring the overscroll pull back to zero.
-    if (g.overscroll != 0) {
-        g.overscroll = approach(g.overscroll, 0, 0.18);
-        if (@abs(g.overscroll) < 0.5) g.overscroll = 0;
+    // Rubber-band: ease the overscroll toward its target, which itself decays
+    // to zero — so the pull-in and the spring-back are both smooth (no snap).
+    if (g.overscroll != 0 or g.overscroll_target != 0) {
+        g.overscroll_target = approach(g.overscroll_target, 0, 0.32);
+        g.overscroll = approach(g.overscroll, g.overscroll_target, 0.55);
+        if (@abs(g.overscroll_target) < 0.5) g.overscroll_target = 0;
+        if (@abs(g.overscroll) < 0.5 and g.overscroll_target == 0) g.overscroll = 0;
         g.dirty = true;
     }
 
@@ -666,8 +671,10 @@ fn onKeyDown(event: objc.Object) void {
 fn addOverscroll(excess_rows: f32) void {
     const ch: f32 = @floatCast(g.font.metrics.cell_h);
     const limit = ch * 1.5;
-    const resist = 1.0 - @min(@abs(g.overscroll) / limit, 1.0);
-    g.overscroll = std.math.clamp(g.overscroll + excess_rows * ch * 0.30 * resist, -limit, limit);
+    // Feed the target, not the displayed value — onTick eases `overscroll`
+    // toward it, so a hard scroll cannot snap the rubber-band in one frame.
+    const resist = 1.0 - @min(@abs(g.overscroll_target) / limit, 1.0);
+    g.overscroll_target = std.math.clamp(g.overscroll_target + excess_rows * ch * 0.30 * resist, -limit, limit);
 }
 
 fn bounceImpulse() f32 {
@@ -781,10 +788,12 @@ fn renderFrame() void {
 
     const cur = t.terminal.cursor();
     if (cur.visible and t.terminal.viewportOffset() == 0 and
-        g.scroll_pos == 0 and g.overscroll == 0 and
-        cur.x < cols and cur.y < rows)
+        g.scroll_pos == 0 and cur.x < cols and cur.y < rows)
     {
+        // Ride the rubber-band: shift the cursor with the grid during a bounce.
+        g.raster.y_shift_px = -@as(f64, g.overscroll);
         drawCursor();
+        g.raster.y_shift_px = 0;
     }
 
     if (g.search_open) {
