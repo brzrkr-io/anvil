@@ -83,6 +83,18 @@ NEXT UP
     `src/ipc/bridge.zig`, `src/app/palette.zig`, `src/webview/webview.zig`,
     `ui/palette/index.html`. WebKit framework linked. 210 tests pass.
 
+[x] Caldera prompt (Phase 1) — adaptive shell prompt binary
+    COMPLETE 2026-05-21. New `caldera-prompt` standalone executable (`src/prompt/`):
+    `icons`, `segments`, `context`, `git`, `render`, `build_segments`, `main`.
+    Adaptive segments: cwd always, git branch+dirty when in a repo, toolchain when
+    a language is detected, container/cluster when present, exit-state on non-zero.
+    Two-line rich prompt + single-line transient mode; rich Unicode glyphs gated on
+    `$CALDERA_CONSOLE`, ASCII fallback otherwise. `config.zon` gains a `prompt`
+    section (`enabled`, `transient`, `custom`). Shell integration wires PROMPT/PS1
+    from `caldera-prompt --exit $?`; transient hook on zle-line-finish. 212 tests
+    pass. Deferred: bundled icon font (one-file swap in `icons.zig`); Phase 2
+    interactive hover layer.
+
 [ ] M4 — Built-in browser surface
     See docs/product/console-rebuild-plan.md for sub-tasks.
 
