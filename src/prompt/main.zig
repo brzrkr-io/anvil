@@ -6,6 +6,7 @@ const icons = @import("icons.zig");
 const segments = @import("segments.zig");
 const context = @import("context.zig");
 const git = @import("git.zig");
+const render = @import("render.zig");
 
 pub fn main() void {
     _ = icons;
@@ -20,4 +21,5 @@ test {
     _ = segments;
     _ = context;
     _ = git;
+    _ = render;
 }
