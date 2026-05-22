@@ -169,11 +169,30 @@ pub const Terminal = struct {
 
     // --- resize ------------------------------------------------------------
 
-    /// Resize both grids to `cols x rows`. Content anchors to the top-left.
+    /// Resize both grids to `cols x rows`. When shrinking past the cursor,
+    /// pre-scroll the primary so the cursor stays anchored to the bottom;
+    /// displaced rows are archived into scrollback exactly as a normal line
+    /// feed would do.
     pub fn resize(self: *Terminal, new_cols: usize, new_rows: usize) void {
         const w = @max(new_cols, 1);
-        self.primary.resize(w, new_rows);
-        self.alternate.resize(w, new_rows);
+        const h = @max(new_rows, 1);
+
+        // Pre-scroll the primary grid when the new height cannot fit the
+        // cursor's current row.  Use a full-screen region for the scroll so
+        // any active DECSTBM sub-region does not interfere; resize resets the
+        // region anyway.
+        if (h < self.primary.cur_y + 1) {
+            const to_scroll = (self.primary.cur_y + 1) - h;
+            self.primary.region = .{ .top = 0, .bottom = self.primary.height - 1 };
+            var i: usize = 0;
+            while (i < to_scroll) : (i += 1) {
+                if (self.primary.scrollUp(1)) |displaced| self.archive(displaced);
+                self.primary.cur_y -= 1;
+            }
+        }
+
+        self.primary.resize(w, h);
+        self.alternate.resize(w, h);
         if (self.compose_buf.len != w) {
             const fresh = self.alloc.alloc(Cell, w) catch return;
             self.alloc.free(self.compose_buf);
@@ -1464,4 +1483,78 @@ test "viewportRowAt returns a blank row for out-of-range y" {
         // A blank cell has cp = ' ' (space); no non-space content expected.
         try testing.expect(c.cp == ' ' or c.cp == 0);
     }
+}
+
+// --- resize pre-scroll tests -----------------------------------------------
+
+test "shrink past cursor anchors cursor to bottom and archives overflow" {
+    // 4-wide, 5-row terminal. Feed 5 lines so cursor is on row 4 (last).
+    // Shrink to 3 rows: 2 rows overflow into scrollback, cursor on row 2.
+    var term = try makeTerminal(4, 5);
+    defer term.deinit();
+    // Write 5 lines; cursor ends up on the last row with known content.
+    term.feed("aaaa\r\nbbbb\r\ncccc\r\ndddd\r\neeee");
+    try testing.expectEqual(@as(usize, 4), term.cursor().y);
+    try testing.expectEqual(@as(usize, 0), term.scrollbackLen());
+
+    term.resize(4, 3);
+
+    // Cursor must be within the new height.
+    try testing.expect(term.cursor().y < term.rows());
+    // 2 rows (row 0 and row 1 from the original screen) overflowed.
+    try testing.expectEqual(@as(usize, 2), term.scrollbackLen());
+    // The cursor row must still contain the last-written text "eeee".
+    var buf: [8]u8 = undefined;
+    try testing.expectEqualStrings("eeee", viewportText(&term, term.cursor().y, &buf));
+}
+
+test "shrink that does not overflow the cursor leaves scrollback unchanged" {
+    // 4-wide, 5-row terminal. Cursor at row 1; rows 2..4 are blank.
+    // Shrink to 3 rows: cursor still fits, no overflow.
+    var term = try makeTerminal(4, 5);
+    defer term.deinit();
+    term.feed("aaaa\r\nbbbb");
+    try testing.expectEqual(@as(usize, 1), term.cursor().y);
+    try testing.expectEqual(@as(usize, 0), term.scrollbackLen());
+
+    term.resize(4, 3);
+
+    try testing.expectEqual(@as(usize, 0), term.scrollbackLen());
+    var buf: [8]u8 = undefined;
+    try testing.expectEqualStrings("bbbb", viewportText(&term, term.cursor().y, &buf));
+}
+
+test "grow preserves content and cursor and leaves scrollback unchanged" {
+    var term = try makeTerminal(4, 3);
+    defer term.deinit();
+    term.feed("aaaa\r\nbbbb\r\ncccc");
+    // cccc is on row 2, cursor there.
+    try testing.expectEqual(@as(usize, 2), term.cursor().y);
+    try testing.expectEqual(@as(usize, 0), term.scrollbackLen());
+
+    term.resize(4, 6);
+
+    try testing.expectEqual(@as(usize, 0), term.scrollbackLen());
+    var buf: [8]u8 = undefined;
+    // cccc must still be on row 2.
+    try testing.expectEqualStrings("cccc", viewportText(&term, 2, &buf));
+    try testing.expectEqual(@as(usize, 2), term.cursor().y);
+}
+
+test "grow then shrink round trip leaves the cursor line visible" {
+    // 4-wide, 3-row terminal. Fill all rows; cursor on row 2.
+    var term = try makeTerminal(4, 3);
+    defer term.deinit();
+    term.feed("aaaa\r\nbbbb\r\ncccc");
+    try testing.expectEqual(@as(usize, 2), term.cursor().y);
+
+    // Grow to 6 rows — cursor stays at row 2, content intact.
+    term.resize(4, 6);
+    try testing.expectEqual(@as(usize, 0), term.scrollbackLen());
+
+    // Shrink back to 3 rows — cccc must still be visible at the cursor.
+    term.resize(4, 3);
+    try testing.expect(term.cursor().y < term.rows());
+    var buf: [8]u8 = undefined;
+    try testing.expectEqualStrings("cccc", viewportText(&term, term.cursor().y, &buf));
 }
