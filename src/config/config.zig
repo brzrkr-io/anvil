@@ -42,7 +42,7 @@ pub const Config = struct {
     font: FontCfg = .{},
     cursor: CursorCfg = .{},
     window: WindowCfg = .{},
-    theme: []const u8 = "mineral-dark",
+    theme: []const u8 = "system",
     theme_overrides: Overrides = .{},
     keybindings: Keybindings = .{},
     shell_integration: bool = true,
@@ -293,7 +293,7 @@ test "a partial config keeps defaults for absent fields" {
     try testing.expectEqual(@as(usize, 200), loaded.config.scrollback);
     try testing.expectEqualStrings("IBM Plex Mono", loaded.config.font.family);
     try testing.expectEqual(CursorStyle.block, loaded.config.cursor.style);
-    try testing.expectEqualStrings("mineral-dark", loaded.config.theme);
+    try testing.expectEqualStrings("system", loaded.config.theme);
 }
 
 test "malformed ZON returns ParseFailed" {

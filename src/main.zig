@@ -68,6 +68,7 @@ const App = struct {
     search_open: bool = false,
     webview: webview_mod.Webview,
     palette: palette_mod.Palette = .{},
+    system_dark: bool = false,
 };
 var g: App = undefined;
 
@@ -106,7 +107,7 @@ fn imMouseDown(_: c.id, _: c.SEL, ev: c.id) callconv(.c) void {
 fn applyConfig(new_loaded: cfg_mod.Loaded) void {
     const nl = new_loaded;
     const nc = nl.config;
-    g.theme = theme_mod.resolve(nc.theme, nc.theme_overrides);
+    g.theme = theme_mod.resolve(effectiveThemeName(g.nsapp, nc.theme), nc.theme_overrides);
     g.renderer.setClearColor(g.theme.background); // keep the GPU clear in sync
     g.cursor_cfg = nc.cursor;
     loadKeybindings(nc.keybindings);
@@ -241,6 +242,19 @@ fn onTick() void {
         if (g.watcher.poll(g.alloc)) |new_loaded| applyConfig(new_loaded);
     }
 
+    if (std.mem.eql(u8, g.config.config.theme, "system")) {
+        const now_dark = systemIsDark(g.nsapp);
+        if (now_dark != g.system_dark) {
+            g.system_dark = now_dark;
+            g.theme = theme_mod.resolve(
+                effectiveThemeName(g.nsapp, "system"),
+                g.config.config.theme_overrides,
+            );
+            g.renderer.setClearColor(g.theme.background);
+            g.dirty = true;
+        }
+    }
+
     // Drain every tab so background tabs stay current; render only the active.
     var i: usize = 0;
     var any_dead = false;
@@ -368,6 +382,24 @@ fn firstCodepoint(nsstr: objc.Object) ?u21 {
     const len = std.unicode.utf8ByteSequenceLength(s[0]) catch return null;
     if (s.len < len) return null;
     return std.unicode.utf8Decode(s[0..len]) catch null;
+}
+
+/// True when the macOS system appearance is dark.
+fn systemIsDark(nsapp: objc.Object) bool {
+    const appearance = nsapp.msgSend(objc.Object, "effectiveAppearance", .{});
+    if (appearance.value == null) return true;
+    const name = appearance.msgSend(objc.Object, "name", .{});
+    const cstr = name.msgSend(?[*:0]const u8, "UTF8String", .{}) orelse return true;
+    return std.mem.indexOf(u8, std.mem.span(cstr), "Dark") != null;
+}
+
+/// Resolve the configured theme name, mapping "system" to the dark/light
+/// Mineral theme that matches the current macOS appearance.
+fn effectiveThemeName(nsapp: objc.Object, cfg_theme: []const u8) []const u8 {
+    if (std.mem.eql(u8, cfg_theme, "system")) {
+        return if (systemIsDark(nsapp)) "mineral-dark" else "mineral-light";
+    }
+    return cfg_theme;
 }
 
 /// Lowercase an ASCII letter codepoint. Non-ASCII codepoints are returned
@@ -777,7 +809,7 @@ pub fn main() void {
 
     const scale = window.msgSend(f64, "backingScaleFactor", .{});
 
-    const active_theme = theme_mod.resolve(cfg.theme, cfg.theme_overrides);
+    const active_theme = theme_mod.resolve(effectiveThemeName(nsapp, cfg.theme), cfg.theme_overrides);
 
     // Font: configured family first, then fallbacks. dupeZ into the config
     // arena so the slice outlives this stack frame (font stack needs [:0]const u8).
@@ -815,6 +847,7 @@ pub fn main() void {
         .search = Search.init(alloc),
         .webview = wv,
     };
+    g.system_dark = systemIsDark(nsapp);
     g.renderer.setClearColor(active_theme.background);
     g.raster.pad_x = @floatFromInt(grid_pad);
     g.raster.pad_y = @floatFromInt(grid_pad);
