@@ -46,6 +46,7 @@ pub const Config = struct {
     theme_overrides: Overrides = .{},
     keybindings: Keybindings = .{},
     shell_integration: bool = true,
+    prompt: PromptCfg = .{},
 
     pub const FontCfg = struct {
         family: []const u8 = "IBM Plex Mono",
@@ -58,6 +59,17 @@ pub const Config = struct {
     pub const WindowCfg = struct {
         width: f64 = 1024.0,
         height: f64 = 640.0,
+    };
+    /// Shell-prompt settings. `custom` declares extra command-backed segments.
+    pub const PromptCfg = struct {
+        enabled: bool = true,
+        transient: bool = true,
+        custom: []const Custom = &.{},
+
+        pub const Custom = struct {
+            label: []const u8,
+            command: []const u8,
+        };
     };
 
     /// Pull every out-of-range value back to a usable minimum.
@@ -442,4 +454,23 @@ test "config parses shell_integration" {
     var off = try parseSlice(testing.allocator, ".{ .shell_integration = false }");
     defer off.deinit();
     try testing.expectEqual(false, off.config.shell_integration);
+}
+
+test "config defaults the prompt section on" {
+    var loaded = try parseSlice(testing.allocator, ".{ .scrollback = 100 }");
+    defer loaded.deinit();
+    try testing.expect(loaded.config.prompt.enabled);
+    try testing.expect(loaded.config.prompt.transient);
+    try testing.expectEqual(@as(usize, 0), loaded.config.prompt.custom.len);
+}
+
+test "config parses a custom prompt segment" {
+    const src =
+        \\.{ .prompt = .{ .custom = .{ .{ .label = "aws", .command = "echo prod" } } } }
+    ;
+    var loaded = try parseSlice(testing.allocator, src);
+    defer loaded.deinit();
+    try testing.expectEqual(@as(usize, 1), loaded.config.prompt.custom.len);
+    try testing.expectEqualStrings("aws", loaded.config.prompt.custom[0].label);
+    try testing.expectEqualStrings("echo prod", loaded.config.prompt.custom[0].command);
 }
