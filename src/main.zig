@@ -23,6 +23,8 @@ const searchbar = @import("render/searchbar.zig");
 const webview_mod = @import("webview/webview.zig");
 const palette_mod = @import("app/palette.zig");
 const bridge = @import("ipc/bridge.zig");
+const selection_mod = @import("app/selection.zig");
+const Selection = selection_mod.Selection;
 
 const CGPoint = extern struct { x: f64, y: f64 };
 const CGSize = extern struct { width: f64, height: f64 };
@@ -113,6 +115,7 @@ const App = struct {
     webview: webview_mod.Webview,
     palette: palette_mod.Palette = .{},
     system_dark: bool = false,
+    selection: Selection = .{},
 };
 var g: App = undefined;
 
@@ -144,6 +147,14 @@ fn imScrollWheel(_: c.id, _: c.SEL, ev: c.id) callconv(.c) void {
 
 fn imMouseDown(_: c.id, _: c.SEL, ev: c.id) callconv(.c) void {
     onMouseDown(.{ .value = ev });
+}
+
+fn imMouseDragged(_: c.id, _: c.SEL, ev: c.id) callconv(.c) void {
+    onMouseDragged(.{ .value = ev });
+}
+
+fn imMouseUp(_: c.id, _: c.SEL, ev: c.id) callconv(.c) void {
+    onMouseUp(.{ .value = ev });
 }
 
 // --- event handling ------------------------------------------------------
@@ -406,6 +417,7 @@ fn resizeAllTabs() void {
     }
     g.raster.resize(dw, dh) catch {};
     g.renderer.resize(dw, dh);
+    g.selection.clear();
     snapAnim();
     g.dirty = true;
 }
@@ -618,6 +630,13 @@ fn onKeyDown(event: objc.Object) void {
                 summonPalette();
                 return;
             }
+            // ⌘C — copy selection to clipboard.
+            if (asciiLowerCp(cp) == 'c' and !mods.shift and !mods.control and !mods.option) {
+                if (g.selection.active) {
+                    copySelection();
+                    return;
+                }
+            }
         }
         return; // other ⌘ combos still go to the system
     }
@@ -665,6 +684,7 @@ fn onKeyDown(event: objc.Object) void {
     _ = g.tabs.current().pty.write(bytes) catch {};
     g.tabs.current().terminal.scrollToBottom();
     g.scroll_pos = 0;
+    g.selection.clear();
     g.dirty = true;
 }
 
@@ -700,25 +720,163 @@ fn onScroll(event: objc.Object) void {
     g.dirty = true;
 }
 
-fn onMouseDown(event: objc.Object) void {
-    if (!g.tabs.barVisible()) return;
-
+/// Convert an NSEvent's locationInWindow to a (viewport row, col) cell.
+/// Returns null if the point is outside the terminal grid (e.g. in the tab bar).
+/// Clamps to the grid edge when `clamp` is true (for drag events).
+fn eventCell(event: objc.Object, clamp: bool) ?struct { row: usize, col: usize } {
     const win_pt = event.msgSend(CGPoint, "locationInWindow", .{});
     const view_pt = g.view.msgSend(CGPoint, "convertPoint:fromView:", .{
         win_pt, @as(c.id, null),
     });
     const b = g.view.msgSend(CGRect, "bounds", .{});
-    // bounds/point are bottom-left origin: the bar occupies the top.
-    const ch_pt = g.font.metrics.cell_h / g.scale; // bar height in points
-    if (view_pt.y < b.size.height - ch_pt) return; // click below the bar
+    const cw: f64 = g.font.metrics.cell_w;
+    const ch: f64 = g.font.metrics.cell_h;
+    const t = g.tabs.current();
+    const rows: f64 = @floatFromInt(t.terminal.rows());
+    const cols: f64 = @floatFromInt(t.terminal.cols());
 
-    const n = g.tabs.count();
-    if (n == 0) return;
-    const frac = std.math.clamp(view_pt.x / b.size.width, 0.0, 0.999);
-    const idx: usize = @intFromFloat(frac * @as(f64, @floatFromInt(n)));
-    g.tabs.switchTo(idx);
-    snapAnim();
+    // Device-pixel coordinates, raster origin (top-left).
+    const raster_h = b.size.height * g.scale;
+    const px_x = view_pt.x * g.scale;
+    const px_y = raster_h - view_pt.y * g.scale;
+
+    // Grid origin in device pixels.
+    const pad: f64 = @floatFromInt(grid_pad);
+    const top_bar_px: f64 = @floatFromInt(topBarRows());
+    const grid_top = pad + top_bar_px * ch;
+    const grid_left = pad;
+
+    const rel_y = px_y - grid_top;
+    const rel_x = px_x - grid_left;
+
+    if (!clamp) {
+        if (rel_y < 0 or rel_x < 0) return null;
+        if (rel_y >= rows * ch or rel_x >= cols * cw) return null;
+    }
+
+    const raw_row = rel_y / ch;
+    const raw_col = rel_x / cw;
+    const row: usize = @intFromFloat(std.math.clamp(raw_row, 0.0, rows - 1));
+    const col: usize = @intFromFloat(std.math.clamp(raw_col, 0.0, cols - 1));
+    return .{ .row = row, .col = col };
+}
+
+fn onMouseDown(event: objc.Object) void {
+    const win_pt = event.msgSend(CGPoint, "locationInWindow", .{});
+    const view_pt = g.view.msgSend(CGPoint, "convertPoint:fromView:", .{
+        win_pt, @as(c.id, null),
+    });
+    const b = g.view.msgSend(CGRect, "bounds", .{});
+
+    // Check if the click is in the tab bar (top row).
+    if (g.tabs.barVisible()) {
+        const ch_pt = g.font.metrics.cell_h / g.scale; // bar height in points
+        if (view_pt.y >= b.size.height - ch_pt) {
+            // Tab bar click — switch tab.
+            const n = g.tabs.count();
+            if (n == 0) return;
+            const frac = std.math.clamp(view_pt.x / b.size.width, 0.0, 0.999);
+            const idx: usize = @intFromFloat(frac * @as(f64, @floatFromInt(n)));
+            g.tabs.switchTo(idx);
+            snapAnim();
+            g.dirty = true;
+            return;
+        }
+    }
+
+    // Grid click — begin selection.
+    const cell = eventCell(event, false) orelse {
+        g.selection.clear();
+        g.dirty = true;
+        return;
+    };
+    const content_row = g.tabs.current().terminal.contentRowOfViewport(cell.row);
+    g.selection = .{
+        .active = true,
+        .anchor = .{ .row = content_row, .col = cell.col },
+        .head = .{ .row = content_row, .col = cell.col },
+    };
     g.dirty = true;
+}
+
+fn onMouseDragged(event: objc.Object) void {
+    if (!g.selection.active) return;
+    const cell = eventCell(event, true) orelse return;
+    const content_row = g.tabs.current().terminal.contentRowOfViewport(cell.row);
+    g.selection.head = .{ .row = content_row, .col = cell.col };
+    g.dirty = true;
+}
+
+fn onMouseUp(event: objc.Object) void {
+    _ = event;
+    // A click with no drag (anchor == head) means no real selection.
+    if (g.selection.active and
+        g.selection.anchor.row == g.selection.head.row and
+        g.selection.anchor.col == g.selection.head.col)
+    {
+        g.selection.clear();
+    }
+    g.dirty = true;
+}
+
+/// Extract selected text from the active tab's terminal and write it to the
+/// macOS general pasteboard.
+fn copySelection() void {
+    const term_obj = &g.tabs.current().terminal;
+    const o = g.selection.ordered();
+    const s = o.s;
+    const e = o.e;
+
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(g.alloc);
+
+    var row = s.row;
+    while (row <= e.row) : (row += 1) {
+        const cells = term_obj.line(row);
+        const col_start: usize = if (row == s.row) s.col else 0;
+        const col_end: usize = if (row == e.row) e.col else cells.len;
+        const safe_end = @min(col_end, cells.len);
+
+        // Find the last non-blank cell to trim trailing whitespace.
+        var last = col_start;
+        var ci = col_start;
+        while (ci < safe_end) : (ci += 1) {
+            if (cells[ci].cp != 0 and cells[ci].cp != ' ') last = ci + 1;
+        }
+
+        var x = col_start;
+        while (x < last) : (x += 1) {
+            const cp = cells[x].cp;
+            if (cp == 0) {
+                text.append(g.alloc, ' ') catch {};
+            } else {
+                var enc_buf: [4]u8 = undefined;
+                const n = std.unicode.utf8Encode(cp, &enc_buf) catch continue;
+                text.appendSlice(g.alloc, enc_buf[0..n]) catch {};
+            }
+        }
+
+        if (row < e.row) text.append(g.alloc, '\n') catch {};
+    }
+
+    // NSString stringWithUTF8String: requires a null-terminated string.
+    const str_z = g.alloc.dupeZ(u8, text.items) catch return;
+    defer g.alloc.free(str_z);
+
+    const ns_str = objc.getClass("NSString").?.msgSend(
+        objc.Object,
+        "stringWithUTF8String:",
+        .{str_z.ptr},
+    );
+
+    const pb = objc.getClass("NSPasteboard").?.msgSend(
+        objc.Object,
+        "generalPasteboard",
+        .{},
+    );
+    pb.msgSend(void, "clearContents", .{});
+    const pb_type = nsString("public.utf8-plain-text");
+    _ = pb.msgSend(bool, "setString:forType:", .{ ns_str, pb_type });
 }
 
 // --- rendering -----------------------------------------------------------
@@ -758,9 +916,10 @@ fn renderFrame() void {
     if (g.scroll_pos == 0 and g.overscroll == 0) {
         var y: usize = 0;
         while (y < rows) : (y += 1) {
+            const crow = t.terminal.contentRowOfViewport(y);
             const line = t.terminal.viewportRow(y);
             var x: usize = 0;
-            while (x < cols and x < line.len) : (x += 1) drawCell(x, y, line[x]);
+            while (x < cols and x < line.len) : (x += 1) drawCell(x, y, crow, line[x]);
         }
     } else {
         // Displayed offset = scroll_pos. Render the integer offset (base+1)
@@ -772,11 +931,17 @@ fn renderFrame() void {
         const frac: f64 = @as(f64, g.scroll_pos) - @floor(@as(f64, g.scroll_pos));
         const scroll_shift = (1.0 - frac) * g.font.metrics.cell_h;
         g.raster.y_shift_px = scroll_shift - @as(f64, g.overscroll);
+        const hist = t.terminal.scrollbackLen();
+        const off = base + 1;
         var y: usize = 0;
         while (y <= rows) : (y += 1) {
-            const line = t.terminal.viewportRowAt(base + 1, y);
+            // Content row for viewportRowAt(off, y): same formula as
+            // contentRowOfViewport but substituting `off` for viewport_offset.
+            // Use saturating arithmetic to guard against off > hist + y.
+            const crow: usize = if (off > y) (hist + y) -| off else hist + y - off;
+            const line = t.terminal.viewportRowAt(off, y);
             var x: usize = 0;
-            while (x < cols and x < line.len) : (x += 1) drawCell(x, y, line[x]);
+            while (x < cols and x < line.len) : (x += 1) drawCell(x, y, crow, line[x]);
         }
         g.raster.y_shift_px = 0;
     }
@@ -805,7 +970,7 @@ fn renderFrame() void {
     g.renderer.present(g.raster.bytes());
 }
 
-fn drawCell(x: usize, y: usize, cell: term.Cell) void {
+fn drawCell(x: usize, y: usize, content_row: usize, cell: term.Cell) void {
     var fg = resolve(cell.fg, g.theme.foreground);
     var bg = resolve(cell.bg, g.theme.background);
     if (cell.attrs.inverse) {
@@ -813,9 +978,11 @@ fn drawCell(x: usize, y: usize, cell: term.Cell) void {
         fg = bg;
         bg = t;
     }
+    if (g.selection.active and g.selection.contains(content_row, x)) {
+        bg = color.mix(g.theme.background, g.theme.accent, 0.28);
+    }
     if (g.search_open) {
-        const crow = g.tabs.current().terminal.contentRowOfViewport(y);
-        switch (g.search.classify(crow, x)) {
+        switch (g.search.classify(content_row, x)) {
             .current => bg = g.theme.accent,
             .other => bg = g.theme.ansi[8],
             .none => {},
@@ -912,6 +1079,8 @@ pub fn main() void {
     _ = View.addMethod("keyDown:", imKeyDown);
     _ = View.addMethod("scrollWheel:", imScrollWheel);
     _ = View.addMethod("mouseDown:", imMouseDown);
+    _ = View.addMethod("mouseDragged:", imMouseDragged);
+    _ = View.addMethod("mouseUp:", imMouseUp);
     objc.registerClassPair(View);
 
     const delegate = Delegate.msgSend(objc.Object, "alloc", .{})
@@ -1025,4 +1194,5 @@ test {
     _ = @import("pty/pty.zig");
     _ = @import("ipc/bridge.zig");
     _ = @import("app/palette.zig");
+    _ = @import("app/selection.zig");
 }
