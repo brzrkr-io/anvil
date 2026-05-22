@@ -302,6 +302,95 @@ pub const PaneTree = struct {
     }
 };
 
+/// Result of a divider hit-test: the split node that owns the divider, the
+/// index of the child *before* the divider (child i+1 is on the other side),
+/// and the divider's center position in device pixels along the split axis.
+pub const DividerHit = struct {
+    split_node: *PaneNode,
+    child_index: usize, // divider is between children[child_index] and [child_index+1]
+    axis_center: f64, // px position of the divider center (x for horizontal, y for vertical)
+};
+
+/// Find the divider closest to `px, py` within `slop_px` device pixels.
+/// Returns null when the point is not near any divider.
+/// No allocation — the tree is traversed directly.
+pub fn findDividerAt(
+    tree: *const PaneTree,
+    outer: Rect,
+    divider_px: f64,
+    px: f64,
+    py: f64,
+    slop_px: f64,
+) ?DividerHit {
+    return findDividerInNode(tree.root, outer, divider_px, px, py, slop_px);
+}
+
+fn findDividerInNode(
+    node: *PaneNode,
+    rect: Rect,
+    divider_px: f64,
+    px: f64,
+    py: f64,
+    slop_px: f64,
+) ?DividerHit {
+    switch (node.*) {
+        .leaf => return null,
+        .split => |*sp| {
+            const n = sp.children.items.len;
+            const total_gutter = divider_px * @as(f64, @floatFromInt(n - 1));
+            const available = switch (sp.dir) {
+                .horizontal => rect.w - total_gutter,
+                .vertical => rect.h - total_gutter,
+            };
+            var offset: f64 = 0.0;
+            for (sp.children.items, 0..) |child, i| {
+                const child_size = sp.ratios.items[i] * available;
+                const child_rect: Rect = switch (sp.dir) {
+                    .horizontal => .{ .x = rect.x + offset, .y = rect.y, .w = child_size, .h = rect.h },
+                    .vertical => .{ .x = rect.x, .y = rect.y + offset, .w = rect.w, .h = child_size },
+                };
+                offset += child_size;
+
+                // Check the gutter *after* this child (not after the last child).
+                if (i + 1 < n) {
+                    const gutter_start = switch (sp.dir) {
+                        .horizontal => rect.x + offset,
+                        .vertical => rect.y + offset,
+                    };
+                    const gutter_center = gutter_start + divider_px * 0.5;
+                    const hit_coord = switch (sp.dir) {
+                        .horizontal => px,
+                        .vertical => py,
+                    };
+                    // For a horizontal split, the click must also be within the
+                    // vertical span of this split (and vice versa).
+                    const in_span = switch (sp.dir) {
+                        .horizontal => py >= rect.y and py < rect.y + rect.h,
+                        .vertical => px >= rect.x and px < rect.x + rect.w,
+                    };
+                    if (in_span and @abs(hit_coord - gutter_center) <= divider_px * 0.5 + slop_px) {
+                        return .{
+                            .split_node = node,
+                            .child_index = i,
+                            .axis_center = gutter_center,
+                        };
+                    }
+                    offset += divider_px;
+
+                    // Recurse into child's subtree.
+                    const child_result = findDividerInNode(child, child_rect, divider_px, px, py, slop_px);
+                    if (child_result) |hit| return hit;
+                } else {
+                    // Last child: only recurse.
+                    const child_result = findDividerInNode(child, child_rect, divider_px, px, py, slop_px);
+                    if (child_result) |hit| return hit;
+                }
+            }
+            return null;
+        },
+    }
+}
+
 /// Move `delta` ratio units between `ratios[divider_index]` and
 /// `ratios[divider_index+1]`. Positive delta grows index i, shrinks i+1.
 /// Each ratio is clamped to `min_ratio`; the pair-sum invariant is preserved.
@@ -825,4 +914,148 @@ test "closeLeaf on non-root: collapse propagates correctly" {
     try testing.expect(tree.root.* == .split);
     try testing.expectEqual(@as(usize, 2), tree.root.split.children.items.len);
     try checkRatiosSumTree(tree.root);
+}
+
+/// Helper: derive (cols, rows) from a pane rect, matching the resize path.
+fn deriveColsRows(rect: Rect, cell_w: f64, cell_h: f64) struct { cols: usize, rows: usize } {
+    const cols = @max(@as(usize, @intFromFloat(rect.w / cell_w)), 1);
+    const rows = @max(@as(usize, @intFromFloat(rect.h / cell_h)), 1);
+    return .{ .cols = cols, .rows = rows };
+}
+
+test "resize derivation: 2-pane horizontal split yields correct per-pane cols" {
+    // A 2-pane horizontal split: each pane gets half the width minus half the gutter.
+    var tree = try PaneTree.initSingle(testing.allocator, 1);
+    defer tree.deinit();
+    try tree.split(.horizontal, 2);
+
+    const cell_w: f64 = 8.0;
+    const cell_h: f64 = 16.0;
+    const div: f64 = 4.0;
+    const inner: Rect = .{ .x = 0, .y = 0, .w = 400, .h = 200 };
+
+    var out = std.ArrayListUnmanaged(PaneTree.LayoutEntry).empty;
+    defer out.deinit(testing.allocator);
+    tree.layout(inner, div, &out, testing.allocator);
+
+    try testing.expectEqual(@as(usize, 2), out.items.len);
+    for (out.items) |e| {
+        const dr = deriveColsRows(e.rect, cell_w, cell_h);
+        // Each pane is (400 - 4) / 2 = 198 px wide -> 198 / 8 = 24 cols.
+        try testing.expectEqual(@as(usize, 24), dr.cols);
+        // Full height: 200 / 16 = 12 rows.
+        try testing.expectEqual(@as(usize, 12), dr.rows);
+        try testing.expect(dr.cols >= 1);
+        try testing.expect(dr.rows >= 1);
+    }
+}
+
+test "resize derivation: 3-pane vertical split yields >= 1 rows each" {
+    var tree = try PaneTree.initSingle(testing.allocator, 1);
+    defer tree.deinit();
+    try tree.split(.vertical, 2);
+    try tree.split(.vertical, 3);
+
+    const cell_w: f64 = 8.0;
+    const cell_h: f64 = 16.0;
+    const div: f64 = 4.0;
+    const inner: Rect = .{ .x = 0, .y = 0, .w = 300, .h = 150 };
+
+    var out = std.ArrayListUnmanaged(PaneTree.LayoutEntry).empty;
+    defer out.deinit(testing.allocator);
+    tree.layout(inner, div, &out, testing.allocator);
+
+    try testing.expectEqual(@as(usize, 3), out.items.len);
+    for (out.items) |e| {
+        const dr = deriveColsRows(e.rect, cell_w, cell_h);
+        try testing.expect(dr.cols >= 1);
+        try testing.expect(dr.rows >= 1);
+    }
+}
+
+test "adjustRatio: a known delta shifts child ratio by that amount (before clamping)" {
+    var tree = try PaneTree.initSingle(testing.allocator, 1);
+    defer tree.deinit();
+    try tree.split(.horizontal, 2);
+    const sp = &tree.root.split;
+
+    // Start: both at 0.5.
+    const before_i = sp.ratios.items[0];
+    const before_j = sp.ratios.items[1];
+    const delta = 0.1;
+    adjustRatio(sp, 0, delta, 0.05);
+
+    // After: i should be 0.5+0.1=0.6, j = 0.4 (no clamping since both > min).
+    try testing.expectApproxEqAbs(before_i + delta, sp.ratios.items[0], 1e-9);
+    try testing.expectApproxEqAbs(before_j - delta, sp.ratios.items[1], 1e-9);
+    // Sum still 1.0.
+    var sum: f64 = 0.0;
+    for (sp.ratios.items) |r| sum += r;
+    try testing.expectApproxEqAbs(1.0, sum, 1e-9);
+}
+
+test "adjustRatio: delta clamped at min_ratio floor" {
+    var tree = try PaneTree.initSingle(testing.allocator, 1);
+    defer tree.deinit();
+    try tree.split(.horizontal, 2);
+    const sp = &tree.root.split;
+
+    const min_r = 0.2;
+    // A huge positive delta: j cannot go below min_r.
+    adjustRatio(sp, 0, 1.0, min_r);
+    try testing.expect(sp.ratios.items[1] >= min_r - 1e-9);
+    try testing.expect(sp.ratios.items[0] >= min_r - 1e-9);
+    var sum: f64 = 0.0;
+    for (sp.ratios.items) |r| sum += r;
+    try testing.expectApproxEqAbs(1.0, sum, 1e-9);
+}
+
+test "findDividerAt: finds the divider between two horizontal panes" {
+    var tree = try PaneTree.initSingle(testing.allocator, 1);
+    defer tree.deinit();
+    try tree.split(.horizontal, 2);
+
+    const outer: Rect = .{ .x = 0, .y = 0, .w = 400, .h = 200 };
+    const div: f64 = 8.0;
+    // Divider center: at x = (400 - 8) / 2 + 8/2 = 196 + 4 = 200.
+    const divider_center_x: f64 = 200.0;
+
+    // Click exactly at center.
+    const hit = findDividerAt(&tree, outer, div, divider_center_x, 100.0, 4.0);
+    try testing.expect(hit != null);
+    try testing.expectEqual(@as(usize, 0), hit.?.child_index);
+
+    // Click well outside: no hit.
+    const miss = findDividerAt(&tree, outer, div, 50.0, 100.0, 4.0);
+    try testing.expect(miss == null);
+}
+
+test "leafCount == registry-count invariant after split and close" {
+    // Simulate the invariant: registry.count() should equal tree.leafCount()
+    // after every split and close operation.
+    // We fake the registry as a simple counter to avoid spawning PTYs.
+    var tree = try PaneTree.initSingle(testing.allocator, 1);
+    defer tree.deinit();
+    var reg_count: usize = 1;
+
+    try tree.split(.horizontal, 2);
+    reg_count += 1;
+    try testing.expectEqual(reg_count, tree.leafCount());
+
+    try tree.split(.vertical, 3);
+    reg_count += 1;
+    try testing.expectEqual(reg_count, tree.leafCount());
+
+    _ = tree.closeLeaf(3);
+    reg_count -= 1;
+    try testing.expectEqual(reg_count, tree.leafCount());
+
+    _ = tree.closeLeaf(2);
+    reg_count -= 1;
+    try testing.expectEqual(reg_count, tree.leafCount());
+
+    // Last pane close returns null.
+    const last = tree.closeLeaf(1);
+    try testing.expectEqual(@as(?PaneId, null), last);
+    // tree is now empty; don't count leaves.
 }

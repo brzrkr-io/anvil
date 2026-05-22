@@ -31,7 +31,7 @@ pub const divider_px: f64 = 8.0;
 /// Maximum number of leaves supported with zero heap allocation.
 /// A FixedBufferAllocator backed by a stack array of this size is used for
 /// the layout call, so no heap allocation occurs in steady state.
-const max_layout_entries = 64;
+pub const max_layout_entries = 64;
 
 /// Draw all panes in `tree` into `raster`, then draw divider hairlines over them.
 ///

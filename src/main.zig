@@ -38,6 +38,27 @@ const CGPoint = extern struct { x: f64, y: f64 };
 const CGSize = extern struct { width: f64, height: f64 };
 const CGRect = extern struct { origin: CGPoint, size: CGSize };
 
+/// State for an in-progress divider drag.
+const DividerDrag = struct {
+    split_node: *workspace_mod.layout_mod.PaneNode,
+    child_index: usize,
+    /// The initial pixel position of the divider center along the split axis.
+    start_axis_px: f64,
+    /// The initial pointer position along the split axis (device pixels).
+    start_ptr_px: f64,
+    /// The initial ratios of the two children bracketing the divider.
+    start_ratio_i: f64,
+    start_ratio_j: f64,
+};
+
+/// Maximum number of panes allowed per tab.
+const max_panes_per_tab: usize = 8;
+
+/// A terminal cell address (viewport-relative).
+const CellPos = struct { row: usize, col: usize };
+/// Device-pixel raster coordinates (top-left origin).
+const RasterPx = struct { px: f64, py: f64 };
+
 const app_icon_png = @embedFile("assets/app-icon.png");
 const palette_html: [:0]const u8 = @embedFile("palette_html");
 
@@ -106,6 +127,10 @@ const App = struct {
     keys_hud_toggle: ?cfg_mod.Chord = null,
     keys_tree_toggle: ?cfg_mod.Chord = null,
     keys_cheatsheet: ?cfg_mod.Chord = null,
+    keys_split_right: ?cfg_mod.Chord = null,
+    keys_split_down: ?cfg_mod.Chord = null,
+    keys_close_pane: ?cfg_mod.Chord = null,
+    divider_drag: ?DividerDrag = null,
     search: Search,
     cheatsheet_visible: bool = false,
     tree_visible: bool = false,
@@ -203,6 +228,9 @@ fn loadKeybindings(kb: cfg_mod.Keybindings) void {
     g.keys_hud_toggle = cfg_mod.parseChord(kb.hud_toggle);
     g.keys_tree_toggle = cfg_mod.parseChord(kb.tree_toggle);
     g.keys_cheatsheet = cfg_mod.parseChord(kb.cheatsheet_toggle);
+    g.keys_split_right = cfg_mod.parseChord(kb.split_right);
+    g.keys_split_down = cfg_mod.parseChord(kb.split_down);
+    g.keys_close_pane = cfg_mod.parseChord(kb.close_pane);
 }
 
 // --- command palette -----------------------------------------------------
@@ -425,18 +453,41 @@ fn onTick() void {
     if (any_dead) closeDeadTabs();
 }
 
-/// Close any tab whose shell has exited. Terminates the app if none remain.
+/// Close any dead panes across all tabs. If a tab's last pane dies, close the
+/// tab. Terminates the app when no tabs remain.
 fn closeDeadTabs() void {
     const bar_before = topBarRows();
-    var i: usize = 0;
-    while (i < g.tabs.count()) {
-        if (g.tabs.tabs.items[i].focusedPane().isDead()) {
-            if (!g.tabs.closeAt(i)) {
-                g.nsapp.msgSend(void, "terminate:", .{@as(c.id, null)});
-                return;
+    var tab_i: usize = 0;
+    while (tab_i < g.tabs.count()) {
+        const tab = g.tabs.tabs.items[tab_i];
+        // Collect dead pane ids first (can't modify while iterating the map).
+        var dead_ids: [max_panes_per_tab]workspace_mod.layout_mod.PaneId = undefined;
+        var dead_count: usize = 0;
+        var pit = tab.registry.map.valueIterator();
+        while (pit.next()) |pane_ptr| {
+            if (pane_ptr.*.isDead() and dead_count < dead_ids.len) {
+                dead_ids[dead_count] = pane_ptr.*.id;
+                dead_count += 1;
             }
-            // The list shifted; do not advance i.
-        } else i += 1;
+        }
+        // Close each dead pane. If closeLeaf returns null the tab must close.
+        var closed_tab = false;
+        for (dead_ids[0..dead_count]) |dead_id| {
+            const next_id = tab.tree.closeLeaf(dead_id);
+            tab.registry.remove(dead_id);
+            if (next_id) |nid| {
+                tab.tree.focused = nid;
+            } else {
+                // Last pane gone — close the tab.
+                if (!g.tabs.closeAt(tab_i)) {
+                    g.nsapp.msgSend(void, "terminate:", .{@as(c.id, null)});
+                    return;
+                }
+                closed_tab = true;
+                break;
+            }
+        }
+        if (!closed_tab) tab_i += 1;
     }
     if (topBarRows() != bar_before) resizeAllTabs();
     snapAnim();
@@ -455,27 +506,150 @@ fn resizeSurface() void {
     g.webview.setFrame(b.size.width, b.size.height);
 }
 
-/// Reflow every tab's terminal + pty to the window's current cell grid. This
-/// sends SIGWINCH and makes the shell redraw, so it runs once when a resize
-/// settles — not on every live-resize tick (that spammed the shell and made
-/// the text jitter).
-fn resizeAllTabs() void {
+/// Split the focused pane of the current tab in the given direction.
+/// No-op when the tab already has `max_panes_per_tab` panes.
+fn splitFocusedPane(dir: workspace_mod.layout_mod.SplitDir) void {
+    const tab = g.tabs.current();
+    if (tab.tree.leafCount() >= max_panes_per_tab) {
+        std.debug.print("anvil: max pane count ({d}) reached\n", .{max_panes_per_tab});
+        return;
+    }
+    // Compute current pane rect for the focused pane so the new pane can be
+    // sized appropriately. Use the tree layout on the current inner rect.
+    const cw = g.font.metrics.cell_w;
+    const ch = g.font.metrics.cell_h;
+    const div = workspace_mod.divider_px;
+    const ir = innerRect();
+
+    var entry_buf: [workspace_mod.max_layout_entries]workspace_mod.layout_mod.PaneTree.LayoutEntry = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(std.mem.sliceAsBytes(&entry_buf));
+    var entries = std.ArrayListUnmanaged(workspace_mod.layout_mod.PaneTree.LayoutEntry).empty;
+    tab.tree.layout(ir, div, &entries, fba.allocator());
+
+    // Find the focused pane's rect.
+    var focused_rect: workspace_mod.layout_mod.Rect = ir;
+    for (entries.items) |e| {
+        if (e.id == tab.tree.focused) {
+            focused_rect = e.rect;
+            break;
+        }
+    }
+
+    // After split, the focused pane's dimension along the split axis halves.
+    const new_cols: usize = switch (dir) {
+        .horizontal => @max(@as(usize, @intFromFloat((focused_rect.w - div) * 0.5 / cw)), 1),
+        .vertical => @max(@as(usize, @intFromFloat(focused_rect.w / cw)), 1),
+    };
+    const new_rows: usize = switch (dir) {
+        .horizontal => @max(@as(usize, @intFromFloat(focused_rect.h / ch)), 1),
+        .vertical => @max(@as(usize, @intFromFloat((focused_rect.h - div) * 0.5 / ch)), 1),
+    };
+
+    const new_id = tab.registry.createAndRegister(
+        tab.alloc,
+        new_cols,
+        new_rows,
+        g.config.config.scrollback,
+        currentCwd(),
+    ) catch |e| {
+        std.debug.print("anvil: pane create failed: {s}\n", .{@errorName(e)});
+        return;
+    };
+    // Start the reader thread for the new pane.
+    if (tab.registry.get(new_id)) |new_pane| {
+        new_pane.startReader() catch |e| {
+            std.debug.print("anvil: pane reader failed: {s}\n", .{@errorName(e)});
+            tab.registry.remove(new_id);
+            return;
+        };
+    }
+
+    tab.tree.split(dir, new_id) catch |e| {
+        std.debug.print("anvil: tree split failed: {s}\n", .{@errorName(e)});
+        tab.registry.remove(new_id);
+        return;
+    };
+    // tree.split already sets tree.focused = new_id.
+
+    resizeAllTabs();
+    snapAnim();
+    g.dirty = true;
+}
+
+/// Close the focused pane of the current tab.
+/// If it is the last pane, close the tab instead.
+fn closePane() void {
+    const tab = g.tabs.current();
+    const focused_id = tab.tree.focused;
+
+    const next_id = tab.tree.closeLeaf(focused_id);
+    tab.registry.remove(focused_id);
+
+    if (next_id) |nid| {
+        tab.tree.focused = nid;
+        resizeAllTabs();
+        snapAnim();
+        g.dirty = true;
+    } else {
+        // Last pane in tab — close the tab.
+        const bar_before = topBarRows();
+        if (!g.tabs.closeActive()) {
+            g.nsapp.msgSend(void, "terminate:", .{@as(c.id, null)});
+        } else {
+            if (topBarRows() != bar_before) resizeAllTabs();
+            snapAnim();
+            g.dirty = true;
+        }
+    }
+}
+
+/// Compute the inner content rect in device pixels for the current window state.
+fn innerRect() workspace_mod.layout_mod.Rect {
     const b = g.view.msgSend(CGRect, "bounds", .{});
-    const dw: usize = @intFromFloat(@max(b.size.width * g.scale, 1));
-    const dh: usize = @intFromFloat(@max(b.size.height * g.scale, 1));
-    const cw: usize = @intFromFloat(g.font.metrics.cell_w);
-    const ch: usize = @intFromFloat(g.font.metrics.cell_h);
-    const tree_px = if (g.tree_visible) filetree_render.tree_cols * cw else 0;
-    const cols = @max((dw -| 2 * grid_pad -| tree_px) / cw, 1);
-    const total_rows = @max((dh -| 2 * grid_pad) / ch, 1);
-    const rows = @max(total_rows -| topBarRows() -| bottomBarRows(), 1);
+    const dw: f64 = @max(b.size.width * g.scale, 1);
+    const dh: f64 = @max(b.size.height * g.scale, 1);
+    const pad: f64 = @floatFromInt(grid_pad);
+    const cell_h_f: f64 = g.font.metrics.cell_h;
+    const cw: f64 = g.font.metrics.cell_w;
+    const tree_offset: f64 = if (g.tree_visible)
+        @as(f64, @floatFromInt(filetree_render.tree_cols)) * cw
+    else
+        0;
+    const top_bar_px: f64 = @as(f64, @floatFromInt(topBarRows())) * cell_h_f;
+    const bot_bar_px: f64 = @as(f64, @floatFromInt(bottomBarRows())) * cell_h_f;
+    return .{
+        .x = pad + tree_offset,
+        .y = pad + top_bar_px,
+        .w = dw - 2 * pad - tree_offset,
+        .h = dh - 2 * pad - top_bar_px - bot_bar_px,
+    };
+}
+
+/// Reflow every pane in every tab to its current cell grid size, derived from
+/// the pane tree layout. Sends SIGWINCH to each pane's shell. Runs once when a
+/// resize settles — not on every live-resize frame.
+fn resizeAllTabs() void {
+    const ir = innerRect();
+    const cw = g.font.metrics.cell_w;
+    const ch = g.font.metrics.cell_h;
+    const div = workspace_mod.divider_px;
+
+    var entry_buf: [workspace_mod.max_layout_entries]workspace_mod.layout_mod.PaneTree.LayoutEntry = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(std.mem.sliceAsBytes(&entry_buf));
+    var entries = std.ArrayListUnmanaged(workspace_mod.layout_mod.PaneTree.LayoutEntry).empty;
 
     for (g.tabs.tabs.items) |tab| {
-        var pit = tab.registry.map.valueIterator();
-        while (pit.next()) |pane_ptr| {
-            pane_ptr.*.terminal.resize(cols, rows);
-            pane_ptr.*.pty.resize(@intCast(cols), @intCast(rows));
+        entries.clearRetainingCapacity();
+        tab.tree.layout(ir, div, &entries, fba.allocator());
+        for (entries.items) |e| {
+            const pane = tab.registry.get(e.id) orelse continue;
+            const cols = @max(@as(usize, @intFromFloat(e.rect.w / cw)), 1);
+            const rows = @max(@as(usize, @intFromFloat(e.rect.h / ch)), 1);
+            pane.terminal.resize(cols, rows);
+            pane.pty.resize(@intCast(cols), @intCast(rows));
         }
+        // Reset the FBA for the next tab.
+        fba.reset();
     }
     focusedPane().selection.clear();
     snapAnim();
@@ -604,6 +778,10 @@ fn handleTabKey(mods: keys.Mods, cp: u21) bool {
         addTab(currentCwd());
         return true;
     };
+    if (g.keys_close_pane) |ch| if (chordMatches(ch, mods, cp)) {
+        closePane();
+        return true;
+    };
     if (g.keys_close) |ch| if (chordMatches(ch, mods, cp)) {
         const bar_before = topBarRows();
         if (!g.tabs.closeActive()) {
@@ -615,6 +793,14 @@ fn handleTabKey(mods: keys.Mods, cp: u21) bool {
             if (topBarRows() != bar_before) resizeAllTabs();
             g.dirty = true;
         }
+        return true;
+    };
+    if (g.keys_split_right) |ch| if (chordMatches(ch, mods, cp)) {
+        splitFocusedPane(.horizontal);
+        return true;
+    };
+    if (g.keys_split_down) |ch| if (chordMatches(ch, mods, cp)) {
+        splitFocusedPane(.vertical);
         return true;
     };
     if (g.keys_next) |ch| if (chordMatches(ch, mods, cp)) {
@@ -955,38 +1141,78 @@ fn onScroll(event: objc.Object) void {
     g.dirty = true;
 }
 
-/// Convert an NSEvent's locationInWindow to a (viewport row, col) cell.
-/// Returns null if the point is outside the terminal grid (e.g. in the tab bar).
+/// Convert a window-point (NSEvent location) to device-pixel raster coordinates.
+fn windowPointToRasterPx(view_pt: CGPoint, raster_h: f64) RasterPx {
+    return .{
+        .px = view_pt.x * g.scale,
+        .py = raster_h - view_pt.y * g.scale,
+    };
+}
+
+/// Convert an NSEvent's locationInWindow to a viewport cell within the pane
+/// under the pointer. Returns null if the point is in a gutter or outside the grid.
 /// Clamps to the grid edge when `clamp` is true (for drag events).
-fn eventCell(event: objc.Object, clamp: bool) ?struct { row: usize, col: usize } {
+fn eventCell(event: objc.Object, clamp: bool) ?CellPos {
     const win_pt = event.msgSend(CGPoint, "locationInWindow", .{});
     const view_pt = g.view.msgSend(CGPoint, "convertPoint:fromView:", .{
         win_pt, @as(c.id, null),
     });
     const b = g.view.msgSend(CGRect, "bounds", .{});
-    const cw: f64 = g.font.metrics.cell_w;
-    const ch: f64 = g.font.metrics.cell_h;
-    const rows: f64 = @floatFromInt(focusedPane().terminal.rows());
-    const cols: f64 = @floatFromInt(focusedPane().terminal.cols());
 
     // Device-pixel coordinates, raster origin (top-left).
     const raster_h = b.size.height * g.scale;
-    const px_x = view_pt.x * g.scale;
-    const px_y = raster_h - view_pt.y * g.scale;
+    const rp = windowPointToRasterPx(view_pt, raster_h);
 
-    // Grid origin in device pixels.
-    const pad: f64 = @floatFromInt(grid_pad);
-    const top_bar_px: f64 = @floatFromInt(topBarRows());
-    const grid_top = pad + top_bar_px * ch;
-    // When the tree panel is visible the terminal grid is shifted right.
-    const tree_offset_px = if (g.tree_visible)
-        @as(f64, @floatFromInt(filetree_render.tree_cols)) * cw
-    else
-        @as(f64, 0);
-    const grid_left = pad + tree_offset_px;
+    // Hit-test the pane tree to find which pane the pointer is in.
+    const tab = g.tabs.current();
+    const ir = innerRect();
+    const div = workspace_mod.divider_px;
 
-    const rel_y = px_y - grid_top;
-    const rel_x = px_x - grid_left;
+    const hit_id = tab.tree.hitTest(ir, div, rp.px, rp.py, g.alloc);
+
+    // Determine which pane to use: the hit pane (or fall back to focused for clamp).
+    const pane_id = hit_id orelse {
+        if (!clamp) return null;
+        // On clamp mode (drag), keep routing to the focused pane.
+        return eventCellInPane(tab.tree.focused, ir, div, rp.px, rp.py, clamp);
+    };
+
+    return eventCellInPane(pane_id, ir, div, rp.px, rp.py, clamp);
+}
+
+/// Given a pane id, derive the viewport cell for the pointer position (device pixels).
+fn eventCellInPane(
+    pane_id: workspace_mod.layout_mod.PaneId,
+    ir: workspace_mod.layout_mod.Rect,
+    div: f64,
+    rp_px: f64,
+    rp_py: f64,
+    clamp: bool,
+) ?CellPos {
+    const tab = g.tabs.current();
+    const cw = g.font.metrics.cell_w;
+    const ch = g.font.metrics.cell_h;
+
+    // Find the pane's rect.
+    var entry_buf: [workspace_mod.max_layout_entries]workspace_mod.layout_mod.PaneTree.LayoutEntry = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(std.mem.sliceAsBytes(&entry_buf));
+    var entries = std.ArrayListUnmanaged(workspace_mod.layout_mod.PaneTree.LayoutEntry).empty;
+    tab.tree.layout(ir, div, &entries, fba.allocator());
+
+    var pane_rect: ?workspace_mod.layout_mod.Rect = null;
+    for (entries.items) |e| {
+        if (e.id == pane_id) {
+            pane_rect = e.rect;
+            break;
+        }
+    }
+    const pr = pane_rect orelse return null;
+    const pane = tab.registry.get(pane_id) orelse return null;
+    const rows: f64 = @floatFromInt(pane.terminal.rows());
+    const cols: f64 = @floatFromInt(pane.terminal.cols());
+
+    const rel_x = rp_px - pr.x;
+    const rel_y = rp_py - pr.y;
 
     if (!clamp) {
         if (rel_y < 0 or rel_x < 0) return null;
@@ -1054,6 +1280,17 @@ fn writeMouseEvent(button: u8, cell_col: usize, cell_row: usize, press: bool) vo
     _ = fp.pty.write(bytes) catch {};
 }
 
+/// Return the raster-space px coordinates for an NSEvent location.
+fn eventRasterPx(event: objc.Object) RasterPx {
+    const win_pt = event.msgSend(CGPoint, "locationInWindow", .{});
+    const view_pt = g.view.msgSend(CGPoint, "convertPoint:fromView:", .{
+        win_pt, @as(c.id, null),
+    });
+    const b = g.view.msgSend(CGRect, "bounds", .{});
+    const raster_h = b.size.height * g.scale;
+    return windowPointToRasterPx(view_pt, raster_h);
+}
+
 fn onMouseDown(event: objc.Object) void {
     const win_pt = event.msgSend(CGPoint, "locationInWindow", .{});
     const view_pt = g.view.msgSend(CGPoint, "convertPoint:fromView:", .{
@@ -1105,6 +1342,45 @@ fn onMouseDown(event: objc.Object) void {
                 }
             }
             return; // tree panel click — do not start text selection
+        }
+    }
+
+    // Check if the click is on a divider — start a drag if so.
+    {
+        const rp = eventRasterPx(event);
+        const tab = g.tabs.current();
+        const ir = innerRect();
+        const div = workspace_mod.divider_px;
+        const slop: f64 = 4.0; // extra px of slop around divider band
+        if (workspace_mod.layout_mod.findDividerAt(&tab.tree, ir, div, rp.px, rp.py, slop)) |hit| {
+            const sp = &hit.split_node.split;
+            g.divider_drag = .{
+                .split_node = hit.split_node,
+                .child_index = hit.child_index,
+                .start_axis_px = hit.axis_center,
+                .start_ptr_px = switch (sp.dir) {
+                    .horizontal => rp.px,
+                    .vertical => rp.py,
+                },
+                .start_ratio_i = sp.ratios.items[hit.child_index],
+                .start_ratio_j = sp.ratios.items[hit.child_index + 1],
+            };
+            return; // consumed by divider drag
+        }
+    }
+
+    // Click-to-focus: find the pane under the pointer and make it focused.
+    {
+        const rp = eventRasterPx(event);
+        const tab = g.tabs.current();
+        const ir = innerRect();
+        const div = workspace_mod.divider_px;
+        if (tab.tree.hitTest(ir, div, rp.px, rp.py, g.alloc)) |hit_id| {
+            if (hit_id != tab.tree.focused) {
+                tab.tree.focused = hit_id;
+                snapAnim();
+                g.dirty = true;
+            }
         }
     }
 
@@ -1176,6 +1452,67 @@ fn onMouseDown(event: objc.Object) void {
 }
 
 fn onMouseDragged(event: objc.Object) void {
+    // Divider drag — update ratio and reflow.
+    if (g.divider_drag) |*dd| {
+        const rp = eventRasterPx(event);
+        const sp = &dd.split_node.split;
+        const ptr_now = switch (sp.dir) {
+            .horizontal => rp.px,
+            .vertical => rp.py,
+        };
+        const tab = g.tabs.current();
+        const ir = innerRect();
+        const div = workspace_mod.divider_px;
+
+        // Compute the total extent available for ratio adjustment.
+        const total_dim = switch (sp.dir) {
+            .horizontal => ir.w,
+            .vertical => ir.h,
+        };
+        const n: f64 = @floatFromInt(sp.children.items.len);
+        const total_gutter = div * (n - 1.0);
+        const available = total_dim - total_gutter;
+        if (available <= 0) return;
+
+        // Delta in ratio space: pixel delta / available pixels.
+        const px_delta = ptr_now - dd.start_ptr_px;
+        const ratio_delta = px_delta / available;
+
+        // Compute min_ratio from min pane size (8 cols / 3 rows).
+        const cell_dim: f64 = switch (sp.dir) {
+            .horizontal => g.font.metrics.cell_w,
+            .vertical => g.font.metrics.cell_h,
+        };
+        const min_cells: f64 = switch (sp.dir) {
+            .horizontal => 8.0,
+            .vertical => 3.0,
+        };
+        const min_ratio = (min_cells * cell_dim) / available;
+
+        // Reset to starting ratios then apply current delta from start.
+        sp.ratios.items[dd.child_index] = dd.start_ratio_i;
+        sp.ratios.items[dd.child_index + 1] = dd.start_ratio_j;
+        workspace_mod.layout_mod.adjustRatio(sp, dd.child_index, ratio_delta, @max(min_ratio, 0.01));
+
+        // Resize panes to reflect the new layout.
+        var entry_buf: [workspace_mod.max_layout_entries]workspace_mod.layout_mod.PaneTree.LayoutEntry = undefined;
+        var fba = std.heap.FixedBufferAllocator.init(std.mem.sliceAsBytes(&entry_buf));
+        var entries = std.ArrayListUnmanaged(workspace_mod.layout_mod.PaneTree.LayoutEntry).empty;
+        tab.tree.layout(ir, div, &entries, fba.allocator());
+        const cw = g.font.metrics.cell_w;
+        const ch = g.font.metrics.cell_h;
+        for (entries.items) |e| {
+            const pane = tab.registry.get(e.id) orelse continue;
+            const cols = @max(@as(usize, @intFromFloat(e.rect.w / cw)), 1);
+            const rows = @max(@as(usize, @intFromFloat(e.rect.h / ch)), 1);
+            // During drag, only update the terminal grid (suppress SIGWINCH
+            // for the same reason live-resize does: avoid jitter).
+            pane.terminal.resize(cols, rows);
+        }
+        g.dirty = true;
+        return;
+    }
+
     // Mouse reporting: forward drag as button-motion event.
     const tm = &focusedPane().terminal;
     if (tm.modes.mouse_button) {
@@ -1193,6 +1530,13 @@ fn onMouseDragged(event: objc.Object) void {
 }
 
 fn onMouseUp(event: objc.Object) void {
+    // Divider drag end — send SIGWINCH to settle the grid.
+    if (g.divider_drag != null) {
+        g.divider_drag = null;
+        resizeAllTabs(); // sends SIGWINCH now that drag has settled
+        return;
+    }
+
     // Mouse reporting: forward release to PTY (SGR only; legacy X10 has no release).
     const tm = &focusedPane().terminal;
     if (tm.modes.mouse_button and tm.modes.mouse_sgr) {
@@ -1415,7 +1759,7 @@ fn renderFrame() void {
     else
         0;
 
-    // Inner content rect: the window area minus top bar and file-tree panel.
+    // Inner content rect: the window area minus top bar, bottom bar, and file-tree panel.
     // origin_y uses pad_y + top bar height so drawWorkspace passes top_bar_rows=0.
     const cell_h_f64: f64 = g.font.metrics.cell_h;
     const inner: workspace_mod.layout_mod.Rect = .{
@@ -1423,7 +1767,8 @@ fn renderFrame() void {
         .y = g.raster.pad_y + @as(f64, @floatFromInt(topBarRows())) * cell_h_f64,
         .w = @as(f64, @floatFromInt(g.raster.width)) - 2 * g.raster.pad_x - tree_offset_px,
         .h = @as(f64, @floatFromInt(g.raster.height)) - 2 * g.raster.pad_y -
-            @as(f64, @floatFromInt(topBarRows())) * cell_h_f64,
+            @as(f64, @floatFromInt(topBarRows())) * cell_h_f64 -
+            @as(f64, @floatFromInt(bottomBarRows())) * cell_h_f64,
     };
 
     const search_ptr: ?*const Search = if (g.search_open) &g.search else null;

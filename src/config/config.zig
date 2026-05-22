@@ -245,7 +245,7 @@ fn eqIgnoreCase(a: []const u8, b: []const u8) bool {
 /// `parseChord`; an unparseable string falls back to that field's default.
 pub const Keybindings = struct {
     new_tab: []const u8 = "cmd+t",
-    close_tab: []const u8 = "cmd+w",
+    close_tab: []const u8 = "",
     next_tab: []const u8 = "cmd+shift+]",
     prev_tab: []const u8 = "cmd+shift+[",
     tab_1: []const u8 = "cmd+1",
@@ -263,6 +263,9 @@ pub const Keybindings = struct {
     hud_toggle: []const u8 = "cmd+j",
     tree_toggle: []const u8 = "cmd+e",
     cheatsheet_toggle: []const u8 = "cmd+/",
+    split_right: []const u8 = "cmd+d",
+    split_down: []const u8 = "cmd+shift+d",
+    close_pane: []const u8 = "cmd+w",
 };
 
 const testing = std.testing;
@@ -439,7 +442,7 @@ test "config parses a keybindings override" {
     var loaded = try parseSlice(testing.allocator, ".{ .keybindings = .{ .new_tab = \"ctrl+n\" } }");
     defer loaded.deinit();
     try testing.expectEqualStrings("ctrl+n", loaded.config.keybindings.new_tab);
-    try testing.expectEqualStrings("cmd+w", loaded.config.keybindings.close_tab); // default
+    try testing.expectEqualStrings("", loaded.config.keybindings.close_tab); // default (pane close is now cmd+w)
 }
 
 test "config parses a search keybinding override" {
