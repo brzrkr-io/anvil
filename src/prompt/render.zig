@@ -2,6 +2,10 @@
 //! wrapped in the shell's zero-width markers (`%{ %}` for zsh, `\001 \002` for
 //! bash) — without that the shell miscounts the prompt's visible width and
 //! typed input lands in the wrong column.
+//!
+//! Colors are emitted as indexed ANSI colors (`\x1b[38;5;Nm`) so the terminal
+//! re-resolves them through the active theme palette on every frame. A theme
+//! switch therefore recolors all prompts in scrollback automatically.
 
 const std = @import("std");
 const seg = @import("segments.zig");
@@ -12,70 +16,40 @@ pub const Shell = enum { plain, zsh, bash };
 const reset = "\x1b[0m";
 const edge = "\u{258e}"; // ▎
 
-const Palette = struct {
-    accent: []const u8,
-    accent_err: []const u8,
-    bright: []const u8,
-    dim: []const u8,
-    rule_color: []const u8,
-    git: []const u8,
-    tool: []const u8,
-    infra: []const u8,
-    warn: []const u8,
-    ok: []const u8,
-};
-
-const dark_palette: Palette = .{
-    .accent = "\x1b[38;2;84;183;192m", // #54b7c0 mineral
-    .accent_err = "\x1b[38;2;212;74;63m", // #d44a3f
-    .bright = "\x1b[38;2;216;219;226m", // #d8dbe2 anchor
-    .dim = "\x1b[38;2;125;135;145m", // #7d8791
-    .rule_color = "\x1b[38;2;74;80;96m", // #4a5060
-    .git = "\x1b[38;2;127;176;135m", // #7fb087
-    .tool = "\x1b[38;2;157;146;207m", // #9d92cf
-    .infra = "\x1b[38;2;111;159;196m", // #6f9fc4
-    .warn = "\x1b[38;2;199;154;62m", // #c79a3e
-    .ok = "\x1b[38;2;90;168;115m", // #5aa873
-};
-
-const light_palette: Palette = .{
-    .accent = "\x1b[38;2;44;122;130m", // #2c7a82 mineral
-    .accent_err = "\x1b[38;2;181;68;58m", // #b5443a
-    .bright = "\x1b[38;2;27;31;36m", // #1b1f24 ink — the strong anchor on light
-    .dim = "\x1b[38;2;93;102;113m", // #5d6671 readable mid grey
-    .rule_color = "\x1b[38;2;205;211;213m", // #cdd3d5 faint light separator
-    .git = "\x1b[38;2;60;125;84m", // #3c7d54
-    .tool = "\x1b[38;2;98;85;143m", // #62558f
-    .infra = "\x1b[38;2;63;108;149m", // #3f6c95
-    .warn = "\x1b[38;2;148;100;16m", // #946410
-    .ok = "\x1b[38;2;60;125;84m", // #3c7d54
-};
+// Indexed ANSI colors — resolved through the active theme each frame.
+const anchor = "\x1b[39m"; // default foreground — cwd anchor; flips with theme
+const accent = "\x1b[38;5;6m"; // ANSI 6 = mineral/cyan — edge glyph, prompt glyph
+const accent_err = "\x1b[38;5;1m"; // ANSI 1 = red — error state
+const dim = "\x1b[38;5;8m"; // ANSI 8 = readable dim grey
+const git_color = "\x1b[38;5;2m"; // ANSI 2 = green
+const tool_color = "\x1b[38;5;5m"; // ANSI 5 = magenta — toolchain
+const infra_color = "\x1b[38;5;4m"; // ANSI 4 = blue — container/cluster
+const warn_color = "\x1b[38;5;3m"; // ANSI 3 = yellow/amber — attention
+const ok_color = "\x1b[38;5;2m"; // ANSI 2 = green
 
 /// A segment's colour: an attention state (dirty / failed) wins; otherwise the
 /// colour is keyed to the segment's type.
-fn segColor(p: *const Palette, s: seg.Segment) []const u8 {
+fn segColor(s: seg.Segment) []const u8 {
     switch (s.state) {
-        .warn => return p.warn,
-        .err => return p.accent_err,
-        .ok => return p.ok,
-        .run => return p.accent,
+        .warn => return warn_color,
+        .err => return accent_err,
+        .ok => return ok_color,
+        .run => return accent,
         .normal => {},
     }
     return switch (s.icon) {
-        .repo => p.bright,
-        .branch => p.git,
-        .toolchain => p.tool,
-        .container, .cluster => p.infra,
-        else => p.dim,
+        .repo => anchor,
+        .branch => git_color,
+        .toolchain => tool_color,
+        .container, .cluster => infra_color,
+        else => dim,
     };
 }
 
 pub const Options = struct {
     rich: bool,
     failed: bool, // last command exited non-zero
-    width: usize = 0, // terminal columns, for the separator rule
     shell: Shell = .plain,
-    light: bool = false, // use light palette instead of dark
 };
 
 const Buf = std.ArrayList(u8);
@@ -98,46 +72,23 @@ fn esc(buf: *Buf, a: std.mem.Allocator, shell: Shell, seq: []const u8) !void {
     }
 }
 
-/// A faint, full-width horizontal rule — printed as the prompt's first line so
-/// the scrollback reads as distinct command blocks. `width` is the terminal
-/// column count; the rule stops one column short to avoid the wrap edge case.
-pub fn rule(a: std.mem.Allocator, width: usize, shell: Shell) ![]u8 {
-    return ruleWithPalette(a, width, shell, &dark_palette);
-}
-
-fn ruleWithPalette(a: std.mem.Allocator, width: usize, shell: Shell, p: *const Palette) ![]u8 {
-    const w: usize = if (width <= 1) 79 else @min(width - 1, 511);
-    var buf: Buf = .empty;
-    errdefer buf.deinit(a);
-    try esc(&buf, a, shell, p.rule_color);
-    var i: usize = 0;
-    while (i < w) : (i += 1) try buf.appendSlice(a, "\u{2500}");
-    try esc(&buf, a, shell, reset);
-    try buf.appendSlice(a, "\n");
-    return buf.toOwnedSlice(a);
-}
-
-/// The full two-line prompt block, with the separator rule as its first line.
+/// The full two-line prompt block. The separator rule is now drawn by the
+/// renderer from OSC 133;A marks, so it is always full-width and theme-colored.
 pub fn full(a: std.mem.Allocator, segments: []const seg.Segment, opts: Options) ![]u8 {
-    const p: *const Palette = if (opts.light) &light_palette else &dark_palette;
     var buf: Buf = .empty;
     errdefer buf.deinit(a);
     const sh = opts.shell;
 
-    const r = try ruleWithPalette(a, opts.width, sh, p);
-    defer a.free(r);
-    try buf.appendSlice(a, r);
-
-    const edge_color = if (opts.failed) p.accent_err else p.accent;
-    // Line 1: edge + segments. The cwd anchor is bright; the rest take their
-    // state colour.
+    const edge_color = if (opts.failed) accent_err else accent;
+    // Line 1: edge + segments. The cwd anchor uses the default fg; others take
+    // their state colour.
     try esc(&buf, a, sh, edge_color);
     try buf.appendSlice(a, edge);
     try esc(&buf, a, sh, reset);
     try buf.appendSlice(a, "  ");
     for (segments, 0..) |s, idx| {
         if (idx != 0) try buf.appendSlice(a, "   ");
-        try esc(&buf, a, sh, segColor(p, s));
+        try esc(&buf, a, sh, segColor(s));
         // In rich mode the segment leads with its icon glyph (segment colour).
         if (opts.rich) {
             try buf.appendSlice(a, icons.glyph(s.icon, true));
@@ -162,10 +113,9 @@ pub fn full(a: std.mem.Allocator, segments: []const seg.Segment, opts: Options) 
 
 /// The collapsed transient prompt — just the glyph.
 pub fn transient(a: std.mem.Allocator, opts: Options) ![]u8 {
-    const p: *const Palette = if (opts.light) &light_palette else &dark_palette;
     var buf: Buf = .empty;
     errdefer buf.deinit(a);
-    const col = if (opts.failed) p.accent_err else p.dim;
+    const col = if (opts.failed) accent_err else dim;
     try esc(&buf, a, opts.shell, col);
     try buf.appendSlice(a, "\u{203a}");
     try esc(&buf, a, opts.shell, reset);
@@ -192,21 +142,21 @@ test "full renders two lines with the accent edge" {
     try testing.expect(std.mem.indexOf(u8, out, "main") != null);
 }
 
-test "full uses the failure colour when the last command failed" {
+test "full uses indexed accent_err colour on failure" {
     const s = sampleSegs();
     const ok = try full(testing.allocator, &s, .{ .rich = true, .failed = false });
     defer testing.allocator.free(ok);
     const bad = try full(testing.allocator, &s, .{ .rich = true, .failed = true });
     defer testing.allocator.free(bad);
-    try testing.expect(std.mem.indexOf(u8, bad, dark_palette.accent_err) != null);
-    try testing.expect(std.mem.indexOf(u8, ok, dark_palette.accent_err) == null);
+    try testing.expect(std.mem.indexOf(u8, bad, accent_err) != null);
+    try testing.expect(std.mem.indexOf(u8, ok, accent_err) == null);
 }
 
-test "the cwd anchor renders bright (dark palette)" {
+test "the cwd anchor uses the default-fg indexed color" {
     const s = sampleSegs();
     const out = try full(testing.allocator, &s, .{ .rich = true, .failed = false });
     defer testing.allocator.free(out);
-    try testing.expect(std.mem.indexOf(u8, out, dark_palette.bright) != null);
+    try testing.expect(std.mem.indexOf(u8, out, anchor) != null);
 }
 
 test "transient is a single line" {
@@ -222,11 +172,12 @@ test "full emits the OSC 133;B prompt-end mark" {
     try testing.expect(std.mem.indexOf(u8, out, "\x1b]133;B") != null);
 }
 
-test "rule is a faint full-width line ending in a newline" {
-    const out = try rule(testing.allocator, 12, .plain);
+test "full does not contain a rule line (renderer draws the separator)" {
+    const s = sampleSegs();
+    const out = try full(testing.allocator, &s, .{ .rich = true, .failed = false });
     defer testing.allocator.free(out);
-    try testing.expect(std.mem.indexOf(u8, out, "\u{2500}") != null);
-    try testing.expect(std.mem.endsWith(u8, out, "\n"));
+    // The box-drawing horizontal bar character must not appear in the prompt text.
+    try testing.expect(std.mem.indexOf(u8, out, "\u{2500}") == null);
 }
 
 test "zsh mode wraps escape sequences in zero-width markers" {
@@ -237,10 +188,14 @@ test "zsh mode wraps escape sequences in zero-width markers" {
     try testing.expect(std.mem.indexOf(u8, out, "%}") != null);
 }
 
-test "light palette: full uses light bright and not dark bright" {
-    const s = sampleSegs();
-    const out = try full(testing.allocator, &s, .{ .rich = true, .failed = false, .light = true });
+test "transient uses indexed dim colour when not failed" {
+    const out = try transient(testing.allocator, .{ .rich = false, .failed = false });
     defer testing.allocator.free(out);
-    try testing.expect(std.mem.indexOf(u8, out, light_palette.bright) != null);
-    try testing.expect(std.mem.indexOf(u8, out, dark_palette.bright) == null);
+    try testing.expect(std.mem.indexOf(u8, out, dim) != null);
+}
+
+test "transient uses indexed accent_err colour when failed" {
+    const out = try transient(testing.allocator, .{ .rich = false, .failed = true });
+    defer testing.allocator.free(out);
+    try testing.expect(std.mem.indexOf(u8, out, accent_err) != null);
 }

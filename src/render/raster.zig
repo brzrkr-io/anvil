@@ -118,6 +118,27 @@ pub const Raster = struct {
         capi.CTFontDrawGlyphs(font.ct, &g, &pos, 1, self.ctx);
     }
 
+    /// Draw a thin full-width horizontal hairline at the TOP edge of cell-row
+    /// `row`. The strip is ≈2 device pixels tall and respects `y_shift_px` so
+    /// it scrolls with the grid. Intended for prompt-start separator marks.
+    pub fn rowRule(self: *Raster, font: Font, row: f64, rgb: [3]u8) void {
+        const ch = font.metrics.cell_h;
+        // Top edge of the row in CG coordinates (y-up, origin bottom-left).
+        // cellRect places the cell at:
+        //   y = height - pad_y - (row + 1) * ch + y_shift_px
+        // The TOP of that cell (highest CG y) is one cell_h above that origin:
+        //   top_y = height - pad_y - row * ch + y_shift_px
+        // We fill a 2px strip just below the top edge (toward lower CG y).
+        const strip_h: f64 = 2.0;
+        const top_y = @as(f64, @floatFromInt(self.height)) - self.pad_y -
+            row * ch + self.y_shift_px - strip_h;
+        setFill(self.ctx, rgb);
+        capi.CGContextFillRect(self.ctx, .{
+            .origin = .{ .x = 0, .y = top_y },
+            .size = .{ .width = @floatFromInt(self.width), .height = strip_h },
+        });
+    }
+
     fn cellRect(self: *Raster, font: Font, col: f64, row: f64) capi.CGRect {
         const cw = font.metrics.cell_w;
         const ch = font.metrics.cell_h;
@@ -232,6 +253,29 @@ test "cellInset underline fills the cell bottom" {
     // should still be clear — it is above the underline strip.
     const mid_y: usize = @intFromFloat(f.metrics.cell_h * 1.5);
     try std.testing.expectEqual([3]u8{ 0, 0, 0 }, pixelAt(&r, ux, mid_y));
+}
+
+test "rowRule draws a strip at the top of a cell row" {
+    const f = try Font.init("Menlo", 26.0);
+    defer f.deinit();
+    const w: usize = 400;
+    const h: usize = 300;
+    var r = try Raster.init(std.testing.allocator, w, h);
+    defer r.deinit();
+    r.clear(.{ 0, 0, 0 });
+    // Draw a rule at raster row 1 (the second row from the top of the viewport).
+    r.rowRule(f, 1.0, .{ 200, 100, 50 });
+    // The strip sits at the top edge of row 1. In the bitmap (y-down), row 1
+    // starts at bitmap-y = cell_h (row 0 occupies [0, cell_h)).
+    // The rule strip is 2px tall just at that boundary.
+    const strip_bitmap_y: usize = @intFromFloat(f.metrics.cell_h);
+    // A pixel in the middle of the strip's x-span should carry the rule color.
+    const mid_x: usize = w / 2;
+    try std.testing.expectEqual([3]u8{ 200, 100, 50 }, pixelAt(&r, mid_x, strip_bitmap_y));
+    // A pixel well into the interior of row 1 (well below the top edge) should
+    // still be the cleared background.
+    const inner_y: usize = @intFromFloat(f.metrics.cell_h * 1.5);
+    try std.testing.expectEqual([3]u8{ 0, 0, 0 }, pixelAt(&r, mid_x, inner_y));
 }
 
 test "y_shift_px shifts cellBg upward in the bitmap" {

@@ -635,6 +635,12 @@ pub const Terminal = struct {
             else => return,
         };
         const line_num = self.evicted_lines + self.history.len() + self.active().cur_y;
+        // Suppress a duplicate prompt_start on the same line (precmd may fire
+        // OSC 133;A more than once per prompt draw).
+        if (kind == .prompt_start and self.mark_count > 0) {
+            const last = self.marks[self.mark_count - 1];
+            if (last.kind == .prompt_start and last.line == line_num) return;
+        }
         if (self.mark_count == max_marks) {
             // Drop the oldest mark to make room.
             std.mem.copyForwards(PromptMark, self.marks[0 .. max_marks - 1], self.marks[1..]);
@@ -642,6 +648,22 @@ pub const Terminal = struct {
         }
         self.marks[self.mark_count] = .{ .kind = kind, .line = line_num };
         self.mark_count += 1;
+    }
+
+    /// True when the given absolute line index was marked as a prompt start
+    /// (OSC 133;A). Used by the renderer to draw a separator hairline.
+    pub fn isPromptStart(self: *const Terminal, abs_line: usize) bool {
+        for (self.marks[0..self.mark_count]) |m| {
+            if (m.kind == .prompt_start and m.line == abs_line) return true;
+        }
+        return false;
+    }
+
+    /// Convert a content-row index (scrollback rows followed by grid rows, as
+    /// used by `line()` and `contentRowOfViewport()`) to an absolute line
+    /// index that matches the values stored in `marks`.
+    pub fn absoluteLineOfContent(self: *const Terminal, content_row: usize) usize {
+        return self.evicted_lines + content_row;
     }
 
     // --- misc control ------------------------------------------------------
@@ -1044,6 +1066,57 @@ test "OSC 133 absolute line survives scrollback eviction" {
     try testing.expectEqual(@as(usize, 1), term.promptMarks()[0].line);
 }
 
+test "isPromptStart returns true for a prompt_start mark and false elsewhere" {
+    var term = try makeTerminal(6, 3);
+    defer term.deinit();
+    term.feed("\x1B]133;A\x07"); // prompt start at abs line 0
+    term.feed("$ ls\r\n"); // move to line 1
+    term.feed("\x1B]133;B\x07"); // command start (not prompt_start) at line 1
+    try testing.expect(term.isPromptStart(0));
+    try testing.expect(!term.isPromptStart(1)); // command_start, not prompt_start
+    try testing.expect(!term.isPromptStart(2)); // no mark here
+}
+
+test "isPromptStart deduplicates repeated OSC 133;A on the same line" {
+    var term = try makeTerminal(6, 3);
+    defer term.deinit();
+    term.feed("\x1B]133;A\x07");
+    term.feed("\x1B]133;A\x07"); // second fire on same line — must be a no-op
+    // Only one mark recorded.
+    try testing.expectEqual(@as(usize, 1), term.promptMarks().len);
+    try testing.expect(term.isPromptStart(0));
+}
+
+test "absoluteLineOfContent converts content row to absolute line" {
+    var term = try makeTerminal(4, 3);
+    defer term.deinit();
+    // Fresh: no evictions; content row equals absolute line.
+    try testing.expectEqual(@as(usize, 0), term.absoluteLineOfContent(0));
+    try testing.expectEqual(@as(usize, 2), term.absoluteLineOfContent(2));
+    // Feed enough lines to cause scrollback eviction (cap=default, but 4-col
+    // 3-row grid will evict once we push a 4th line).
+    term.feed("A\r\nB\r\nC\r\nD"); // pushes first row into scrollback
+    // evicted_lines is still 0 until scrollback itself is full; for a fresh
+    // terminal with default capacity the first eviction takes much longer.
+    // Just confirm the formula holds: absoluteLineOfContent = evicted + row.
+    const ev = term.evicted_lines;
+    try testing.expectEqual(ev + 1, term.absoluteLineOfContent(1));
+}
+
+test "isPromptStart ring wraps without error past max_marks" {
+    var term = try makeTerminal(6, 3);
+    defer term.deinit();
+    // Feed enough distinct prompt-starts to overflow the ring. Each one
+    // advances the cursor to the next line so the absolute line differs.
+    var i: usize = 0;
+    while (i < max_marks + 10) : (i += 1) {
+        term.feed("\x1B]133;A\x07");
+        term.feed("\r\n"); // next line so absolute index differs each iteration
+    }
+    // Ring is at capacity; no crash and count is capped.
+    try testing.expectEqual(@as(usize, max_marks), term.promptMarks().len);
+}
+
 test "ESC c performs a full reset" {
     var term = try makeTerminal(4, 2);
     defer term.deinit();
@@ -1334,6 +1407,7 @@ test "OSC 133 marks evict the oldest past the cap" {
     var i: usize = 0;
     while (i < max_marks + 5) : (i += 1) {
         term.feed("\x1B]133;A\x07");
+        term.feed("\r\n"); // advance cursor so each mark lands on a distinct line
     }
     // The ring is capped; the most recent max_marks are retained.
     try testing.expectEqual(@as(usize, max_marks), term.promptMarks().len);

@@ -159,18 +159,10 @@ fn imMouseUp(_: c.id, _: c.SEL, ev: c.id) callconv(.c) void {
 
 // --- event handling ------------------------------------------------------
 
-/// True when the theme's background is perceptually light (Rec. 601 luma > 0.5).
-fn themeIsLight(t: Theme) bool {
-    const bg = t.background;
-    const luma = (@as(u32, bg[0]) * 299 + @as(u32, bg[1]) * 587 + @as(u32, bg[2]) * 114) / 1000;
-    return luma > 128;
-}
-
 fn applyConfig(new_loaded: cfg_mod.Loaded) void {
     const nl = new_loaded;
     const nc = nl.config;
     g.theme = theme_mod.resolve(effectiveThemeName(g.nsapp, nc.theme), nc.theme_overrides);
-    shell_integration.writeThemeHint(themeIsLight(g.theme));
     g.renderer.setClearColor(g.theme.background); // keep the GPU clear in sync
     g.cursor_cfg = nc.cursor;
     loadKeybindings(nc.keybindings);
@@ -250,7 +242,6 @@ fn hidePalette() void {
 
 fn setTheme(name: []const u8) void {
     g.theme = theme_mod.byName(name);
-    shell_integration.writeThemeHint(themeIsLight(g.theme));
     g.renderer.setClearColor(g.theme.background);
     g.dirty = true;
 }
@@ -318,7 +309,6 @@ fn onTick() void {
                 effectiveThemeName(g.nsapp, "system"),
                 g.config.config.theme_overrides,
             );
-            shell_integration.writeThemeHint(themeIsLight(g.theme));
             g.renderer.setClearColor(g.theme.background);
             g.dirty = true;
         }
@@ -913,6 +903,9 @@ fn renderFrame() void {
     const rows = t.terminal.rows();
     const cols = t.terminal.cols();
 
+    // Separator color: a quiet hairline that adapts to the theme.
+    const rule_rgb = color.mix(g.theme.background, g.theme.foreground, 0.14);
+
     if (g.scroll_pos == 0 and g.overscroll == 0) {
         var y: usize = 0;
         while (y < rows) : (y += 1) {
@@ -920,6 +913,10 @@ fn renderFrame() void {
             const line = t.terminal.viewportRow(y);
             var x: usize = 0;
             while (x < cols and x < line.len) : (x += 1) drawCell(x, y, crow, line[x]);
+            if (t.terminal.isPromptStart(t.terminal.absoluteLineOfContent(crow))) {
+                const ry: f64 = @floatFromInt(y + topBarRows());
+                g.raster.rowRule(g.font, ry, rule_rgb);
+            }
         }
     } else {
         // Displayed offset = scroll_pos. Render the integer offset (base+1)
@@ -942,6 +939,10 @@ fn renderFrame() void {
             const line = t.terminal.viewportRowAt(off, y);
             var x: usize = 0;
             while (x < cols and x < line.len) : (x += 1) drawCell(x, y, crow, line[x]);
+            if (t.terminal.isPromptStart(t.terminal.absoluteLineOfContent(crow))) {
+                const ry: f64 = @floatFromInt(y + topBarRows());
+                g.raster.rowRule(g.font, ry, rule_rgb);
+            }
         }
         g.raster.y_shift_px = 0;
     }
@@ -1158,7 +1159,6 @@ pub fn main() void {
         .webview = wv,
     };
     g.system_dark = systemIsDark(nsapp);
-    shell_integration.writeThemeHint(themeIsLight(g.theme));
     g.renderer.setClearColor(active_theme.background);
     g.raster.pad_x = @floatFromInt(grid_pad);
     g.raster.pad_y = @floatFromInt(grid_pad);

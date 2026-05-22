@@ -102,11 +102,6 @@ pub fn setup(enabled: bool) void {
         } else |_| {}
     }
 
-    var tbuf: [std.fs.max_path_bytes]u8 = undefined;
-    if (std.fmt.bufPrintZ(&tbuf, "{s}/theme", .{dir})) |theme_path| {
-        _ = setenv("CALDERA_THEME_FILE", theme_path.ptr, 1);
-    } else |_| {}
-
     if (!enabled) return;
 
     // zsh auto-injection: point ZDOTDIR at our dir, after stashing the real one.
@@ -122,15 +117,6 @@ pub fn setup(enabled: bool) void {
     if (std.fmt.bufPrintZ(&dz, "{s}", .{dir})) |dirz| {
         _ = setenv("ZDOTDIR", dirz.ptr, 1);
     } else |_| {}
-}
-
-/// Write the current theme hint (`light` or `dark`) to the theme file under
-/// the runtime dir, so a freshly-spawned `caldera-prompt` picks the matching
-/// color set. Best-effort — any failure is silently ignored.
-pub fn writeThemeHint(is_light: bool) void {
-    var dbuf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir = runtimeDir(&dbuf) orelse return;
-    _ = writeFile(dir, "theme", if (is_light) "light" else "dark");
 }
 
 const testing = std.testing;
@@ -217,38 +203,4 @@ test "setup(false) does not export ZDOTDIR" {
     setup(false);
     try testing.expect(std.c.getenv("CALDERA_CONSOLE") != null); // marker still set
     try testing.expect(std.c.getenv("ZDOTDIR") == null); // but no injection
-}
-
-test "writeThemeHint writes light and dark correctly" {
-    const saved_home = std.c.getenv("HOME");
-    _ = setenv("HOME", "/tmp/caldera-theme-hint-test", 1);
-    defer if (saved_home) |s| {
-        _ = setenv("HOME", s, 1);
-    };
-
-    // Ensure the runtime dir exists by running setup first.
-    setup(false);
-
-    writeThemeHint(true);
-
-    var dbuf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir = runtimeDir(&dbuf).?;
-    var pbuf: [std.fs.max_path_bytes]u8 = undefined;
-    const theme_path = try std.fmt.bufPrintZ(&pbuf, "{s}/theme", .{dir});
-    const fd_light = std.c.open(theme_path.ptr, .{ .ACCMODE = .RDONLY }, @as(c_uint, 0));
-    try testing.expect(fd_light >= 0);
-    var rbuf: [16]u8 = undefined;
-    const n_light = std.c.read(fd_light, &rbuf, rbuf.len);
-    _ = std.c.close(fd_light);
-    try testing.expect(n_light > 0);
-    try testing.expectEqualStrings("light", rbuf[0..@intCast(n_light)]);
-
-    writeThemeHint(false);
-
-    const fd_dark = std.c.open(theme_path.ptr, .{ .ACCMODE = .RDONLY }, @as(c_uint, 0));
-    try testing.expect(fd_dark >= 0);
-    const n_dark = std.c.read(fd_dark, &rbuf, rbuf.len);
-    _ = std.c.close(fd_dark);
-    try testing.expect(n_dark > 0);
-    try testing.expectEqualStrings("dark", rbuf[0..@intCast(n_dark)]);
 }

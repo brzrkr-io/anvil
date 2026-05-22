@@ -10,8 +10,6 @@ const build_segments = @import("build_segments.zig");
 const Args = struct {
     exit_code: u8 = 0,
     transient: bool = false,
-    rule: bool = false,
-    width: usize = 0,
     shell: render.Shell = .plain,
 };
 
@@ -22,12 +20,11 @@ fn parseArgs(p: std.process.Init.Minimal) Args {
     while (it.next()) |arg| {
         if (std.mem.eql(u8, arg, "--transient")) {
             a.transient = true;
-        } else if (std.mem.eql(u8, arg, "--rule")) {
-            a.rule = true;
         } else if (std.mem.eql(u8, arg, "--exit")) {
             if (it.next()) |v| a.exit_code = std.fmt.parseInt(u8, v, 10) catch 0;
         } else if (std.mem.eql(u8, arg, "--width")) {
-            if (it.next()) |v| a.width = std.fmt.parseInt(usize, v, 10) catch 0;
+            // --width is accepted for forward-compat but no longer used.
+            _ = it.next();
         } else if (std.mem.eql(u8, arg, "--shell")) {
             if (it.next()) |v| {
                 if (std.mem.eql(u8, v, "zsh")) {
@@ -57,20 +54,6 @@ fn writeAll(s: []const u8) void {
     }
 }
 
-/// Read the theme hint file pointed to by CALDERA_THEME_FILE. Returns true
-/// when the file content starts with "light". Defaults to false (dark) when
-/// the env var is unset or the file is missing/unreadable.
-fn themeIsLight() bool {
-    const path = std.c.getenv("CALDERA_THEME_FILE") orelse return false;
-    const fd = std.c.open(path, .{ .ACCMODE = .RDONLY }, @as(c_uint, 0));
-    if (fd < 0) return false;
-    defer _ = std.c.close(fd);
-    var buf: [16]u8 = undefined;
-    const n = std.c.read(fd, &buf, buf.len);
-    if (n <= 0) return false;
-    return std.mem.startsWith(u8, buf[0..@intCast(n)], "light");
-}
-
 pub fn main(p: std.process.Init.Minimal) void {
     var arena = std.heap.ArenaAllocator.init(std.heap.c_allocator);
     defer arena.deinit();
@@ -79,13 +62,7 @@ pub fn main(p: std.process.Init.Minimal) void {
     const args = parseArgs(p);
     // Rich glyphs only inside Caldera.
     const rich = std.c.getenv("CALDERA_CONSOLE") != null;
-    const opts = render.Options{ .rich = rich, .failed = args.exit_code != 0, .width = args.width, .shell = args.shell, .light = themeIsLight() };
-
-    if (args.rule) {
-        const s = render.rule(alloc, args.width, args.shell) catch return;
-        writeAll(s);
-        return;
-    }
+    const opts = render.Options{ .rich = rich, .failed = args.exit_code != 0, .shell = args.shell };
 
     if (args.transient) {
         const s = render.transient(alloc, opts) catch return;
