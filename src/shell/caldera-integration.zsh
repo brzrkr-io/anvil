@@ -33,3 +33,19 @@ __caldera_mark_prompt() {
   precmd_functions=(${precmd_functions:#__caldera_mark_prompt})
 }
 precmd_functions+=(__caldera_mark_prompt)
+
+# Caldera prompt — when the binary is known, drive PROMPT from it.
+if [[ -n "$CALDERA_PROMPT" && -x "$CALDERA_PROMPT" ]]; then
+  setopt prompt_subst
+  __caldera_prompt() {
+    PROMPT="$("$CALDERA_PROMPT" --exit $? 2>/dev/null)"
+  }
+  precmd_functions+=(__caldera_prompt)
+
+  # Transient: on accept-line, redraw the finished prompt collapsed.
+  __caldera_transient() {
+    PROMPT="$("$CALDERA_PROMPT" --transient 2>/dev/null)"
+    zle .reset-prompt
+  }
+  zle -N zle-line-finish __caldera_transient
+fi

@@ -33,3 +33,11 @@ case "$PS1" in
   *'133;B'*) ;;
   *) PS1="${PS1}\[\e]133;B\a\]" ;;
 esac
+
+# Caldera prompt — bash gets the full prompt each draw (no transient collapse).
+if [[ -n "$CALDERA_PROMPT" && -x "$CALDERA_PROMPT" ]]; then
+  __caldera_prompt() {
+    PS1="$("$CALDERA_PROMPT" --exit $? 2>/dev/null)"
+  }
+  PROMPT_COMMAND="__caldera_prompt${PROMPT_COMMAND:+; $PROMPT_COMMAND}"
+fi

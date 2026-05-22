@@ -14,6 +14,17 @@ const integration_zsh = @embedFile("../shell/caldera-integration.zsh");
 const integration_bash = @embedFile("../shell/caldera-integration.bash");
 const zdotdir_zshenv = @embedFile("../shell/zdotdir-zshenv.zsh");
 
+/// Absolute path to the caldera-prompt binary, resolved next to this
+/// executable. Null if it cannot be determined.
+fn promptBinaryPath(buf: []u8) ?[]const u8 {
+    var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var n: u32 = @intCast(exe_buf.len);
+    if (std.c._NSGetExecutablePath(&exe_buf, &n) != 0) return null;
+    const exe = exe_buf[0 .. std.mem.indexOfScalar(u8, exe_buf[0..n], 0) orelse n];
+    const dir = std.fs.path.dirname(exe) orelse return null;
+    return std.fmt.bufPrint(buf, "{s}/caldera-prompt", .{dir}) catch null;
+}
+
 /// Resolve `~/.cache/caldera-console/shell` into `buf`. Null when `$HOME`
 /// is unset.
 fn runtimeDir(buf: []u8) ?[]const u8 {
@@ -82,6 +93,14 @@ pub fn setup(enabled: bool) void {
     if (std.fmt.bufPrintZ(&bbuf, "{s}/caldera-integration.bash", .{dir})) |bash_path| {
         _ = setenv("CALDERA_SHELL_INTEGRATION", bash_path.ptr, 1);
     } else |_| {}
+
+    var pbuf: [std.fs.max_path_bytes]u8 = undefined;
+    if (promptBinaryPath(&pbuf)) |pp| {
+        var ppz: [std.fs.max_path_bytes]u8 = undefined;
+        if (std.fmt.bufPrintZ(&ppz, "{s}", .{pp})) |ppzs| {
+            _ = setenv("CALDERA_PROMPT", ppzs.ptr, 1);
+        } else |_| {}
+    }
 
     if (!enabled) return;
 
