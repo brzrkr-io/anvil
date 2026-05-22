@@ -67,7 +67,8 @@ fn snapAnim() void {
     const cur = t.terminal.cursor();
     g.cursor_ax = @floatFromInt(cur.x);
     g.cursor_ay = @floatFromInt(cur.y);
-    g.scroll_anim = @floatFromInt(t.terminal.viewportOffset());
+    g.scroll_pos = @floatFromInt(t.terminal.viewportOffset());
+    g.overscroll = 0;
 }
 
 // Uniform inset (device pixels) between the window edge and the terminal grid.
@@ -93,7 +94,8 @@ const App = struct {
     blink_phase: f32 = 0, // 0..1 cursor blink-fade phase
     cursor_ax: f32 = 0, // animated cursor column (viewport cells)
     cursor_ay: f32 = 0, // animated cursor row (viewport cells)
-    scroll_anim: f32 = 0, // animated viewport offset (rows)
+    scroll_pos: f32 = 0, // displayed viewport offset, fractional, driven by the gesture
+    overscroll: f32 = 0, // rubber-band pull past a history edge, in device pixels
     config: cfg_mod.Loaded,
     watcher: cfg_mod.Watcher,
     keys_new: ?cfg_mod.Chord = null,
@@ -256,10 +258,14 @@ fn runAction(action: palette_mod.Action) void {
         .scroll_top => {
             const t = &g.tabs.current().terminal;
             t.scrollViewport(@intCast(t.scrollbackLen()));
+            g.scroll_pos = @floatFromInt(t.viewportOffset());
+            g.overscroll = bounceImpulse();
             g.dirty = true;
         },
         .scroll_bottom => {
             g.tabs.current().terminal.scrollToBottom();
+            g.scroll_pos = 0;
+            g.overscroll = -bounceImpulse();
             g.dirty = true;
         },
         .app_quit => g.nsapp.msgSend(void, "terminate:", .{@as(c.id, null)}),
@@ -345,16 +351,10 @@ fn onTick() void {
         g.dirty = true;
     }
 
-    // Smooth scroll. Snap instantly when the jump is larger than a screen
-    // (e.g. scroll-to-bottom from deep history) — animating that looks slow.
-    const so: f32 = @floatFromInt(t.terminal.viewportOffset());
-    if (@abs(so - g.scroll_anim) > 0.01) {
-        if (@abs(so - g.scroll_anim) > @as(f32, @floatFromInt(t.terminal.rows()))) {
-            g.scroll_anim = so;
-        } else {
-            g.scroll_anim = approach(g.scroll_anim, so, 0.30);
-            if (@abs(so - g.scroll_anim) <= 0.01) g.scroll_anim = so;
-        }
+    // Rubber-band: spring the overscroll pull back to zero.
+    if (g.overscroll != 0) {
+        g.overscroll = approach(g.overscroll, 0, 0.18);
+        if (@abs(g.overscroll) < 0.5) g.overscroll = 0;
         g.dirty = true;
     }
 
@@ -562,6 +562,7 @@ fn handleTabKey(mods: keys.Mods, cp: u21) bool {
 fn scrollToCurrentMatch() void {
     if (g.search.currentMatch()) |m| {
         g.tabs.current().terminal.scrollToLine(m.row);
+        g.scroll_pos = @floatFromInt(g.tabs.current().terminal.viewportOffset());
     }
 }
 
@@ -658,15 +659,37 @@ fn onKeyDown(event: objc.Object) void {
     const bytes = keys.encode(p.key, p.mods, false, &buf);
     _ = g.tabs.current().pty.write(bytes) catch {};
     g.tabs.current().terminal.scrollToBottom();
+    g.scroll_pos = 0;
     g.dirty = true;
+}
+
+fn addOverscroll(excess_rows: f32) void {
+    const ch: f32 = @floatCast(g.font.metrics.cell_h);
+    const limit = ch * 1.5;
+    const resist = 1.0 - @min(@abs(g.overscroll) / limit, 1.0);
+    g.overscroll = std.math.clamp(g.overscroll + excess_rows * ch * 0.30 * resist, -limit, limit);
+}
+
+fn bounceImpulse() f32 {
+    return @as(f32, @floatCast(g.font.metrics.cell_h)) * 0.9;
 }
 
 fn onScroll(event: objc.Object) void {
     const dy = event.msgSend(f64, "scrollingDeltaY", .{});
     if (dy == 0) return;
-    const mag: f64 = @max(@abs(dy) / 8.0, 1.0);
-    const lines: isize = @intFromFloat(mag);
-    g.tabs.current().terminal.scrollViewport(if (dy > 0) lines else -lines);
+    const t = g.tabs.current();
+    const d: f32 = @floatCast(dy / 8.0);
+    const max_pos: f32 = @floatFromInt(t.terminal.scrollbackLen());
+    var np = g.scroll_pos + d;
+    if (np > max_pos) {
+        addOverscroll(np - max_pos);
+        np = max_pos;
+    } else if (np < 0) {
+        addOverscroll(np);
+        np = 0;
+    }
+    g.scroll_pos = np;
+    t.terminal.setViewportOffset(@intFromFloat(@round(np)));
     g.dirty = true;
 }
 
@@ -724,9 +747,8 @@ fn renderFrame() void {
     const t = g.tabs.current();
     const rows = t.terminal.rows();
     const cols = t.terminal.cols();
-    const off: f32 = @floatFromInt(t.terminal.viewportOffset());
 
-    if (g.scroll_anim == off) {
+    if (g.scroll_pos == 0 and g.overscroll == 0) {
         var y: usize = 0;
         while (y < rows) : (y += 1) {
             const line = t.terminal.viewportRow(y);
@@ -734,12 +756,15 @@ fn renderFrame() void {
             while (x < cols and x < line.len) : (x += 1) drawCell(x, y, line[x]);
         }
     } else {
-        // Displayed offset = scroll_anim. Render the integer offset (base+1)
-        // and slide the grid UP by (1-frac) cells so it interpolates toward
-        // base. Rows 0..=rows are drawn (the extra bottom row fills the gap).
-        const base: usize = @intFromFloat(@floor(g.scroll_anim));
-        const frac: f64 = @as(f64, g.scroll_anim) - @floor(@as(f64, g.scroll_anim));
-        g.raster.y_shift_px = (1.0 - frac) * g.font.metrics.cell_h;
+        // Displayed offset = scroll_pos. Render the integer offset (base+1)
+        // and slide the grid by (1-frac) cells plus any overscroll translation.
+        // A positive y_shift_px moves cells UP on screen; overscroll > 0 means
+        // pulled past the top, so the grid slides DOWN — that requires a
+        // NEGATIVE y_shift_px contribution.
+        const base: usize = @intFromFloat(@floor(g.scroll_pos));
+        const frac: f64 = @as(f64, g.scroll_pos) - @floor(@as(f64, g.scroll_pos));
+        const scroll_shift = (1.0 - frac) * g.font.metrics.cell_h;
+        g.raster.y_shift_px = scroll_shift - @as(f64, g.overscroll);
         var y: usize = 0;
         while (y <= rows) : (y += 1) {
             const line = t.terminal.viewportRowAt(base + 1, y);
@@ -755,7 +780,8 @@ fn renderFrame() void {
     }
 
     const cur = t.terminal.cursor();
-    if (cur.visible and t.terminal.viewportOffset() == 0 and g.scroll_anim == off and
+    if (cur.visible and t.terminal.viewportOffset() == 0 and
+        g.scroll_pos == 0 and g.overscroll == 0 and
         cur.x < cols and cur.y < rows)
     {
         drawCursor();

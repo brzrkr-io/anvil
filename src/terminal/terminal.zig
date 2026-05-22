@@ -212,6 +212,11 @@ pub const Terminal = struct {
         self.viewport_offset = 0;
     }
 
+    /// Set the viewport offset to an absolute row count, clamped to history.
+    pub fn setViewportOffset(self: *Terminal, offset: usize) void {
+        self.viewport_offset = @min(offset, self.history.len());
+    }
+
     /// The row at viewport position `y` (0 = top of the viewport), always
     /// exactly `cols` cells wide. When the viewport is scrolled up, the top
     /// rows come from scrollback (short rows padded into `compose_buf`); the
@@ -891,6 +896,23 @@ test "viewport scroll clamps and scrollToBottom resets it" {
     try testing.expectEqual(@as(usize, 0), term.viewportOffset());
     term.scrollViewport(2);
     term.scrollToBottom();
+    try testing.expectEqual(@as(usize, 0), term.viewportOffset());
+}
+
+test "setViewportOffset clamps to scrollback length and sets within range" {
+    var term = try makeTerminal(4, 2);
+    defer term.deinit();
+    term.feed("L1\r\nL2\r\nL3\r\nL4");
+    // scrollback holds L1, L2 (len 2)
+    try testing.expectEqual(@as(usize, 2), term.scrollbackLen());
+
+    term.setViewportOffset(1);
+    try testing.expectEqual(@as(usize, 1), term.viewportOffset());
+
+    term.setViewportOffset(999); // clamps to scrollbackLen
+    try testing.expectEqual(@as(usize, 2), term.viewportOffset());
+
+    term.setViewportOffset(0);
     try testing.expectEqual(@as(usize, 0), term.viewportOffset());
 }
 
