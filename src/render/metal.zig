@@ -64,6 +64,11 @@ pub const Renderer = struct {
 
         layer.msgSend(void, "setDevice:", .{device});
         layer.msgSend(void, "setPixelFormat:", .{pixel_format});
+        // Present synchronously inside the CoreAnimation transaction so the
+        // drawable updates atomically with a live-resize step — otherwise the
+        // window server stretches the previous (stale) drawable to fill the
+        // new bounds for a frame, which reads as ghosted / double-vision text.
+        layer.msgSend(void, "setPresentsWithTransaction:", .{true});
         layer.msgSend(void, "setDrawableSize:", .{extern struct { w: f64, h: f64 }{
             .w = @floatFromInt(width),
             .h = @floatFromInt(height),
@@ -143,8 +148,12 @@ pub const Renderer = struct {
             @as(c_ulong, 3), @as(c_ulong, 0), @as(c_ulong, 6),
         });
         enc.msgSend(void, "endEncoding", .{});
-        cmd.msgSend(void, "presentDrawable:", .{drawable});
+        // presentsWithTransaction is on: commit, wait until the work is
+        // scheduled, then present the drawable on this (main) thread so the
+        // frame lands in lockstep with the layer's resize.
         cmd.msgSend(void, "commit", .{});
+        cmd.msgSend(void, "waitUntilScheduled", .{});
+        drawable.msgSend(void, "present", .{});
     }
 };
 
