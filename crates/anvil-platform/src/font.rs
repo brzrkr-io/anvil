@@ -24,22 +24,15 @@
 //!
 //! This matches the Zig raster's `cellRect` / `cellGlyph` geometry.
 
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr::NonNull;
 
 use anvil_render::{FontMetrics, GlyphPainter, PixelRect};
 use objc2_core_foundation::{CFError, CFRetained, CFString, CGPoint, CGSize};
-use objc2_core_graphics::CGColorSpace;
 #[allow(deprecated)]
 use objc2_core_text::{CTFont, CTFontManagerRegisterGraphicsFont, CTFontOrientation};
 use thiserror::Error;
-
-// BGRA8, premultiplied alpha, little-endian 32-bit words — matches Metal
-// MTLPixelFormatBGRA8Unorm (same constants as capi.zig).
-const K_CG_IMAGE_ALPHA_PREMULTIPLIED_FIRST: u32 = 2;
-const K_CG_BITMAP_BYTE_ORDER32_LITTLE: u32 = 2 << 12;
-const BGRA8_BITMAP_INFO: u32 =
-    K_CG_IMAGE_ALPHA_PREMULTIPLIED_FIRST | K_CG_BITMAP_BYTE_ORDER32_LITTLE;
 
 /// The IBM Plex Mono build patched with developer icon glyphs (Nerd Font).
 /// Bundled so the prompt's icons have glyphs regardless of system fonts.
@@ -200,40 +193,51 @@ pub fn register_bundled() {
 
 // ── GlyphPainter implementation ──────────────────────────────────────────────
 
-/// Cached CoreGraphics state keyed to the current pixel buffer. The
-/// CGBitmapContext + CGColorSpace are expensive to create — caching them
-/// across many `draw_glyph` calls is the difference between responsive
-/// typing and per-cell latency. Invalidated whenever the buffer pointer or
-/// bitmap dimensions change (i.e. on resize).
-struct Cached {
-    // The CGContext internally retains its color space, so we don't need to
-    // keep our own handle alive.
+/// Cell-sized grayscale rasterization context used to bake glyphs into alpha
+/// masks once. Owned by `CoreTextPainter`; rebuilt when cell dimensions change.
+struct Rasterizer {
     ctx: CFRetained<objc2_core_graphics::CGContext>,
-    buf_ptr: *mut c_void,
+    buf: Vec<u8>,
+    cell_w: usize,
+    cell_h: usize,
+    descent: f64,
+}
+
+/// A pre-rasterized alpha mask for a single glyph, sized to the cell.
+struct GlyphMask {
+    pixels: Vec<u8>,
     width: usize,
     height: usize,
 }
 
-/// Implements `GlyphPainter` via CoreText.  Holds a per-frame CGBitmapContext
-/// cache so the expensive CG state setup is amortized across the ~thousands
-/// of glyphs drawn per frame.
+/// Implements `GlyphPainter` via CoreText with a **glyph mask cache**.
+///
+/// `CTFontDrawGlyphs` is the dominant cost in the render loop (~50–200µs per
+/// call); a steady-state frame redraws ~1,900 cells and calls it for each.
+/// We rasterize each glyph once into a small alpha mask, then composite the
+/// mask tinted with the foreground color on subsequent draws — the inner
+/// loop is a tight CPU alpha-blend that skips zero-alpha pixels (the common
+/// case in printable glyphs). Steady-state typing is then bounded by memory
+/// bandwidth, not by CoreText.
 pub struct CoreTextPainter<'a> {
     font: &'a Font,
-    cached: Option<Cached>,
+    rasterizer: Option<Rasterizer>,
+    cache: HashMap<u16, GlyphMask>,
 }
 
 impl<'a> CoreTextPainter<'a> {
     pub fn new(font: &'a Font) -> Self {
-        Self { font, cached: None }
+        Self {
+            font,
+            rasterizer: None,
+            cache: HashMap::new(),
+        }
     }
 }
 
 impl GlyphPainter for CoreTextPainter<'_> {
     /// Draw the glyph for Unicode `codepoint` into the BGRA8 `pixels` buffer
     /// at the cell described by `dest` (top-down bitmap coordinates).
-    ///
-    /// The CoreText context is y-up, so we convert `dest.y` (top-down) to
-    /// CG y-up before calling `CTFontDrawGlyphs`.
     #[allow(clippy::too_many_arguments)]
     fn draw_glyph(
         &mut self,
@@ -245,8 +249,6 @@ impl GlyphPainter for CoreTextPainter<'_> {
         bitmap_width: usize,
         bitmap_height: usize,
     ) {
-        // Resolve codepoint → glyph via the font cmap (also handles astral
-        // codepoints through `Font::glyph`'s surrogate path).
         if codepoint == 0 {
             return;
         }
@@ -255,80 +257,142 @@ impl GlyphPainter for CoreTextPainter<'_> {
             return;
         }
 
-        // Reuse the CGBitmapContext across all glyphs in this frame; recreate
-        // only when the pixel buffer pointer or dimensions change (resize).
-        let buf_ptr = pixels.as_mut_ptr() as *mut c_void;
-        let need_new = self
-            .cached
-            .as_ref()
-            .is_none_or(|c| c.buf_ptr != buf_ptr || c.width != bitmap_width || c.height != bitmap_height);
-        if need_new {
-            let color_space = match CGColorSpace::new_device_rgb() {
-                Some(s) => s,
-                None => return,
-            };
-            // SAFETY:
-            // - pixels is valid for bitmap_width * bitmap_height * 4 bytes.
-            // - color_space is a valid CGColorSpace.
-            // - BGRA8_BITMAP_INFO matches Metal's BGRA8Unorm layout.
-            // - None release callback: CG must NOT free the buffer. The
-            //   pointer-change check above guarantees we drop a stale context
-            //   before its buffer goes away.
-            let ctx = unsafe {
-                objc2_core_graphics::CGBitmapContextCreate(
-                    buf_ptr,
-                    bitmap_width,
-                    bitmap_height,
-                    8,
-                    bitmap_width * 4,
-                    Some(&color_space),
-                    BGRA8_BITMAP_INFO,
-                )
-            };
-            let ctx = match ctx {
-                Some(c) => c,
-                None => return,
-            };
-            // Identity text matrix — set once, never changes per glyph.
-            // SAFETY: CGAffineTransformIdentity is a valid static extern.
-            objc2_core_graphics::CGContext::set_text_matrix(Some(&ctx), unsafe {
-                objc2_core_graphics::CGAffineTransformIdentity
-            });
-            drop(color_space); // CGContext has its own retain
-            self.cached = Some(Cached {
-                ctx,
-                buf_ptr,
-                width: bitmap_width,
-                height: bitmap_height,
-            });
+        // Masks are sized to the cell. (Re)build the rasterizer if cell
+        // dimensions change; invalidate the cache when it does.
+        let cell_w = dest.w.round() as usize;
+        let cell_h = dest.h.round() as usize;
+        if cell_w == 0 || cell_h == 0 {
+            return;
         }
-        // SAFETY-of-borrow: `cached` was just populated if it was None.
-        let ctx = &self.cached.as_ref().unwrap().ctx;
+        let need_new = self
+            .rasterizer
+            .as_ref()
+            .is_none_or(|r| r.cell_w != cell_w || r.cell_h != cell_h);
+        if need_new {
+            self.cache.clear();
+            self.rasterizer = Rasterizer::new(cell_w, cell_h, metrics.descent);
+            if self.rasterizer.is_none() {
+                return;
+            }
+        }
 
-        // Per-glyph hot path: just set the fill color and draw.
-        objc2_core_graphics::CGContext::set_rgb_fill_color(
-            Some(ctx),
-            fg[0] as f64 / 255.0,
-            fg[1] as f64 / 255.0,
-            fg[2] as f64 / 255.0,
-            1.0,
-        );
+        // Rasterize the glyph once; subsequent calls hit the cache.
+        if !self.cache.contains_key(&glyph) {
+            let mask = self.rasterizer.as_mut().unwrap().rasterize(&self.font.ct, glyph);
+            self.cache.insert(glyph, mask);
+        }
+        let mask = self.cache.get(&glyph).unwrap();
 
-        // Convert top-down dest.y to CG y-up.
-        let cg_cell_bottom = bitmap_height as f64 - dest.y - dest.h;
-        let baseline_y = cg_cell_bottom + metrics.descent;
-        let pos = CGPoint { x: dest.x, y: baseline_y };
+        // Composite the mask into the BGRA8 destination, tinted with fg.
+        composite_mask(mask, dest.x, dest.y, fg, pixels, bitmap_width, bitmap_height);
+    }
+}
 
+impl Rasterizer {
+    fn new(cell_w: usize, cell_h: usize, descent: f64) -> Option<Self> {
+        let mut buf = vec![0u8; cell_w * cell_h];
+        let gray = objc2_core_graphics::CGColorSpace::new_device_gray()?;
         // SAFETY:
-        // - glyph and pos are stack values valid for one element each.
-        // - ctx is a valid CGContext (cached above).
+        // - `buf` is valid for cell_w * cell_h bytes and lives in this
+        //   struct alongside the context (drop order: ctx before buf).
+        // - gray is a valid CGColorSpace.
+        // - bitmapInfo = 0 = kCGImageAlphaNone, an 8-bit single-channel
+        //   gray context: the rendered glyph's luminance == its coverage.
+        // - None release callback: CG never frees `buf`.
+        let buf_ptr = buf.as_mut_ptr() as *mut c_void;
+        let ctx = unsafe {
+            objc2_core_graphics::CGBitmapContextCreate(
+                buf_ptr,
+                cell_w,
+                cell_h,
+                8,
+                cell_w,
+                Some(&gray),
+                0, // kCGImageAlphaNone
+            )
+        }?;
+        // SAFETY: CGAffineTransformIdentity is a valid static extern.
+        objc2_core_graphics::CGContext::set_text_matrix(Some(&ctx), unsafe {
+            objc2_core_graphics::CGAffineTransformIdentity
+        });
+        // White fill: the glyph rasterizes at full luminance = full coverage.
+        objc2_core_graphics::CGContext::set_rgb_fill_color(Some(&ctx), 1.0, 1.0, 1.0, 1.0);
+        drop(gray);
+        Some(Self {
+            ctx,
+            buf,
+            cell_w,
+            cell_h,
+            descent,
+        })
+    }
+
+    fn rasterize(&mut self, ct: &CTFont, glyph: u16) -> GlyphMask {
+        // Clear the cell-sized buffer to fully transparent.
+        self.buf.fill(0);
+        // Baseline in CG y-up = `descent` pixels above the bottom of the cell.
+        let pos = CGPoint {
+            x: 0.0,
+            y: self.descent,
+        };
+        // SAFETY: glyph and pos are stack values valid for one element each;
+        // `self.ctx` is a valid CGContext over `self.buf`.
         unsafe {
-            self.font.ct.draw_glyphs(
+            ct.draw_glyphs(
                 NonNull::new(&glyph as *const u16 as *mut u16).unwrap(),
                 NonNull::new(&pos as *const CGPoint as *mut CGPoint).unwrap(),
                 1,
-                ctx,
+                &self.ctx,
             );
+        }
+        GlyphMask {
+            pixels: self.buf.clone(),
+            width: self.cell_w,
+            height: self.cell_h,
+        }
+    }
+}
+
+/// Alpha-blend `mask` into the BGRA8 destination at top-down (`dest_x`,
+/// `dest_y`), tinted with `fg`. Zero-alpha pixels short-circuit — most of a
+/// printable glyph's cell is empty space, so the inner loop is cheap.
+fn composite_mask(
+    mask: &GlyphMask,
+    dest_x: f64,
+    dest_y: f64,
+    fg: [u8; 3],
+    dst: &mut [u8],
+    dst_w: usize,
+    dst_h: usize,
+) {
+    let dx = dest_x.round() as isize;
+    let dy = dest_y.round() as isize;
+    let stride = dst_w * 4;
+    let fg_b = fg[2] as u32;
+    let fg_g = fg[1] as u32;
+    let fg_r = fg[0] as u32;
+    for y in 0..mask.height {
+        let py = dy + y as isize;
+        if py < 0 || (py as usize) >= dst_h {
+            continue;
+        }
+        let row_start = y * mask.width;
+        let mask_row = &mask.pixels[row_start..row_start + mask.width];
+        for (x, &a) in mask_row.iter().enumerate() {
+            if a == 0 {
+                continue;
+            }
+            let px = dx + x as isize;
+            if px < 0 || (px as usize) >= dst_w {
+                continue;
+            }
+            let off = py as usize * stride + px as usize * 4;
+            let aa = a as u32;
+            let inv = 255 - aa;
+            // BGRA layout, destination treated as opaque.
+            dst[off] = ((dst[off] as u32 * inv + fg_b * aa + 127) / 255) as u8;
+            dst[off + 1] = ((dst[off + 1] as u32 * inv + fg_g * aa + 127) / 255) as u8;
+            dst[off + 2] = ((dst[off + 2] as u32 * inv + fg_r * aa + 127) / 255) as u8;
         }
     }
 }
