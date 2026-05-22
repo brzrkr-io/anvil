@@ -170,6 +170,10 @@ fn imMouseUp(_: c.id, _: c.SEL, ev: c.id) callconv(.c) void {
     onMouseUp(.{ .value = ev });
 }
 
+fn imPerformKeyEquivalent(_: c.id, _: c.SEL, ev: c.id) callconv(.c) bool {
+    return onPerformKeyEquivalent(.{ .value = ev });
+}
+
 // --- event handling ------------------------------------------------------
 
 fn applyConfig(new_loaded: cfg_mod.Loaded) void {
@@ -661,6 +665,27 @@ fn addTab(cwd: ?[]const u8) void {
     resizeAllTabs();
     snapAnim();
     g.dirty = true;
+}
+
+/// `performKeyEquivalent:` runs before `keyDown:` and before AppKit's key-view
+/// loop — the only reliable place to catch the Tab key, which the key-view
+/// loop would otherwise consume. Handles Ctrl+Tab / Ctrl+Shift+Tab tab cycling.
+fn onPerformKeyEquivalent(event: objc.Object) bool {
+    const flags = event.msgSend(c_ulong, "modifierFlags", .{});
+    const control = flags & (1 << 18) != 0;
+    const command = flags & (1 << 20) != 0;
+    const shift = flags & (1 << 17) != 0;
+    if (control and !command) {
+        const kc = event.msgSend(c_ushort, "keyCode", .{});
+        if (kc == 48) { // 48 = Tab
+            closeSearch();
+            if (shift) g.tabs.prev() else g.tabs.next();
+            snapAnim();
+            g.dirty = true;
+            return true;
+        }
+    }
+    return false;
 }
 
 fn onKeyDown(event: objc.Object) void {
@@ -1291,6 +1316,7 @@ pub fn main() void {
     _ = View.addMethod("keyDown:", imKeyDown);
     _ = View.addMethod("scrollWheel:", imScrollWheel);
     _ = View.addMethod("viewDidEndLiveResize", imViewDidEndLiveResize);
+    _ = View.addMethod("performKeyEquivalent:", imPerformKeyEquivalent);
     _ = View.addMethod("mouseDown:", imMouseDown);
     _ = View.addMethod("mouseDragged:", imMouseDragged);
     _ = View.addMethod("mouseUp:", imMouseUp);
