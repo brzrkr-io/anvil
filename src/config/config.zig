@@ -262,6 +262,7 @@ pub const Keybindings = struct {
     search_prev: []const u8 = "cmd+shift+g",
     hud_toggle: []const u8 = "cmd+j",
     tree_toggle: []const u8 = "cmd+e",
+    cheatsheet_toggle: []const u8 = "cmd+/",
 };
 
 const testing = std.testing;

@@ -29,6 +29,7 @@ const selection_mod = @import("app/selection.zig");
 const Selection = selection_mod.Selection;
 const filetree_mod = @import("app/filetree.zig");
 const filetree_render = @import("render/filetree.zig");
+const cheatsheet_mod = @import("render/cheatsheet.zig");
 const interact = @import("app/interact.zig");
 
 const CGPoint = extern struct { x: f64, y: f64 };
@@ -120,7 +121,9 @@ const App = struct {
     keys_search_prev: ?cfg_mod.Chord = null,
     keys_hud_toggle: ?cfg_mod.Chord = null,
     keys_tree_toggle: ?cfg_mod.Chord = null,
+    keys_cheatsheet: ?cfg_mod.Chord = null,
     search: Search,
+    cheatsheet_visible: bool = false,
     tree_visible: bool = false,
     tree: filetree_mod.FileTree = .{},
     search_open: bool = false,
@@ -210,6 +213,7 @@ fn loadKeybindings(kb: cfg_mod.Keybindings) void {
     g.keys_search_prev = cfg_mod.parseChord(kb.search_prev);
     g.keys_hud_toggle = cfg_mod.parseChord(kb.hud_toggle);
     g.keys_tree_toggle = cfg_mod.parseChord(kb.tree_toggle);
+    g.keys_cheatsheet = cfg_mod.parseChord(kb.cheatsheet_toggle);
 }
 
 // --- command palette -----------------------------------------------------
@@ -303,6 +307,10 @@ fn runAction(action: palette_mod.Action) void {
             g.dirty = true;
         },
         .tree_toggle => toggleTree(),
+        .cheatsheet_show => {
+            g.cheatsheet_visible = true;
+            g.dirty = true;
+        },
     }
 }
 
@@ -637,6 +645,11 @@ fn handleTabKey(mods: keys.Mods, cp: u21) bool {
         toggleTree();
         return true;
     };
+    if (g.keys_cheatsheet) |chd| if (chordMatches(chd, mods, cp)) {
+        g.cheatsheet_visible = !g.cheatsheet_visible;
+        g.dirty = true;
+        return true;
+    };
     return false;
 }
 
@@ -814,6 +827,14 @@ fn onKeyDown(event: objc.Object) void {
             }
         }
         return; // other ⌘ combos still go to the system
+    }
+
+    // While the cheatsheet is visible, any keystroke closes it (swallowed).
+    // ⌘/ to toggle is already handled in the mods.command branch above.
+    if (g.cheatsheet_visible) {
+        g.cheatsheet_visible = false;
+        g.dirty = true;
+        return;
     }
 
     // While the search bar is open, keystrokes edit the query, not the shell.
@@ -1376,15 +1397,19 @@ fn renderFrame() void {
     }
 
     if (g.hud_visible) {
-        // The HUD floats in the top-right corner; terminal keeps full width.
+        // The HUD floats in the top-right corner of the WINDOW. Position it
+        // from the raster's full width in cells — NOT terminal `cols`, which
+        // shrinks when the file tree is open (that put the card mid-window).
         const ch: usize = @intFromFloat(g.font.metrics.cell_h);
+        const cw: usize = @intFromFloat(g.font.metrics.cell_w);
         const total_rows = @max((g.raster.height -| 2 * grid_pad) / ch, 1);
+        const total_cols = @max((g.raster.width -| 2 * grid_pad) / cw, 1);
         hud_mod.draw(
             &g.raster,
             g.font,
             g.theme,
             g.hud,
-            cols,
+            total_cols,
             total_rows,
             topBarRows(),
         );
@@ -1400,6 +1425,20 @@ fn renderFrame() void {
             &g.tree,
             total_rows,
             topBarRows(),
+        );
+    }
+
+    if (g.cheatsheet_visible) {
+        const ch: usize = @intFromFloat(g.font.metrics.cell_h);
+        const cw: usize = @intFromFloat(g.font.metrics.cell_w);
+        const total_rows = @max((g.raster.height -| 2 * grid_pad) / ch, 1);
+        const total_cols = @max((g.raster.width -| 2 * grid_pad) / cw, 1);
+        cheatsheet_mod.draw(
+            &g.raster,
+            g.font,
+            g.theme,
+            total_cols,
+            total_rows,
         );
     }
 
@@ -1627,6 +1666,7 @@ test {
     _ = @import("render/tabbar.zig");
     _ = @import("render/searchbar.zig");
     _ = @import("render/hud.zig");
+    _ = @import("render/cheatsheet.zig");
     _ = @import("terminal/terminal.zig");
     _ = @import("terminal/search.zig");
     _ = @import("pty/pty.zig");
