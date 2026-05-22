@@ -1,11 +1,17 @@
 //! GPU rendering pipeline: Metal, CoreText glyph rasterization, frame composition.
 //!
 //! Phase P4a port: `raster` and `draw` are pure-Rust modules.
-//! Panel renderers (workspace, tabbar, agent_panel, searchbar, filetree,
-//! cheatsheet) are deferred to the next phase.
+//! Phase P4b port: panel renderers — workspace, tabbar, agent_panel, searchbar,
+//! filetree, cheatsheet.
 
+pub mod agent_panel;
+pub mod cheatsheet;
 pub mod draw;
+pub mod filetree;
 pub mod raster;
+pub mod searchbar;
+pub mod tabbar;
+pub mod workspace;
 
 pub use draw::{
     CursorConfig, CursorParams, CursorStyle, cursor_opacity, draw_cell, draw_cursor, draw_viewport,
