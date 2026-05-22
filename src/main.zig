@@ -129,6 +129,10 @@ fn imWindowDidResize(_: c.id, _: c.SEL, _: c.id) callconv(.c) void {
     onResize();
 }
 
+fn imViewDidEndLiveResize(_: c.id, _: c.SEL) callconv(.c) void {
+    onEndLiveResize();
+}
+
 fn imTick(_: c.id, _: c.SEL, _: c.id) callconv(.c) void {
     onTick();
 }
@@ -391,6 +395,21 @@ fn closeDeadTabs() void {
 }
 
 /// Size every tab's terminal + pty to the current window, minus the bar row.
+/// Resize the GPU surface — raster bitmap, Metal drawable, webview frame — to
+/// the window's current pixel size. Cheap; safe to run on every resize tick.
+fn resizeSurface() void {
+    const b = g.view.msgSend(CGRect, "bounds", .{});
+    const dw: usize = @intFromFloat(@max(b.size.width * g.scale, 1));
+    const dh: usize = @intFromFloat(@max(b.size.height * g.scale, 1));
+    g.raster.resize(dw, dh) catch {};
+    g.renderer.resize(dw, dh);
+    g.webview.setFrame(b.size.width, b.size.height);
+}
+
+/// Reflow every tab's terminal + pty to the window's current cell grid. This
+/// sends SIGWINCH and makes the shell redraw, so it runs once when a resize
+/// settles — not on every live-resize tick (that spammed the shell and made
+/// the text jitter).
 fn resizeAllTabs() void {
     const b = g.view.msgSend(CGRect, "bounds", .{});
     const dw: usize = @intFromFloat(@max(b.size.width * g.scale, 1));
@@ -405,17 +424,28 @@ fn resizeAllTabs() void {
         tab.terminal.resize(cols, rows);
         tab.pty.resize(@intCast(cols), @intCast(rows));
     }
-    g.raster.resize(dw, dh) catch {};
-    g.renderer.resize(dw, dh);
     g.selection.clear();
     snapAnim();
     g.dirty = true;
 }
 
+fn viewInLiveResize() bool {
+    return g.view.msgSend(bool, "inLiveResize", .{});
+}
+
 fn onResize() void {
+    resizeSurface();
+    // During a live drag only the pixel surface tracks the window; the cell
+    // grid is left alone so the shell is not reflowed on every frame. The
+    // grid is reflowed once when the drag ends (viewDidEndLiveResize).
+    if (!viewInLiveResize()) resizeAllTabs();
+    renderFrame();
+}
+
+/// A live-resize drag finished — reflow the grid once, now that the size has
+/// settled.
+fn onEndLiveResize() void {
     resizeAllTabs();
-    const b = g.view.msgSend(CGRect, "bounds", .{});
-    g.webview.setFrame(b.size.width, b.size.height);
     renderFrame();
 }
 
@@ -1079,6 +1109,7 @@ pub fn main() void {
     _ = View.addMethod("acceptsFirstResponder", imAcceptsFirstResponder);
     _ = View.addMethod("keyDown:", imKeyDown);
     _ = View.addMethod("scrollWheel:", imScrollWheel);
+    _ = View.addMethod("viewDidEndLiveResize", imViewDidEndLiveResize);
     _ = View.addMethod("mouseDown:", imMouseDown);
     _ = View.addMethod("mouseDragged:", imMouseDragged);
     _ = View.addMethod("mouseUp:", imMouseUp);
