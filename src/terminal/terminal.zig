@@ -25,6 +25,13 @@ pub const Cursor = struct {
     visible: bool,
 };
 
+/// Monotonic clock in milliseconds. Used for shell-integration timing.
+fn monoMs() i64 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+    return @as(i64, ts.sec) * 1000 + @divTrunc(ts.nsec, 1_000_000);
+}
+
 /// An OSC-133 semantic prompt mark, keyed to an absolute output line so the
 /// command and output regions of the session are machine-identifiable.
 pub const PromptMark = struct {
@@ -94,6 +101,13 @@ pub const Terminal = struct {
     /// Count of scrollback rows evicted over the session's lifetime, so
     /// absolute line numbers in `marks` stay stable as history scrolls away.
     evicted_lines: usize = 0,
+
+    /// Shell integration: last-run outcome. Updated by OSC 133;C (command
+    /// starts) and 133;D (command ends, optionally carrying an exit code).
+    shell_running: bool = false, // true between 133;C and 133;D
+    shell_run_start_ms: i64 = 0, // milliTimestamp when 133;C was received
+    shell_last_exit: i32 = 0, // exit code from most recent 133;D
+    shell_last_duration_ms: i64 = 0, // duration of the most recent run in ms
 
     /// Reusable buffer backing `viewportRow` when it pads a short scrollback
     /// row — one row wide, reallocated on resize.
@@ -653,6 +667,37 @@ pub const Terminal = struct {
             'D' => .command_done,
             else => return,
         };
+
+        // Update shell-state tracking for 133;C and 133;D.
+        if (kind == .output_start) { // 133;C = command started
+            self.shell_running = true;
+            self.shell_run_start_ms = monoMs();
+        } else if (kind == .command_done) { // 133;D = command finished
+            if (self.shell_running) {
+                self.shell_last_duration_ms = monoMs() - self.shell_run_start_ms;
+            }
+            self.shell_running = false;
+            // Parse optional "exit_code=N" from the 133;D payload (e.g. "D;exit_code=1").
+            const ec_key = "exit_code=";
+            if (std.mem.indexOf(u8, payload, ec_key)) |idx| {
+                const num_str = payload[idx + ec_key.len ..];
+                var n: i32 = 0;
+                var negative = false;
+                var start: usize = 0;
+                if (num_str.len > 0 and num_str[0] == '-') {
+                    negative = true;
+                    start = 1;
+                }
+                for (num_str[start..]) |ch| {
+                    if (ch < '0' or ch > '9') break;
+                    n = n * 10 + @as(i32, ch - '0');
+                }
+                self.shell_last_exit = if (negative) -n else n;
+            } else {
+                self.shell_last_exit = 0;
+            }
+        }
+
         const line_num = self.evicted_lines + self.history.len() + self.active().cur_y;
         // Suppress a duplicate prompt_start on the same line (precmd may fire
         // OSC 133;A more than once per prompt draw).
@@ -667,6 +712,21 @@ pub const Terminal = struct {
         }
         self.marks[self.mark_count] = .{ .kind = kind, .line = line_num };
         self.mark_count += 1;
+    }
+
+    /// Shell-state accessor for the HUD: running state and last-run outcome.
+    pub const LastRun = struct {
+        running: bool,
+        exit_code: i32,
+        duration_ms: i64,
+    };
+
+    pub fn lastRun(self: *const Terminal) LastRun {
+        return .{
+            .running = self.shell_running,
+            .exit_code = self.shell_last_exit,
+            .duration_ms = self.shell_last_duration_ms,
+        };
     }
 
     /// True when the given absolute line index was marked as a prompt start

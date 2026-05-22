@@ -12,6 +12,7 @@ pub const Action = enum {
     scroll_top,
     scroll_bottom,
     app_quit,
+    hud_toggle,
 };
 
 pub const Entry = struct {
@@ -30,6 +31,7 @@ pub const catalog = [_]Entry{
     .{ .id = "scroll.top", .title = "Scroll to Top", .action = .scroll_top },
     .{ .id = "scroll.bottom", .title = "Scroll to Bottom", .action = .scroll_bottom },
     .{ .id = "app.quit", .title = "Quit Anvil", .action = .app_quit },
+    .{ .id = "hud.toggle", .title = "Toggle HUD", .subtitle = "Show or hide the developer context panel", .action = .hud_toggle },
 };
 
 /// Look up the action for a command id, or null if unknown.

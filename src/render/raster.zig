@@ -118,6 +118,19 @@ pub const Raster = struct {
         capi.CTFontDrawGlyphs(font.ct, &g, &pos, 1, self.ctx);
     }
 
+    /// Draw a thin full-height vertical hairline at the LEFT edge of cell-column
+    /// `col`. The strip is ≈2 device pixels wide. Intended for panel separators.
+    pub fn colRule(self: *Raster, font: Font, col: usize, rgb: [3]u8) void {
+        const cw = font.metrics.cell_w;
+        const strip_w: f64 = 2.0;
+        const left_x = self.pad_x + @as(f64, @floatFromInt(col)) * cw;
+        setFill(self.ctx, rgb);
+        capi.CGContextFillRect(self.ctx, .{
+            .origin = .{ .x = left_x, .y = 0 },
+            .size = .{ .width = strip_w, .height = @floatFromInt(self.height) },
+        });
+    }
+
     /// Draw a thin full-width horizontal hairline at the TOP edge of cell-row
     /// `row`. The strip is ≈2 device pixels tall and respects `y_shift_px` so
     /// it scrolls with the grid. Intended for prompt-start separator marks.

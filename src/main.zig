@@ -18,6 +18,8 @@ const keys = @import("app/keys.zig");
 const shell_integration = @import("app/shell_integration.zig");
 const tabs_mod = @import("app/tab.zig");
 const tabbar = @import("render/tabbar.zig");
+const hud_mod = @import("render/hud.zig");
+const git = @import("prompt/git.zig");
 const Search = @import("terminal/search.zig").Search;
 const searchbar = @import("render/searchbar.zig");
 const webview_mod = @import("webview/webview.zig");
@@ -78,6 +80,12 @@ fn snapAnim() void {
 // The margin shows the background color; the grid simply has fewer cells.
 const grid_pad: usize = 22;
 
+// HUD data refresh rate: once every N ticks (≈60fps timer → ~1 s).
+const hud_refresh_ticks: u32 = 60;
+
+// Scratch buffer for the git branch name (reused each refresh).
+var git_branch_buf: [128]u8 = undefined;
+
 // Reused scratch buffer for draining per-tab PTY bytes each tick.
 // One tab is drained at a time, so this is safe as a module global.
 var feed_scratch: [256 * 1024]u8 = undefined;
@@ -110,8 +118,12 @@ const App = struct {
     keys_search_open: ?cfg_mod.Chord = null,
     keys_search_next: ?cfg_mod.Chord = null,
     keys_search_prev: ?cfg_mod.Chord = null,
+    keys_hud_toggle: ?cfg_mod.Chord = null,
     search: Search,
     search_open: bool = false,
+    hud_visible: bool = true,
+    hud: hud_mod.Hud = .{},
+    hud_tick: u32 = 0, // counts up to hud_refresh_ticks then resets
     webview: webview_mod.Webview,
     palette: palette_mod.Palette = .{},
     system_dark: bool = false,
@@ -189,6 +201,7 @@ fn loadKeybindings(kb: cfg_mod.Keybindings) void {
     g.keys_search_open = cfg_mod.parseChord(kb.search_open);
     g.keys_search_next = cfg_mod.parseChord(kb.search_next);
     g.keys_search_prev = cfg_mod.parseChord(kb.search_prev);
+    g.keys_hud_toggle = cfg_mod.parseChord(kb.hud_toggle);
 }
 
 // --- command palette -----------------------------------------------------
@@ -277,6 +290,11 @@ fn runAction(action: palette_mod.Action) void {
             g.dirty = true;
         },
         .app_quit => g.nsapp.msgSend(void, "terminate:", .{@as(c.id, null)}),
+        .hud_toggle => {
+            g.hud_visible = !g.hud_visible;
+            resizeAllTabs();
+            g.dirty = true;
+        },
     }
 }
 
@@ -368,6 +386,15 @@ fn onTick() void {
         g.dirty = true;
     }
 
+    // HUD data refresh — throttled to ~once per second.
+    if (g.hud_visible) {
+        g.hud_tick += 1;
+        if (g.hud_tick >= hud_refresh_ticks) {
+            g.hud_tick = 0;
+            refreshHud();
+        }
+    }
+
     if (g.dirty) {
         renderFrame();
         g.dirty = false;
@@ -416,7 +443,9 @@ fn resizeAllTabs() void {
     const dh: usize = @intFromFloat(@max(b.size.height * g.scale, 1));
     const cw: usize = @intFromFloat(g.font.metrics.cell_w);
     const ch: usize = @intFromFloat(g.font.metrics.cell_h);
-    const cols = @max((dw -| 2 * grid_pad) / cw, 1);
+    const raw_cols = @max((dw -| 2 * grid_pad) / cw, 1);
+    const hud_reserve = if (g.hud_visible) hud_mod.hud_cols + 1 else 0;
+    const cols = @max(raw_cols -| hud_reserve, 1);
     const total_rows = @max((dh -| 2 * grid_pad) / ch, 1);
     const rows = @max(total_rows -| topBarRows() -| bottomBarRows(), 1);
 
@@ -589,6 +618,12 @@ fn handleTabKey(mods: keys.Mods, cp: u21) bool {
         if (!g.search_open) openSearch();
         g.search.prev();
         scrollToCurrentMatch();
+        g.dirty = true;
+        return true;
+    };
+    if (g.keys_hud_toggle) |chd| if (chordMatches(chd, mods, cp)) {
+        g.hud_visible = !g.hud_visible;
+        resizeAllTabs();
         g.dirty = true;
         return true;
     };
@@ -899,6 +934,86 @@ fn copySelection() void {
     _ = pb.msgSend(bool, "setString:forType:", .{ ns_str, pb_type });
 }
 
+// --- HUD data refresh ----------------------------------------------------
+
+/// Query physical RAM size in bytes via sysctl, or 0 on failure.
+fn queryRamTotal() u64 {
+    var val: u64 = 0;
+    var len: usize = @sizeOf(u64);
+    _ = std.c.sysctlbyname("hw.memsize", &val, &len, null, 0);
+    return val;
+}
+
+/// Query macOS vm page counts to estimate memory-in-use percentage.
+/// Returns 0–100, or 0 on failure.
+fn queryMemPct() u8 {
+    // host_statistics64 with HOST_VM_INFO64 fills a vm_statistics64_data_t.
+    // Rather than declaring the full mach struct, we query two sysctl integers:
+    //   vm.page_free_count  — free pages
+    //   vm.page_active_count — active pages  (not available via sysctl on macOS)
+    // Fallback: use "vm.pagesize" + "hw.memsize" + "vm.page_free_count" to
+    // compute  used% = 1 - (free_pages * pagesize / total_ram).
+    const ram = queryRamTotal();
+    if (ram == 0) return 0;
+
+    var page_size: u64 = 4096;
+    var ps_len: usize = @sizeOf(u64);
+    _ = std.c.sysctlbyname("hw.pagesize", &page_size, &ps_len, null, 0);
+
+    var free_pages: u64 = 0;
+    var fp_len: usize = @sizeOf(u64);
+    _ = std.c.sysctlbyname("vm.page_free_count", &free_pages, &fp_len, null, 0);
+
+    const free_bytes = free_pages * page_size;
+    if (free_bytes >= ram) return 0;
+    const used_bytes = ram - free_bytes;
+    const pct = @divTrunc(used_bytes * 100, ram);
+    return @intCast(@min(pct, 100));
+}
+
+/// Populate `g.hud` from live data: git status, last-run state, memory.
+fn refreshHud() void {
+    const cur_term = &g.tabs.current().terminal;
+
+    // --- git ---
+    const cwd = cur_term.cwdPath();
+    if (cwd.len > 0) {
+        if (git.query(g.alloc, cwd, &git_branch_buf)) |info| {
+            g.hud.git = if (info.dirty > 0) .dirty else .ok;
+            g.hud.branch_len = info.branch.len;
+            @memcpy(g.hud.branch[0..info.branch.len], info.branch);
+            g.hud.git_dirty = info.dirty;
+            g.hud.git_ahead = info.ahead;
+            g.hud.git_behind = info.behind;
+        } else {
+            g.hud.git = .no_repo;
+            g.hud.branch_len = 0;
+        }
+    } else {
+        g.hud.git = .no_repo;
+        g.hud.branch_len = 0;
+    }
+
+    // --- last run ---
+    const lr = cur_term.lastRun();
+    if (lr.running) {
+        // currently running — show idle until done
+        g.hud.run = .idle;
+    } else if (lr.duration_ms == 0 and lr.exit_code == 0 and !lr.running) {
+        // no run recorded yet
+        g.hud.run = .idle;
+    } else {
+        g.hud.run = if (lr.exit_code == 0) .ok else .failed;
+        g.hud.run_exit = lr.exit_code;
+        g.hud.run_duration_ms = lr.duration_ms;
+    }
+
+    // --- mem ---
+    g.hud.mem_pct = queryMemPct();
+
+    g.dirty = true;
+}
+
 // --- rendering -----------------------------------------------------------
 
 /// Open the search bar (re-scanning the active tab) and reflow for the row.
@@ -996,6 +1111,24 @@ fn renderFrame() void {
         const ch: usize = @intFromFloat(g.font.metrics.cell_h);
         const total_rows = @max((g.raster.height -| 2 * grid_pad) / ch, 1);
         searchbar.drawSearchBar(&g.raster, g.font, g.theme, &g.search, total_rows - 1);
+    }
+
+    if (g.hud_visible) {
+        // The HUD occupies the rightmost hud_cols columns of the raster, after
+        // the one-column separator gutter. start_col = terminal cols + 1 gutter.
+        const start_col = cols + 1;
+        const ch: usize = @intFromFloat(g.font.metrics.cell_h);
+        const total_rows_for_hud = @max((g.raster.height -| 2 * grid_pad) / ch, 1);
+        const visible_rows = @max(total_rows_for_hud -| topBarRows() -| bottomBarRows(), 1);
+        hud_mod.draw(
+            &g.raster,
+            g.font,
+            g.theme,
+            g.hud,
+            start_col,
+            visible_rows,
+            topBarRows(),
+        );
     }
 
     g.renderer.present(g.raster.bytes());
@@ -1220,6 +1353,7 @@ test {
     _ = @import("app/shell_integration.zig");
     _ = @import("render/tabbar.zig");
     _ = @import("render/searchbar.zig");
+    _ = @import("render/hud.zig");
     _ = @import("terminal/terminal.zig");
     _ = @import("terminal/search.zig");
     _ = @import("pty/pty.zig");
