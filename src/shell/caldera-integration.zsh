@@ -9,6 +9,7 @@ CALDERA_ZSH_LOADED=1
 # (133;A), and report the cwd (OSC 7).
 __caldera_precmd() {
   local last=$?
+  typeset -g CALDERA_EXIT=$last
   printf '\e]133;D;%s\a' "$last"
   printf '\e]7;file://%s%s\a' "${HOST:-localhost}" "$PWD"
   printf '\e]133;A\a'
@@ -38,7 +39,7 @@ precmd_functions+=(__caldera_mark_prompt)
 if [[ -n "$CALDERA_PROMPT" && -x "$CALDERA_PROMPT" ]]; then
   setopt prompt_subst
   __caldera_prompt() {
-    PROMPT="$("$CALDERA_PROMPT" --exit $? 2>/dev/null)"
+    PROMPT="$("$CALDERA_PROMPT" --exit ${CALDERA_EXIT:-0} 2>/dev/null)"
   }
   precmd_functions+=(__caldera_prompt)
 

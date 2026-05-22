@@ -54,6 +54,7 @@ pub fn full(allocator: std.mem.Allocator, segments: []const seg.Segment, opts: O
     try buf.appendSlice(allocator, " \u{276f}");
     try buf.appendSlice(allocator, reset);
     try buf.appendSlice(allocator, " ");
+    try buf.appendSlice(allocator, "\x1b]133;B\x07");
 
     return buf.toOwnedSlice(allocator);
 }
@@ -105,4 +106,11 @@ test "transient is a single line, no edge" {
     defer testing.allocator.free(out);
     try testing.expect(std.mem.indexOf(u8, out, "\n") == null);
     try testing.expect(std.mem.indexOf(u8, out, edge) == null);
+}
+
+test "full emits the OSC 133;B prompt-end mark" {
+    const s = sampleSegs();
+    const out = try full(testing.allocator, &s, .{ .rich = true, .failed = false });
+    defer testing.allocator.free(out);
+    try testing.expect(std.mem.indexOf(u8, out, "\x1b]133;B") != null);
 }

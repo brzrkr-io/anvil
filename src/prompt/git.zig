@@ -62,6 +62,7 @@ pub fn query(allocator: std.mem.Allocator, cwd: []const u8, out_buf: []u8) ?Info
     const result = std.process.run(allocator, io, .{
         .argv = &.{ "git", "status", "--porcelain=v1", "--branch" },
         .cwd = .{ .path = cwd },
+        .timeout = .{ .duration = .{ .raw = std.Io.Duration.fromSeconds(2), .clock = .awake } },
     }) catch return null;
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);

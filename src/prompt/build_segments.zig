@@ -38,9 +38,12 @@ pub fn assemble(in: Inputs) seg.List {
     // git — when in a repo.
     if (in.git_info) |g| {
         const dirty_suffix = if (g.dirty > 0) blk: {
-            const s = std.fmt.bufPrint(in.scratch[off..], "{s} \u{25cf}{d}", .{ g.branch, g.dirty }) catch g.branch;
-            off += s.len;
-            break :blk s;
+            if (std.fmt.bufPrint(in.scratch[off..], "{s} \u{25cf}{d}", .{ g.branch, g.dirty })) |s| {
+                off += s.len;
+                break :blk s;
+            } else |_| {
+                break :blk g.branch;
+            }
         } else g.branch;
         list.add(.{
             .icon = .branch,
@@ -60,9 +63,11 @@ pub fn assemble(in: Inputs) seg.List {
 
     // failure — only on a non-zero exit.
     if (in.exit_code != 0) {
-        const s = std.fmt.bufPrint(in.scratch[off..], "{d}", .{in.exit_code}) catch "?";
-        off += s.len;
-        list.add(.{ .icon = .err, .text = s, .state = .err });
+        const exit_text = if (std.fmt.bufPrint(in.scratch[off..], "{d}", .{in.exit_code})) |s| blk: {
+            off += s.len;
+            break :blk s;
+        } else |_| "?";
+        list.add(.{ .icon = .err, .text = exit_text, .state = .err });
     }
 
     return list;
