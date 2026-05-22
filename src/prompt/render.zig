@@ -16,13 +16,30 @@ const dim = "\x1b[38;2;125;135;145m";
 const rule_color = "\x1b[38;2;74;80;96m"; // a quiet separator grey
 const edge = "\u{258e}"; // ▎
 
-fn stateColor(s: seg.State) []const u8 {
-    return switch (s) {
-        .normal => dim,
-        .ok => "\x1b[38;2;90;168;115m",
-        .warn => "\x1b[38;2;199;154;62m",
-        .err => accent_err,
-        .run => accent,
+// Segment colours — a touch of life, keyed to the segment type so the prompt
+// is not a wall of grey.
+const git_color = "\x1b[38;2;127;176;135m"; // soft green
+const tool_color = "\x1b[38;2;157;146;207m"; // soft violet
+const infra_color = "\x1b[38;2;111;159;196m"; // soft steel blue
+const warn_color = "\x1b[38;2;199;154;62m"; // amber — dirty / attention
+const ok_color = "\x1b[38;2;90;168;115m"; // green
+
+/// A segment's colour: an attention state (dirty / failed) wins; otherwise the
+/// colour is keyed to the segment's type.
+fn segColor(s: seg.Segment) []const u8 {
+    switch (s.state) {
+        .warn => return warn_color,
+        .err => return accent_err,
+        .ok => return ok_color,
+        .run => return accent,
+        .normal => {},
+    }
+    return switch (s.icon) {
+        .repo => bright,
+        .branch => git_color,
+        .toolchain => tool_color,
+        .container, .cluster => infra_color,
+        else => dim,
     };
 }
 
@@ -87,7 +104,7 @@ pub fn full(a: std.mem.Allocator, segments: []const seg.Segment, opts: Options) 
     try buf.appendSlice(a, "  ");
     for (segments, 0..) |s, idx| {
         if (idx != 0) try buf.appendSlice(a, "   ");
-        try esc(&buf, a, sh, if (idx == 0) bright else stateColor(s.state));
+        try esc(&buf, a, sh, segColor(s));
         try buf.appendSlice(a, s.text);
         try esc(&buf, a, sh, reset);
     }
