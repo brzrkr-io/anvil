@@ -1,0 +1,25 @@
+# Mineral Light theme — TOML equivalent of the built-in mineral-light palette.
+# Apply as theme_overrides in config.toml, or use theme = "mineral-light".
+
+[theme_overrides]
+background = "#eef1f2"
+foreground = "#1b1f24"
+accent     = "#286e76"
+
+[theme_overrides.ansi]
+black          = "#1b1f24"
+red            = "#b5443a"
+green          = "#327952"
+yellow         = "#946410"
+blue           = "#3f6c95"
+magenta        = "#62558f"
+cyan           = "#286e76"
+white          = "#5e656d"
+bright_black   = "#5d6671"
+bright_red     = "#ad4033"
+bright_green   = "#357850"
+bright_yellow  = "#86590e"
+bright_blue    = "#37608a"
+bright_magenta = "#564a83"
+bright_cyan    = "#256a70"
+bright_white   = "#5f676f"

@@ -1,0 +1,114 @@
+# Anvil configuration — ~/.config/anvil/config.toml
+#
+# All fields are optional. Missing fields keep their defaults.
+# Live-reloadable fields take effect within ~16 ms (one render tick):
+#   theme, theme_overrides, cursor, keybindings
+# Startup-only fields require relaunch:
+#   font, scrollback, window
+
+# ── Terminal ──────────────────────────────────────────────────────────────────
+
+# Scrollback ring capacity (number of rows). Minimum 1.
+scrollback = 100_000
+
+# Shell integration: OSC 133 marks + OSC 7 cwd. Enables smart prompt + new-tab
+# cwd inheritance. Set false to disable.
+shell_integration = true
+
+# ── Font ──────────────────────────────────────────────────────────────────────
+
+[font]
+family = "IBM Plex Mono"  # Any font family name installed on macOS.
+size   = 14.0             # Point size. Minimum 4.0.
+
+# ── Cursor ────────────────────────────────────────────────────────────────────
+
+[cursor]
+style = "block"   # "block" | "bar" | "underline"
+blink = true
+
+# ── Window ────────────────────────────────────────────────────────────────────
+
+[window]
+width  = 1024.0   # Initial window width in points. Minimum 200.
+height = 640.0    # Initial window height in points. Minimum 150.
+
+# ── Theme ─────────────────────────────────────────────────────────────────────
+
+# Built-in themes: "mineral-dark" (default), "mineral-light".
+# "system" selects mineral-dark (reserved for future OS dark/light sync).
+theme = "mineral-dark"
+
+# Optional per-color overrides applied on top of the chosen base theme.
+# Each field is an optional #rrggbb hex string. Absent fields keep the base
+# theme value.
+#
+# [theme_overrides]
+# background = "#0b0d0e"
+# foreground = "#e8eaee"
+# accent     = "#2f7f86"
+#
+# [theme_overrides.ansi]
+# black          = "#1c1e26"
+# red            = "#e06c75"
+# green          = "#98c379"
+# yellow         = "#e5c07b"
+# blue           = "#61afef"
+# magenta        = "#c678dd"
+# cyan           = "#56b6c2"
+# white          = "#abb2bf"
+# bright_black   = "#5c6370"
+# bright_red     = "#e06c75"
+# bright_green   = "#98c379"
+# bright_yellow  = "#e5c07b"
+# bright_blue    = "#61afef"
+# bright_magenta = "#c678dd"
+# bright_cyan    = "#56b6c2"
+# bright_white   = "#ffffff"
+
+# ── Keybindings ───────────────────────────────────────────────────────────────
+#
+# Each value is a chord string: modifier tokens (cmd/shift/ctrl/opt, case-
+# insensitive) joined by +, followed by a single key character.
+# An empty string "" disables a binding.
+#
+# [keybindings]
+# new_tab            = "cmd+t"
+# close_tab          = ""
+# next_tab           = "cmd+shift+]"
+# prev_tab           = "cmd+shift+["
+# tab_1              = "cmd+1"
+# tab_2              = "cmd+2"
+# tab_3              = "cmd+3"
+# tab_4              = "cmd+4"
+# tab_5              = "cmd+5"
+# tab_6              = "cmd+6"
+# tab_7              = "cmd+7"
+# tab_8              = "cmd+8"
+# tab_9              = "cmd+9"
+# search_open        = "cmd+f"
+# search_next        = "cmd+g"
+# search_prev        = "cmd+shift+g"
+# hud_toggle         = "cmd+j"
+# tree_toggle        = "cmd+e"
+# cheatsheet_toggle  = "cmd+/"
+# split_right        = "cmd+d"
+# split_down         = "cmd+shift+d"
+# close_pane         = "cmd+w"
+# focus_left         = "cmd+shift+h"
+# focus_right        = "cmd+shift+l"
+# focus_up           = "cmd+shift+k"
+# focus_down         = "cmd+shift+j"
+
+# ── Prompt ────────────────────────────────────────────────────────────────────
+
+[prompt]
+enabled   = true   # Enable the anvil-prompt adaptive shell prompt.
+transient = true   # Collapse previous prompts to a minimal marker.
+
+# Custom command-backed segments (shown after the built-in segments).
+# Each segment runs `command` in the shell and displays the stdout as `label`.
+#
+# [[prompt.custom]]
+# label   = "aws"
+# command = "echo prod"

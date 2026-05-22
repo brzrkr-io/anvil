@@ -1,0 +1,25 @@
+# Mineral Dark theme — TOML equivalent of the built-in mineral-dark palette.
+# Apply as theme_overrides in config.toml, or use theme = "mineral-dark".
+
+[theme_overrides]
+background = "#181a21"
+foreground = "#d8dbe2"
+accent     = "#54b7c0"
+
+[theme_overrides.ansi]
+black          = "#2c303e"
+red            = "#e08b82"
+green          = "#8ec99b"
+yellow         = "#e2c089"
+blue           = "#8bb0d4"
+magenta        = "#bba6dd"
+cyan           = "#7ecace"
+white          = "#c3c8d2"
+bright_black   = "#868ea6"
+bright_red     = "#ee9f96"
+bright_green   = "#a6d8b1"
+bright_yellow  = "#efce9a"
+bright_blue    = "#a3c4e4"
+bright_magenta = "#cbb8e9"
+bright_cyan    = "#95d9de"
+bright_white   = "#eef1f6"

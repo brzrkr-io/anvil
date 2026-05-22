@@ -17,12 +17,19 @@ dependencies = [
 [[package]]
 name = "anvil-agent"
 version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "anvil-caldera"
 version = "0.1.0"
 dependencies = [
  "anvil-agent",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
@@ -31,6 +38,7 @@ version = "0.1.0"
 dependencies = [
  "anvil-theme",
  "serde",
+ "tempfile",
  "thiserror",
  "toml",
 ]
