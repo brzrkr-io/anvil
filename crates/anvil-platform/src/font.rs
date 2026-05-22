@@ -200,16 +200,31 @@ pub fn register_bundled() {
 
 // ── GlyphPainter implementation ──────────────────────────────────────────────
 
-/// Implements `GlyphPainter` via CoreText.  Stateless — each `draw_glyph`
-/// call creates a temporary `CGBitmapContext` over the caller's pixel buffer
-/// and draws through `CTFontDrawGlyphs`.
+/// Cached CoreGraphics state keyed to the current pixel buffer. The
+/// CGBitmapContext + CGColorSpace are expensive to create — caching them
+/// across many `draw_glyph` calls is the difference between responsive
+/// typing and per-cell latency. Invalidated whenever the buffer pointer or
+/// bitmap dimensions change (i.e. on resize).
+struct Cached {
+    // The CGContext internally retains its color space, so we don't need to
+    // keep our own handle alive.
+    ctx: CFRetained<objc2_core_graphics::CGContext>,
+    buf_ptr: *mut c_void,
+    width: usize,
+    height: usize,
+}
+
+/// Implements `GlyphPainter` via CoreText.  Holds a per-frame CGBitmapContext
+/// cache so the expensive CG state setup is amortized across the ~thousands
+/// of glyphs drawn per frame.
 pub struct CoreTextPainter<'a> {
     font: &'a Font,
+    cached: Option<Cached>,
 }
 
 impl<'a> CoreTextPainter<'a> {
     pub fn new(font: &'a Font) -> Self {
-        Self { font }
+        Self { font, cached: None }
     }
 }
 
@@ -230,87 +245,91 @@ impl GlyphPainter for CoreTextPainter<'_> {
         bitmap_width: usize,
         bitmap_height: usize,
     ) {
-        // `codepoint` is the cell's Unicode scalar. The GlyphPainter contract
-        // passes codepoints, not pre-resolved glyph indices — resolve it
-        // through the font cmap (this also handles astral-plane codepoints via
-        // the surrogate path in `Font::glyph`).
+        // Resolve codepoint → glyph via the font cmap (also handles astral
+        // codepoints through `Font::glyph`'s surrogate path).
         if codepoint == 0 {
             return;
         }
         let glyph: u16 = self.font.glyph(codepoint);
         if glyph == 0 {
-            return; // the font has no glyph for this codepoint
+            return;
         }
 
-        let space = match CGColorSpace::new_device_rgb() {
-            Some(s) => s,
-            None => return,
-        };
+        // Reuse the CGBitmapContext across all glyphs in this frame; recreate
+        // only when the pixel buffer pointer or dimensions change (resize).
+        let buf_ptr = pixels.as_mut_ptr() as *mut c_void;
+        let need_new = self
+            .cached
+            .as_ref()
+            .is_none_or(|c| c.buf_ptr != buf_ptr || c.width != bitmap_width || c.height != bitmap_height);
+        if need_new {
+            let color_space = match CGColorSpace::new_device_rgb() {
+                Some(s) => s,
+                None => return,
+            };
+            // SAFETY:
+            // - pixels is valid for bitmap_width * bitmap_height * 4 bytes.
+            // - color_space is a valid CGColorSpace.
+            // - BGRA8_BITMAP_INFO matches Metal's BGRA8Unorm layout.
+            // - None release callback: CG must NOT free the buffer. The
+            //   pointer-change check above guarantees we drop a stale context
+            //   before its buffer goes away.
+            let ctx = unsafe {
+                objc2_core_graphics::CGBitmapContextCreate(
+                    buf_ptr,
+                    bitmap_width,
+                    bitmap_height,
+                    8,
+                    bitmap_width * 4,
+                    Some(&color_space),
+                    BGRA8_BITMAP_INFO,
+                )
+            };
+            let ctx = match ctx {
+                Some(c) => c,
+                None => return,
+            };
+            // Identity text matrix — set once, never changes per glyph.
+            // SAFETY: CGAffineTransformIdentity is a valid static extern.
+            objc2_core_graphics::CGContext::set_text_matrix(Some(&ctx), unsafe {
+                objc2_core_graphics::CGAffineTransformIdentity
+            });
+            drop(color_space); // CGContext has its own retain
+            self.cached = Some(Cached {
+                ctx,
+                buf_ptr,
+                width: bitmap_width,
+                height: bitmap_height,
+            });
+        }
+        // SAFETY-of-borrow: `cached` was just populated if it was None.
+        let ctx = &self.cached.as_ref().unwrap().ctx;
 
-        // Create a CGBitmapContext backed by the caller's pixel buffer.
-        // SAFETY:
-        // - pixels.as_mut_ptr() is valid for bitmap_width * bitmap_height * 4 bytes.
-        // - space is a valid CGColorSpace.
-        // - BGRA8_BITMAP_INFO matches Metal's BGRA8Unorm layout.
-        // - None release callback: CoreGraphics must NOT free the buffer.
-        let ctx = unsafe {
-            objc2_core_graphics::CGBitmapContextCreate(
-                pixels.as_mut_ptr() as *mut c_void,
-                bitmap_width,
-                bitmap_height,
-                8,
-                bitmap_width * 4,
-                Some(&space),
-                BGRA8_BITMAP_INFO,
-            )
-        };
-        let ctx = match ctx {
-            Some(c) => c,
-            None => return,
-        };
-
-        // Set identity text matrix (required by CoreText).
-        // SAFETY: CGAffineTransformIdentity is a valid static extern value.
-        objc2_core_graphics::CGContext::set_text_matrix(Some(&ctx), unsafe {
-            objc2_core_graphics::CGAffineTransformIdentity
-        });
-
-        // Set the foreground fill colour.
+        // Per-glyph hot path: just set the fill color and draw.
         objc2_core_graphics::CGContext::set_rgb_fill_color(
-            Some(&ctx),
+            Some(ctx),
             fg[0] as f64 / 255.0,
             fg[1] as f64 / 255.0,
             fg[2] as f64 / 255.0,
             1.0,
         );
 
-        // Convert top-down dest.y to CG y-up:
-        //   cg_cell_bottom = bitmap_height - dest.y - dest.h
-        // Baseline within the CG cell:
-        //   baseline_y = cg_cell_bottom + metrics.descent
+        // Convert top-down dest.y to CG y-up.
         let cg_cell_bottom = bitmap_height as f64 - dest.y - dest.h;
         let baseline_y = cg_cell_bottom + metrics.descent;
-
-        let pos = CGPoint {
-            x: dest.x,
-            y: baseline_y,
-        };
+        let pos = CGPoint { x: dest.x, y: baseline_y };
 
         // SAFETY:
-        // - glyph is a stack-allocated u16; NonNull is valid for one element.
-        // - pos is a stack-allocated CGPoint; NonNull is valid for one element.
-        // - ctx is a valid CGContext.
+        // - glyph and pos are stack values valid for one element each.
+        // - ctx is a valid CGContext (cached above).
         unsafe {
             self.font.ct.draw_glyphs(
                 NonNull::new(&glyph as *const u16 as *mut u16).unwrap(),
                 NonNull::new(&pos as *const CGPoint as *mut CGPoint).unwrap(),
                 1,
-                &ctx,
+                ctx,
             );
         }
-        // `ctx` and `space` are dropped (CFRetained) here, releasing the
-        // CoreFoundation refcount.  They do NOT free the pixel buffer because
-        // we passed None as the release callback to CGBitmapContextCreate.
     }
 }
 
