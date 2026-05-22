@@ -7,7 +7,6 @@ const objc = @import("objc");
 const c = objc.c;
 
 const term = @import("terminal/terminal.zig");
-const color = @import("render/color.zig");
 const Font = @import("render/font.zig").Font;
 const Raster = @import("render/raster.zig").Raster;
 const Renderer = @import("render/metal.zig").Renderer;
@@ -31,6 +30,8 @@ const filetree_mod = @import("app/filetree.zig");
 const filetree_render = @import("render/filetree.zig");
 const cheatsheet_mod = @import("render/cheatsheet.zig");
 const interact = @import("app/interact.zig");
+const draw_mod = @import("render/draw.zig");
+const metal_mod = @import("render/metal.zig");
 
 const CGPoint = extern struct { x: f64, y: f64 };
 const CGSize = extern struct { width: f64, height: f64 };
@@ -46,20 +47,6 @@ var config_path_buf: [std.fs.max_path_bytes]u8 = undefined;
 /// Exponential approach: move `cur` a fraction `rate` toward `target`.
 fn approach(cur: f32, target: f32, rate: f32) f32 {
     return cur + (target - cur) * rate;
-}
-
-fn smoothstep(t: f32) f32 {
-    const clamped = std.math.clamp(t, 0.0, 1.0);
-    return clamped * clamped * (3.0 - 2.0 * clamped);
-}
-
-/// Cursor opacity for blink phase `p` in [0,1): solid, fade out, dim hold,
-/// fade in — a soft blink rather than a hard on/off toggle.
-fn cursorOpacity(p: f32) f32 {
-    if (p < 0.50) return 1.0;
-    if (p < 0.62) return 1.0 - smoothstep((p - 0.50) / 0.12);
-    if (p < 0.88) return 0.0;
-    return smoothstep((p - 0.88) / 0.12);
 }
 
 fn windowIsKey() bool {
@@ -380,7 +367,7 @@ fn onTick() void {
         // Only redraw for blink when the opacity value actually changes.
         // cursorOpacity is constant during the solid-hold (0..0.5) and off-hold
         // (0.62..0.88) stretches, so skip the dirty mark during those holds.
-        const new_opacity = cursorOpacity(g.blink_phase);
+        const new_opacity = draw_mod.cursorOpacity(g.blink_phase);
         if (new_opacity != g.last_blink_opacity) {
             g.last_blink_opacity = new_opacity;
             g.dirty = true;
@@ -1088,10 +1075,7 @@ fn onMouseDown(event: objc.Object) void {
             // View y is 0 at bottom; tree starts at top (below tab bar).
             const tree_top_pt = top_bar_h_pt + pad_pt;
             const click_y_from_top = b.size.height - view_pt.y;
-            if (click_y_from_top >= tree_top_pt + ch_pt) {
-                // Subtract 1 to skip the "FILES" header row rendered at raster_row = top_offset + 0.
-                const raw_row: usize = @intFromFloat((click_y_from_top - tree_top_pt) / ch_pt);
-                const row_in_tree: usize = raw_row - 1;
+            if (filetree_render.treeRowAtClick(click_y_from_top, tree_top_pt, ch_pt, 1)) |row_in_tree| {
                 if (row_in_tree < g.tree.count) {
                     const e = &g.tree.entries[row_in_tree];
                     g.tree.selected_idx = row_in_tree;
@@ -1405,11 +1389,6 @@ fn renderFrame() void {
     g.raster.clear(g.theme.background);
 
     const t = g.tabs.current();
-    const rows = t.terminal.rows();
-    const cols = t.terminal.cols();
-
-    // Separator color: a quiet hairline that adapts to the theme.
-    const rule_rgb = color.mix(g.theme.background, g.theme.foreground, 0.28);
 
     // When the tree panel is visible, shift the terminal grid right by the
     // panel width so it occupies the left edge. The tab bar, HUD, search bar,
@@ -1426,56 +1405,27 @@ fn renderFrame() void {
     const rule_x_start = g.raster.pad_x + tree_offset_px;
     const rule_x_end = @as(f64, @floatFromInt(g.raster.width)) - g.raster.pad_x;
 
-    if (g.scroll_pos == 0 and g.overscroll == 0) {
-        var y: usize = 0;
-        while (y < rows) : (y += 1) {
-            const crow = t.terminal.contentRowOfViewport(y);
-            const line = t.terminal.viewportRow(y);
-            var x: usize = 0;
-            while (x < cols and x < line.len) : (x += 1) drawCell(x, y, crow, line[x]);
-            if (t.terminal.isPromptStart(t.terminal.absoluteLineOfContent(crow))) {
-                const ry: f64 = @floatFromInt(y + topBarRows());
-                g.raster.rowRule(g.font, ry, rule_rgb, rule_x_start, rule_x_end);
-            }
-        }
-    } else {
-        // Displayed offset = scroll_pos. Render the integer offset (base+1)
-        // and slide the grid by (1-frac) cells plus any overscroll translation.
-        // A positive y_shift_px moves cells UP on screen; overscroll > 0 means
-        // pulled past the top, so the grid slides DOWN — that requires a
-        // NEGATIVE y_shift_px contribution.
-        const base: usize = @intFromFloat(@floor(g.scroll_pos));
-        const frac: f64 = @as(f64, g.scroll_pos) - @floor(@as(f64, g.scroll_pos));
-        const scroll_shift = (1.0 - frac) * g.font.metrics.cell_h;
-        g.raster.y_shift_px = scroll_shift - @as(f64, g.overscroll);
-        const hist = t.terminal.scrollbackLen();
-        const off = base + 1;
-        var y: usize = 0;
-        while (y <= rows) : (y += 1) {
-            // Content row for viewportRowAt(off, y): same formula as
-            // contentRowOfViewport but substituting `off` for viewport_offset.
-            // Use saturating arithmetic to guard against off > hist + y.
-            const crow: usize = if (off > y) (hist + y) -| off else hist + y - off;
-            const line = t.terminal.viewportRowAt(off, y);
-            var x: usize = 0;
-            while (x < cols and x < line.len) : (x += 1) drawCell(x, y, crow, line[x]);
-            if (t.terminal.isPromptStart(t.terminal.absoluteLineOfContent(crow))) {
-                const ry: f64 = @floatFromInt(y + topBarRows());
-                g.raster.rowRule(g.font, ry, rule_rgb, rule_x_start, rule_x_end);
-            }
-        }
-        g.raster.y_shift_px = 0;
-    }
-
-    const cur = t.terminal.cursor();
-    if (cur.visible and t.terminal.viewportOffset() == 0 and
-        g.scroll_pos == 0 and cur.x < cols and cur.y < rows)
-    {
-        // Ride the rubber-band: shift the cursor with the grid during a bounce.
-        g.raster.y_shift_px = -@as(f64, g.overscroll);
-        drawCursor();
-        g.raster.y_shift_px = 0;
-    }
+    const cp = draw_mod.CursorParams{
+        .ax = g.cursor_ax,
+        .ay = g.cursor_ay,
+        .blink_phase = g.blink_phase,
+        .cfg = g.cursor_cfg,
+    };
+    const search_ptr: ?*const Search = if (g.search_open) &g.search else null;
+    draw_mod.drawViewport(
+        &g.raster,
+        &t.terminal,
+        g.font,
+        g.theme,
+        g.scroll_pos,
+        g.overscroll,
+        g.selection,
+        search_ptr,
+        topBarRows(),
+        cp,
+        rule_x_start,
+        rule_x_end,
+    );
 
     // Reset x_offset before drawing UI elements in absolute space.
     g.raster.x_offset = 0;
@@ -1537,84 +1487,7 @@ fn renderFrame() void {
         );
     }
 
-    g.renderer.present(g.raster.bytes(), viewInLiveResize());
-}
-
-fn drawCell(x: usize, y: usize, content_row: usize, cell: term.Cell) void {
-    var fg = resolve(cell.fg, g.theme.foreground);
-    var bg = resolve(cell.bg, g.theme.background);
-    if (cell.attrs.inverse) {
-        const t = fg;
-        fg = bg;
-        bg = t;
-    }
-    if (g.selection.active and g.selection.contains(content_row, x)) {
-        bg = color.mix(g.theme.background, g.theme.accent, 0.28);
-    }
-    if (g.search_open) {
-        switch (g.search.classify(content_row, x)) {
-            .current => bg = g.theme.accent,
-            .other => bg = g.theme.ansi[8],
-            .none => {},
-        }
-    }
-    const ry = y + topBarRows(); // raster row: offset by top bar when visible
-    if (!std.mem.eql(u8, &bg, &g.theme.background)) {
-        g.raster.cellBg(g.font, x, ry, bg);
-    }
-    if (cell.cp != ' ' and cell.cp != 0) {
-        g.raster.cellGlyph(g.font, x, ry, g.font.glyph(cell.cp), fg);
-    }
-}
-
-fn drawCursor() void {
-    // Prefer the app-requested cursor shape/blink (DECSCUSR) when set; fall
-    // back to the config defaults. Map terminal.CursorShape → cfg CursorStyle.
-    const terminal_obj = &g.tabs.current().terminal;
-    const blink: bool = terminal_obj.app_cursor_blink orelse g.cursor_cfg.blink;
-    const opacity: f32 = if (blink) cursorOpacity(g.blink_phase) else 1.0;
-    const ax: f64 = g.cursor_ax;
-    const ay: f64 = @as(f64, g.cursor_ay) + @as(f64, @floatFromInt(topBarRows()));
-    const cursor_rgb = color.mix(g.theme.background, g.theme.accent, opacity);
-
-    // Resolve style: app request overrides config.
-    const style: cfg_mod.CursorStyle = if (terminal_obj.app_cursor_shape) |s| switch (s) {
-        .block => .block,
-        .underline => .underline,
-        .bar => .bar,
-    } else g.cursor_cfg.style;
-
-    switch (style) {
-        .block => {
-            g.raster.cellInset(g.font, ax, ay, cursor_rgb, 0.0, 0.0, 1.0, 1.0);
-            // Re-draw the glyph of the cell the cursor rect mostly covers, in
-            // the inverted color, on top of the accent rect.
-            const ic: usize = @intFromFloat(@round(g.cursor_ax));
-            const ir: usize = @intFromFloat(@round(g.cursor_ay));
-            const t = g.tabs.current();
-            if (ir < t.terminal.rows() and ic < t.terminal.cols()) {
-                const line = t.terminal.viewportRow(ir);
-                if (ic < line.len) {
-                    const cell = line[ic];
-                    if (cell.cp != ' ' and cell.cp != 0) {
-                        const base_fg = resolve(cell.fg, g.theme.foreground);
-                        const glyph_fg = color.mix(base_fg, g.theme.background, opacity);
-                        g.raster.cellGlyph(g.font, ic, ir + topBarRows(), g.font.glyph(cell.cp), glyph_fg);
-                    }
-                }
-            }
-        },
-        .bar => g.raster.cellInset(g.font, ax, ay, cursor_rgb, 0.0, 0.0, 0.15, 1.0),
-        .underline => g.raster.cellInset(g.font, ax, ay, cursor_rgb, 0.0, 0.0, 1.0, 0.12),
-    }
-}
-
-fn resolve(col: term.Color, default: [3]u8) [3]u8 {
-    return switch (col) {
-        .default => default,
-        .palette => |p| g.theme.palette256(p),
-        .rgb => |v| v,
-    };
+    g.renderer.present(g.raster.bytes(), metal_mod.presentMode(viewInLiveResize()) == .sync);
 }
 
 // --- setup ---------------------------------------------------------------
@@ -1766,6 +1639,9 @@ test {
     _ = @import("render/color.zig");
     _ = @import("render/font.zig");
     _ = @import("render/raster.zig");
+    _ = @import("render/draw.zig");
+    _ = @import("render/metal.zig");
+    _ = @import("render/filetree.zig");
     _ = @import("app/keys.zig");
     _ = @import("app/tab.zig");
     _ = @import("app/shell_integration.zig");
@@ -1781,4 +1657,5 @@ test {
     _ = @import("app/selection.zig");
     _ = @import("app/filetree.zig");
     _ = @import("app/interact.zig");
+    _ = @import("testing/counting_allocator.zig");
 }

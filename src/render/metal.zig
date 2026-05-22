@@ -170,6 +170,23 @@ pub const Renderer = struct {
     }
 };
 
+/// The present strategy for a frame: sync prevents ghosting during live resize;
+/// async gives lower latency for normal frames.
+pub const PresentMode = enum { sync, async };
+
+/// Choose the present mode for a frame. During a live resize the layer must
+/// commit synchronously so the frame lands in lockstep with the new drawable
+/// size — prevents ghosting. All other frames use the async path.
+pub fn presentMode(in_live_resize: bool) PresentMode {
+    return if (in_live_resize) .sync else .async;
+}
+
+test "presentMode returns sync during live resize and async otherwise" {
+    const testing = @import("std").testing;
+    try testing.expectEqual(PresentMode.sync, presentMode(true));
+    try testing.expectEqual(PresentMode.async, presentMode(false));
+}
+
 fn makeTexture(device: objc.Object, width: usize, height: usize) objc.Object {
     const desc = objc.getClass("MTLTextureDescriptor").?.msgSend(
         objc.Object,

@@ -324,6 +324,46 @@ test "rowRule draws a strip at the top of a cell row" {
     try std.testing.expectEqual([3]u8{ 0, 0, 0 }, pixelAt(&r, mid_x, inner_y));
 }
 
+// --- Stale-separator tests (Bug E regression) ------------------------------
+
+test "clear then draw nothing leaves a pure background bitmap" {
+    // I-E1: after clear() with no draw calls, every pixel matches the fill color.
+    var r = try Raster.init(std.testing.allocator, 64, 48);
+    defer r.deinit();
+    const bg: [3]u8 = .{ 20, 20, 20 };
+    r.clear(bg);
+    // Sample corner and center — all must be bg.
+    try std.testing.expectEqual(bg, pixelAt(&r, 0, 0));
+    try std.testing.expectEqual(bg, pixelAt(&r, 32, 24));
+    try std.testing.expectEqual(bg, pixelAt(&r, 63, 47));
+}
+
+test "rowRule draws only on its row and clear erases it next frame" {
+    const f = try Font.init("Menlo", 26.0);
+    defer f.deinit();
+    const w: usize = 400;
+    const h: usize = 300;
+    var r = try Raster.init(std.testing.allocator, w, h);
+    defer r.deinit();
+
+    const bg: [3]u8 = .{ 0, 0, 0 };
+    const rule_color: [3]u8 = .{ 200, 100, 50 };
+
+    // Frame 1: draw a rule at row 2.
+    r.clear(bg);
+    r.rowRule(f, 2.0, rule_color, 0, @floatFromInt(w));
+    // Strip should be at the top edge of raster row 2 (bitmap-y = 2 * cell_h).
+    const strip_y: usize = @intFromFloat(f.metrics.cell_h * 2.0);
+    try std.testing.expectEqual(rule_color, pixelAt(&r, w / 2, strip_y));
+    // Row 1's interior should be bg (rule is narrow — check midpoint of row 1).
+    const row1_mid: usize = @intFromFloat(f.metrics.cell_h * 1.5);
+    try std.testing.expectEqual(bg, pixelAt(&r, w / 2, row1_mid));
+
+    // Frame 2: clear only — rule must be gone.
+    r.clear(bg);
+    try std.testing.expectEqual(bg, pixelAt(&r, w / 2, strip_y));
+}
+
 test "y_shift_px shifts cellBg upward in the bitmap" {
     const f = try Font.init("Menlo", 26.0);
     defer f.deinit();

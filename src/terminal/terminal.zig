@@ -1708,6 +1708,108 @@ test "grow then shrink round trip leaves the cursor line visible" {
     try testing.expectEqualStrings("cccc", viewportText(&term, term.cursor().y, &buf));
 }
 
+// --- Terminal-level resize matrix (Bug A regression) ----------------------
+
+/// Verify terminal-level invariants after a resize.
+/// `dims_changed` should be true when w2/h2 differ from the pre-resize dimensions;
+/// some invariants (wrap_pending cleared, region reset) only hold after a real resize.
+fn verifyTerminal(t: *const Terminal, w2: usize, h2: usize, dims_changed: bool) !void {
+    const ew = @max(w2, 1);
+    const eh = @max(h2, 1);
+    // I-R3 cursor in bounds
+    try testing.expect(t.primary.cur_x < ew);
+    try testing.expect(t.primary.cur_y < eh);
+    // wrap_pending only guaranteed cleared when dims actually changed
+    if (dims_changed) try testing.expect(!t.primary.wrap_pending);
+    // I-R4 region reset (only when resize ran)
+    if (dims_changed) {
+        try testing.expectEqual(@as(usize, 0), t.primary.region.top);
+        try testing.expectEqual(eh - 1, t.primary.region.bottom);
+    }
+    // I-R5 scrolled_off width
+    try testing.expectEqual(ew, t.primary.scrolled_off.len);
+    // I-R7 viewport_offset <= history.len()
+    try testing.expect(t.viewport_offset <= t.history.len());
+    // I-R8 alt-grid parity
+    try testing.expectEqual(t.primary.width, t.alternate.width);
+    try testing.expectEqual(t.primary.height, t.alternate.height);
+    // I-R9 compose_buf width
+    try testing.expectEqual(ew, t.compose_buf.len);
+}
+
+const ResizeCase = struct {
+    name: [:0]const u8,
+    w1: usize,
+    h1: usize,
+    w2: usize,
+    h2: usize,
+    feed: []const u8 = "",
+    on_alternate: bool = false,
+};
+
+test "terminal resize matrix" {
+    const cases = [_]ResizeCase{
+        .{ .name = "grow both", .w1 = 4, .h1 = 3, .w2 = 8, .h2 = 6, .feed = "abc" },
+        .{ .name = "shrink both", .w1 = 8, .h1 = 6, .w2 = 4, .h2 = 3, .feed = "hello\r\nworld" },
+        .{ .name = "grow cols only", .w1 = 4, .h1 = 3, .w2 = 8, .h2 = 3, .feed = "hi" },
+        .{ .name = "shrink rows only", .w1 = 4, .h1 = 6, .w2 = 4, .h2 = 3, .feed = "line\r\nnext" },
+        .{ .name = "degenerate 1x1", .w1 = 8, .h1 = 4, .w2 = 1, .h2 = 1, .feed = "A" },
+        .{ .name = "degenerate 0x0 clamped", .w1 = 8, .h1 = 4, .w2 = 0, .h2 = 0, .feed = "" },
+        .{ .name = "no-op resize", .w1 = 4, .h1 = 3, .w2 = 4, .h2 = 3, .feed = "test" },
+        .{ .name = "grow then shrink round trip", .w1 = 4, .h1 = 3, .w2 = 6, .h2 = 5, .feed = "abc\r\ndef" },
+        .{ .name = "resize twice no feed first", .w1 = 4, .h1 = 4, .w2 = 2, .h2 = 2, .feed = "" },
+        .{ .name = "resize on alternate screen", .w1 = 8, .h1 = 4, .w2 = 4, .h2 = 2, .feed = "alt", .on_alternate = true },
+        .{ .name = "cursor at bottom-right then shrink", .w1 = 6, .h1 = 4, .w2 = 3, .h2 = 2, .feed = "aaaa\r\nbbbb\r\ncccc\r\ndddd" },
+        .{ .name = "resize twice no feed second", .w1 = 4, .h1 = 4, .w2 = 8, .h2 = 8, .feed = "" },
+    };
+
+    inline for (cases) |c| {
+        var t = try Terminal.init(testing.allocator, c.w1, c.h1, scrollback.default_capacity);
+        defer t.deinit();
+
+        if (c.on_alternate) {
+            t.feed("\x1b[?1049h"); // enter alt screen
+        }
+        t.feed(c.feed);
+
+        const ew2 = @max(c.w2, 1);
+        const eh2 = @max(c.h2, 1);
+        const dims_changed = ew2 != t.primary.width or eh2 != t.primary.height;
+        t.resize(c.w2, c.h2);
+
+        verifyTerminal(&t, c.w2, c.h2, dims_changed) catch |err| {
+            std.debug.print("terminal resize matrix: case '{s}' failed: {}\n", .{ c.name, err });
+            return err;
+        };
+
+        // Second resize: back to original dimensions (always changes if first changed).
+        const ew1 = @max(c.w1, 1);
+        const eh1 = @max(c.h1, 1);
+        const rt_changed = ew1 != t.primary.width or eh1 != t.primary.height;
+        t.resize(c.w1, c.h1);
+        verifyTerminal(&t, c.w1, c.h1, rt_changed) catch |err| {
+            std.debug.print("terminal resize matrix (round trip): case '{s}' failed: {}\n", .{ c.name, err });
+            return err;
+        };
+    }
+}
+
+test "resize to 1x1 from any state terminates" {
+    // Bug B smoke test: resize to degenerate sizes must complete without hanging.
+    // The original freeze was the HUD git-status thread, not a resize loop —
+    // but we verify termination for degenerate inputs to prevent future regressions.
+    const degen_sizes = [_][2]usize{ .{ 0, 0 }, .{ 1, 1 }, .{ 80, 1 }, .{ 1, 24 } };
+    inline for (degen_sizes) |sz| {
+        var t = try Terminal.init(testing.allocator, 80, 24, scrollback.default_capacity);
+        defer t.deinit();
+        t.feed("some text\r\nmore text\r\nand more");
+        // Must complete (no infinite loop).
+        t.resize(sz[0], sz[1]);
+        try testing.expect(t.primary.cur_x < t.primary.width);
+        try testing.expect(t.primary.cur_y < t.primary.height);
+    }
+}
+
 test "DECSCUSR sets and clears app cursor shape" {
     var term = try makeTerminal(10, 2);
     defer term.deinit();

@@ -664,3 +664,99 @@ test "erase paints the pen background" {
     g.eraseLine(2);
     try testing.expectEqual(cell.Color{ .palette = 4 }, g.rowConst(0)[0].bg);
 }
+
+// --- Grid-level resize matrix (Bug A regression) ---------------------------
+
+/// Verify grid-level invariants after every resize case.
+/// I-G1: cursor in bounds; I-G3: region reset (when dimensions changed);
+/// I-G4: scrolled_off.len == width; I-G5: top-left content preserved.
+/// Note: wrap_pending is only cleared when dimensions actually change; the
+/// no-op path (same w/h) returns early and preserves it.
+fn verifyGrid(g: *const Grid, prev_cells: []const Cell, prev_w: usize, prev_h: usize, dims_changed: bool) !void {
+    // I-G1 cursor in bounds
+    try testing.expect(g.cur_x < g.width);
+    try testing.expect(g.cur_y < g.height);
+    // I-G2 wrap_pending cleared (only when resize actually ran)
+    if (dims_changed) try testing.expect(!g.wrap_pending);
+    // I-G3 region reset (only when resize actually ran)
+    if (dims_changed) {
+        try testing.expectEqual(@as(usize, 0), g.region.top);
+        try testing.expectEqual(g.height - 1, g.region.bottom);
+    }
+    // I-G4 scrolled_off width
+    try testing.expectEqual(g.width, g.scrolled_off.len);
+    // I-G5 top-left content preserved in the overlap rect
+    const copy_w = @min(g.width, prev_w);
+    const copy_h = @min(g.height, prev_h);
+    var y: usize = 0;
+    while (y < copy_h) : (y += 1) {
+        var x: usize = 0;
+        while (x < copy_w) : (x += 1) {
+            const got = g.rowConst(y)[x];
+            const exp = prev_cells[y * prev_w + x];
+            try testing.expectEqual(exp.cp, got.cp);
+        }
+    }
+}
+
+const GridResizeCase = struct {
+    name: [:0]const u8,
+    w1: usize,
+    h1: usize,
+    w2: usize,
+    h2: usize,
+    feed: []const u8 = "",
+};
+
+test "grid resize matrix" {
+    const cases = [_]GridResizeCase{
+        .{ .name = "grow both", .w1 = 4, .h1 = 3, .w2 = 8, .h2 = 6, .feed = "abc" },
+        .{ .name = "shrink both", .w1 = 8, .h1 = 6, .w2 = 4, .h2 = 3, .feed = "hello" },
+        .{ .name = "grow cols only", .w1 = 4, .h1 = 3, .w2 = 8, .h2 = 3, .feed = "hi" },
+        .{ .name = "shrink rows only", .w1 = 4, .h1 = 6, .w2 = 4, .h2 = 3, .feed = "xy" },
+        .{ .name = "degenerate 1x1", .w1 = 8, .h1 = 4, .w2 = 1, .h2 = 1, .feed = "A" },
+        .{ .name = "degenerate 0x0 (clamped to 1x1)", .w1 = 8, .h1 = 4, .w2 = 0, .h2 = 0, .feed = "" },
+        .{ .name = "no-op resize", .w1 = 4, .h1 = 3, .w2 = 4, .h2 = 3, .feed = "test" },
+        .{ .name = "grow then shrink round trip", .w1 = 4, .h1 = 3, .w2 = 6, .h2 = 5, .feed = "abc" },
+        .{ .name = "resize twice no feed", .w1 = 4, .h1 = 4, .w2 = 2, .h2 = 2, .feed = "" },
+        .{ .name = "cursor at bottom-right then shrink", .w1 = 6, .h1 = 4, .w2 = 3, .h2 = 2, .feed = "" },
+    };
+
+    inline for (cases) |c| {
+        var g = try Grid.init(testing.allocator, c.w1, c.h1);
+        defer g.deinit();
+
+        // Feed characters.
+        for (c.feed) |ch| g.print(ch);
+
+        // Snapshot cells before resize.
+        const snap = try testing.allocator.alloc(Cell, g.width * g.height);
+        defer testing.allocator.free(snap);
+        @memcpy(snap, g.cells);
+        const prev_w = g.width;
+        const prev_h = g.height;
+
+        // For the "cursor at bottom-right" case, position cursor there.
+        if (std.mem.eql(u8, c.name, "cursor at bottom-right then shrink")) {
+            g.cursorTo(c.w1 - 1, c.h1 - 1);
+        }
+
+        const ew2 = @max(c.w2, 1);
+        const eh2 = @max(c.h2, 1);
+        const dims_changed = ew2 != prev_w or eh2 != prev_h;
+        g.resize(c.w2, c.h2);
+
+        verifyGrid(&g, snap, prev_w, prev_h, dims_changed) catch |err| {
+            std.debug.print("grid resize matrix: case '{s}' failed: {}\n", .{ c.name, err });
+            return err;
+        };
+
+        // Round-trip: grow back if we shrank.
+        if (ew2 < prev_w or eh2 < prev_h) {
+            g.resize(c.w1, c.h1);
+            // Only check invariants (content is lost on shrink + regrow).
+            try testing.expect(g.cur_x < g.width);
+            try testing.expect(g.cur_y < g.height);
+        }
+    }
+}
