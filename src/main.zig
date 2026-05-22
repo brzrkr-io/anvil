@@ -83,9 +83,6 @@ const grid_pad: usize = 22;
 // HUD data refresh rate: once every N ticks (≈60fps timer → ~1 s).
 const hud_refresh_ticks: u32 = 60;
 
-// Scratch buffer for the git branch name (reused each refresh).
-var git_branch_buf: [128]u8 = undefined;
-
 // Reused scratch buffer for draining per-tab PTY bytes each tick.
 // One tab is drained at a time, so this is safe as a module global.
 var feed_scratch: [256 * 1024]u8 = undefined;
@@ -971,27 +968,78 @@ fn queryMemPct() u8 {
     return @intCast(@min(pct, 100));
 }
 
+// --- background git query ------------------------------------------------
+// `git status` is a subprocess that can take tens to hundreds of ms (up to a
+// 2 s timeout). Running it on the main thread froze the whole app — input,
+// copy/paste, rendering — once a second. Each refresh now hands the query to
+// a short-lived worker thread; the main thread only reads a finished result.
+// Single-producer / single-consumer with at most one worker live at a time,
+// so two atomic flags suffice — no mutex (Zig 0.16 has no std.Thread.Mutex).
+
+const GitJob = struct {
+    in_flight: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    ready: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    cwd: [std.fs.max_path_bytes]u8 = undefined,
+    cwd_len: usize = 0,
+    // result fields — written by the worker, read by the main thread once
+    // `ready` is observed true.
+    state: hud_mod.GitState = .no_repo,
+    branch: [128]u8 = undefined,
+    branch_len: usize = 0,
+    dirty: u32 = 0,
+    ahead: u32 = 0,
+    behind: u32 = 0,
+};
+var git_job: GitJob = .{};
+
+/// Worker body: run `git status` once for `git_job.cwd`, then publish. The
+/// main thread wrote `cwd` and called `spawn` (which establishes happens-
+/// before), so reading `git_job.cwd` here is safe.
+fn gitJobRun() void {
+    var branch_scratch: [128]u8 = undefined;
+    const info = git.query(std.heap.c_allocator, git_job.cwd[0..git_job.cwd_len], &branch_scratch);
+    if (info) |gi| {
+        git_job.state = if (gi.dirty > 0) .dirty else .ok;
+        const bl = @min(gi.branch.len, git_job.branch.len);
+        @memcpy(git_job.branch[0..bl], gi.branch[0..bl]);
+        git_job.branch_len = bl;
+        git_job.dirty = gi.dirty;
+        git_job.ahead = gi.ahead;
+        git_job.behind = gi.behind;
+    } else {
+        git_job.state = .no_repo;
+        git_job.branch_len = 0;
+    }
+    git_job.ready.store(true, .release); // release: publishes the fields above
+    git_job.in_flight.store(false, .release);
+}
+
 /// Populate `g.hud` from live data: git status, last-run state, memory.
 fn refreshHud() void {
     const cur_term = &g.tabs.current().terminal;
 
-    // --- git ---
-    const cwd = cur_term.cwdPath();
-    if (cwd.len > 0) {
-        if (git.query(g.alloc, cwd, &git_branch_buf)) |info| {
-            g.hud.git = if (info.dirty > 0) .dirty else .ok;
-            g.hud.branch_len = info.branch.len;
-            @memcpy(g.hud.branch[0..info.branch.len], info.branch);
-            g.hud.git_dirty = info.dirty;
-            g.hud.git_ahead = info.ahead;
-            g.hud.git_behind = info.behind;
-        } else {
-            g.hud.git = .no_repo;
-            g.hud.branch_len = 0;
+    // --- git: consume a finished result, then kick off the next query ---
+    if (git_job.ready.load(.acquire)) {
+        g.hud.git = git_job.state;
+        g.hud.branch_len = git_job.branch_len;
+        @memcpy(g.hud.branch[0..git_job.branch_len], git_job.branch[0..git_job.branch_len]);
+        g.hud.git_dirty = git_job.dirty;
+        g.hud.git_ahead = git_job.ahead;
+        g.hud.git_behind = git_job.behind;
+        git_job.ready.store(false, .monotonic);
+    }
+    if (!git_job.in_flight.load(.acquire)) {
+        const cwd = cur_term.cwdPath();
+        if (cwd.len > 0 and cwd.len <= git_job.cwd.len) {
+            @memcpy(git_job.cwd[0..cwd.len], cwd);
+            git_job.cwd_len = cwd.len;
+            git_job.in_flight.store(true, .release);
+            if (std.Thread.spawn(.{}, gitJobRun, .{})) |t| {
+                t.detach();
+            } else |_| {
+                git_job.in_flight.store(false, .release);
+            }
         }
-    } else {
-        g.hud.git = .no_repo;
-        g.hud.branch_len = 0;
     }
 
     // --- last run ---
