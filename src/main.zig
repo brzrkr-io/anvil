@@ -29,6 +29,7 @@ const selection_mod = @import("app/selection.zig");
 const Selection = selection_mod.Selection;
 const filetree_mod = @import("app/filetree.zig");
 const filetree_render = @import("render/filetree.zig");
+const interact = @import("app/interact.zig");
 
 const CGPoint = extern struct { x: f64, y: f64 };
 const CGSize = extern struct { width: f64, height: f64 };
@@ -650,6 +651,70 @@ fn toggleTree() void {
     g.dirty = true;
 }
 
+/// ⌘↑ — scroll the viewport up to the nearest `prompt_start` mark above the
+/// current viewport top. If none is found above, does nothing.
+fn jumpToPrevPrompt() void {
+    const t = &g.tabs.current().terminal;
+    const marks = t.promptMarks();
+    if (marks.len == 0) return;
+
+    // The content row currently at the top of the viewport.
+    const top_content = t.contentRowOfViewport(0);
+
+    // Find the rightmost mark with content_row strictly less than top_content.
+    // marks[i].line is an absolute line; content_row = abs - evicted_lines.
+    const ev = t.evicted_lines;
+    var best: ?usize = null; // content row of the best candidate
+    for (marks) |m| {
+        if (m.kind != .prompt_start) continue;
+        if (m.line < ev) continue; // evicted from scrollback — can't navigate there
+        const cr = m.line - ev;
+        if (cr < top_content) {
+            if (best == null or cr > best.?) best = cr;
+        }
+    }
+    if (best) |cr| {
+        t.scrollToLine(cr);
+        g.scroll_pos = @floatFromInt(t.viewportOffset());
+        g.overscroll_target = bounceImpulse();
+        g.dirty = true;
+    }
+}
+
+/// ⌘↓ — scroll the viewport down to the nearest `prompt_start` mark below the
+/// current viewport top. Past the last mark, scrolls to the live bottom.
+fn jumpToNextPrompt() void {
+    const t = &g.tabs.current().terminal;
+    const marks = t.promptMarks();
+
+    // The content row currently at the top of the viewport.
+    const top_content = t.contentRowOfViewport(0);
+
+    const ev = t.evicted_lines;
+    var best: ?usize = null; // content row of the best candidate
+    for (marks) |m| {
+        if (m.kind != .prompt_start) continue;
+        if (m.line < ev) continue;
+        const cr = m.line - ev;
+        if (cr > top_content) {
+            if (best == null or cr < best.?) best = cr;
+        }
+    }
+
+    if (best) |cr| {
+        t.scrollToLine(cr);
+        g.scroll_pos = @floatFromInt(t.viewportOffset());
+        g.overscroll_target = -bounceImpulse();
+        g.dirty = true;
+    } else {
+        // No mark below — jump to the live bottom.
+        t.scrollToBottom();
+        g.scroll_pos = 0;
+        g.overscroll_target = -bounceImpulse();
+        g.dirty = true;
+    }
+}
+
 /// Scroll the active tab so the current search match is visible.
 fn scrollToCurrentMatch() void {
     if (g.search.currentMatch()) |m| {
@@ -718,6 +783,20 @@ fn onKeyDown(event: objc.Object) void {
         .command = flags & (1 << 20) != 0,
     };
     if (mods.command) {
+        // ⌘↑ / ⌘↓ — jump between OSC 133 prompt marks.
+        // Arrow keys are function keys; check keyCode directly before trying
+        // to read a character codepoint (they don't have one).
+        const keycode = event.msgSend(c_ushort, "keyCode", .{});
+        if (!mods.shift and !mods.control and !mods.option) {
+            if (keycode == 126) { // Up arrow
+                jumpToPrevPrompt();
+                return;
+            } else if (keycode == 125) { // Down arrow
+                jumpToNextPrompt();
+                return;
+            }
+        }
+
         const src = event.msgSend(objc.Object, "charactersIgnoringModifiers", .{});
         if (firstCodepoint(src)) |cp| {
             if (handleTabKey(mods, cp)) return;
@@ -862,6 +941,42 @@ fn eventCell(event: objc.Object, clamp: bool) ?struct { row: usize, col: usize }
     return .{ .row = row, .col = col };
 }
 
+/// Write `\x15${EDITOR:-open} '<path>'\n` to the active tab's PTY.
+/// Single-quotes in `path` are escaped as `'\''`.
+fn ptyWriteOpenFile(path: []const u8) void {
+    const pty = &g.tabs.current().pty;
+    _ = pty.write("\x15${EDITOR:-open} '") catch {};
+    // Escape single quotes: replace each ' with '\''.
+    var i: usize = 0;
+    while (i < path.len) {
+        const next = std.mem.indexOfScalarPos(u8, path, i, '\'') orelse {
+            _ = pty.write(path[i..]) catch {};
+            break;
+        };
+        _ = pty.write(path[i..next]) catch {};
+        _ = pty.write("'\\''") catch {};
+        i = next + 1;
+    }
+    _ = pty.write("'\n") catch {};
+}
+
+/// Write `\x15open '<url>'\n` to the active tab's PTY.
+fn ptyWriteOpenUrl(url: []const u8) void {
+    const pty = &g.tabs.current().pty;
+    _ = pty.write("\x15open '") catch {};
+    var i: usize = 0;
+    while (i < url.len) {
+        const next = std.mem.indexOfScalarPos(u8, url, i, '\'') orelse {
+            _ = pty.write(url[i..]) catch {};
+            break;
+        };
+        _ = pty.write(url[i..next]) catch {};
+        _ = pty.write("'\\''") catch {};
+        i = next + 1;
+    }
+    _ = pty.write("'\n") catch {};
+}
+
 fn onMouseDown(event: objc.Object) void {
     const win_pt = event.msgSend(CGPoint, "locationInWindow", .{});
     const view_pt = g.view.msgSend(CGPoint, "convertPoint:fromView:", .{
@@ -905,16 +1020,57 @@ fn onMouseDown(event: objc.Object) void {
                     if (e.is_dir) {
                         g.tree.toggle(row_in_tree);
                     } else {
-                        // File click: write the filename followed by a space to the PTY.
-                        const name = e.nameSlice();
-                        _ = g.tabs.current().pty.write(name) catch {};
-                        _ = g.tabs.current().pty.write(" ") catch {};
+                        // File click: open the file via the shell.
+                        // Write: Ctrl-U (clear line) + "${EDITOR:-open} '<path>'" + Enter.
+                        ptyWriteOpenFile(e.pathSlice());
                     }
                     g.dirty = true;
                 }
             }
             return; // tree panel click — do not start text selection
         }
+    }
+
+    // ⌘-click: open a file path or URL under the cursor. Does not start selection.
+    const flags = event.msgSend(c_ulong, "modifierFlags", .{});
+    if (flags & (1 << 20) != 0) { // NSEventModifierFlagCommand
+        if (eventCell(event, false)) |cl| {
+            const t = &g.tabs.current().terminal;
+            const crow = t.contentRowOfViewport(cl.row);
+            const cells = t.line(crow);
+            // Decode the row to UTF-8 so we can do string token extraction.
+            var line_buf: [4096]u8 = undefined;
+            var line_len: usize = 0;
+            // Also build a column→byte-offset map (one entry per cell).
+            var col_to_byte: [4096]usize = undefined;
+            var ci: usize = 0;
+            while (ci < cells.len and line_len + 4 < line_buf.len) : (ci += 1) {
+                col_to_byte[ci] = line_len;
+                const cp = cells[ci].cp;
+                if (cp == 0 or cp == ' ') {
+                    line_buf[line_len] = ' ';
+                    line_len += 1;
+                } else {
+                    const n = std.unicode.utf8Encode(cp, line_buf[line_len..]) catch {
+                        line_buf[line_len] = ' ';
+                        line_len += 1;
+                        continue;
+                    };
+                    line_len += n;
+                }
+            }
+            const line_str = line_buf[0..line_len];
+            const byte_col = if (cl.col < ci) col_to_byte[cl.col] else line_len;
+            const raw_tok = interact.tokenAtCol(line_str, byte_col);
+            const tok = interact.stripLineSuffix(raw_tok);
+            const cwd = currentCwd() orelse "";
+            switch (interact.classify(tok, cwd)) {
+                .url => ptyWriteOpenUrl(tok),
+                .path => ptyWriteOpenFile(tok),
+                .none => {},
+            }
+        }
+        return; // ⌘-click never starts a text selection
     }
 
     // Grid click — begin selection.
@@ -1478,4 +1634,5 @@ test {
     _ = @import("app/palette.zig");
     _ = @import("app/selection.zig");
     _ = @import("app/filetree.zig");
+    _ = @import("app/interact.zig");
 }
