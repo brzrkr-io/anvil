@@ -1,0 +1,65 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/anvil-term",
+    "crates/anvil-agent",
+    "crates/anvil-theme",
+    "crates/anvil-workspace",
+    "crates/anvil-config",
+    "crates/anvil-render",
+    "crates/anvil-caldera",
+    "crates/anvil-control",
+    "crates/anvil-prompt-core",
+    "crates/anvil-platform",
+    "crates/anvil",
+    "crates/anvil-prompt",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+version = "0.1.0"
+license = "MIT"
+
+[workspace.dependencies]
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "1.1"
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Utilities
+bitflags = "2.11"
+
+# PTY / POSIX
+nix = { version = "0.31", features = ["fs", "ioctl", "process", "signal", "term"] }
+
+# Apple / Objective-C bindings
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = "0.3"
+objc2-metal = "0.3"
+objc2-quartz-core = "0.3"
+objc2-core-text = "0.3"
+objc2-core-graphics = "0.3"
+objc2-web-kit = "0.3"
+
+# Internal crates
+anvil-term         = { path = "crates/anvil-term" }
+anvil-agent        = { path = "crates/anvil-agent" }
+anvil-theme        = { path = "crates/anvil-theme" }
+anvil-workspace    = { path = "crates/anvil-workspace" }
+anvil-config       = { path = "crates/anvil-config" }
+anvil-render       = { path = "crates/anvil-render" }
+anvil-caldera      = { path = "crates/anvil-caldera" }
+anvil-control      = { path = "crates/anvil-control" }
+anvil-prompt-core  = { path = "crates/anvil-prompt-core" }
+anvil-platform     = { path = "crates/anvil-platform" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

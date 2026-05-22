@@ -8,3 +8,6 @@ docs/superpowers/
 
 # tool state
 .forge/
+
+# Rust / Cargo
+/target

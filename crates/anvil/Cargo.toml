@@ -1,0 +1,17 @@
+[package]
+name = "anvil"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "anvil"
+path = "src/main.rs"
+
+[dependencies]
+anvil-platform   = { workspace = true }
+anvil-term       = { workspace = true }
+anvil-workspace  = { workspace = true }
+anvil-theme      = { workspace = true }
+anvil-config     = { workspace = true }
+anvil-agent      = { workspace = true }

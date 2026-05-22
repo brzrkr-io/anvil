@@ -1,0 +1,13 @@
+[package]
+name = "anvil-platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anvil-term      = { workspace = true }
+anvil-workspace = { workspace = true }
+anvil-render    = { workspace = true }
+anvil-theme     = { workspace = true }
+anvil-config    = { workspace = true }
+anvil-control   = { workspace = true }
