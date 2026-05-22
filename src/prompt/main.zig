@@ -7,7 +7,12 @@ const git = @import("git.zig");
 const render = @import("render.zig");
 const build_segments = @import("build_segments.zig");
 
-const Args = struct { exit_code: u8 = 0, transient: bool = false };
+const Args = struct {
+    exit_code: u8 = 0,
+    transient: bool = false,
+    rule: bool = false,
+    width: usize = 0,
+};
 
 fn parseArgs(p: std.process.Init.Minimal) Args {
     var a = Args{};
@@ -16,8 +21,12 @@ fn parseArgs(p: std.process.Init.Minimal) Args {
     while (it.next()) |arg| {
         if (std.mem.eql(u8, arg, "--transient")) {
             a.transient = true;
+        } else if (std.mem.eql(u8, arg, "--rule")) {
+            a.rule = true;
         } else if (std.mem.eql(u8, arg, "--exit")) {
             if (it.next()) |v| a.exit_code = std.fmt.parseInt(u8, v, 10) catch 0;
+        } else if (std.mem.eql(u8, arg, "--width")) {
+            if (it.next()) |v| a.width = std.fmt.parseInt(usize, v, 10) catch 0;
         }
     }
     return a;
@@ -47,7 +56,13 @@ pub fn main(p: std.process.Init.Minimal) void {
     const args = parseArgs(p);
     // Rich glyphs only inside Caldera.
     const rich = std.c.getenv("CALDERA_CONSOLE") != null;
-    const opts = render.Options{ .rich = rich, .failed = args.exit_code != 0 };
+    const opts = render.Options{ .rich = rich, .failed = args.exit_code != 0, .width = args.width };
+
+    if (args.rule) {
+        const s = render.rule(alloc, args.width) catch return;
+        writeAll(s);
+        return;
+    }
 
     if (args.transient) {
         const s = render.transient(alloc, opts) catch return;

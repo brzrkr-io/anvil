@@ -37,7 +37,8 @@ esac
 # Caldera prompt — bash gets the full prompt each draw (no transient collapse).
 if [[ -n "$CALDERA_PROMPT" && -x "$CALDERA_PROMPT" ]]; then
   __caldera_prompt() {
-    PS1="$("$CALDERA_PROMPT" --exit $? 2>/dev/null)"
+    local last=$?
+    PS1="$("$CALDERA_PROMPT" --exit "$last" --width "${COLUMNS:-80}" 2>/dev/null)"
   }
   PROMPT_COMMAND="__caldera_prompt${PROMPT_COMMAND:+; $PROMPT_COMMAND}"
 fi

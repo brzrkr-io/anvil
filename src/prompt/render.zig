@@ -26,12 +26,19 @@ fn stateColor(s: seg.State) []const u8 {
 pub const Options = struct {
     rich: bool,
     failed: bool, // last command exited non-zero
+    width: usize = 0, // terminal columns, for the separator rule
 };
 
 /// The full two-line prompt block. Caller owns the returned slice.
 pub fn full(allocator: std.mem.Allocator, segments: []const seg.Segment, opts: Options) ![]u8 {
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);
+
+    // A faint separator rule is the prompt's first line — drawn as part of the
+    // prompt so the terminal renders it reliably, capping each command block.
+    const r = try rule(allocator, opts.width);
+    defer allocator.free(r);
+    try buf.appendSlice(allocator, r);
 
     const edge_color = if (opts.failed) accent_err else accent;
 
@@ -66,6 +73,24 @@ pub fn full(allocator: std.mem.Allocator, segments: []const seg.Segment, opts: O
 pub fn transient(allocator: std.mem.Allocator, opts: Options) ![]u8 {
     const color = if (opts.failed) accent_err else dim;
     return std.fmt.allocPrint(allocator, "{s}\u{203a}{s} ", .{ color, reset });
+}
+
+/// A faint, full-width horizontal rule — printed above each prompt so the
+/// scrollback reads as distinct command blocks. `width` is the terminal column
+/// count; 0 falls back to 80. The returned slice ends with a newline.
+pub fn rule(allocator: std.mem.Allocator, width: usize) ![]u8 {
+    // One column short of the full width — filling the exact width triggers the
+    // terminal's deferred-wrap edge case and the prompt overwrites the rule's
+    // row. Leading \r and trailing \r\n keep the rule on its own clean line.
+    const w: usize = if (width <= 1) 79 else @min(width - 1, 511);
+    var buf: std.ArrayList(u8) = .empty;
+    errdefer buf.deinit(allocator);
+    try buf.appendSlice(allocator, "\x1b[38;2;74;80;96m"); // a quiet separator grey
+    var i: usize = 0;
+    while (i < w) : (i += 1) try buf.appendSlice(allocator, "\u{2500}");
+    try buf.appendSlice(allocator, reset);
+    try buf.appendSlice(allocator, "\n");
+    return buf.toOwnedSlice(allocator);
 }
 
 const testing = std.testing;
@@ -116,4 +141,11 @@ test "full emits the OSC 133;B prompt-end mark" {
     const out = try full(testing.allocator, &s, .{ .rich = true, .failed = false });
     defer testing.allocator.free(out);
     try testing.expect(std.mem.indexOf(u8, out, "\x1b]133;B") != null);
+}
+
+test "rule is a faint full-width line ending in a newline" {
+    const out = try rule(testing.allocator, 12);
+    defer testing.allocator.free(out);
+    try testing.expect(std.mem.indexOf(u8, out, "\u{2500}") != null);
+    try testing.expect(std.mem.endsWith(u8, out, "\n"));
 }
