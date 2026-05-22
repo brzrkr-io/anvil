@@ -195,89 +195,6 @@ pub const Raster = struct {
         });
     }
 
-    /// Box-blur a rectangle of the bitmap in place — used to frost the backdrop
-    /// behind translucent panels. `px,py` top-left, `pw,ph` size, all device px.
-    /// Runs ~3 horizontal+vertical box-blur passes to approximate a Gaussian.
-    /// Blurs B, G, R channels; leaves A untouched.
-    pub fn blurRegion(self: *Raster, px: f64, py: f64, pw: f64, ph: f64, radius: usize) void {
-        if (radius == 0 or pw <= 0 or ph <= 0) return;
-
-        // Convert to integer pixel bounds, clamped to bitmap extents.
-        const x0: usize = @intFromFloat(@max(0.0, @floor(px)));
-        const y0: usize = @intFromFloat(@max(0.0, @floor(py)));
-        const x1_raw: usize = @intFromFloat(@min(@as(f64, @floatFromInt(self.width)), @ceil(px + pw)));
-        const y1_raw: usize = @intFromFloat(@min(@as(f64, @floatFromInt(self.height)), @ceil(py + ph)));
-        if (x1_raw <= x0 or y1_raw <= y0) return;
-        const x1 = x1_raw;
-        const y1 = y1_raw;
-        const rw = x1 - x0;
-        const rh = y1 - y0;
-
-        // Scratch buffer: same size as the region (one channel's worth at a time).
-        const scratch = self.alloc.alloc(u8, rw * rh) catch return;
-        defer self.alloc.free(scratch);
-
-        // Three passes approximate a Gaussian.
-        const passes: usize = 3;
-        for (0..passes) |_| {
-            // Process channels B(0), G(1), R(2); skip A(3).
-            for ([_]usize{ 0, 1, 2 }) |ch| {
-                // --- Horizontal pass: pixels → scratch ---
-                for (0..rh) |ry| {
-                    const abs_y = y0 + ry;
-                    for (0..rw) |rx| {
-                        // Accumulate over [rx-radius, rx+radius], clamped to [0, rw).
-                        var sum: u32 = 0;
-                        var count: u32 = 0;
-                        const lo = if (rx >= radius) rx - radius else 0;
-                        const hi = @min(rw - 1, rx + radius);
-                        var sx = lo;
-                        while (sx <= hi) : (sx += 1) {
-                            const i = ((abs_y) * self.width + (x0 + sx)) * 4 + ch;
-                            sum += self.pixels[i];
-                            count += 1;
-                        }
-                        scratch[ry * rw + rx] = @intCast(sum / count);
-                    }
-                }
-                // Write scratch back.
-                for (0..rh) |ry| {
-                    const abs_y = y0 + ry;
-                    for (0..rw) |rx| {
-                        const i = (abs_y * self.width + (x0 + rx)) * 4 + ch;
-                        self.pixels[i] = scratch[ry * rw + rx];
-                    }
-                }
-
-                // --- Vertical pass: pixels → scratch ---
-                for (0..rw) |rx| {
-                    const abs_x = x0 + rx;
-                    for (0..rh) |ry| {
-                        var sum: u32 = 0;
-                        var count: u32 = 0;
-                        const lo = if (ry >= radius) ry - radius else 0;
-                        const hi = @min(rh - 1, ry + radius);
-                        var sy = lo;
-                        while (sy <= hi) : (sy += 1) {
-                            const i = ((y0 + sy) * self.width + abs_x) * 4 + ch;
-                            sum += self.pixels[i];
-                            count += 1;
-                        }
-                        scratch[ry * rw + rx] = @intCast(sum / count);
-                    }
-                }
-                // Write scratch back.
-                for (0..rh) |ry| {
-                    const abs_y = y0 + ry;
-                    for (0..rw) |rx| {
-                        const i = (abs_y * self.width + (x0 + rx)) * 4 + ch;
-                        self.pixels[i] = scratch[ry * rw + rx];
-                    }
-                }
-            }
-        }
-    }
-
     /// The BGRA8 pixel buffer, ready for texture upload.
     pub fn bytes(self: *Raster) []const u8 {
         return self.pixels;
@@ -403,37 +320,6 @@ test "rowRule draws a strip at the top of a cell row" {
     // still be the cleared background.
     const inner_y: usize = @intFromFloat(f.metrics.cell_h * 1.5);
     try std.testing.expectEqual([3]u8{ 0, 0, 0 }, pixelAt(&r, mid_x, inner_y));
-}
-
-test "blurRegion softens a sharp black/white edge" {
-    // 64×32 raster — clear to black, right half white.
-    var r = try Raster.init(std.testing.allocator, 64, 32);
-    defer r.deinit();
-    // Fill left half black, right half white (using raw pixel writes).
-    for (0..32) |y| {
-        for (0..64) |x| {
-            const i = (y * 64 + x) * 4;
-            const v: u8 = if (x >= 32) 255 else 0;
-            r.pixels[i + 0] = v; // B
-            r.pixels[i + 1] = v; // G
-            r.pixels[i + 2] = v; // R
-            r.pixels[i + 3] = 255; // A
-        }
-    }
-    // Blur the whole region with a radius of 6.
-    r.blurRegion(0, 0, 64, 32, 6);
-    // Pixel at the seam (x=32) must be intermediate — neither 0 nor 255.
-    const seam = pixelAt(&r, 32, 16);
-    try std.testing.expect(seam[0] > 10);
-    try std.testing.expect(seam[0] < 245);
-    // Pixel deep in the white half (x=62) stays bright.
-    const far_white = pixelAt(&r, 62, 16);
-    try std.testing.expect(far_white[0] > 200);
-    // Pixel deep in the black half (x=2) stays dark.
-    const far_black = pixelAt(&r, 2, 16);
-    try std.testing.expect(far_black[0] < 50);
-    // Alpha is untouched — still 255 everywhere.
-    try std.testing.expectEqual(@as(u8, 255), r.pixels[(16 * 64 + 32) * 4 + 3]);
 }
 
 test "y_shift_px shifts cellBg upward in the bitmap" {
