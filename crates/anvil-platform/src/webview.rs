@@ -21,7 +21,7 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{NSResponder, NSView, NSWindow};
-use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{MainThreadMarker, NSNumber, NSPoint, NSRect, NSSize, NSString};
 use objc2_web_kit::{
     WKScriptMessage, WKScriptMessageHandler, WKUserContentController, WKWebView,
     WKWebViewConfiguration,
@@ -165,11 +165,12 @@ impl Webview {
 
         // Make the webview transparent (the dim backdrop shows the terminal).
         // `drawsBackground` is a private/non-standard property set via KVC.
+        // setValue:forKey: takes an object, so the bool is boxed in an NSNumber.
         // SAFETY: setValue:forKey: is an NSObject method; both args are valid.
         unsafe {
-            let no: bool = false;
+            let no = NSNumber::numberWithBool(false);
             let key = NSString::from_str("drawsBackground");
-            let _: () = msg_send![&*webview, setValue: no, forKey: &*key];
+            let _: () = msg_send![&*webview, setValue: &*no, forKey: &*key];
         }
 
         // Start hidden; the app calls `show()` when needed.
