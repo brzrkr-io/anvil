@@ -31,6 +31,7 @@ const filetree_render = @import("render/filetree.zig");
 const cheatsheet_mod = @import("render/cheatsheet.zig");
 const interact = @import("app/interact.zig");
 const draw_mod = @import("render/draw.zig");
+const workspace_mod = @import("render/workspace.zig");
 const metal_mod = @import("render/metal.zig");
 
 const CGPoint = extern struct { x: f64, y: f64 };
@@ -1406,47 +1407,42 @@ fn bottomBarRows() usize {
 fn renderFrame() void {
     g.raster.clear(g.theme.background);
 
-    const fp = focusedPane();
-
-    // When the tree panel is visible, shift the terminal grid right by the
-    // panel width so it occupies the left edge. The tab bar, HUD, search bar,
-    // and tree panel all draw in absolute space (x_offset = 0).
+    // When the tree panel is visible, the terminal grid is shifted right by the
+    // panel width. Tab bar, HUD, search bar, and tree panel all draw in absolute
+    // space (origin_x = 0, origin_y = 0 — the defaults after drawWorkspace resets them).
     const tree_offset_px: f64 = if (g.tree_visible)
         @as(f64, @floatFromInt(filetree_render.tree_cols)) * g.font.metrics.cell_w
     else
         0;
-    if (g.tree_visible) {
-        g.raster.x_offset = tree_offset_px;
-    }
-    // Prompt-rule horizontal bounds: start at the terminal content's left edge
-    // (past any panel offset), end at the right inset margin.
-    const rule_x_start = g.raster.pad_x + tree_offset_px;
-    const rule_x_end = @as(f64, @floatFromInt(g.raster.width)) - g.raster.pad_x;
 
-    const cp = draw_mod.CursorParams{
-        .ax = fp.cursor_ax,
-        .ay = fp.cursor_ay,
-        .blink_phase = g.blink_phase,
-        .cfg = g.cursor_cfg,
+    // Inner content rect: the window area minus top bar and file-tree panel.
+    // origin_y uses pad_y + top bar height so drawWorkspace passes top_bar_rows=0.
+    const cell_h_f64: f64 = g.font.metrics.cell_h;
+    const inner: workspace_mod.layout_mod.Rect = .{
+        .x = g.raster.pad_x + tree_offset_px,
+        .y = g.raster.pad_y + @as(f64, @floatFromInt(topBarRows())) * cell_h_f64,
+        .w = @as(f64, @floatFromInt(g.raster.width)) - 2 * g.raster.pad_x - tree_offset_px,
+        .h = @as(f64, @floatFromInt(g.raster.height)) - 2 * g.raster.pad_y -
+            @as(f64, @floatFromInt(topBarRows())) * cell_h_f64,
     };
+
     const search_ptr: ?*const Search = if (g.search_open) &g.search else null;
-    draw_mod.drawViewport(
+    const focused_id = g.tabs.current().tree.focused;
+    workspace_mod.drawWorkspace(
         &g.raster,
-        &fp.terminal,
+        &g.tabs.current().tree,
+        &g.tabs.current().registry,
+        inner,
+        workspace_mod.divider_px,
         g.font,
         g.theme,
-        fp.scroll_pos,
-        fp.overscroll,
-        fp.selection,
         search_ptr,
-        topBarRows(),
-        cp,
-        rule_x_start,
-        rule_x_end,
+        focused_id,
+        g.blink_phase,
+        g.cursor_cfg,
     );
 
-    // Reset x_offset before drawing UI elements in absolute space.
-    g.raster.x_offset = 0;
+    // Origin is reset to 0 by drawWorkspace. Draw UI chrome in absolute space.
 
     // Tab bar on top of the grid so a gliding top row cannot bleed into it.
     if (g.tabs.barVisible()) {
@@ -1678,4 +1674,5 @@ test {
     _ = @import("testing/counting_allocator.zig");
     _ = @import("workspace/layout.zig");
     _ = @import("workspace/pane.zig");
+    _ = @import("render/workspace.zig");
 }

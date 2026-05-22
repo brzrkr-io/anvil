@@ -18,7 +18,8 @@ pub const Raster = struct {
     pad_x: f64 = 0, // inset margin in device pixels, applied by cellRect
     pad_y: f64 = 0,
     y_shift_px: f64 = 0, // vertical pixel offset added to every cell (smooth scroll)
-    x_offset: f64 = 0, // horizontal pixel offset added to every cell (panel shift)
+    origin_x: f64 = 0, // device-pixel x of cell-column 0 for the current pane
+    origin_y: f64 = 0, // device-pixel y (raster, top-down) of cell-row 0 for the current pane
 
     pub fn init(alloc: std.mem.Allocator, width: usize, height: usize) !Raster {
         const space = capi.CGColorSpaceCreateDeviceRGB() orelse return error.ColorSpaceFailed;
@@ -124,7 +125,7 @@ pub const Raster = struct {
     pub fn colRule(self: *Raster, font: Font, col: usize, rgb: [3]u8) void {
         const cw = font.metrics.cell_w;
         const strip_w: f64 = 2.0;
-        const left_x = self.pad_x + @as(f64, @floatFromInt(col)) * cw;
+        const left_x = self.origin_x + @as(f64, @floatFromInt(col)) * cw;
         setFill(self.ctx, rgb);
         capi.CGContextFillRect(self.ctx, .{
             .origin = .{ .x = left_x, .y = 0 },
@@ -141,12 +142,12 @@ pub const Raster = struct {
         const ch = font.metrics.cell_h;
         // Top edge of the row in CG coordinates (y-up, origin bottom-left).
         // cellRect places the cell at:
-        //   y = height - pad_y - (row + 1) * ch + y_shift_px
+        //   y = height - origin_y - (row + 1) * ch + y_shift_px
         // The TOP of that cell (highest CG y) is one cell_h above that origin:
-        //   top_y = height - pad_y - row * ch + y_shift_px
+        //   top_y = height - origin_y - row * ch + y_shift_px
         // We fill a 2px strip just below the top edge (toward lower CG y).
         const strip_h: f64 = 2.0;
-        const top_y = @as(f64, @floatFromInt(self.height)) - self.pad_y -
+        const top_y = @as(f64, @floatFromInt(self.height)) - self.origin_y -
             row * ch + self.y_shift_px - strip_h;
         setFill(self.ctx, rgb);
         capi.CGContextFillRect(self.ctx, .{
@@ -160,8 +161,8 @@ pub const Raster = struct {
         const ch = font.metrics.cell_h;
         return .{
             .origin = .{
-                .x = self.pad_x + col * cw + self.x_offset,
-                .y = @as(f64, @floatFromInt(self.height)) - self.pad_y - (row + 1.0) * ch + self.y_shift_px,
+                .x = self.origin_x + col * cw,
+                .y = @as(f64, @floatFromInt(self.height)) - self.origin_y - (row + 1.0) * ch + self.y_shift_px,
             },
             .size = .{ .width = cw, .height = ch },
         };

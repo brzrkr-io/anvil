@@ -1,5 +1,5 @@
 //! File-tree panel renderer. Draws the left-edge panel in absolute pixel space
-//! (independent of raster.x_offset, which must be 0 when this is called).
+//! (raster.origin_x and raster.origin_y must be 0 when this is called).
 //!
 //! Brand: Mineral palette — theme.surface panel bg, theme.border separator,
 //! alloy-grey file names, foreground for dir names, info-teal icons.
@@ -28,7 +28,7 @@ const icon_file: u21 = 0xf15b;
 /// Draw the file-tree panel into the left `tree_cols` columns of the raster.
 /// `total_rows` is the full visible row count (including top bar).
 /// `top_offset` is the number of rows taken by the tab bar (0 or 1).
-/// `raster.x_offset` must be 0 when this is called.
+/// `raster.origin_x` and `raster.origin_y` must be 0 when this is called.
 pub fn draw(
     raster: *Raster,
     font: Font,
