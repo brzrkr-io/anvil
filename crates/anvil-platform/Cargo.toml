@@ -18,7 +18,34 @@ libc            = "0.2"
 # objc2 / Apple framework bindings (macOS only)
 objc2                  = { workspace = true }
 objc2-core-foundation  = { workspace = true, features = ["CFString", "CFError", "CFCGTypes"] }
-objc2-foundation   = { workspace = true, features = ["NSString", "NSError"] }
+objc2-foundation   = { workspace = true, features = [
+    "NSString",
+    "NSError",
+    "NSTimer",
+    "NSDate",
+    "NSData",
+    "NSGeometry",
+    "NSObject",
+    "NSNotification",
+] }
+objc2-app-kit      = { workspace = true, features = [
+    "NSApplication",
+    "NSAppearance",
+    "NSEvent",
+    "NSImage",
+    "NSPasteboard",
+    "NSResponder",
+    "NSView",
+    "NSWindow",
+] }
+objc2-web-kit      = { workspace = true, features = [
+    "WKWebView",
+    "WKWebViewConfiguration",
+    "WKUserContentController",
+    "WKScriptMessage",
+    "WKScriptMessageHandler",
+] }
+block2             = { version = "0.6" }
 objc2-metal        = { workspace = true, features = [
     "MTLDevice",
     "MTLCommandQueue",
