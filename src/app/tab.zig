@@ -5,6 +5,11 @@
 const std = @import("std");
 const Terminal = @import("../terminal/terminal.zig").Terminal;
 const Pty = @import("../pty/pty.zig").Pty;
+const pane_mod = @import("../workspace/pane.zig");
+const Pane = pane_mod.Pane;
+const PaneRegistry = pane_mod.PaneRegistry;
+const layout_mod = @import("../workspace/layout.zig");
+const PaneTree = layout_mod.PaneTree;
 
 /// True when a tab bar should be drawn — only with 2+ tabs (low-profile rule).
 pub fn barVisible(count: usize) bool {
@@ -41,21 +46,13 @@ pub fn nextActiveAfterClose(count: usize, closed: usize, active: usize) usize {
     return @min(active, remaining - 1);
 }
 
-/// One terminal tab: a shell, its model, and the PTY->main-thread handoff.
-/// Heap-allocate via `create` so the address is stable for the reader thread.
+/// One terminal tab: owns a PaneTree (layout) and a PaneRegistry (runtime).
+/// Currently always a single-leaf tree. Heap-allocate via `create` so the
+/// address is stable.
 pub const Tab = struct {
     alloc: std.mem.Allocator,
-    terminal: Terminal,
-    pty: Pty,
-
-    // PTY -> main handoff. The reader thread appends to `buf`; the 60 Hz tick
-    // drains it. Same design as M1's module globals, now per-tab.
-    buf: [256 * 1024]u8 = undefined,
-    len: usize = 0,
-    mutex: std.atomic.Mutex = .unlocked, // match M1's lock type exactly
-    dead: bool = false,
-    closing: bool = false,
-    reader: ?std.Thread = null,
+    tree: PaneTree,
+    registry: PaneRegistry,
 
     /// Create a tab: a `cols x rows` terminal with `scrollback` history and a
     /// shell spawned in `cwd` (or the inherited default when `cwd` is null).
@@ -69,134 +66,59 @@ pub const Tab = struct {
     ) !*Tab {
         const self = try alloc.create(Tab);
         errdefer alloc.destroy(self);
-        // Separate statements with their own errdefer — a struct literal would
-        // leak the Terminal if spawnIn failed after Terminal.init succeeded.
-        var terminal = try Terminal.init(alloc, cols, rows, scrollback);
-        errdefer terminal.deinit();
-        const pty = try spawnIn(alloc, @intCast(cols), @intCast(rows), cwd);
-        self.* = .{ .alloc = alloc, .terminal = terminal, .pty = pty };
+
+        var registry = PaneRegistry{};
+        errdefer registry.deinit(alloc);
+
+        const first_id = try registry.createAndRegister(alloc, cols, rows, scrollback, cwd);
+
+        const tree = try PaneTree.initSingle(alloc, first_id);
+        errdefer {
+            // tree.deinit() only frees nodes; registry.deinit() frees panes.
+            var t = tree;
+            t.deinit();
+        }
+
+        self.* = .{ .alloc = alloc, .tree = tree, .registry = registry };
         return self;
     }
 
-    /// Spawn the reader thread. Call exactly once, after `create`, when the
-    /// Tab pointer is stable.
+    /// Spawn reader threads for all panes. Call exactly once, after `create`,
+    /// when the Tab pointer is stable.
     pub fn startReader(self: *Tab) !void {
-        self.reader = try std.Thread.spawn(.{}, readerLoop, .{self});
+        var it = self.registry.map.valueIterator();
+        while (it.next()) |pane_ptr| {
+            try pane_ptr.*.startReader();
+        }
     }
 
-    /// Stop the shell + reader thread, free the terminal, free the Tab.
+    /// Return the focused pane. Always valid after `create`.
+    pub fn focusedPane(self: *Tab) *Pane {
+        const id = self.tree.focused;
+        return self.registry.get(id) orelse @panic("focused PaneId not in registry");
+    }
+
+    /// Stop all shells + reader threads, free all panes and the tree, free the Tab.
     pub fn deinit(self: *Tab) void {
-        self.lock();
-        self.closing = true;
-        self.unlock();
-        self.pty.deinit(); // closes the master fd -> read() returns Eof
-        if (self.reader) |t| t.join(); // inner-loop escape (closing) or Eof -> thread exits
-        self.terminal.deinit();
+        self.registry.deinit(self.alloc);
+        self.tree.deinit();
         const alloc = self.alloc;
         alloc.destroy(self);
-    }
-
-    fn lock(self: *Tab) void {
-        while (!self.mutex.tryLock()) std.Thread.yield() catch {};
-    }
-    fn unlock(self: *Tab) void {
-        self.mutex.unlock();
-    }
-
-    /// Move newly-read PTY bytes out of the handoff buffer into `dst`.
-    /// Returns the slice of `dst` that was filled. Call from the main thread.
-    pub fn drain(self: *Tab, dst: []u8) []u8 {
-        self.lock();
-        defer self.unlock();
-        const n = @min(self.len, dst.len);
-        @memcpy(dst[0..n], self.buf[0..n]);
-        self.len = 0;
-        return dst[0..n];
-    }
-
-    /// True once the shell has exited.
-    pub fn isDead(self: *Tab) bool {
-        self.lock();
-        defer self.unlock();
-        return self.dead;
     }
 
     /// The tab's display label: shell title -> cwd basename -> "shell".
     /// Writes into `out` and returns the used slice.
     pub fn label(self: *const Tab, out: []u8) []const u8 {
-        const title = self.terminal.title();
+        // Label from the focused pane's terminal.
+        const id = self.tree.focused;
+        const pane = self.registry.get(id) orelse return copyTrunc(out, "shell");
+        const title = pane.terminal.title();
         if (title.len > 0) return copyTrunc(out, title);
-        const cwd = self.terminal.cwdPath();
+        const cwd = pane.terminal.cwdPath();
         if (cwd.len > 0) return copyTrunc(out, basename(cwd));
         return copyTrunc(out, "shell");
     }
 };
-
-/// PTY reader thread body — blocking reads appended to the tab's handoff buffer.
-fn readerLoop(tab: *Tab) void {
-    var local: [64 * 1024]u8 = undefined;
-    outer: while (true) {
-        const n = tab.pty.read(&local) catch break;
-        if (n == 0) break;
-        var off: usize = 0;
-        while (off < n) {
-            tab.lock();
-            if (tab.closing) {
-                tab.unlock();
-                break :outer;
-            }
-            const space = tab.buf.len - tab.len;
-            if (space == 0) {
-                tab.unlock();
-                std.Thread.yield() catch {};
-                continue;
-            }
-            const take = @min(space, n - off);
-            @memcpy(tab.buf[tab.len..][0..take], local[off..][0..take]);
-            tab.len += take;
-            tab.unlock();
-            off += take;
-        }
-    }
-    tab.lock();
-    tab.dead = true;
-    tab.unlock();
-}
-
-/// Spawn a shell, in `cwd` when given. Pty has no cwd parameter, so when a cwd
-/// is requested this temporarily chdir's the process around the spawn (the
-/// child inherits cwd at fork). Tab creation is main-thread-only, so the
-/// transient process-wide chdir is safe.
-/// Uses std.c.chdir / std.c.getcwd — std.process.changeCurDir does not exist
-/// in Zig 0.16 (the process API requires an Io instance in that version).
-fn spawnIn(alloc: std.mem.Allocator, cols: u16, rows: u16, cwd: ?[]const u8) !Pty {
-    if (cwd) |dir| {
-        // Save the current working directory. Only proceed with the chdir-spawn-
-        // restore dance when getcwd succeeds; if it fails we cannot guarantee a
-        // restore, so fall through to the no-cwd spawn below.
-        var saved_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const saved_ptr = std.c.getcwd(&saved_buf, saved_buf.len);
-        if (saved_ptr != null) {
-            // Null-terminate the requested dir for the C call.
-            var dir_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
-            if (dir.len >= dir_buf.len) return error.NameTooLong;
-            @memcpy(dir_buf[0..dir.len], dir);
-            dir_buf[dir.len] = 0;
-            _ = std.c.chdir(@ptrCast(dir_buf[0..dir.len :0])); // best-effort
-            const pty = Pty.spawnShell(alloc, cols, rows);
-            // Restore the saved cwd (guaranteed to have been saved).
-            const saved = std.mem.span(@as([*:0]const u8, @ptrCast(&saved_buf)));
-            var restore_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
-            if (saved.len < restore_buf.len) {
-                @memcpy(restore_buf[0..saved.len], saved);
-                restore_buf[saved.len] = 0;
-                _ = std.c.chdir(@ptrCast(restore_buf[0..saved.len :0]));
-            }
-            return pty;
-        }
-    }
-    return Pty.spawnShell(alloc, cols, rows);
-}
 
 /// A hard cap on tabs — bounds the per-tab thread + 256 KiB buffer cost.
 pub const max_tabs = 32;
@@ -233,9 +155,7 @@ pub const TabManager = struct {
     }
 
     /// Create a tab, start its reader thread, append it, and make it active.
-    /// A no-op (logged) once `max_tabs` is reached. The reader starts *before*
-    /// the append so a failed append/startReader never leaves a freed tab in
-    /// the list (the heap pointer from `create` is already stable).
+    /// A no-op (logged) once `max_tabs` is reached.
     pub fn newTab(self: *TabManager, cols: usize, rows: usize, scrollback: usize, cwd: ?[]const u8) !void {
         if (self.tabs.items.len >= max_tabs) {
             std.debug.print("anvil: tab limit ({d}) reached\n", .{max_tabs});
@@ -336,7 +256,21 @@ test "label falls back to \"shell\" with no title or cwd" {
     var t = try Terminal.init(testing.allocator, 20, 5, 100);
     defer t.deinit();
     // A fresh terminal has neither an OSC title nor an OSC cwd.
-    var tab = Tab{ .alloc = testing.allocator, .terminal = t, .pty = undefined };
+    // Build a minimal Pane on the stack (no PTY, no reader thread).
+    var pane = Pane{
+        .alloc = testing.allocator,
+        .id = 1,
+        .terminal = t,
+        .pty = undefined,
+    };
+    // Build a minimal registry pointing at the pane.
+    var registry = PaneRegistry{};
+    defer registry.map.deinit(testing.allocator);
+    try registry.map.put(testing.allocator, 1, &pane);
+    // Build a minimal tree.
+    var tree = try PaneTree.initSingle(testing.allocator, 1);
+    defer tree.deinit();
+    var tab = Tab{ .alloc = testing.allocator, .tree = tree, .registry = registry };
     var buf: [64]u8 = undefined;
     try testing.expectEqualStrings("shell", tab.label(&buf));
 }

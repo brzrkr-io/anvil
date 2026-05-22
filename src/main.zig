@@ -58,13 +58,13 @@ fn windowIsKey() bool {
 /// Snap all animation state to the active tab's current values — used on tab
 /// switch, resize, and startup so those discontinuities never animate.
 fn snapAnim() void {
-    const t = g.tabs.current();
-    const cur = t.terminal.cursor();
-    g.cursor_ax = @floatFromInt(cur.x);
-    g.cursor_ay = @floatFromInt(cur.y);
-    g.scroll_pos = @floatFromInt(t.terminal.viewportOffset());
-    g.overscroll = 0;
-    g.overscroll_target = 0;
+    const p = focusedPane();
+    const cur = p.terminal.cursor();
+    p.cursor_ax = @floatFromInt(cur.x);
+    p.cursor_ay = @floatFromInt(cur.y);
+    p.scroll_pos = @floatFromInt(p.terminal.viewportOffset());
+    p.overscroll = 0;
+    p.overscroll_target = 0;
 }
 
 // Uniform inset (device pixels) between the window edge and the terminal grid.
@@ -92,11 +92,6 @@ const App = struct {
     cursor_cfg: cfg_mod.Config.CursorCfg,
     blink_phase: f32 = 0, // 0..1 cursor blink-fade phase
     last_blink_opacity: f32 = -1, // last opacity value that triggered a redraw
-    cursor_ax: f32 = 0, // animated cursor column (viewport cells)
-    cursor_ay: f32 = 0, // animated cursor row (viewport cells)
-    scroll_pos: f32 = 0, // displayed viewport offset, fractional, driven by the gesture
-    overscroll: f32 = 0, // rubber-band pull past a history edge, in device pixels
-    overscroll_target: f32 = 0, // where the rubber-band is easing toward
     config: cfg_mod.Loaded,
     watcher: cfg_mod.Watcher,
     keys_new: ?cfg_mod.Chord = null,
@@ -121,9 +116,13 @@ const App = struct {
     webview: webview_mod.Webview,
     palette: palette_mod.Palette = .{},
     system_dark: bool = false,
-    selection: Selection = .{},
 };
 var g: App = undefined;
+
+/// Return the focused pane of the current tab. Always valid after startup.
+fn focusedPane() *@import("workspace/pane.zig").Pane {
+    return g.tabs.current().focusedPane();
+}
 
 // --- Objective-C method implementations ----------------------------------
 
@@ -274,20 +273,21 @@ fn runAction(action: palette_mod.Action) void {
             }
         },
         .clear_screen => {
-            g.tabs.current().terminal.feed("\x1b[H\x1b[2J");
+            focusedPane().terminal.feed("\x1b[H\x1b[2J");
             g.dirty = true;
         },
         .scroll_top => {
-            const t = &g.tabs.current().terminal;
-            t.scrollViewport(@intCast(t.scrollbackLen()));
-            g.scroll_pos = @floatFromInt(t.viewportOffset());
-            g.overscroll_target = bounceImpulse();
+            const p = focusedPane();
+            p.terminal.scrollViewport(@intCast(p.terminal.scrollbackLen()));
+            p.scroll_pos = @floatFromInt(p.terminal.viewportOffset());
+            p.overscroll_target = bounceImpulse();
             g.dirty = true;
         },
         .scroll_bottom => {
-            g.tabs.current().terminal.scrollToBottom();
-            g.scroll_pos = 0;
-            g.overscroll_target = -bounceImpulse();
+            const p = focusedPane();
+            p.terminal.scrollToBottom();
+            p.scroll_pos = 0;
+            p.overscroll_target = -bounceImpulse();
             g.dirty = true;
         },
         .app_quit => g.nsapp.msgSend(void, "terminate:", .{@as(c.id, null)}),
@@ -341,26 +341,30 @@ fn onTick() void {
         }
     }
 
-    // Drain every tab so background tabs stay current; render only the active.
+    // Drain every tab's panes so background tabs stay current; render only the active.
     var i: usize = 0;
     var any_dead = false;
     while (i < g.tabs.count()) : (i += 1) {
         const tab = g.tabs.tabs.items[i];
-        const bytes = tab.drain(&feed_scratch);
-        if (bytes.len > 0) {
-            tab.terminal.feed(bytes);
-            if (i == g.tabs.active) {
-                g.dirty = true;
-                if (g.search_open) g.search.rescan(&g.tabs.current().terminal);
+        var pit = tab.registry.map.valueIterator();
+        while (pit.next()) |pane_ptr| {
+            const pane = pane_ptr.*;
+            const bytes = pane.drain(&feed_scratch);
+            if (bytes.len > 0) {
+                pane.terminal.feed(bytes);
+                if (i == g.tabs.active and pane.id == tab.tree.focused) {
+                    g.dirty = true;
+                    if (g.search_open) g.search.rescan(&focusedPane().terminal);
+                }
             }
+            if (pane.isDead()) any_dead = true;
         }
-        if (tab.isDead()) any_dead = true;
     }
 
     // Blink fade — only while the window is focused, so an unfocused window
     // does not burn 60fps. When blink is off in config (and not overridden by
     // DECSCUSR), the cursor is solid.
-    const effective_blink = g.tabs.current().terminal.app_cursor_blink orelse g.cursor_cfg.blink;
+    const effective_blink = focusedPane().terminal.app_cursor_blink orelse g.cursor_cfg.blink;
     if (effective_blink and windowIsKey()) {
         g.blink_phase += 1.0 / 64.0;
         if (g.blink_phase >= 1.0) g.blink_phase -= 1.0;
@@ -379,26 +383,28 @@ fn onTick() void {
     }
 
     // Cursor glide.
-    const t = g.tabs.current();
-    const cur = t.terminal.cursor();
-    const tx: f32 = @floatFromInt(cur.x);
-    const ty: f32 = @floatFromInt(cur.y);
-    if (@abs(tx - g.cursor_ax) > 0.002 or @abs(ty - g.cursor_ay) > 0.002) {
-        g.cursor_ax = approach(g.cursor_ax, tx, 0.30);
-        g.cursor_ay = approach(g.cursor_ay, ty, 0.30);
-        if (@abs(tx - g.cursor_ax) <= 0.002) g.cursor_ax = tx;
-        if (@abs(ty - g.cursor_ay) <= 0.002) g.cursor_ay = ty;
-        g.dirty = true;
-    }
+    {
+        const p = focusedPane();
+        const cur = p.terminal.cursor();
+        const tx: f32 = @floatFromInt(cur.x);
+        const ty: f32 = @floatFromInt(cur.y);
+        if (@abs(tx - p.cursor_ax) > 0.002 or @abs(ty - p.cursor_ay) > 0.002) {
+            p.cursor_ax = approach(p.cursor_ax, tx, 0.30);
+            p.cursor_ay = approach(p.cursor_ay, ty, 0.30);
+            if (@abs(tx - p.cursor_ax) <= 0.002) p.cursor_ax = tx;
+            if (@abs(ty - p.cursor_ay) <= 0.002) p.cursor_ay = ty;
+            g.dirty = true;
+        }
 
-    // Rubber-band: ease the overscroll toward its target, which itself decays
-    // to zero — so the pull-in and the spring-back are both smooth (no snap).
-    if (g.overscroll != 0 or g.overscroll_target != 0) {
-        g.overscroll_target = approach(g.overscroll_target, 0, 0.32);
-        g.overscroll = approach(g.overscroll, g.overscroll_target, 0.55);
-        if (@abs(g.overscroll_target) < 0.5) g.overscroll_target = 0;
-        if (@abs(g.overscroll) < 0.5 and g.overscroll_target == 0) g.overscroll = 0;
-        g.dirty = true;
+        // Rubber-band: ease the overscroll toward its target, which itself decays
+        // to zero — so the pull-in and the spring-back are both smooth (no snap).
+        if (p.overscroll != 0 or p.overscroll_target != 0) {
+            p.overscroll_target = approach(p.overscroll_target, 0, 0.32);
+            p.overscroll = approach(p.overscroll, p.overscroll_target, 0.55);
+            if (@abs(p.overscroll_target) < 0.5) p.overscroll_target = 0;
+            if (@abs(p.overscroll) < 0.5 and p.overscroll_target == 0) p.overscroll = 0;
+            g.dirty = true;
+        }
     }
 
     // HUD data refresh — throttled to ~once per second.
@@ -423,7 +429,7 @@ fn closeDeadTabs() void {
     const bar_before = topBarRows();
     var i: usize = 0;
     while (i < g.tabs.count()) {
-        if (g.tabs.tabs.items[i].isDead()) {
+        if (g.tabs.tabs.items[i].focusedPane().isDead()) {
             if (!g.tabs.closeAt(i)) {
                 g.nsapp.msgSend(void, "terminate:", .{@as(c.id, null)});
                 return;
@@ -464,10 +470,13 @@ fn resizeAllTabs() void {
     const rows = @max(total_rows -| topBarRows() -| bottomBarRows(), 1);
 
     for (g.tabs.tabs.items) |tab| {
-        tab.terminal.resize(cols, rows);
-        tab.pty.resize(@intCast(cols), @intCast(rows));
+        var pit = tab.registry.map.valueIterator();
+        while (pit.next()) |pane_ptr| {
+            pane_ptr.*.terminal.resize(cols, rows);
+            pane_ptr.*.pty.resize(@intCast(cols), @intCast(rows));
+        }
     }
-    g.selection.clear();
+    focusedPane().selection.clear();
     snapAnim();
     g.dirty = true;
 }
@@ -679,7 +688,7 @@ fn toggleTree() void {
 /// ⌘↑ — scroll the viewport up to the nearest `prompt_start` mark above the
 /// current viewport top. If none is found above, does nothing.
 fn jumpToPrevPrompt() void {
-    const t = &g.tabs.current().terminal;
+    const t = &focusedPane().terminal;
     const marks = t.promptMarks();
     if (marks.len == 0) return;
 
@@ -699,9 +708,10 @@ fn jumpToPrevPrompt() void {
         }
     }
     if (best) |cr| {
-        t.scrollToLine(cr);
-        g.scroll_pos = @floatFromInt(t.viewportOffset());
-        g.overscroll_target = bounceImpulse();
+        const p = focusedPane();
+        p.terminal.scrollToLine(cr);
+        p.scroll_pos = @floatFromInt(p.terminal.viewportOffset());
+        p.overscroll_target = bounceImpulse();
         g.dirty = true;
     }
 }
@@ -709,7 +719,7 @@ fn jumpToPrevPrompt() void {
 /// ⌘↓ — scroll the viewport down to the nearest `prompt_start` mark below the
 /// current viewport top. Past the last mark, scrolls to the live bottom.
 fn jumpToNextPrompt() void {
-    const t = &g.tabs.current().terminal;
+    const t = &focusedPane().terminal;
     const marks = t.promptMarks();
 
     // The content row currently at the top of the viewport.
@@ -727,15 +737,17 @@ fn jumpToNextPrompt() void {
     }
 
     if (best) |cr| {
-        t.scrollToLine(cr);
-        g.scroll_pos = @floatFromInt(t.viewportOffset());
-        g.overscroll_target = -bounceImpulse();
+        const p = focusedPane();
+        p.terminal.scrollToLine(cr);
+        p.scroll_pos = @floatFromInt(p.terminal.viewportOffset());
+        p.overscroll_target = -bounceImpulse();
         g.dirty = true;
     } else {
         // No mark below — jump to the live bottom.
-        t.scrollToBottom();
-        g.scroll_pos = 0;
-        g.overscroll_target = -bounceImpulse();
+        const p = focusedPane();
+        p.terminal.scrollToBottom();
+        p.scroll_pos = 0;
+        p.overscroll_target = -bounceImpulse();
         g.dirty = true;
     }
 }
@@ -743,15 +755,16 @@ fn jumpToNextPrompt() void {
 /// Scroll the active tab so the current search match is visible.
 fn scrollToCurrentMatch() void {
     if (g.search.currentMatch()) |m| {
-        g.tabs.current().terminal.scrollToLine(m.row);
-        g.scroll_pos = @floatFromInt(g.tabs.current().terminal.viewportOffset());
+        const p = focusedPane();
+        p.terminal.scrollToLine(m.row);
+        p.scroll_pos = @floatFromInt(p.terminal.viewportOffset());
     }
 }
 
 /// The active tab's cwd (OSC 7), or null if unknown.
 /// Returns the filesystem path (file:// host stripped), not the raw URL.
 fn currentCwd() ?[]const u8 {
-    const cwd = g.tabs.current().terminal.cwdPath();
+    const cwd = focusedPane().terminal.cwdPath();
     return if (cwd.len > 0) cwd else null;
 }
 
@@ -832,7 +845,7 @@ fn onKeyDown(event: objc.Object) void {
             }
             // ⌘C — copy selection to clipboard.
             if (asciiLowerCp(cp) == 'c' and !mods.shift and !mods.control and !mods.option) {
-                if (g.selection.active) {
+                if (focusedPane().selection.active) {
                     copySelection();
                     return;
                 }
@@ -865,7 +878,7 @@ fn onKeyDown(event: objc.Object) void {
                 while (qlen > 0 and (g.search.query_buf[qlen - 1] & 0xC0) == 0x80) qlen -= 1;
                 if (qlen > 0) qlen -= 1;
                 const q = g.search.query_buf[0..qlen];
-                g.search.setQuery(&g.tabs.current().terminal, q);
+                g.search.setQuery(&focusedPane().terminal, q);
                 scrollToCurrentMatch();
                 g.dirty = true;
             },
@@ -876,7 +889,7 @@ fn onKeyDown(event: objc.Object) void {
                 if (base.len + 4 <= tmp.len) {
                     @memcpy(tmp[0..base.len], base);
                     const n = std.unicode.utf8Encode(cp, tmp[base.len..]) catch 0;
-                    g.search.setQuery(&g.tabs.current().terminal, tmp[0 .. base.len + n]);
+                    g.search.setQuery(&focusedPane().terminal, tmp[0 .. base.len + n]);
                     scrollToCurrentMatch();
                     g.dirty = true;
                 }
@@ -889,10 +902,11 @@ fn onKeyDown(event: objc.Object) void {
     const p = extractKey(event) orelse return;
     var buf: [16]u8 = undefined;
     const bytes = keys.encode(p.key, p.mods, false, &buf);
-    _ = g.tabs.current().pty.write(bytes) catch {};
-    g.tabs.current().terminal.scrollToBottom();
-    g.scroll_pos = 0;
-    g.selection.clear();
+    const fp = focusedPane();
+    _ = fp.pty.write(bytes) catch {};
+    fp.terminal.scrollToBottom();
+    fp.scroll_pos = 0;
+    fp.selection.clear();
     g.dirty = true;
 }
 
@@ -901,8 +915,9 @@ fn addOverscroll(excess_rows: f32) void {
     const limit = ch * 1.5;
     // Feed the target, not the displayed value — onTick eases `overscroll`
     // toward it, so a hard scroll cannot snap the rubber-band in one frame.
-    const resist = 1.0 - @min(@abs(g.overscroll_target) / limit, 1.0);
-    g.overscroll_target = std.math.clamp(g.overscroll_target + excess_rows * ch * 0.30 * resist, -limit, limit);
+    const p = focusedPane();
+    const resist = 1.0 - @min(@abs(p.overscroll_target) / limit, 1.0);
+    p.overscroll_target = std.math.clamp(p.overscroll_target + excess_rows * ch * 0.30 * resist, -limit, limit);
 }
 
 fn bounceImpulse() f32 {
@@ -914,7 +929,7 @@ fn onScroll(event: objc.Object) void {
     if (dy == 0) return;
 
     // Mouse reporting: forward scroll as button 64 (up) or 65 (down) to PTY.
-    const tm = &g.tabs.current().terminal;
+    const tm = &focusedPane().terminal;
     if (tm.modes.mouse_button or tm.modes.mouse_x10) {
         if (eventCell(event, false)) |cl| {
             const btn: u8 = if (dy > 0) 64 else 65;
@@ -923,10 +938,10 @@ fn onScroll(event: objc.Object) void {
         return;
     }
 
-    const t = g.tabs.current();
+    const p = focusedPane();
     const d: f32 = @floatCast(dy / 8.0);
-    const max_pos: f32 = @floatFromInt(t.terminal.scrollbackLen());
-    var np = g.scroll_pos + d;
+    const max_pos: f32 = @floatFromInt(p.terminal.scrollbackLen());
+    var np = p.scroll_pos + d;
     if (np > max_pos) {
         addOverscroll(np - max_pos);
         np = max_pos;
@@ -934,8 +949,8 @@ fn onScroll(event: objc.Object) void {
         addOverscroll(np);
         np = 0;
     }
-    g.scroll_pos = np;
-    t.terminal.setViewportOffset(@intFromFloat(@round(np)));
+    p.scroll_pos = np;
+    p.terminal.setViewportOffset(@intFromFloat(@round(np)));
     g.dirty = true;
 }
 
@@ -950,9 +965,8 @@ fn eventCell(event: objc.Object, clamp: bool) ?struct { row: usize, col: usize }
     const b = g.view.msgSend(CGRect, "bounds", .{});
     const cw: f64 = g.font.metrics.cell_w;
     const ch: f64 = g.font.metrics.cell_h;
-    const t = g.tabs.current();
-    const rows: f64 = @floatFromInt(t.terminal.rows());
-    const cols: f64 = @floatFromInt(t.terminal.cols());
+    const rows: f64 = @floatFromInt(focusedPane().terminal.rows());
+    const cols: f64 = @floatFromInt(focusedPane().terminal.cols());
 
     // Device-pixel coordinates, raster origin (top-left).
     const raster_h = b.size.height * g.scale;
@@ -988,7 +1002,7 @@ fn eventCell(event: objc.Object, clamp: bool) ?struct { row: usize, col: usize }
 /// Write `\x15${EDITOR:-open} '<path>'\n` to the active tab's PTY.
 /// Single-quotes in `path` are escaped as `'\''`.
 fn ptyWriteOpenFile(path: []const u8) void {
-    const pty = &g.tabs.current().pty;
+    const pty = &focusedPane().pty;
     _ = pty.write("\x15${EDITOR:-open} '") catch {};
     // Escape single quotes: replace each ' with '\''.
     var i: usize = 0;
@@ -1006,7 +1020,7 @@ fn ptyWriteOpenFile(path: []const u8) void {
 
 /// Write `\x15open '<url>'\n` to the active tab's PTY.
 fn ptyWriteOpenUrl(url: []const u8) void {
-    const pty = &g.tabs.current().pty;
+    const pty = &focusedPane().pty;
     _ = pty.write("\x15open '") catch {};
     var i: usize = 0;
     while (i < url.len) {
@@ -1026,17 +1040,17 @@ fn ptyWriteOpenUrl(url: []const u8) void {
 /// `cell_col`, `cell_row`: 0-based viewport cell (converted to 1-based internally).
 /// `press`: true for button-down / motion, false for release.
 fn writeMouseEvent(button: u8, cell_col: usize, cell_row: usize, press: bool) void {
-    const t = g.tabs.current();
+    const fp = focusedPane();
     var mbuf: [32]u8 = undefined;
     const bytes = keys.encodeMouse(
         button,
         cell_col + 1, // 1-based
         cell_row + 1, // 1-based
         press,
-        t.terminal.modes.mouse_sgr,
+        fp.terminal.modes.mouse_sgr,
         &mbuf,
     );
-    _ = t.pty.write(bytes) catch {};
+    _ = fp.pty.write(bytes) catch {};
 }
 
 fn onMouseDown(event: objc.Object) void {
@@ -1094,7 +1108,7 @@ fn onMouseDown(event: objc.Object) void {
     }
 
     // Mouse reporting: forward to PTY instead of starting a local selection.
-    const tm = &g.tabs.current().terminal;
+    const tm = &focusedPane().terminal;
     if (tm.modes.mouse_button or tm.modes.mouse_x10) {
         if (eventCell(event, false)) |cl| {
             writeMouseEvent(0, cl.col, cl.row, true); // left button press
@@ -1106,7 +1120,7 @@ fn onMouseDown(event: objc.Object) void {
     const flags = event.msgSend(c_ulong, "modifierFlags", .{});
     if (flags & (1 << 20) != 0) { // NSEventModifierFlagCommand
         if (eventCell(event, false)) |cl| {
-            const t = &g.tabs.current().terminal;
+            const t = &focusedPane().terminal;
             const crow = t.contentRowOfViewport(cl.row);
             const cells = t.line(crow);
             // Decode the row to UTF-8 so we can do string token extraction.
@@ -1146,12 +1160,13 @@ fn onMouseDown(event: objc.Object) void {
 
     // Grid click — begin selection.
     const cell = eventCell(event, false) orelse {
-        g.selection.clear();
+        focusedPane().selection.clear();
         g.dirty = true;
         return;
     };
-    const content_row = g.tabs.current().terminal.contentRowOfViewport(cell.row);
-    g.selection = .{
+    const fp2 = focusedPane();
+    const content_row = fp2.terminal.contentRowOfViewport(cell.row);
+    fp2.selection = .{
         .active = true,
         .anchor = .{ .row = content_row, .col = cell.col },
         .head = .{ .row = content_row, .col = cell.col },
@@ -1161,23 +1176,24 @@ fn onMouseDown(event: objc.Object) void {
 
 fn onMouseDragged(event: objc.Object) void {
     // Mouse reporting: forward drag as button-motion event.
-    const tm = &g.tabs.current().terminal;
+    const tm = &focusedPane().terminal;
     if (tm.modes.mouse_button) {
         if (eventCell(event, false)) |cl| {
             writeMouseEvent(0 + 32, cl.col, cl.row, true); // left drag = button 0 + 32
         }
         return;
     }
-    if (!g.selection.active) return;
+    const fp3 = focusedPane();
+    if (!fp3.selection.active) return;
     const cell = eventCell(event, true) orelse return;
-    const content_row = g.tabs.current().terminal.contentRowOfViewport(cell.row);
-    g.selection.head = .{ .row = content_row, .col = cell.col };
+    const content_row = fp3.terminal.contentRowOfViewport(cell.row);
+    fp3.selection.head = .{ .row = content_row, .col = cell.col };
     g.dirty = true;
 }
 
 fn onMouseUp(event: objc.Object) void {
     // Mouse reporting: forward release to PTY (SGR only; legacy X10 has no release).
-    const tm = &g.tabs.current().terminal;
+    const tm = &focusedPane().terminal;
     if (tm.modes.mouse_button and tm.modes.mouse_sgr) {
         if (eventCell(event, false)) |cl| {
             writeMouseEvent(0, cl.col, cl.row, false); // left button release
@@ -1191,11 +1207,12 @@ fn onMouseUp(event: objc.Object) void {
         return;
     }
     // A click with no drag (anchor == head) means no real selection.
-    if (g.selection.active and
-        g.selection.anchor.row == g.selection.head.row and
-        g.selection.anchor.col == g.selection.head.col)
+    const fp4 = focusedPane();
+    if (fp4.selection.active and
+        fp4.selection.anchor.row == fp4.selection.head.row and
+        fp4.selection.anchor.col == fp4.selection.head.col)
     {
-        g.selection.clear();
+        fp4.selection.clear();
     }
     g.dirty = true;
 }
@@ -1203,8 +1220,9 @@ fn onMouseUp(event: objc.Object) void {
 /// Extract selected text from the active tab's terminal and write it to the
 /// macOS general pasteboard.
 fn copySelection() void {
-    const term_obj = &g.tabs.current().terminal;
-    const o = g.selection.ordered();
+    const fp5 = focusedPane();
+    const term_obj = &fp5.terminal;
+    const o = fp5.selection.ordered();
     const s = o.s;
     const e = o.e;
 
@@ -1310,7 +1328,7 @@ fn gitJobRun() void {
 
 /// Populate `g.hud` from live data: cwd, git status, last-run state.
 fn refreshHud() void {
-    const cur_term = &g.tabs.current().terminal;
+    const cur_term = &focusedPane().terminal;
 
     // --- cwd ---
     const cwd = cur_term.cwdPath();
@@ -1364,7 +1382,7 @@ fn refreshHud() void {
 fn openSearch() void {
     if (g.search_open) return;
     g.search_open = true;
-    g.search.setQuery(&g.tabs.current().terminal, g.search.query());
+    g.search.setQuery(&focusedPane().terminal, g.search.query());
     resizeAllTabs();
     g.dirty = true;
 }
@@ -1388,7 +1406,7 @@ fn bottomBarRows() usize {
 fn renderFrame() void {
     g.raster.clear(g.theme.background);
 
-    const t = g.tabs.current();
+    const fp = focusedPane();
 
     // When the tree panel is visible, shift the terminal grid right by the
     // panel width so it occupies the left edge. The tab bar, HUD, search bar,
@@ -1406,20 +1424,20 @@ fn renderFrame() void {
     const rule_x_end = @as(f64, @floatFromInt(g.raster.width)) - g.raster.pad_x;
 
     const cp = draw_mod.CursorParams{
-        .ax = g.cursor_ax,
-        .ay = g.cursor_ay,
+        .ax = fp.cursor_ax,
+        .ay = fp.cursor_ay,
         .blink_phase = g.blink_phase,
         .cfg = g.cursor_cfg,
     };
     const search_ptr: ?*const Search = if (g.search_open) &g.search else null;
     draw_mod.drawViewport(
         &g.raster,
-        &t.terminal,
+        &fp.terminal,
         g.font,
         g.theme,
-        g.scroll_pos,
-        g.overscroll,
-        g.selection,
+        fp.scroll_pos,
+        fp.overscroll,
+        fp.selection,
         search_ptr,
         topBarRows(),
         cp,
@@ -1659,4 +1677,5 @@ test {
     _ = @import("app/interact.zig");
     _ = @import("testing/counting_allocator.zig");
     _ = @import("workspace/layout.zig");
+    _ = @import("workspace/pane.zig");
 }
