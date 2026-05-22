@@ -369,8 +369,10 @@ fn onTick() void {
     }
 
     // Blink fade — only while the window is focused, so an unfocused window
-    // does not burn 60fps. When blink is off in config, the cursor is solid.
-    if (g.cursor_cfg.blink and windowIsKey()) {
+    // does not burn 60fps. When blink is off in config (and not overridden by
+    // DECSCUSR), the cursor is solid.
+    const effective_blink = g.tabs.current().terminal.app_cursor_blink orelse g.cursor_cfg.blink;
+    if (effective_blink and windowIsKey()) {
         g.blink_phase += 1.0 / 64.0;
         if (g.blink_phase >= 1.0) g.blink_phase -= 1.0;
         g.dirty = true;
@@ -520,6 +522,19 @@ fn extractKey(event: objc.Object) ?Pressed {
         116 => .page_up,
         121 => .page_down,
         117 => .delete,
+        // F1-F12 virtual keycodes.
+        122 => .f1,
+        120 => .f2,
+        99 => .f3,
+        118 => .f4,
+        96 => .f5,
+        97 => .f6,
+        98 => .f7,
+        100 => .f8,
+        101 => .f9,
+        109 => .f10,
+        103 => .f11,
+        111 => .f12,
         else => null,
     };
     if (named) |key| return .{ .key = key, .mods = mods };
@@ -900,6 +915,17 @@ fn bounceImpulse() f32 {
 fn onScroll(event: objc.Object) void {
     const dy = event.msgSend(f64, "scrollingDeltaY", .{});
     if (dy == 0) return;
+
+    // Mouse reporting: forward scroll as button 64 (up) or 65 (down) to PTY.
+    const tm = &g.tabs.current().terminal;
+    if (tm.modes.mouse_button or tm.modes.mouse_x10) {
+        if (eventCell(event, false)) |cl| {
+            const btn: u8 = if (dy > 0) 64 else 65;
+            writeMouseEvent(btn, cl.col, cl.row, true);
+        }
+        return;
+    }
+
     const t = g.tabs.current();
     const d: f32 = @floatCast(dy / 8.0);
     const max_pos: f32 = @floatFromInt(t.terminal.scrollbackLen());
@@ -998,6 +1024,24 @@ fn ptyWriteOpenUrl(url: []const u8) void {
     _ = pty.write("'\n") catch {};
 }
 
+/// Write an encoded mouse event to the active tab's PTY.
+/// `button`: 0 left, 1 middle, 2 right; add 32 for drag, 64/65 for scroll.
+/// `cell_col`, `cell_row`: 0-based viewport cell (converted to 1-based internally).
+/// `press`: true for button-down / motion, false for release.
+fn writeMouseEvent(button: u8, cell_col: usize, cell_row: usize, press: bool) void {
+    const t = g.tabs.current();
+    var mbuf: [32]u8 = undefined;
+    const bytes = keys.encodeMouse(
+        button,
+        cell_col + 1, // 1-based
+        cell_row + 1, // 1-based
+        press,
+        t.terminal.modes.mouse_sgr,
+        &mbuf,
+    );
+    _ = t.pty.write(bytes) catch {};
+}
+
 fn onMouseDown(event: objc.Object) void {
     const win_pt = event.msgSend(CGPoint, "locationInWindow", .{});
     const view_pt = g.view.msgSend(CGPoint, "convertPoint:fromView:", .{
@@ -1050,6 +1094,15 @@ fn onMouseDown(event: objc.Object) void {
             }
             return; // tree panel click — do not start text selection
         }
+    }
+
+    // Mouse reporting: forward to PTY instead of starting a local selection.
+    const tm = &g.tabs.current().terminal;
+    if (tm.modes.mouse_button or tm.modes.mouse_x10) {
+        if (eventCell(event, false)) |cl| {
+            writeMouseEvent(0, cl.col, cl.row, true); // left button press
+        }
+        return;
     }
 
     // ⌘-click: open a file path or URL under the cursor. Does not start selection.
@@ -1110,6 +1163,14 @@ fn onMouseDown(event: objc.Object) void {
 }
 
 fn onMouseDragged(event: objc.Object) void {
+    // Mouse reporting: forward drag as button-motion event.
+    const tm = &g.tabs.current().terminal;
+    if (tm.modes.mouse_button) {
+        if (eventCell(event, false)) |cl| {
+            writeMouseEvent(0 + 32, cl.col, cl.row, true); // left drag = button 0 + 32
+        }
+        return;
+    }
     if (!g.selection.active) return;
     const cell = eventCell(event, true) orelse return;
     const content_row = g.tabs.current().terminal.contentRowOfViewport(cell.row);
@@ -1118,7 +1179,20 @@ fn onMouseDragged(event: objc.Object) void {
 }
 
 fn onMouseUp(event: objc.Object) void {
-    _ = event;
+    // Mouse reporting: forward release to PTY (SGR only; legacy X10 has no release).
+    const tm = &g.tabs.current().terminal;
+    if (tm.modes.mouse_button and tm.modes.mouse_sgr) {
+        if (eventCell(event, false)) |cl| {
+            writeMouseEvent(0, cl.col, cl.row, false); // left button release
+        }
+        g.dirty = true;
+        return;
+    }
+    if (tm.modes.mouse_button) {
+        // Legacy mouse_button mode: no explicit release byte needed (app infers from next press).
+        g.dirty = true;
+        return;
+    }
     // A click with no drag (anchor == head) means no real selection.
     if (g.selection.active and
         g.selection.anchor.row == g.selection.head.row and
@@ -1473,12 +1547,23 @@ fn drawCell(x: usize, y: usize, content_row: usize, cell: term.Cell) void {
 }
 
 fn drawCursor() void {
-    const opacity: f32 = if (g.cursor_cfg.blink) cursorOpacity(g.blink_phase) else 1.0;
+    // Prefer the app-requested cursor shape/blink (DECSCUSR) when set; fall
+    // back to the config defaults. Map terminal.CursorShape → cfg CursorStyle.
+    const terminal_obj = &g.tabs.current().terminal;
+    const blink: bool = terminal_obj.app_cursor_blink orelse g.cursor_cfg.blink;
+    const opacity: f32 = if (blink) cursorOpacity(g.blink_phase) else 1.0;
     const ax: f64 = g.cursor_ax;
     const ay: f64 = @as(f64, g.cursor_ay) + @as(f64, @floatFromInt(topBarRows()));
     const cursor_rgb = color.mix(g.theme.background, g.theme.accent, opacity);
 
-    switch (g.cursor_cfg.style) {
+    // Resolve style: app request overrides config.
+    const style: cfg_mod.CursorStyle = if (terminal_obj.app_cursor_shape) |s| switch (s) {
+        .block => .block,
+        .underline => .underline,
+        .bar => .bar,
+    } else g.cursor_cfg.style;
+
+    switch (style) {
         .block => {
             g.raster.cellInset(g.font, ax, ay, cursor_rgb, 0.0, 0.0, 1.0, 1.0);
             // Re-draw the glyph of the cell the cursor rect mostly covers, in

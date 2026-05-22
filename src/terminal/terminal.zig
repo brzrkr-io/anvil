@@ -18,6 +18,9 @@ pub const Cell = cell.Cell;
 pub const Color = cell.Color;
 pub const Attrs = cell.Attrs;
 
+/// Cursor shape, as requested by the app via DECSCUSR.
+pub const CursorShape = enum { block, underline, bar };
+
 /// The cursor position and visibility, as the renderer needs it.
 pub const Cursor = struct {
     x: usize,
@@ -108,6 +111,11 @@ pub const Terminal = struct {
     shell_run_start_ms: i64 = 0, // milliTimestamp when 133;C was received
     shell_last_exit: i32 = 0, // exit code from most recent 133;D
     shell_last_duration_ms: i64 = 0, // duration of the most recent run in ms
+
+    /// App-requested cursor style from DECSCUSR. Null = use the config default.
+    app_cursor_shape: ?CursorShape = null,
+    /// App-requested cursor blink from DECSCUSR. Null = use the config default.
+    app_cursor_blink: ?bool = null,
 
     /// Reusable buffer backing `viewportRow` when it pads a short scrollback
     /// row — one row wide, reallocated on resize.
@@ -413,12 +421,58 @@ pub const Terminal = struct {
 
     /// A CSI sequence: `intermediates` may carry a private marker (`?` etc.).
     pub fn csiDispatch(self: *Terminal, intermediates: []const u8, params: []const u16, final: u8) void {
+        // DECSCUSR: CSI Ps SP q — app-requested cursor style.
+        if (intermediates.len == 1 and intermediates[0] == ' ' and final == 'q') {
+            self.applyDecscusr(param(params, 0, 0));
+            return;
+        }
         const private = intermediates.len > 0 and intermediates[0] == '?';
         if (private) {
             self.csiPrivate(params, final);
             return;
         }
         self.csiStandard(params, final);
+    }
+
+    /// Handle DECSCUSR (CSI Ps SP q). Ps:
+    ///   0 or 1 = blinking block (reset to default when 0)
+    ///   2 = steady block
+    ///   3 = blinking underline
+    ///   4 = steady underline
+    ///   5 = blinking bar
+    ///   6 = steady bar
+    fn applyDecscusr(self: *Terminal, ps: u16) void {
+        switch (ps) {
+            0 => { // reset to config default
+                self.app_cursor_shape = null;
+                self.app_cursor_blink = null;
+            },
+            1 => {
+                self.app_cursor_shape = .block;
+                self.app_cursor_blink = true;
+            },
+            2 => {
+                self.app_cursor_shape = .block;
+                self.app_cursor_blink = false;
+            },
+            3 => {
+                self.app_cursor_shape = .underline;
+                self.app_cursor_blink = true;
+            },
+            4 => {
+                self.app_cursor_shape = .underline;
+                self.app_cursor_blink = false;
+            },
+            5 => {
+                self.app_cursor_shape = .bar;
+                self.app_cursor_blink = true;
+            },
+            6 => {
+                self.app_cursor_shape = .bar;
+                self.app_cursor_blink = false;
+            },
+            else => {}, // unknown — ignore
+        }
     }
 
     fn csiStandard(self: *Terminal, params: []const u16, final: u8) void {
@@ -1652,4 +1706,38 @@ test "grow then shrink round trip leaves the cursor line visible" {
     try testing.expect(term.cursor().y < term.rows());
     var buf: [8]u8 = undefined;
     try testing.expectEqualStrings("cccc", viewportText(&term, term.cursor().y, &buf));
+}
+
+test "DECSCUSR sets and clears app cursor shape" {
+    var term = try makeTerminal(10, 2);
+    defer term.deinit();
+
+    // Default: no app request.
+    try testing.expect(term.app_cursor_shape == null);
+    try testing.expect(term.app_cursor_blink == null);
+
+    // Ps=6: steady bar.
+    term.feed("\x1b[6 q");
+    try testing.expectEqual(CursorShape.bar, term.app_cursor_shape.?);
+    try testing.expectEqual(false, term.app_cursor_blink.?);
+
+    // Ps=5: blinking bar.
+    term.feed("\x1b[5 q");
+    try testing.expectEqual(CursorShape.bar, term.app_cursor_shape.?);
+    try testing.expectEqual(true, term.app_cursor_blink.?);
+
+    // Ps=2: steady block.
+    term.feed("\x1b[2 q");
+    try testing.expectEqual(CursorShape.block, term.app_cursor_shape.?);
+    try testing.expectEqual(false, term.app_cursor_blink.?);
+
+    // Ps=4: steady underline.
+    term.feed("\x1b[4 q");
+    try testing.expectEqual(CursorShape.underline, term.app_cursor_shape.?);
+    try testing.expectEqual(false, term.app_cursor_blink.?);
+
+    // Ps=0: reset to config default.
+    term.feed("\x1b[0 q");
+    try testing.expect(term.app_cursor_shape == null);
+    try testing.expect(term.app_cursor_blink == null);
 }
