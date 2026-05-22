@@ -79,14 +79,14 @@ const icons = @import("icons.zig");
 test "assemble: clean repo shows cwd + branch only" {
     var scratch: [256]u8 = undefined;
     const list = assemble(.{
-        .cwd_base = "caldera-console",
+        .cwd_base = "anvil",
         .context = .{ .in_git = true },
         .git_info = .{ .branch = "main" },
         .exit_code = 0,
         .scratch = &scratch,
     });
     try testing.expectEqual(@as(usize, 2), list.slice().len);
-    try testing.expectEqual(seg.Segment{ .icon = .repo, .text = "caldera-console" }, list.slice()[0]);
+    try testing.expectEqual(seg.Segment{ .icon = .repo, .text = "anvil" }, list.slice()[0]);
 }
 
 test "assemble: dirty repo marks the git segment warn" {

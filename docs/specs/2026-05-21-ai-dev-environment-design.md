@@ -3,16 +3,16 @@
 Status: approved design
 Date: 2026-05-21
 Author: Parker Anderson (with Claude Code)
-Scope: two sub-projects — (A) the `caldera-console` AI dev environment, (B) the global `~/.claude` overhaul.
+Scope: two sub-projects — (A) the `anvil` AI dev environment, (B) the global `~/.claude` overhaul.
 
 ## Purpose
 
 Replicate the agent/wiki/brand/instruction setup from the private `caldera-os`
-workspace into the standalone `caldera-console` repo, adapted to this app's real
+workspace into the standalone `anvil` repo, adapted to this app's real
 stack, and standardize the global `~/.claude` setup on the Karpathy/multica
 `CLAUDE.md` behavioral standard plus the LLM-wiki convention.
 
-`caldera-console` is a native macOS app: Zig, `zig build`, Metal, AppKit.
+`anvil` is a native macOS app: Zig, `zig build`, Metal, AppKit.
 It must not depend on `caldera-os` at runtime or reference Linear, the `anvil`
 CLI, Forge, or the Agent-OS "bootstrap" framing.
 
@@ -36,12 +36,12 @@ as a system prompt.
 
 ---
 
-## Sub-project A — `caldera-console` AI dev environment
+## Sub-project A — `anvil` AI dev environment
 
 ### A.1 Repo layout (new files)
 
 ```
-caldera-console/
+anvil/
 ├── CLAUDE.md              @AGENTS.md include + Zig/macOS build notes
 ├── AGENTS.md              adapted from caldera-os — Zig/macOS, no Linear/anvil/Forge
 ├── BRAND.md               copied verbatim
@@ -56,7 +56,7 @@ caldera-console/
 │       ├── design-lead.md
 │       └── product-strategist.md
 ├── wiki/
-│   ├── index.md           fresh, scoped to caldera-console
+│   ├── index.md           fresh, scoped to anvil
 │   ├── log.md             seeded with the setup entry
 │   ├── concepts/
 │   │   ├── README.md
@@ -153,7 +153,7 @@ No `products/`, no Anvil/Forge operation logs, no `entities/`.
 
 `BRAND.md` and all 9 `brand/` files copied **verbatim**. `BRAND.md` is already
 written as portable ("Product repos may copy this file") and already names
-"Caldera Console." Its one caldera-os-specific reference
+"Anvil." Its one caldera-os-specific reference
 (`docs/design/shared-core-surface-modes.md`) is already conditioned on "when
 working inside caldera-os," so verbatim copy is correct.
 
@@ -172,7 +172,7 @@ exists today. Applies to every project once created.
 
 A ~1-page reusable guide for the LLM-wiki pattern: frontmatter fields, the roles
 of `index.md` and `log.md`, ingest discipline, "query the wiki before raw
-sources." Generic — no Caldera specifics. Referenced by a single pointer line in
+sources." Generic — no Anvil specifics. Referenced by a single pointer line in
 the global `CLAUDE.md` so the standard itself stays short.
 
 ### B.3 Refresh the 3 global agents
@@ -198,10 +198,10 @@ file, copy them to `~/.claude/backups/` with timestamps for rollback.
 
 ## Success criteria
 
-- `/agents` in `caldera-console` lists the 7 new subagents; each is dispatchable.
-- `caldera-console/AGENTS.md` and `CLAUDE.md` contain no Rust, Cargo, Linear,
+- `/agents` in `anvil` lists the 7 new subagents; each is dispatchable.
+- `anvil/AGENTS.md` and `CLAUDE.md` contain no Rust, Cargo, Linear,
   `anvil`, or Forge references; build/test commands are `zig build`.
-- `caldera-console/wiki/` contains the system + reusable pages only — no
+- `anvil/wiki/` contains the system + reusable pages only — no
   Anvil/Forge operation logs.
 - `BRAND.md` + 9 `brand/` assets present and byte-identical to caldera-os.
 - `~/.claude/CLAUDE.md` exists with the verbatim Karpathy standard.
@@ -212,7 +212,7 @@ file, copy them to `~/.claude/backups/` with timestamps for rollback.
 
 ## Out of scope
 
-- No changes to `caldera-console` application source code.
+- No changes to `anvil` application source code.
 - No new Claude Code plugins or marketplaces installed.
 - No changes to `settings.json` (review only).
 - No replication into other repos (anvil-console, finance, k8s-platform, etc.).

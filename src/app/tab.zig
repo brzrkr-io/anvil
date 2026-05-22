@@ -238,7 +238,7 @@ pub const TabManager = struct {
     /// the list (the heap pointer from `create` is already stable).
     pub fn newTab(self: *TabManager, cols: usize, rows: usize, scrollback: usize, cwd: ?[]const u8) !void {
         if (self.tabs.items.len >= max_tabs) {
-            std.debug.print("caldera-console: tab limit ({d}) reached\n", .{max_tabs});
+            std.debug.print("anvil: tab limit ({d}) reached\n", .{max_tabs});
             return;
         }
         const tab = try Tab.create(self.alloc, cols, rows, scrollback, cwd);
@@ -326,8 +326,8 @@ test "nextActiveAfterClose handles every position" {
 }
 
 test "basename extracts the last path component" {
-    try testing.expectEqualStrings("caldera-console", basename("/Users/x/caldera-console"));
-    try testing.expectEqualStrings("caldera-console", basename("/Users/x/caldera-console/"));
+    try testing.expectEqualStrings("anvil", basename("/Users/x/anvil"));
+    try testing.expectEqualStrings("anvil", basename("/Users/x/anvil/"));
     try testing.expectEqualStrings("x", basename("x"));
     try testing.expectEqualStrings("", basename("/"));
 }

@@ -1,15 +1,15 @@
-# Caldera Console — Rebuild Plan & Handoff (Zig)
+# Anvil — Rebuild Plan & Handoff (Zig)
 
 Status: handoff doc — start a fresh session and point it here.
 Updated: 2026-05-21
 
-Single source of truth for rebuilding Caldera Console as a Zig application.
+Single source of truth for rebuilding Anvil as a Zig application.
 
 ---
 
 ## 1. Product vision
 
-Caldera Console is a single, unified **control plane for everything a software /
+Anvil is a single, unified **control plane for everything a software /
 devops engineer does** — not a project-management tool. It is "more than a terminal":
 a developer workspace / emulator app.
 
@@ -65,7 +65,7 @@ Zig effort focused on the terminal core instead of reinventing a GUI toolkit.
 ## 5. Target architecture (Zig, Hybrid)
 
 ```
-caldera-console/            (new repo)
+anvil/            (new repo)
 ├── build.zig
 ├── build.zig.zon
 ├── src/
@@ -108,6 +108,7 @@ caldera-console/            (new repo)
 - PTY and shell-integration know-how.
 - Design system: sibling repo `caldera-os` (`BRAND.md`, `docs/design/`). Do not depend
   on `caldera-os`, Linear, or Obsidian at runtime — copy assets locally.
+
 
 ## 9. Current state of `anvil-console` (the interim app)
 

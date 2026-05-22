@@ -44,7 +44,7 @@ pub const Webview = struct {
     ) Webview {
         const Handler = objc.allocateClassPair(
             objc.getClass("NSObject").?,
-            "CalderaScriptHandler",
+            "AnvilScriptHandler",
         ).?;
         _ = Handler.addMethod("userContentController:didReceiveScriptMessage:", imScriptMessage);
         objc.registerClassPair(Handler);
@@ -54,7 +54,7 @@ pub const Webview = struct {
         const ucc = objc.getClass("WKUserContentController").?
             .msgSend(objc.Object, "alloc", .{})
             .msgSend(objc.Object, "init", .{});
-        ucc.msgSend(void, "addScriptMessageHandler:name:", .{ handler, nsString("caldera") });
+        ucc.msgSend(void, "addScriptMessageHandler:name:", .{ handler, nsString("anvil") });
 
         const config = objc.getClass("WKWebViewConfiguration").?
             .msgSend(objc.Object, "alloc", .{})

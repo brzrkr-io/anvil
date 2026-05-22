@@ -1,4 +1,4 @@
-# Caldera Console M1 — Terminal Core Implementation Plan
+# Anvil M1 — Terminal Core Implementation Plan
 
 **Goal:** A genuinely usable single-pane GPU terminal: spawns a shell, parses
 its VT/ANSI output, renders text via Metal, takes keyboard input, and keeps

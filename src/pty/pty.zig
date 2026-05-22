@@ -280,20 +280,20 @@ test "spawnShell starts an interactive login shell" {
 
     // An interactive shell stays alive and runs the commands we send it.
     // (A misformed login argv makes the shell exit before this runs.)
-    _ = try pty.write("printf CALDERA_PTY_OK\n");
+    _ = try pty.write("printf ANVIL_PTY_OK\n");
     _ = try pty.write("exit\n");
 
     var buf: [16384]u8 = undefined;
     const total = drainToEof(&pty, &buf);
     try std.testing.expect(
-        std.mem.indexOf(u8, buf[0..total], "CALDERA_PTY_OK") != null,
+        std.mem.indexOf(u8, buf[0..total], "ANVIL_PTY_OK") != null,
     );
 }
 
 test "lookupEnv finds a present variable and misses an absent one" {
     // PATH is set in every reasonable test environment.
     try std.testing.expect(lookupEnv("PATH") != null);
-    try std.testing.expect(lookupEnv("CALDERA_DEFINITELY_UNSET_VAR_XYZ") == null);
+    try std.testing.expect(lookupEnv("ANVIL_DEFINITELY_UNSET_VAR_XYZ") == null);
 }
 
 test "child environment advertises xterm-256color" {

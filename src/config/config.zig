@@ -1,4 +1,4 @@
-//! User configuration, loaded from ~/.config/caldera-console/config.zon.
+//! User configuration, loaded from ~/.config/anvil/config.zon.
 //!
 //! The file is ZON (Zig Object Notation). Parsing allocates strings into an
 //! arena owned by the returned `Loaded` value — `std.zon.parse.free` cannot be
@@ -108,7 +108,7 @@ pub fn parseSlice(backing: std.mem.Allocator, source: [:0]const u8) error{ParseF
     var cfg = std.zon.parse.fromSliceAlloc(Config, a, source, &diag, .{
         .free_on_error = false, // the arena cleans up wholesale
     }) catch {
-        std.debug.print("caldera-console: config parse error:\n{f}", .{diag});
+        std.debug.print("anvil: config parse error:\n{f}", .{diag});
         return error.ParseFailed;
     };
     cfg.clamp();
@@ -120,7 +120,7 @@ pub fn parseSlice(backing: std.mem.Allocator, source: [:0]const u8) error{ParseF
 pub fn resolvePath(buf: []u8) ?[]const u8 {
     const home_ptr = std.c.getenv("HOME") orelse return null;
     const home = std.mem.sliceTo(home_ptr, 0);
-    return std.fmt.bufPrint(buf, "{s}/.config/caldera-console/config.zon", .{home}) catch null;
+    return std.fmt.bufPrint(buf, "{s}/.config/anvil/config.zon", .{home}) catch null;
 }
 
 /// Read and parse the config file at `path`. A missing file or any read/parse
@@ -137,7 +137,7 @@ pub fn load(backing: std.mem.Allocator, path: []const u8) Loaded {
     if (fd < 0) {
         const e = std.posix.errno(fd);
         if (e != .NOENT)
-            std.debug.print("caldera-console: cannot open config: {s}\n", .{@tagName(e)});
+            std.debug.print("anvil: cannot open config: {s}\n", .{@tagName(e)});
         return defaults(backing);
     }
     defer _ = std.c.close(fd);
@@ -151,7 +151,7 @@ pub fn load(backing: std.mem.Allocator, path: []const u8) Loaded {
         total += @intCast(n);
     }
     if (total >= buf.len) {
-        std.debug.print("caldera-console: config file too large, using defaults\n", .{});
+        std.debug.print("anvil: config file too large, using defaults\n", .{});
         return defaults(backing);
     }
     buf[total] = 0;
@@ -317,7 +317,7 @@ test "defaults has an empty config" {
 }
 
 test "load of a missing file yields defaults" {
-    var loaded = load(testing.allocator, "/nonexistent/caldera-test-config.zon");
+    var loaded = load(testing.allocator, "/nonexistent/anvil-test-config.zon");
     defer loaded.deinit();
     try testing.expectEqual(@as(usize, 100_000), loaded.config.scrollback);
 }

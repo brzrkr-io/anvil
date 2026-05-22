@@ -1,4 +1,4 @@
-//! caldera-prompt — renders the Caldera shell prompt. Invoked by the shell on
+//! anvil-prompt — renders the Anvil shell prompt. Invoked by the shell on
 //! every prompt draw. Args: --exit <n>, --transient. Emits ANSI to stdout.
 
 const std = @import("std");
@@ -60,8 +60,8 @@ pub fn main(p: std.process.Init.Minimal) void {
     const alloc = arena.allocator();
 
     const args = parseArgs(p);
-    // Rich glyphs only inside Caldera.
-    const rich = std.c.getenv("CALDERA_CONSOLE") != null;
+    // Rich glyphs only inside Anvil.
+    const rich = std.c.getenv("ANVIL") != null;
     const opts = render.Options{ .rich = rich, .failed = args.exit_code != 0, .shell = args.shell };
 
     if (args.transient) {

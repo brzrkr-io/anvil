@@ -60,7 +60,7 @@ pub const mineral_light: Theme = .{
 pub fn byName(name: []const u8) Theme {
     if (std.mem.eql(u8, name, "mineral-light")) return mineral_light;
     if (std.mem.eql(u8, name, "mineral-dark")) return mineral_dark;
-    std.debug.print("caldera-console: unknown theme \"{s}\", using mineral-dark\n", .{name});
+    std.debug.print("anvil: unknown theme \"{s}\", using mineral-dark\n", .{name});
     return mineral_dark;
 }
 
@@ -81,7 +81,7 @@ pub fn hexToRgb(hex: []const u8) error{InvalidHex}![3]u8 {
 fn applyOverride(slot: *[3]u8, maybe_hex: ?[]const u8) void {
     const hex = maybe_hex orelse return;
     slot.* = hexToRgb(hex) catch {
-        std.debug.print("caldera-console: invalid theme color \"{s}\", ignored\n", .{hex});
+        std.debug.print("anvil: invalid theme color \"{s}\", ignored\n", .{hex});
         return;
     };
 }

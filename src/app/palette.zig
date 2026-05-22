@@ -29,7 +29,7 @@ pub const catalog = [_]Entry{
     .{ .id = "terminal.clear", .title = "Clear Screen", .action = .clear_screen },
     .{ .id = "scroll.top", .title = "Scroll to Top", .action = .scroll_top },
     .{ .id = "scroll.bottom", .title = "Scroll to Bottom", .action = .scroll_bottom },
-    .{ .id = "app.quit", .title = "Quit Caldera Console", .action = .app_quit },
+    .{ .id = "app.quit", .title = "Quit Anvil", .action = .app_quit },
 };
 
 /// Look up the action for a command id, or null if unknown.

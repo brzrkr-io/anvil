@@ -56,7 +56,7 @@
   var backdrop = document.getElementById('backdrop');
 
   function post(obj) {
-    window.webkit.messageHandlers.caldera.postMessage(JSON.stringify(obj));
+    window.webkit.messageHandlers.anvil.postMessage(JSON.stringify(obj));
   }
 
   function fuzzy(needle, hay) {
@@ -97,7 +97,7 @@
     }
   }
 
-  window.caldera = {
+  window.anvil = {
     receive: function (msg) {
       if (msg.type === 'show') {
         commands = msg.commands || [];

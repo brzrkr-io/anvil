@@ -2,14 +2,14 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replicate the caldera-os agent/wiki/brand/instruction setup into the `caldera-console` repo (adapted to Zig/macOS) and standardize the global `~/.claude` setup on the Karpathy/multica `CLAUDE.md` standard plus an LLM-wiki convention.
+**Goal:** Replicate the caldera-os agent/wiki/brand/instruction setup into the `anvil` repo (adapted to Zig/macOS) and standardize the global `~/.claude` setup on the Karpathy/multica `CLAUDE.md` standard plus an LLM-wiki convention.
 
-**Architecture:** Two sub-projects. (A) `caldera-console` gets `.claude/agents/` subagents, a `wiki/`, `AGENTS.md`, `CLAUDE.md`, and `brand/` — committed to the repo. (B) The global `~/.claude/` gets a new `CLAUDE.md`, an `llmwiki-convention.md`, and a light refresh of 3 existing agents — not version-controlled, so backed up first.
+**Architecture:** Two sub-projects. (A) `anvil` gets `.claude/agents/` subagents, a `wiki/`, `AGENTS.md`, `CLAUDE.md`, and `brand/` — committed to the repo. (B) The global `~/.claude/` gets a new `CLAUDE.md`, an `llmwiki-convention.md`, and a light refresh of 3 existing agents — not version-controlled, so backed up first.
 
 **Tech Stack:** Markdown content files, YAML frontmatter, Claude Code subagent format, `zig build` for verification, `git` for repo commits.
 
 **Conventions for this plan:**
-- Sub-project A tasks (1–10) commit to the `caldera-console` repo on the current branch.
+- Sub-project A tasks (1–10) commit to the `anvil` repo on the current branch.
 - Sub-project B tasks (11–15) modify `~/.claude/` which is not a git repo — they back up first and surface diffs instead of committing.
 - "Verbatim copy" means byte-identical; verify with `diff`.
 - Source repo paths are absolute: `/Users/pjanderson/projects/caldera/caldera-os`.
@@ -19,13 +19,13 @@
 ## Task 1: Replicate brand assets (verbatim)
 
 **Files:**
-- Create: `caldera-console/BRAND.md` (copy of `caldera-os/BRAND.md`)
-- Create: `caldera-console/brand/` — 9 files (copy of `caldera-os/brand/`)
+- Create: `anvil/BRAND.md` (copy of `caldera-os/BRAND.md`)
+- Create: `anvil/brand/` — 9 files (copy of `caldera-os/brand/`)
 
 - [ ] **Step 1: Copy BRAND.md and the brand directory**
 
 ```bash
-cd /Users/pjanderson/projects/caldera/caldera-console
+cd /Users/pjanderson/projects/caldera/anvil
 cp ../caldera-os/BRAND.md ./BRAND.md
 cp -R ../caldera-os/brand ./brand
 ```
@@ -43,22 +43,22 @@ Expected: both `OK` lines print; `ls brand` shows 9 files (`app-icon.svg`, `avat
 
 ```bash
 git add BRAND.md brand/
-git commit -m "feat: replicate Caldera brand contract and assets"
+git commit -m "feat: replicate Anvil brand contract and assets"
 ```
 
 ---
 
-## Task 2: Create caldera-console AGENTS.md
+## Task 2: Create anvil AGENTS.md
 
 **Files:**
-- Create: `caldera-console/AGENTS.md`
+- Create: `anvil/AGENTS.md`
 
 - [ ] **Step 1: Write AGENTS.md**
 
 ```markdown
-# Caldera Console — Agent Instructions
+# Anvil — Agent Instructions
 
-Caldera Console is a native macOS application: Zig, Metal, and AppKit. This file
+Anvil is a native macOS application: Zig, Metal, and AppKit. This file
 holds the shared rules for any agent or contributor working in this repo.
 `CLAUDE.md` adds Claude-specific notes and includes this file.
 
@@ -129,15 +129,15 @@ Expected: `OK: clean`.
 
 ```bash
 git add AGENTS.md
-git commit -m "feat: add adapted AGENTS.md for caldera-console"
+git commit -m "feat: add adapted AGENTS.md for anvil"
 ```
 
 ---
 
-## Task 3: Create caldera-console CLAUDE.md
+## Task 3: Create anvil CLAUDE.md
 
 **Files:**
-- Create: `caldera-console/CLAUDE.md`
+- Create: `anvil/CLAUDE.md`
 
 - [ ] **Step 1: Write CLAUDE.md**
 
@@ -152,7 +152,7 @@ on top of this file.
 
 ## This Project
 
-- Caldera Console is a native macOS app: Zig, Metal, AppKit.
+- Anvil is a native macOS app: Zig, Metal, AppKit.
 - Build and launch: `zig build run`.
 - Run unit tests: `zig build test`.
 - Requires Zig (see `minimum_zig_version` in `build.zig.zon`) and macOS with
@@ -179,12 +179,12 @@ git commit -m "feat: add CLAUDE.md including AGENTS.md and Zig build notes"
 ## Task 4: Scaffold the wiki (index, log, section READMEs)
 
 **Files:**
-- Create: `caldera-console/wiki/index.md`
-- Create: `caldera-console/wiki/log.md`
-- Create: `caldera-console/wiki/concepts/README.md`
-- Create: `caldera-console/wiki/operations/README.md`
-- Create: `caldera-console/wiki/decisions/README.md`
-- Create: `caldera-console/wiki/sources/README.md`
+- Create: `anvil/wiki/index.md`
+- Create: `anvil/wiki/log.md`
+- Create: `anvil/wiki/concepts/README.md`
+- Create: `anvil/wiki/operations/README.md`
+- Create: `anvil/wiki/decisions/README.md`
+- Create: `anvil/wiki/sources/README.md`
 
 - [ ] **Step 1: Create the wiki directories**
 
@@ -204,11 +204,11 @@ sources: []
 confidence: high
 ---
 
-# Caldera Console Wiki Index
+# Anvil Wiki Index
 
 ## Mission
 
-Build Caldera Console as a native macOS control plane for software and devops
+Build Anvil as a native macOS control plane for software and devops
 work: Zig, Metal, AppKit. This wiki is the durable, agent-maintained knowledge
 base for the project.
 
@@ -255,11 +255,11 @@ Allowed `confidence`: `high`, `medium`, `low`. Dates use `YYYY-MM-DD`.
 - [[operations/source-ingest|Source Ingest]] — raw source to wiki workflow.
 - [[operations/wiki-lint|Wiki Lint]] — health checks for wiki growth.
 - [[decisions/0001-ai-dev-environment|0001 AI Dev Environment]] — this setup.
-- [../BRAND](../BRAND.md) — Caldera brand contract for all user-facing work.
+- [../BRAND](../BRAND.md) — Anvil brand contract for all user-facing work.
 
 ## Current State
 
-- Caldera Console is a native macOS app: Zig, Metal, AppKit.
+- Anvil is a native macOS app: Zig, Metal, AppKit.
 - Status: M0 complete (native window + Metal clear); M1 terminal-core in progress.
 - See `docs/product/console-rebuild-plan.md` for the full rebuild plan.
 - This repo is standalone. It must not depend on `caldera-os` at runtime.
@@ -391,7 +391,7 @@ Expected: `wiki/` has `index.md`, `log.md`, and 4 directories; each directory ha
 
 ```bash
 git add wiki/
-git commit -m "feat: scaffold caldera-console wiki (index, log, section READMEs)"
+git commit -m "feat: scaffold anvil wiki (index, log, section READMEs)"
 ```
 
 ---
@@ -399,11 +399,11 @@ git commit -m "feat: scaffold caldera-console wiki (index, log, section READMEs)
 ## Task 5: Create wiki concept and operation pages
 
 **Files:**
-- Create: `caldera-console/wiki/concepts/llm-wiki.md`
-- Create: `caldera-console/wiki/concepts/context-budget.md`
-- Create: `caldera-console/wiki/operations/agent-session-loop.md`
-- Create: `caldera-console/wiki/operations/source-ingest.md`
-- Create: `caldera-console/wiki/operations/wiki-lint.md`
+- Create: `anvil/wiki/concepts/llm-wiki.md`
+- Create: `anvil/wiki/concepts/context-budget.md`
+- Create: `anvil/wiki/operations/agent-session-loop.md`
+- Create: `anvil/wiki/operations/source-ingest.md`
+- Create: `anvil/wiki/operations/wiki-lint.md`
 
 - [ ] **Step 1: Write wiki/concepts/llm-wiki.md**
 
@@ -424,7 +424,7 @@ An LLM wiki is a persistent Markdown knowledge base maintained by agents. It
 compiles raw sources into linked pages so future answers can start from existing
 synthesis instead of re-reading everything.
 
-## Caldera Console Version
+## Anvil Version
 
 - Agent-written summaries and synthesis live in `wiki/`.
 - `wiki/index.md` routes agents to the right pages.
@@ -591,10 +591,10 @@ git commit -m "feat: add wiki concept and operation pages"
 ## Task 6: Create wiki decision and source pages, and context README
 
 **Files:**
-- Create: `caldera-console/wiki/decisions/0001-ai-dev-environment.md`
-- Create: `caldera-console/wiki/sources/karpathy-llm-wiki.md`
-- Create: `caldera-console/wiki/sources/multica-claude-guidelines.md`
-- Create: `caldera-console/context/README.md`
+- Create: `anvil/wiki/decisions/0001-ai-dev-environment.md`
+- Create: `anvil/wiki/sources/karpathy-llm-wiki.md`
+- Create: `anvil/wiki/sources/multica-claude-guidelines.md`
+- Create: `anvil/context/README.md`
 
 - [ ] **Step 1: Write wiki/decisions/0001-ai-dev-environment.md**
 
@@ -618,7 +618,7 @@ Active. Decided 2026-05-21.
 
 ## Context
 
-Caldera Console needed a consistent agent and knowledge setup. The private
+Anvil needed a consistent agent and knowledge setup. The private
 `caldera-os` workspace already had a usable pattern: role-based agents, an
 LLM wiki, a brand contract, and shared agent instructions.
 
@@ -664,7 +664,7 @@ synthesis on every question, an agent ingests sources into structured Markdown
 pages, updates entities and concepts, flags contradictions, maintains an index,
 and appends a chronological log.
 
-## Useful For Caldera Console
+## Useful For Anvil
 
 - Let agents write and maintain `wiki/`.
 - Treat `AGENTS.md` and `wiki/index.md` as the schema for wiki rules.
@@ -706,7 +706,7 @@ Karpathy's observations on LLM coding pitfalls: state assumptions, surface
 tradeoffs, prefer simple solutions, make surgical edits, define success
 criteria, and verify before claiming completion.
 
-## Useful For Caldera Console
+## Useful For Anvil
 
 - These guidelines are installed globally at `~/.claude/CLAUDE.md`.
 - Bias toward simple, scoped changes over speculative flexibility.
@@ -773,9 +773,9 @@ git commit -m "feat: add wiki decision record, source summaries, and context REA
 ## Task 7: Create agents — builder, reviewer, systems-architect
 
 **Files:**
-- Create: `caldera-console/.claude/agents/builder.md`
-- Create: `caldera-console/.claude/agents/reviewer.md`
-- Create: `caldera-console/.claude/agents/systems-architect.md`
+- Create: `anvil/.claude/agents/builder.md`
+- Create: `anvil/.claude/agents/reviewer.md`
+- Create: `anvil/.claude/agents/systems-architect.md`
 
 - [ ] **Step 1: Create the agents directory**
 
@@ -788,12 +788,12 @@ mkdir -p .claude/agents
 ```markdown
 ---
 name: builder
-description: Use this agent to implement an approved plan or a well-scoped change in the Caldera Console codebase. Best when the work is defined (a plan, a spec task, a clear bug) and needs small, verified edits to Zig source, build files, or docs. Examples: <example>Context: an approved plan task exists. user: "Implement Task 3 from the M1 plan." assistant: "I'll dispatch the builder agent to implement Task 3 with small, verified changes."</example> <example>Context: a scoped bug. user: "The window doesn't release its delegate on close — fix it." assistant: "I'll use the builder agent to make the fix and run zig build test."</example>
+description: Use this agent to implement an approved plan or a well-scoped change in the Anvil codebase. Best when the work is defined (a plan, a spec task, a clear bug) and needs small, verified edits to Zig source, build files, or docs. Examples: <example>Context: an approved plan task exists. user: "Implement Task 3 from the M1 plan." assistant: "I'll dispatch the builder agent to implement Task 3 with small, verified changes."</example> <example>Context: a scoped bug. user: "The window doesn't release its delegate on close — fix it." assistant: "I'll use the builder agent to make the fix and run zig build test."</example>
 model: sonnet
 tools: Read, Edit, Write, Bash, Grep, Glob
 ---
 
-You are the Builder for Caldera Console, a native macOS app written in Zig (Metal + AppKit).
+You are the Builder for Anvil, a native macOS app written in Zig (Metal + AppKit).
 
 # Purpose
 
@@ -831,12 +831,12 @@ Do not scan the whole repo.
 ```markdown
 ---
 name: reviewer
-description: Use this agent to review changed code, specs, or wiki updates in Caldera Console for correctness, missing tests, and drift from the task. Best after a builder change or before merging. The reviewer reports findings; it does not edit. Examples: <example>Context: a change just landed. user: "Review the window-resize change." assistant: "I'll dispatch the reviewer agent to check it against the task and look for missing tests."</example> <example>Context: pre-merge. user: "Is this branch ready to merge?" assistant: "I'll use the reviewer agent to review the diff and report findings by severity."</example>
+description: Use this agent to review changed code, specs, or wiki updates in Anvil for correctness, missing tests, and drift from the task. Best after a builder change or before merging. The reviewer reports findings; it does not edit. Examples: <example>Context: a change just landed. user: "Review the window-resize change." assistant: "I'll dispatch the reviewer agent to check it against the task and look for missing tests."</example> <example>Context: pre-merge. user: "Is this branch ready to merge?" assistant: "I'll use the reviewer agent to review the diff and report findings by severity."</example>
 model: opus
 tools: Read, Grep, Glob, Bash
 ---
 
-You are the Reviewer for Caldera Console, a native macOS app written in Zig (Metal + AppKit).
+You are the Reviewer for Anvil, a native macOS app written in Zig (Metal + AppKit).
 
 # Purpose
 
@@ -880,12 +880,12 @@ Read only changed files and their direct dependencies.
 ```markdown
 ---
 name: systems-architect
-description: Use this agent to design technical architecture for Caldera Console — module boundaries, interfaces, data flow, failure modes — before implementation. Best for non-trivial features that need a design before code. Examples: <example>Context: a new subsystem. user: "We need a PTY layer for the terminal — how should it be structured?" assistant: "I'll dispatch the systems-architect agent to design the module boundaries and interfaces."</example> <example>Context: a hard tradeoff. user: "Should rendering and input share a run loop or split?" assistant: "I'll use the systems-architect agent to lay out the options and failure modes."</example>
+description: Use this agent to design technical architecture for Anvil — module boundaries, interfaces, data flow, failure modes — before implementation. Best for non-trivial features that need a design before code. Examples: <example>Context: a new subsystem. user: "We need a PTY layer for the terminal — how should it be structured?" assistant: "I'll dispatch the systems-architect agent to design the module boundaries and interfaces."</example> <example>Context: a hard tradeoff. user: "Should rendering and input share a run loop or split?" assistant: "I'll use the systems-architect agent to lay out the options and failure modes."</example>
 model: opus
 tools: Read, Grep, Glob, Bash
 ---
 
-You are the Systems Architect for Caldera Console, a native macOS app written in Zig (Metal + AppKit).
+You are the Systems Architect for Anvil, a native macOS app written in Zig (Metal + AppKit).
 
 # Purpose
 
@@ -942,8 +942,8 @@ git commit -m "feat: add builder, reviewer, systems-architect subagents"
 ## Task 8: Create agents — orchestrator, librarian
 
 **Files:**
-- Create: `caldera-console/.claude/agents/orchestrator.md`
-- Create: `caldera-console/.claude/agents/librarian.md`
+- Create: `anvil/.claude/agents/orchestrator.md`
+- Create: `anvil/.claude/agents/librarian.md`
 
 - [ ] **Step 1: Write .claude/agents/orchestrator.md**
 
@@ -955,7 +955,7 @@ model: opus
 tools: Read, Grep, Glob, Bash
 ---
 
-You are the Orchestrator for Caldera Console, a native macOS app written in Zig (Metal + AppKit).
+You are the Orchestrator for Anvil, a native macOS app written in Zig (Metal + AppKit).
 
 # Purpose
 
@@ -995,12 +995,12 @@ current task needs.
 ```markdown
 ---
 name: librarian
-description: Use this agent to maintain the Caldera Console wiki — ingest a source into a summary, update concept/decision pages, keep index.md and log.md current, and flag contradictions. Best when new durable knowledge or a new source appears. Examples: <example>Context: a new reference. user: "Ingest this Metal best-practices doc into the wiki." assistant: "I'll dispatch the librarian agent to summarize it and link the relevant pages."</example> <example>Context: wiki upkeep. user: "The wiki feels stale — check it." assistant: "I'll use the librarian agent to lint for orphans, contradictions, and missing concepts."</example>
+description: Use this agent to maintain the Anvil wiki — ingest a source into a summary, update concept/decision pages, keep index.md and log.md current, and flag contradictions. Best when new durable knowledge or a new source appears. Examples: <example>Context: a new reference. user: "Ingest this Metal best-practices doc into the wiki." assistant: "I'll dispatch the librarian agent to summarize it and link the relevant pages."</example> <example>Context: wiki upkeep. user: "The wiki feels stale — check it." assistant: "I'll use the librarian agent to lint for orphans, contradictions, and missing concepts."</example>
 model: sonnet
 tools: Read, Edit, Write, Grep, Glob
 ---
 
-You are the Librarian for Caldera Console, a native macOS app written in Zig (Metal + AppKit).
+You are the Librarian for Anvil, a native macOS app written in Zig (Metal + AppKit).
 
 # Purpose
 
@@ -1058,20 +1058,20 @@ git commit -m "feat: add orchestrator and librarian subagents"
 ## Task 9: Create agents — design-lead, product-strategist
 
 **Files:**
-- Create: `caldera-console/.claude/agents/design-lead.md`
-- Create: `caldera-console/.claude/agents/product-strategist.md`
+- Create: `anvil/.claude/agents/design-lead.md`
+- Create: `anvil/.claude/agents/product-strategist.md`
 
 - [ ] **Step 1: Write .claude/agents/design-lead.md**
 
 ```markdown
 ---
 name: design-lead
-description: Use this agent for brand, app-experience, and design-system work on Caldera Console — interaction model, component guidance, and design review against BRAND.md. Best before or during UI work. Examples: <example>Context: a new surface. user: "How should the command palette look and behave?" assistant: "I'll dispatch the design-lead agent to define the interaction model within the brand."</example> <example>Context: design review. user: "Does this window chrome fit the brand?" assistant: "I'll use the design-lead agent to review it against BRAND.md."</example>
+description: Use this agent for brand, app-experience, and design-system work on Anvil — interaction model, component guidance, and design review against BRAND.md. Best before or during UI work. Examples: <example>Context: a new surface. user: "How should the command palette look and behave?" assistant: "I'll dispatch the design-lead agent to define the interaction model within the brand."</example> <example>Context: design review. user: "Does this window chrome fit the brand?" assistant: "I'll use the design-lead agent to review it against BRAND.md."</example>
 model: sonnet
 tools: Read, Grep, Glob
 ---
 
-You are the Design Lead for Caldera Console, a native macOS app written in Zig (Metal + AppKit).
+You are the Design Lead for Anvil, a native macOS app written in Zig (Metal + AppKit).
 
 # Purpose
 
@@ -1110,12 +1110,12 @@ Read `BRAND.md`, the relevant assets, and the affected UI. Do not scan the whole
 ```markdown
 ---
 name: product-strategist
-description: Use this agent to shape Caldera Console product direction — positioning, scope, now/next/later — without jumping into implementation. Best for discovery and prioritization questions. Examples: <example>Context: scope question. user: "Should the console ship a terminal first or a process monitor first?" assistant: "I'll dispatch the product-strategist agent to frame the options and a now/next/later split."</example> <example>Context: positioning. user: "Who is this app actually for?" assistant: "I'll use the product-strategist agent to ground the answer in sources and assumptions."</example>
+description: Use this agent to shape Anvil product direction — positioning, scope, now/next/later — without jumping into implementation. Best for discovery and prioritization questions. Examples: <example>Context: scope question. user: "Should the console ship a terminal first or a process monitor first?" assistant: "I'll dispatch the product-strategist agent to frame the options and a now/next/later split."</example> <example>Context: positioning. user: "Who is this app actually for?" assistant: "I'll use the product-strategist agent to ground the answer in sources and assumptions."</example>
 model: opus
 tools: Read, Grep, Glob, WebSearch, WebFetch
 ---
 
-You are the Product Strategist for Caldera Console, a native macOS app written in Zig (Metal + AppKit).
+You are the Product Strategist for Anvil, a native macOS app written in Zig (Metal + AppKit).
 
 # Purpose
 
@@ -1170,7 +1170,7 @@ git commit -m "feat: add design-lead and product-strategist subagents"
 
 ---
 
-## Task 10: Verify the caldera-console environment
+## Task 10: Verify the anvil environment
 
 **Files:** none (verification only)
 
@@ -1188,7 +1188,7 @@ Expected: 7 agent files; `wiki/` with index/log + 4 section dirs; `AGENTS.md`, `
 
 - [ ] **Step 3: Confirm agents are discovered by Claude Code**
 
-Open Claude Code in `caldera-console` and run `/agents`.
+Open Claude Code in `anvil` and run `/agents`.
 Expected: the 7 project subagents are listed — `builder`, `reviewer`,
 `systems-architect`, `orchestrator`, `librarian`, `design-lead`,
 `product-strategist`. If any is missing, check its frontmatter `name:` field.
@@ -1499,7 +1499,7 @@ Present the report to the user. Make no changes to `settings.json` in this task.
 ## Self-Review
 
 - **Spec coverage:** Every spec section maps to a task — brand (T1), AGENTS.md
-  (T2), CLAUDE.md (T3), wiki system (T4–T6), 7 agents (T7–T9), caldera-console
+  (T2), CLAUDE.md (T3), wiki system (T4–T6), 7 agents (T7–T9), anvil
   verification incl. `/agents` discovery (T10), global backup (T11), global
   CLAUDE.md (T12), llmwiki convention (T13), agent refresh (T14), settings
   review (T15). No gaps.
@@ -1513,7 +1513,7 @@ Present the report to the user. Make no changes to `settings.json` in this task.
 
 ## Out Of Scope
 
-- No `caldera-console` application source-code changes.
+- No `anvil` application source-code changes.
 - No new Claude Code plugins or marketplaces.
 - No changes to `settings.json` (review only).
 - No replication into other repos.

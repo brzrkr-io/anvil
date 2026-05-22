@@ -31,7 +31,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const exe = b.addExecutable(.{
-        .name = "caldera-console",
+        .name = "anvil",
         .root_module = exe_mod,
     });
     b.installArtifact(exe);
@@ -42,7 +42,7 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
-    // --- caldera-prompt: the shell prompt program -------------------------
+    // --- anvil-prompt: the shell prompt program -------------------------
     const prompt_mod = b.createModule(.{
         .root_source_file = b.path("src/prompt/main.zig"),
         .target = target,
@@ -50,7 +50,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     const prompt_exe = b.addExecutable(.{
-        .name = "caldera-prompt",
+        .name = "anvil-prompt",
         .root_module = prompt_mod,
     });
     b.installArtifact(prompt_exe);

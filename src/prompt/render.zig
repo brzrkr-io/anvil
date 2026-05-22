@@ -127,7 +127,7 @@ const testing = std.testing;
 
 fn sampleSegs() [2]seg.Segment {
     return .{
-        .{ .icon = .repo, .text = "caldera-console" },
+        .{ .icon = .repo, .text = "anvil" },
         .{ .icon = .branch, .text = "main", .state = .warn },
     };
 }
@@ -138,7 +138,7 @@ test "full renders two lines with the accent edge" {
     defer testing.allocator.free(out);
     try testing.expect(std.mem.indexOf(u8, out, "\n") != null);
     try testing.expect(std.mem.indexOf(u8, out, edge) != null);
-    try testing.expect(std.mem.indexOf(u8, out, "caldera-console") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "anvil") != null);
     try testing.expect(std.mem.indexOf(u8, out, "main") != null);
 }
 

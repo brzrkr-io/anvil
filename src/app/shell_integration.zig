@@ -10,11 +10,11 @@ const std = @import("std");
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 extern "c" fn unsetenv(name: [*:0]const u8) c_int;
 
-const integration_zsh = @embedFile("../shell/caldera-integration.zsh");
-const integration_bash = @embedFile("../shell/caldera-integration.bash");
+const integration_zsh = @embedFile("../shell/anvil-integration.zsh");
+const integration_bash = @embedFile("../shell/anvil-integration.bash");
 const zdotdir_zshenv = @embedFile("../shell/zdotdir-zshenv.zsh");
 
-/// Absolute path to the caldera-prompt binary, resolved next to this
+/// Absolute path to the anvil-prompt binary, resolved next to this
 /// executable. Null if it cannot be determined.
 fn promptBinaryPath(buf: []u8) ?[]const u8 {
     var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -22,15 +22,15 @@ fn promptBinaryPath(buf: []u8) ?[]const u8 {
     if (std.c._NSGetExecutablePath(&exe_buf, &n) != 0) return null;
     const exe = exe_buf[0 .. std.mem.indexOfScalar(u8, exe_buf[0..n], 0) orelse n];
     const dir = std.fs.path.dirname(exe) orelse return null;
-    return std.fmt.bufPrint(buf, "{s}/caldera-prompt", .{dir}) catch null;
+    return std.fmt.bufPrint(buf, "{s}/anvil-prompt", .{dir}) catch null;
 }
 
-/// Resolve `~/.cache/caldera-console/shell` into `buf`. Null when `$HOME`
+/// Resolve `~/.cache/anvil/shell` into `buf`. Null when `$HOME`
 /// is unset.
 fn runtimeDir(buf: []u8) ?[]const u8 {
     const home = std.c.getenv("HOME") orelse return null;
     const h = std.mem.span(home);
-    return std.fmt.bufPrint(buf, "{s}/.cache/caldera-console/shell", .{h}) catch null;
+    return std.fmt.bufPrint(buf, "{s}/.cache/anvil/shell", .{h}) catch null;
 }
 
 /// Create every directory along `path` (like `mkdir -p`). Best-effort.
@@ -74,31 +74,31 @@ fn writeFile(dir: []const u8, name: []const u8, content: []const u8) bool {
 pub fn setup(enabled: bool) void {
     var dbuf: [std.fs.max_path_bytes]u8 = undefined;
     const dir = runtimeDir(&dbuf) orelse {
-        std.debug.print("caldera-console: shell integration: $HOME unset, skipped\n", .{});
+        std.debug.print("anvil: shell integration: $HOME unset, skipped\n", .{});
         return;
     };
     mkdirP(dir);
 
-    const ok_zsh = writeFile(dir, "caldera-integration.zsh", integration_zsh);
-    const ok_bash = writeFile(dir, "caldera-integration.bash", integration_bash);
+    const ok_zsh = writeFile(dir, "anvil-integration.zsh", integration_zsh);
+    const ok_bash = writeFile(dir, "anvil-integration.bash", integration_bash);
     const ok_env = writeFile(dir, ".zshenv", zdotdir_zshenv);
     if (!(ok_zsh and ok_bash and ok_env)) {
-        std.debug.print("caldera-console: shell integration: write failed, skipped\n", .{});
+        std.debug.print("anvil: shell integration: write failed, skipped\n", .{});
         return;
     }
 
     // Markers — always exported; harmless to any shell.
-    _ = setenv("CALDERA_CONSOLE", "1", 1);
+    _ = setenv("ANVIL", "1", 1);
     var bbuf: [std.fs.max_path_bytes]u8 = undefined;
-    if (std.fmt.bufPrintZ(&bbuf, "{s}/caldera-integration.bash", .{dir})) |bash_path| {
-        _ = setenv("CALDERA_SHELL_INTEGRATION", bash_path.ptr, 1);
+    if (std.fmt.bufPrintZ(&bbuf, "{s}/anvil-integration.bash", .{dir})) |bash_path| {
+        _ = setenv("ANVIL_SHELL_INTEGRATION", bash_path.ptr, 1);
     } else |_| {}
 
     var pbuf: [std.fs.max_path_bytes]u8 = undefined;
     if (promptBinaryPath(&pbuf)) |pp| {
         var ppz: [std.fs.max_path_bytes]u8 = undefined;
         if (std.fmt.bufPrintZ(&ppz, "{s}", .{pp})) |ppzs| {
-            _ = setenv("CALDERA_PROMPT", ppzs.ptr, 1);
+            _ = setenv("ANVIL_PROMPT", ppzs.ptr, 1);
         } else |_| {}
     }
 
@@ -107,11 +107,11 @@ pub fn setup(enabled: bool) void {
     // zsh auto-injection: point ZDOTDIR at our dir, after stashing the real one.
     const real = std.c.getenv("ZDOTDIR");
     if (real) |r| {
-        _ = setenv("CALDERA_REAL_ZDOTDIR", r, 1);
+        _ = setenv("ANVIL_REAL_ZDOTDIR", r, 1);
     }
     var zbuf: [std.fs.max_path_bytes]u8 = undefined;
-    if (std.fmt.bufPrintZ(&zbuf, "{s}/caldera-integration.zsh", .{dir})) |zsh_path| {
-        _ = setenv("CALDERA_SHELL_INTEGRATION_ZSH", zsh_path.ptr, 1);
+    if (std.fmt.bufPrintZ(&zbuf, "{s}/anvil-integration.zsh", .{dir})) |zsh_path| {
+        _ = setenv("ANVIL_SHELL_INTEGRATION_ZSH", zsh_path.ptr, 1);
     } else |_| {}
     var dz: [std.fs.max_path_bytes]u8 = undefined;
     if (std.fmt.bufPrintZ(&dz, "{s}", .{dir})) |dirz| {
@@ -124,18 +124,18 @@ const testing = std.testing;
 test "runtimeDir resolves under HOME" {
     // Save and override HOME.
     const saved = std.c.getenv("HOME");
-    _ = setenv("HOME", "/tmp/caldera-shell-test", 1);
+    _ = setenv("HOME", "/tmp/anvil-shell-test", 1);
     defer if (saved) |s| {
         _ = setenv("HOME", s, 1);
     };
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const dir = runtimeDir(&buf).?;
-    try testing.expectEqualStrings("/tmp/caldera-shell-test/.cache/caldera-console/shell", dir);
+    try testing.expectEqualStrings("/tmp/anvil-shell-test/.cache/anvil/shell", dir);
 }
 
 test "setup writes the scripts and exports markers" {
     const saved_home = std.c.getenv("HOME");
-    _ = setenv("HOME", "/tmp/caldera-shell-test", 1);
+    _ = setenv("HOME", "/tmp/anvil-shell-test", 1);
     defer if (saved_home) |s| {
         _ = setenv("HOME", s, 1);
     };
@@ -146,7 +146,7 @@ test "setup writes the scripts and exports markers" {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const dir = runtimeDir(&buf).?;
     var pbuf: [std.fs.max_path_bytes]u8 = undefined;
-    inline for (.{ "caldera-integration.zsh", "caldera-integration.bash", ".zshenv" }) |name| {
+    inline for (.{ "anvil-integration.zsh", "anvil-integration.bash", ".zshenv" }) |name| {
         const path = try std.fmt.bufPrintZ(&pbuf, "{s}/{s}", .{ dir, name });
         const fd = std.c.open(path.ptr, .{ .ACCMODE = .RDONLY }, @as(c_uint, 0));
         try testing.expect(fd >= 0);
@@ -154,13 +154,13 @@ test "setup writes the scripts and exports markers" {
     }
 
     // Markers exported.
-    try testing.expect(std.c.getenv("CALDERA_CONSOLE") != null);
+    try testing.expect(std.c.getenv("ANVIL") != null);
     try testing.expect(std.c.getenv("ZDOTDIR") != null);
-    try testing.expect(std.c.getenv("CALDERA_SHELL_INTEGRATION") != null);
-    try testing.expect(std.c.getenv("CALDERA_SHELL_INTEGRATION_ZSH") != null);
+    try testing.expect(std.c.getenv("ANVIL_SHELL_INTEGRATION") != null);
+    try testing.expect(std.c.getenv("ANVIL_SHELL_INTEGRATION_ZSH") != null);
 
     // At least one written file has non-empty content.
-    const zsh_path = try std.fmt.bufPrintZ(&pbuf, "{s}/caldera-integration.zsh", .{dir});
+    const zsh_path = try std.fmt.bufPrintZ(&pbuf, "{s}/anvil-integration.zsh", .{dir});
     const fz = std.c.open(zsh_path.ptr, .{ .ACCMODE = .RDONLY }, @as(c_uint, 0));
     try testing.expect(fz >= 0);
     defer _ = std.c.close(fz);
@@ -171,7 +171,7 @@ test "setup writes the scripts and exports markers" {
 
 test "setup preserves a pre-existing ZDOTDIR" {
     const saved_home = std.c.getenv("HOME");
-    _ = setenv("HOME", "/tmp/caldera-zdotdir-test", 1);
+    _ = setenv("HOME", "/tmp/anvil-zdotdir-test", 1);
     defer if (saved_home) |s| {
         _ = setenv("HOME", s, 1);
     };
@@ -187,13 +187,13 @@ test "setup preserves a pre-existing ZDOTDIR" {
 
     setup(true);
 
-    const real = std.c.getenv("CALDERA_REAL_ZDOTDIR") orelse return error.MissingVar;
+    const real = std.c.getenv("ANVIL_REAL_ZDOTDIR") orelse return error.MissingVar;
     try testing.expectEqualStrings("/tmp/my-zdotdir", std.mem.span(real));
 }
 
 test "setup(false) does not export ZDOTDIR" {
     const saved_home = std.c.getenv("HOME");
-    _ = setenv("HOME", "/tmp/caldera-shell-test-2", 1);
+    _ = setenv("HOME", "/tmp/anvil-shell-test-2", 1);
     defer if (saved_home) |s| {
         _ = setenv("HOME", s, 1);
     };
@@ -201,6 +201,6 @@ test "setup(false) does not export ZDOTDIR" {
     _ = unsetenv("ZDOTDIR");
 
     setup(false);
-    try testing.expect(std.c.getenv("CALDERA_CONSOLE") != null); // marker still set
+    try testing.expect(std.c.getenv("ANVIL") != null); // marker still set
     try testing.expect(std.c.getenv("ZDOTDIR") == null); // but no injection
 }

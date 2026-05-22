@@ -5,7 +5,7 @@ Status: Approved (design); pending spec review
 
 ## Goal
 
-Give Caldera Console a measurable test-coverage baseline and backfill tests,
+Give Anvil a measurable test-coverage baseline and backfill tests,
 module by module, until every testable module reaches **90% line coverage**.
 "Testable" excludes the Objective-C / Metal glue, which is out of scope for the
 90% target.

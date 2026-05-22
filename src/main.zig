@@ -1,4 +1,4 @@
-//! Caldera Console — M1 entry point. Wires the terminal model, the PTY, the
+//! Anvil — M1 entry point. Wires the terminal model, the PTY, the
 //! Metal renderer, the CoreGraphics rasterizer, and AppKit input into a
 //! single-pane GPU terminal.
 
@@ -210,7 +210,7 @@ fn sendShow() void {
         },
     } }) catch return;
     defer g.alloc.free(json);
-    const js = std.fmt.allocPrintSentinel(g.alloc, "window.caldera.receive({s});", .{json}, 0) catch return;
+    const js = std.fmt.allocPrintSentinel(g.alloc, "window.anvil.receive({s});", .{json}, 0) catch return;
     defer g.alloc.free(js);
     g.webview.evalJS(js);
 }
@@ -234,7 +234,7 @@ fn hidePalette() void {
     g.palette.dismiss();
     const json = bridge.encode(g.alloc, .hide) catch return;
     defer g.alloc.free(json);
-    const js = std.fmt.allocPrintSentinel(g.alloc, "window.caldera.receive({s});", .{json}, 0) catch return;
+    const js = std.fmt.allocPrintSentinel(g.alloc, "window.anvil.receive({s});", .{json}, 0) catch return;
     defer g.alloc.free(js);
     g.webview.evalJS(js);
     g.webview.hide(g.view);
@@ -278,7 +278,7 @@ fn runAction(action: palette_mod.Action) void {
 
 fn handleWebMessage(json: []const u8) void {
     const msg = bridge.decode(g.alloc, json) catch |e| {
-        std.debug.print("caldera-console: webview message decode failed: {s}\n", .{@errorName(e)});
+        std.debug.print("anvil: webview message decode failed: {s}\n", .{@errorName(e)});
         return;
     };
     defer msg.deinit(g.alloc);
@@ -290,7 +290,7 @@ fn handleWebMessage(json: []const u8) void {
                 hidePalette();
                 runAction(action);
             } else {
-                std.debug.print("caldera-console: unknown command id: {s}\n", .{id});
+                std.debug.print("anvil: unknown command id: {s}\n", .{id});
             }
         },
     }
@@ -593,7 +593,7 @@ fn addTab(cwd: ?[]const u8) void {
     // New tab will make the bar visible (>=2 tabs): reserve its row.
     const rows = @max(((dh -| 2 * grid_pad) / ch) -| 1, 1);
     g.tabs.newTab(cols, rows, g.config.config.scrollback, cwd) catch |e| {
-        std.debug.print("caldera-console: new tab failed: {s}\n", .{@errorName(e)});
+        std.debug.print("anvil: new tab failed: {s}\n", .{@errorName(e)});
         return;
     };
     resizeAllTabs();
@@ -1055,7 +1055,7 @@ fn setApplicationIcon(app: objc.Object) void {
 }
 
 fn fail(what: []const u8, err: anyerror) noreturn {
-    std.debug.print("caldera-console: {s} init failed: {s}\n", .{ what, @errorName(err) });
+    std.debug.print("anvil: {s} init failed: {s}\n", .{ what, @errorName(err) });
     std.process.exit(1);
 }
 
@@ -1068,14 +1068,14 @@ pub fn main() void {
     setApplicationIcon(nsapp);
 
     // Delegate class: app lifecycle, resize, and the render tick.
-    const Delegate = objc.allocateClassPair(objc.getClass("NSObject").?, "CalderaDelegate").?;
+    const Delegate = objc.allocateClassPair(objc.getClass("NSObject").?, "AnvilDelegate").?;
     _ = Delegate.addMethod("applicationShouldTerminateAfterLastWindowClosed:", imShouldTerminate);
     _ = Delegate.addMethod("windowDidResize:", imWindowDidResize);
     _ = Delegate.addMethod("tick:", imTick);
     objc.registerClassPair(Delegate);
 
     // View class: keyboard and scroll input.
-    const View = objc.allocateClassPair(objc.getClass("NSView").?, "CalderaTerminalView").?;
+    const View = objc.allocateClassPair(objc.getClass("NSView").?, "AnvilTerminalView").?;
     _ = View.addMethod("acceptsFirstResponder", imAcceptsFirstResponder);
     _ = View.addMethod("keyDown:", imKeyDown);
     _ = View.addMethod("scrollWheel:", imScrollWheel);
@@ -1101,7 +1101,7 @@ pub fn main() void {
         .msgSend(objc.Object, "initWithContentRect:styleMask:backing:defer:", .{
         rect, style, @as(c_ulong, 2), false,
     });
-    window.msgSend(void, "setTitle:", .{nsString("Caldera Console")});
+    window.msgSend(void, "setTitle:", .{nsString("Anvil")});
 
     const view = View.msgSend(objc.Object, "alloc", .{})
         .msgSend(objc.Object, "initWithFrame:", .{rect});

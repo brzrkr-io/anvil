@@ -15,7 +15,7 @@ pub const Segment = struct {
 };
 
 /// A fixed-capacity segment list — the prompt never shows more than this many,
-/// and a stack buffer keeps `caldera-prompt` allocation-light on the hot path.
+/// and a stack buffer keeps `anvil-prompt` allocation-light on the hot path.
 pub const max_segments = 12;
 
 pub const List = struct {

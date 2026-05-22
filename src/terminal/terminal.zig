@@ -997,8 +997,8 @@ test "autowrap can be disabled via DECRST ?7" {
 test "OSC 0 sets the window title" {
     var term = try makeTerminal(10, 2);
     defer term.deinit();
-    term.feed("\x1B]0;Caldera Console\x07");
-    try testing.expectEqualStrings("Caldera Console", term.title());
+    term.feed("\x1B]0;Anvil\x07");
+    try testing.expectEqualStrings("Anvil", term.title());
 }
 
 test "OSC 7 records the working directory" {

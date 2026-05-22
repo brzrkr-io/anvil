@@ -1,7 +1,7 @@
-CALDERA CONSOLE — TODO
+ANVIL — TODO
 ======================
-Native Zig rebuild of Caldera Console: a GPU terminal growing into a unified
-control plane for software/devops work.  Repo: caldera/caldera-console.
+Native Zig rebuild of Anvil: a GPU terminal growing into a unified
+control plane for software/devops work.  Repo: caldera/anvil.
 Updated: 2026-05-21
 
 Full plan & milestones: docs/product/console-rebuild-plan.md
@@ -13,7 +13,7 @@ DONE
 [x] M0 — Zig scaffold
     - Zig 0.16 repo, build.zig + zig-objc dependency
     - Native AppKit window + Metal renderer, clears to Mineral #0c0d10
-    - Caldera brand mark as the macOS Dock icon
+    - Anvil brand mark as the macOS Dock icon
 [x] M1 — Terminal core (a genuinely usable single-pane terminal)
     - VT/ANSI parser (Williams DFA), grid, alternate screen
     - Deep scrollback: ring of trimmed rows, 100,000-line capacity
@@ -24,12 +24,12 @@ DONE
     - OSC 133 semantic prompt marks (the AI-readiness hook)
     - 102 unit tests; verified end-to-end (render / input / scroll / resize)
 [x] AI dev environment — design spec written & approved
-[x] AI dev environment — sub-project A (caldera-console) landed:
+[x] AI dev environment — sub-project A (anvil) landed:
     AGENTS.md, CLAUDE.md, BRAND.md + brand/ (9 assets), wiki/, context/,
     and 7 subagents in .claude/agents/ (builder, reviewer, systems-architect,
     orchestrator, librarian, design-lead, product-strategist)
 [x] AI dev environment — sub-project B (global ~/.claude) landed:
-    ~/.claude/CLAUDE.md (Karpathy/multica standard) + llmwiki-convention.md
+    ~/.claude/CLAUDE.md (Karpinsky/multica standard) + llmwiki-convention.md
     (with a pointer from CLAUDE.md); the 3 global agents + settings.json
     backed up to ~/.claude/backups/pre-ai-env-2026-05-21/
 
@@ -71,7 +71,7 @@ NEXT UP
           See wiki/concepts/shell-integration.md.
       [x] Config file + theme system — apply BRAND.md tokens
           (brand/tokens.json), IBM Plex Mono, configurable scrollback size
-          Done 2026-05-21. ZON config at ~/.config/caldera-console/config.zon;
+          Done 2026-05-21. ZON config at ~/.config/anvil/config.zon;
           theme/cursor live-reload on 60 Hz tick; font/scrollback/window at
           startup. Two built-in themes: mineral-dark (default), mineral-light.
           See wiki/concepts/config-system.md.
@@ -83,15 +83,15 @@ NEXT UP
     `src/ipc/bridge.zig`, `src/app/palette.zig`, `src/webview/webview.zig`,
     `ui/palette/index.html`. WebKit framework linked. 210 tests pass.
 
-[x] Caldera prompt (Phase 1) — adaptive shell prompt binary
-    COMPLETE 2026-05-21. New `caldera-prompt` standalone executable (`src/prompt/`):
+[x] Anvil prompt (Phase 1) — adaptive shell prompt binary
+    COMPLETE 2026-05-21. New `anvil-prompt` standalone executable (`src/prompt/`):
     `icons`, `segments`, `context`, `git`, `render`, `build_segments`, `main`.
     Adaptive segments: cwd always, git branch+dirty when in a repo, toolchain when
     a language is detected, container/cluster when present, exit-state on non-zero.
     Two-line rich prompt + single-line transient mode; rich Unicode glyphs gated on
-    `$CALDERA_CONSOLE`, ASCII fallback otherwise. `config.zon` gains a `prompt`
+    `$ANVIL`, ASCII fallback otherwise. `config.zon` gains a `prompt`
     section (`enabled`, `transient`, `custom`). Shell integration wires PROMPT/PS1
-    from `caldera-prompt --exit $?`; transient hook on zle-line-finish. 232 tests
+    from `anvil-prompt --exit $?`; transient hook on zle-line-finish. 232 tests
     pass. Deferred: bundled icon font (one-file swap in `icons.zig`); Phase 2
     interactive hover layer.
 
@@ -133,4 +133,4 @@ NOTES
 - Build / run / test:   zig build run   |   zig build test
 - BRAND GATE: once BRAND.md lands in the repo, read it before any UI /
   window / icon / user-facing work.
-- caldera-console must not depend on caldera-os, Linear, anvil, or Forge.
+- anvil must not depend on caldera-os, Linear, or Forge.
