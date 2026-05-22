@@ -17,7 +17,7 @@ const keys = @import("app/keys.zig");
 const shell_integration = @import("app/shell_integration.zig");
 const tabs_mod = @import("app/tab.zig");
 const tabbar = @import("render/tabbar.zig");
-const hud_mod = @import("render/hud.zig");
+const agent_panel = @import("render/agent_panel.zig");
 const git = @import("prompt/git.zig");
 const Search = @import("terminal/search.zig").Search;
 const searchbar = @import("render/searchbar.zig");
@@ -141,7 +141,8 @@ const App = struct {
     tree: filetree_mod.FileTree = .{},
     search_open: bool = false,
     hud_visible: bool = true,
-    hud: hud_mod.Hud = .{},
+    local_ctx: agent_panel.LocalContext = .{},
+    agent_snap: agent_panel.Snapshot = .{},
     hud_tick: u32 = 0, // counts up to hud_refresh_ticks then resets
     webview: webview_mod.Webview,
     palette: palette_mod.Palette = .{},
@@ -1677,7 +1678,7 @@ const GitJob = struct {
     cwd_len: usize = 0,
     // result fields — written by the worker, read by the main thread once
     // `ready` is observed true.
-    state: hud_mod.GitState = .no_repo,
+    state: agent_panel.GitState = .no_repo,
     branch: [128]u8 = undefined,
     branch_len: usize = 0,
     dirty: u32 = 0,
@@ -1708,24 +1709,24 @@ fn gitJobRun() void {
     git_job.in_flight.store(false, .release);
 }
 
-/// Populate `g.hud` from live data: cwd, git status, last-run state.
+/// Populate `g.local_ctx` from live data: cwd, git status, last-run state.
 fn refreshHud() void {
     const cur_term = &focusedPane().terminal;
 
     // --- cwd ---
     const cwd = cur_term.cwdPath();
-    const cwd_len = @min(cwd.len, g.hud.cwd.len);
-    @memcpy(g.hud.cwd[0..cwd_len], cwd[0..cwd_len]);
-    g.hud.cwd_len = cwd_len;
+    const cwd_len = @min(cwd.len, g.local_ctx.cwd.len);
+    @memcpy(g.local_ctx.cwd[0..cwd_len], cwd[0..cwd_len]);
+    g.local_ctx.cwd_len = cwd_len;
 
     // --- git: consume a finished result, then kick off the next query ---
     if (git_job.ready.load(.acquire)) {
-        g.hud.git = git_job.state;
-        g.hud.branch_len = git_job.branch_len;
-        @memcpy(g.hud.branch[0..git_job.branch_len], git_job.branch[0..git_job.branch_len]);
-        g.hud.git_dirty = git_job.dirty;
-        g.hud.git_ahead = git_job.ahead;
-        g.hud.git_behind = git_job.behind;
+        g.local_ctx.git = git_job.state;
+        g.local_ctx.branch_len = git_job.branch_len;
+        @memcpy(g.local_ctx.branch[0..git_job.branch_len], git_job.branch[0..git_job.branch_len]);
+        g.local_ctx.git_dirty = git_job.dirty;
+        g.local_ctx.git_ahead = git_job.ahead;
+        g.local_ctx.git_behind = git_job.behind;
         git_job.ready.store(false, .monotonic);
     }
     if (!git_job.in_flight.load(.acquire)) {
@@ -1745,14 +1746,14 @@ fn refreshHud() void {
     const lr = cur_term.lastRun();
     if (lr.running) {
         // currently running — show idle until done
-        g.hud.run = .idle;
+        g.local_ctx.run = .idle;
     } else if (lr.duration_ms == 0 and lr.exit_code == 0 and !lr.running) {
         // no run recorded yet
-        g.hud.run = .idle;
+        g.local_ctx.run = .idle;
     } else {
-        g.hud.run = if (lr.exit_code == 0) .ok else .failed;
-        g.hud.run_exit = lr.exit_code;
-        g.hud.run_duration_ms = lr.duration_ms;
+        g.local_ctx.run = if (lr.exit_code == 0) .ok else .failed;
+        g.local_ctx.run_exit = lr.exit_code;
+        g.local_ctx.run_duration_ms = lr.duration_ms;
     }
 
     g.dirty = true;
@@ -1838,21 +1839,25 @@ fn renderFrame() void {
     }
 
     if (g.hud_visible) {
-        // The HUD floats in the top-right corner of the WINDOW. Position it
-        // from the raster's full width in cells — NOT terminal `cols`, which
-        // shrinks when the file tree is open (that put the card mid-window).
+        // The agent panel floats in the top-right corner of the WINDOW.
+        // Position from the raster's full width in cells — NOT terminal `cols`,
+        // which shrinks when the file tree is open.
         const ch: usize = @intFromFloat(g.font.metrics.cell_h);
         const cw: usize = @intFromFloat(g.font.metrics.cell_w);
         const total_rows = @max((g.raster.height -| 2 * grid_pad) / ch, 1);
         const total_cols = @max((g.raster.width -| 2 * grid_pad) / cw, 1);
-        hud_mod.draw(
+        agent_panel.draw(
             &g.raster,
             g.font,
             g.theme,
-            g.hud,
-            total_cols,
-            total_rows,
-            topBarRows(),
+            &g.agent_snap,
+            &g.local_ctx,
+            .{ .floating = .{
+                .total_cols = total_cols,
+                .total_rows = total_rows,
+                .top_offset = topBarRows(),
+            } },
+            false,
         );
     }
 
@@ -2043,7 +2048,8 @@ test {
     _ = @import("app/shell_integration.zig");
     _ = @import("render/tabbar.zig");
     _ = @import("render/searchbar.zig");
-    _ = @import("render/hud.zig");
+    _ = @import("render/agent_panel.zig");
+    _ = @import("caldera/poller.zig");
     _ = @import("render/cheatsheet.zig");
     _ = @import("terminal/terminal.zig");
     _ = @import("terminal/search.zig");
