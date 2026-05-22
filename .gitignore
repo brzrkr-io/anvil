@@ -4,3 +4,4 @@ zig-out/
 docs/superpowers/
 *.o
 .obsidian/
+.superpowers/
