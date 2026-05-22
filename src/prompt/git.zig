@@ -54,14 +54,14 @@ fn readNum(s: []const u8) u32 {
 /// Run git in `cwd` and return its status, or null if not a repo / git fails /
 /// it errors. `out_buf` backs the returned branch slice.
 ///
-/// Uses `std.process.run` (Zig 0.16 API) with
-/// `std.Io.Threaded.global_single_threaded.io()`.
+/// Uses `std.process.run` (Zig 0.16 API) with a `Threaded` io backed by
+/// `c_allocator` so that process spawn can allocate argv buffers.
 pub fn query(allocator: std.mem.Allocator, cwd: []const u8, out_buf: []u8) ?Info {
-    const io = std.Io.Threaded.global_single_threaded.io();
+    var threaded = std.Io.Threaded.init(std.heap.c_allocator, .{});
+    const io = threaded.io();
     const result = std.process.run(allocator, io, .{
         .argv = &.{ "git", "status", "--porcelain=v1", "--branch" },
         .cwd = .{ .path = cwd },
-        .stderr = .ignore,
     }) catch return null;
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
