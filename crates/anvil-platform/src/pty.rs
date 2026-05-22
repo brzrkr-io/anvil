@@ -86,6 +86,16 @@ impl Pty {
         };
         // SAFETY: we own slave_fd; closing it here is correct.
         unsafe { libc::close(slave_fd) };
+        // Make the master non-blocking so `read` returns immediately when no
+        // shell output is pending. The main run loop polls per-tick — a
+        // blocking read would freeze the whole UI between bytes of output.
+        // SAFETY: master_fd is a valid fd we own from openpty.
+        unsafe {
+            let flags = libc::fcntl(master_fd, libc::F_GETFL, 0);
+            if flags >= 0 {
+                libc::fcntl(master_fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+            }
+        }
         // SAFETY: master_fd is a valid fd we own from openpty.
         let master = unsafe { OwnedFd::from_raw_fd(master_fd) };
         Ok(Pty { master, child })
@@ -110,19 +120,24 @@ impl Pty {
         Self::spawn_exec(&shell, &[arg0.as_str()], cols, rows)
     }
 
-    /// Read available output from the child. Blocking.
-    /// Returns `PtyError::Eof` when the child has exited (macOS delivers EIO
-    /// on a read from a master whose slave has been closed).
+    /// Read available output from the child. Non-blocking (the master fd has
+    /// `O_NONBLOCK` set in `spawn_exec`). Returns `Ok(0)` when no data is
+    /// currently available (EAGAIN/EWOULDBLOCK); returns `PtyError::Eof` when
+    /// the child has exited (macOS delivers EIO on a read from a master whose
+    /// slave has been closed).
     pub fn read(&self, buf: &mut [u8]) -> Result<usize, PtyError> {
         let fd = self.master.as_raw_fd();
         // SAFETY: fd is valid and buf is a valid writable slice.
         let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
         if n < 0 {
-            let err = std::io::Error::last_os_error();
-            if err.raw_os_error() == Some(libc::EIO) {
-                return Err(PtyError::Eof);
+            let errno = std::io::Error::last_os_error()
+                .raw_os_error()
+                .unwrap_or(0);
+            if errno == libc::EAGAIN || errno == libc::EWOULDBLOCK {
+                return Ok(0); // no data available right now
             }
-            return Err(PtyError::Eof); // treat all read errors as EOF
+            // EIO and any other read error: treat as EOF.
+            return Err(PtyError::Eof);
         }
         if n == 0 {
             return Err(PtyError::Eof);
@@ -220,13 +235,24 @@ fn build_child_env() -> Result<Vec<CString>, PtyError> {
 
 // -- helper ------------------------------------------------------------------
 
-/// Drain a pty into `out` until EOF, capped at `out.len`.
+/// Drain a pty into `out` until EOF or a 2s timeout, capped at `out.len`.
+/// Under non-blocking reads `Ok(0)` means "no data right now"; the helper
+/// briefly sleeps and retries until real EOF or the deadline elapses.
 #[cfg(test)]
 fn drain_to_eof(pty: &Pty, out: &mut [u8]) -> usize {
+    use std::thread;
+    use std::time::{Duration, Instant};
+    let deadline = Instant::now() + Duration::from_secs(2);
     let mut total = 0;
     while total < out.len() {
         match pty.read(&mut out[total..]) {
-            Ok(0) | Err(_) => break,
+            Err(_) => break, // real EOF
+            Ok(0) => {
+                if Instant::now() >= deadline {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
             Ok(n) => total += n,
         }
     }
@@ -257,9 +283,16 @@ mod tests {
 
         let mut buf = [0u8; 256];
         let mut total = 0;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while total < buf.len() {
             match pty.read(&mut buf[total..]) {
-                Ok(0) | Err(_) => break,
+                Err(_) => break,
+                Ok(0) => {
+                    if std::time::Instant::now() >= deadline {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
                 Ok(n) => {
                     total += n;
                     if buf[..total].windows(4).any(|w| w == b"ping") {
