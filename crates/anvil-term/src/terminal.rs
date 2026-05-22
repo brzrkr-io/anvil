@@ -264,15 +264,14 @@ impl Terminal {
         if bytes.is_empty() {
             return;
         }
-        // The parser takes &mut dyn Handler; Terminal implements Handler.
-        // We need to split the borrow: use a raw-pointer trick to satisfy Rust.
-        // SAFETY: `parser` and the handler methods only touch non-parser fields;
-        // there is no aliasing — `Parser::feed` calls back into `Terminal` but
-        // never touches `self.parser` recursively.
-        let parser_ptr: *mut Parser = &mut self.parser;
-        unsafe {
-            (*parser_ptr).feed(self, bytes);
-        }
+        // The parser takes `&mut dyn Handler` and `Terminal` is that handler,
+        // so `self.parser.feed(self, ..)` would alias `&mut self`. Move the
+        // parser out for the duration of the call — it carries state across
+        // feeds, so it is put back afterward. `Parser` is small POD, so the
+        // swap is cheap, and no `unsafe` is needed.
+        let mut parser = std::mem::take(&mut self.parser);
+        parser.feed(self, bytes);
+        self.parser = parser;
         self.viewport_offset = 0;
     }
 
