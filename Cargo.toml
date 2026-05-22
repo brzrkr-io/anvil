@@ -45,6 +45,7 @@ objc2-metal = "0.3"
 objc2-quartz-core = "0.3"
 objc2-core-text = "0.3"
 objc2-core-graphics = "0.3"
+objc2-core-foundation = "0.3"
 objc2-web-kit = "0.3"
 
 # Internal crates

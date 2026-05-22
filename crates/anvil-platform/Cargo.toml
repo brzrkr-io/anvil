@@ -14,3 +14,42 @@ anvil-control   = { workspace = true }
 nix             = { workspace = true }
 thiserror       = { workspace = true }
 libc            = "0.2"
+
+# objc2 / Apple framework bindings (macOS only)
+objc2                  = { workspace = true }
+objc2-core-foundation  = { workspace = true, features = ["CFString", "CFError", "CFCGTypes"] }
+objc2-foundation   = { workspace = true, features = ["NSString", "NSError"] }
+objc2-metal        = { workspace = true, features = [
+    "MTLDevice",
+    "MTLCommandQueue",
+    "MTLCommandBuffer",
+    "MTLCommandEncoder",
+    "MTLRenderCommandEncoder",
+    "MTLRenderPipeline",
+    "MTLRenderPass",
+    "MTLLibrary",
+    "MTLTexture",
+    "MTLPixelFormat",
+    "MTLDrawable",
+    "MTLAllocation",
+    "MTLResource",
+    "MTLDefines",
+    "MTLTypes",
+] }
+objc2-quartz-core  = { workspace = true, features = ["CAMetalLayer"] }
+objc2-core-text    = { workspace = true, features = [
+    "CTFont",
+    "CTFontDescriptor",
+    "CTFontManager",
+] }
+objc2-core-graphics = { workspace = true, features = [
+    "CGBase",
+    "CGGeometry",
+    "CGAffineTransform",
+    "CGColorSpace",
+    "CGContext",
+    "CGBitmapContext",
+    "CGDataProvider",
+    "CGFont",
+    "CGImage",
+] }
