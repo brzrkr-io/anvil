@@ -44,6 +44,27 @@ pub const PromptMark = struct {
     /// length + the cursor's grid row at the time the mark was emitted.
     /// Monotonic for the session; survives scrollback eviction.
     line: usize,
+    /// Exit code, valid only when kind == .command_done. 0 otherwise.
+    exit_code: i32 = 0,
+};
+
+/// A shell command and its output, derived from adjacent OSC 133 marks.
+/// All line numbers are ABSOLUTE (comparable to PromptMark.line).
+pub const Block = struct {
+    /// Absolute line of the command_start mark (the command-input row).
+    command_line: usize,
+    /// Absolute line of output_start (133;C), or == command_line if none seen.
+    output_line: usize,
+    /// Absolute line one past the last output row (exclusive end).
+    /// = the next block's command_line, or lineCount for the live block.
+    end_line: usize,
+    state: enum { running, exited },
+    /// Valid only when state == .exited.
+    exit_code: i32,
+
+    pub fn outputRowCount(self: Block) usize {
+        return self.end_line -| self.output_line -| 1;
+    }
 };
 
 /// DEC private modes the terminal records. Only modes that affect the model
@@ -771,7 +792,11 @@ pub const Terminal = struct {
             std.mem.copyForwards(PromptMark, self.marks[0 .. max_marks - 1], self.marks[1..]);
             self.mark_count -= 1;
         }
-        self.marks[self.mark_count] = .{ .kind = kind, .line = line_num };
+        self.marks[self.mark_count] = .{
+            .kind = kind,
+            .line = line_num,
+            .exit_code = if (kind == .command_done) self.shell_last_exit else 0,
+        };
         self.mark_count += 1;
     }
 
@@ -820,6 +845,82 @@ pub const Terminal = struct {
     /// index that matches the values stored in `marks`.
     pub fn absoluteLineOfContent(self: *const Terminal, content_row: usize) usize {
         return self.evicted_lines + content_row;
+    }
+
+    // --- command-block derivation ------------------------------------------
+
+    /// Derive a Block from the command_start mark at marks[i].
+    /// Scans forward through subsequent marks to find output_start, command_done,
+    /// and the next boundary (command_start or prompt_start that follows this one).
+    fn blockFromMark(self: *const Terminal, i: usize) Block {
+        const marks = self.marks[0..self.mark_count];
+        const abs_line_count = self.evicted_lines + self.lineCount();
+        var b = Block{
+            .command_line = marks[i].line,
+            .output_line = marks[i].line, // default: no output_start seen
+            .end_line = abs_line_count, // default: live block
+            .state = .running,
+            .exit_code = 0,
+        };
+        var j: usize = i + 1;
+        while (j < marks.len) : (j += 1) {
+            const m = marks[j];
+            switch (m.kind) {
+                .command_start, .prompt_start => {
+                    b.end_line = m.line;
+                    break;
+                },
+                .output_start => {
+                    // Only the first output_start between this command_start and boundary.
+                    if (b.output_line == b.command_line) b.output_line = m.line;
+                },
+                .command_done => {
+                    b.state = .exited;
+                    b.exit_code = m.exit_code;
+                },
+            }
+        }
+        return b;
+    }
+
+    /// Return the Block that contains absolute line `abs_line`, or null if
+    /// `abs_line` is in a prompt region, before the first command, or its
+    /// start mark has been evicted.
+    pub fn blockAt(self: *const Terminal, abs_line: usize) ?Block {
+        const marks = self.marks[0..self.mark_count];
+        // Walk all command_start marks; build each block and check containment.
+        var i: usize = 0;
+        while (i < marks.len) : (i += 1) {
+            if (marks[i].kind != .command_start) continue;
+            const b = self.blockFromMark(i);
+            if (abs_line >= b.command_line and abs_line < b.end_line) return b;
+        }
+        return null;
+    }
+
+    /// Return the next block after `abs_line` (the block whose command_line > abs_line),
+    /// or null if none exists.
+    pub fn blockAfter(self: *const Terminal, abs_line: usize) ?Block {
+        const marks = self.marks[0..self.mark_count];
+        var i: usize = 0;
+        while (i < marks.len) : (i += 1) {
+            if (marks[i].kind != .command_start) continue;
+            if (marks[i].line > abs_line) return self.blockFromMark(i);
+        }
+        return null;
+    }
+
+    /// Return the previous block before `abs_line` (the block whose command_line < abs_line),
+    /// or null if none exists.
+    pub fn blockBefore(self: *const Terminal, abs_line: usize) ?Block {
+        const marks = self.marks[0..self.mark_count];
+        var result: ?Block = null;
+        var i: usize = 0;
+        while (i < marks.len) : (i += 1) {
+            if (marks[i].kind != .command_start) continue;
+            if (marks[i].line < abs_line) result = self.blockFromMark(i);
+        }
+        return result;
     }
 
     // --- misc control ------------------------------------------------------
@@ -1842,4 +1943,350 @@ test "DECSCUSR sets and clears app cursor shape" {
     term.feed("\x1b[0 q");
     try testing.expect(term.app_cursor_shape == null);
     try testing.expect(term.app_cursor_blink == null);
+}
+
+// --- Block derivation tests ------------------------------------------------
+
+// Sequence helpers:
+//   A = OSC 133;A  (prompt_start)
+//   B = OSC 133;B  (command_start)
+//   C = OSC 133;C  (output_start)
+//   D0 = OSC 133;D;exit_code=0  (command_done, exit 0)
+//   DN = OSC 133;D;exit_code=N  (command_done, non-zero exit)
+//
+// Layout for a single completed command in a 20-col, 10-row terminal:
+//   Line 0: A B  (prompt_start + command_start on same line)
+//           \r\n -> cursor at line 1
+//   Line 1: C    (output_start)
+//           "output\r\n" -> cursor at line 2
+//   Line 2: D;exit_code=42  (command_done on line 2)
+//           A    (next prompt_start, also on line 2 — shell's precmd)
+
+test "Block: single completed command has correct fields" {
+    var term = try makeTerminal(20, 10);
+    defer term.deinit();
+
+    // Line 0: prompt_start + command_start
+    term.feed("\x1B]133;A\x07");
+    term.feed("\x1B]133;B\x07");
+    term.feed("\r\n"); // cursor -> line 1
+    // Line 1: output_start + output text
+    term.feed("\x1B]133;C\x07");
+    term.feed("output\r\n"); // cursor -> line 2
+    // Line 2: command_done + next prompt_start
+    term.feed("\x1B]133;D;exit_code=42\x07");
+    term.feed("\x1B]133;A\x07"); // next prompt terminates the block
+
+    // blockAt on the command_line (0)
+    const b = term.blockAt(0).?;
+    try testing.expectEqual(@as(usize, 0), b.command_line);
+    try testing.expectEqual(@as(usize, 1), b.output_line);
+    try testing.expectEqual(@as(usize, 2), b.end_line);
+    try testing.expect(b.state == .exited);
+    try testing.expectEqual(@as(i32, 42), b.exit_code);
+
+    // blockAt on an output row (line 1)
+    const b2 = term.blockAt(1).?;
+    try testing.expectEqual(@as(usize, 0), b2.command_line);
+    try testing.expectEqual(@as(usize, 1), b2.output_line);
+
+    // blockAt on the prompt row above (before any command) — null
+    // (line 0 is the command_line itself, not a prompt-only line here;
+    //  there is no line before line 0, so test "no block before line 0")
+    try testing.expect(term.blockAt(2) == null); // line 2 is prompt_start of next cycle
+    try testing.expect(term.blockBefore(0) == null); // nothing before the first block
+}
+
+test "Block: failed command has correct non-zero exit_code" {
+    var term = try makeTerminal(20, 10);
+    defer term.deinit();
+
+    term.feed("\x1B]133;A\x07");
+    term.feed("\x1B]133;B\x07");
+    term.feed("\r\n");
+    term.feed("\x1B]133;C\x07");
+    term.feed("err\r\n");
+    term.feed("\x1B]133;D;exit_code=127\x07");
+    term.feed("\x1B]133;A\x07"); // boundary
+
+    const b = term.blockAt(0).?;
+    try testing.expect(b.state == .exited);
+    try testing.expectEqual(@as(i32, 127), b.exit_code);
+}
+
+test "Block: exit_code stored on PromptMark for command_done" {
+    var term = try makeTerminal(20, 10);
+    defer term.deinit();
+
+    term.feed("\x1B]133;A\x07");
+    term.feed("\x1B]133;B\x07");
+    term.feed("\r\n");
+    term.feed("\x1B]133;C\x07");
+    term.feed("\x1B]133;D;exit_code=5\x07");
+
+    // Find the command_done mark and verify its exit_code field.
+    const marks = term.promptMarks();
+    var found = false;
+    for (marks) |m| {
+        if (m.kind == .command_done) {
+            try testing.expectEqual(@as(i32, 5), m.exit_code);
+            found = true;
+        }
+    }
+    try testing.expect(found);
+    // Other marks should have exit_code == 0.
+    for (marks) |m| {
+        if (m.kind != .command_done) {
+            try testing.expectEqual(@as(i32, 0), m.exit_code);
+        }
+    }
+}
+
+test "Block: live/running command has state running and end_line == abs lineCount" {
+    var term = try makeTerminal(20, 10);
+    defer term.deinit();
+
+    term.feed("\x1B]133;A\x07");
+    term.feed("\x1B]133;B\x07");
+    term.feed("\r\n");
+    term.feed("\x1B]133;C\x07");
+    term.feed("partial output\r\n");
+    // No 133;D — command is still running.
+
+    const abs_line_count = term.evicted_lines + term.lineCount();
+    const b = term.blockAt(0).?;
+    try testing.expect(b.state == .running);
+    try testing.expectEqual(abs_line_count, b.end_line);
+    try testing.expectEqual(@as(i32, 0), b.exit_code);
+}
+
+test "Block: two consecutive blocks — navigation and end_line boundary" {
+    var term = try makeTerminal(20, 10);
+    defer term.deinit();
+
+    // Block 1: lines 0-1 (command at 0, output at 1, ends at 2)
+    term.feed("\x1B]133;A\x07");
+    term.feed("\x1B]133;B\x07"); // command_start at line 0
+    term.feed("\r\n"); // cursor -> line 1
+    term.feed("\x1B]133;C\x07"); // output_start at line 1
+    term.feed("out1\r\n"); // cursor -> line 2
+    term.feed("\x1B]133;D;exit_code=0\x07");
+    // Block 2 starts: prompt at line 2, command at line 2
+    term.feed("\x1B]133;A\x07"); // prompt_start at line 2 (ends block 1)
+    term.feed("\x1B]133;B\x07"); // command_start at line 2
+    term.feed("\r\n"); // cursor -> line 3
+    term.feed("\x1B]133;C\x07"); // output_start at line 3
+    term.feed("out2\r\n"); // cursor -> line 4
+    term.feed("\x1B]133;D;exit_code=1\x07");
+    term.feed("\x1B]133;A\x07"); // boundary for block 2 at line 4
+
+    const b1 = term.blockAt(0).?;
+    const b2 = term.blockAt(2).?;
+
+    // Block 1 fields
+    try testing.expectEqual(@as(usize, 0), b1.command_line);
+    try testing.expectEqual(@as(usize, 1), b1.output_line);
+    try testing.expectEqual(@as(usize, 2), b1.end_line);
+    try testing.expect(b1.state == .exited);
+    try testing.expectEqual(@as(i32, 0), b1.exit_code);
+
+    // Block 2 fields
+    try testing.expectEqual(@as(usize, 2), b2.command_line);
+    try testing.expectEqual(@as(usize, 3), b2.output_line);
+    try testing.expectEqual(@as(usize, 4), b2.end_line);
+    try testing.expect(b2.state == .exited);
+    try testing.expectEqual(@as(i32, 1), b2.exit_code);
+
+    // end_line of block 1 == command_line of block 2
+    try testing.expectEqual(b1.end_line, b2.command_line);
+
+    // blockAfter(0) returns block 2
+    const after = term.blockAfter(0).?;
+    try testing.expectEqual(@as(usize, 2), after.command_line);
+
+    // blockBefore(2) returns block 1
+    const before = term.blockBefore(2).?;
+    try testing.expectEqual(@as(usize, 0), before.command_line);
+
+    // blockAfter on the last command_line returns null (no block after)
+    try testing.expect(term.blockAfter(2) == null);
+
+    // blockBefore on the first command_line returns null
+    try testing.expect(term.blockBefore(0) == null);
+}
+
+test "Block: command with no output_start — output_line == command_line" {
+    var term = try makeTerminal(20, 10);
+    defer term.deinit();
+
+    // B with no C before D
+    term.feed("\x1B]133;A\x07");
+    term.feed("\x1B]133;B\x07"); // command_start at line 0
+    term.feed("\r\n");
+    term.feed("some output\r\n");
+    term.feed("\x1B]133;D;exit_code=0\x07");
+    term.feed("\x1B]133;A\x07"); // boundary
+
+    const b = term.blockAt(0).?;
+    try testing.expectEqual(@as(usize, 0), b.command_line);
+    // No output_start was emitted, so output_line falls back to command_line.
+    try testing.expectEqual(b.command_line, b.output_line);
+    try testing.expect(b.state == .exited);
+}
+
+test "Block: blockAt on prompt_start line returns null" {
+    var term = try makeTerminal(20, 10);
+    defer term.deinit();
+
+    // Prompt at line 0, command at line 0, then output, then next prompt at line 2.
+    term.feed("\x1B]133;A\x07");
+    term.feed("\x1B]133;B\x07");
+    term.feed("\r\n");
+    term.feed("out\r\n");
+    term.feed("\x1B]133;D;exit_code=0\x07");
+    term.feed("\x1B]133;A\x07"); // prompt_start at line 2
+
+    // Line 2 is a prompt_start — it's the end_line of the completed block,
+    // so blockAt(2) must return null.
+    try testing.expect(term.blockAt(2) == null);
+}
+
+test "Block: blockAt before first command returns null" {
+    var term = try makeTerminal(20, 10);
+    defer term.deinit();
+
+    // Only a prompt_start, no command_start yet.
+    term.feed("\x1B]133;A\x07"); // prompt_start at line 0
+    try testing.expect(term.blockAt(0) == null);
+    try testing.expect(term.blockAt(5) == null);
+}
+
+test "Block: no marks at all returns null for all block queries" {
+    var term = try makeTerminal(20, 10);
+    defer term.deinit();
+
+    term.feed("just some text\r\n");
+    try testing.expect(term.blockAt(0) == null);
+    try testing.expect(term.blockAfter(0) == null);
+    try testing.expect(term.blockBefore(0) == null);
+}
+
+test "Block: scrollback eviction — evicted block returns null, later blocks resolve" {
+    // Use a tiny scrollback so we can evict marks cheaply. The mark ring holds
+    // max_marks entries; we need to push enough marks off to evict a command_start.
+    // Use a 4-col, 2-row terminal so each \r\n advances quickly.
+    var term = try makeTerminal(4, 2);
+    defer term.deinit();
+
+    // Emit one completed block at lines 0-1.
+    term.feed("\x1B]133;A\x07");
+    term.feed("\x1B]133;B\x07"); // command_start at abs line 0
+    term.feed("\r\n");
+    term.feed("\x1B]133;C\x07");
+    term.feed("ok\r\n");
+    term.feed("\x1B]133;D;exit_code=0\x07");
+    term.feed("\x1B]133;A\x07"); // boundary
+
+    // Verify block 1 is visible before eviction.
+    const b_before = term.blockAt(0);
+    try testing.expect(b_before != null);
+
+    // Now flood the mark ring so the early marks are evicted. Feed max_marks
+    // more distinct prompt_start marks (each on a new line).
+    var i: usize = 0;
+    while (i < max_marks) : (i += 1) {
+        term.feed("\x1B]133;A\x07");
+        term.feed("\r\n");
+    }
+
+    // The original command_start at abs line 0 has been evicted from the ring.
+    // blockAt(0) must return null without panicking.
+    try testing.expect(term.blockAt(0) == null);
+
+    // Emit a new block after the flood — it should still resolve correctly.
+    const pre_line = term.evicted_lines + term.history.len() + term.active().cur_y;
+    term.feed("\x1B]133;B\x07"); // new command_start
+    term.feed("\r\n");
+    term.feed("\x1B]133;C\x07");
+    term.feed("new\r\n");
+    term.feed("\x1B]133;D;exit_code=3\x07");
+    term.feed("\x1B]133;A\x07"); // boundary
+
+    const b_new = term.blockAt(pre_line);
+    try testing.expect(b_new != null);
+    try testing.expectEqual(@as(i32, 3), b_new.?.exit_code);
+    try testing.expect(b_new.?.state == .exited);
+}
+
+test "Block: outputRowCount correctness" {
+    var term = try makeTerminal(20, 10);
+    defer term.deinit();
+
+    // Block with 3 output lines:
+    //   command at line 0
+    //   output_start at line 1
+    //   3 output lines (lines 1, 2, 3) — wait, output_start is at line 1
+    //   end_line at line 4 (next prompt_start)
+    //   outputRowCount = end_line -| output_line -| 1 = 4 - 1 - 1 = 2? No:
+    //   output rows are lines [output_line, end_line) exclusive,
+    //   but output_line is the line of the C mark itself (the first output row).
+    //   outputRowCount = end_line - output_line - 1 (subtracting the C-mark line itself? No.)
+    //
+    // Let's re-read the spec: outputRowCount = end_line -| output_line -| 1.
+    // If output_start is at line 1 and end_line is at line 5:
+    //   outputRowCount = 5 - 1 - 1 = 3.  That means 3 output rows: lines 2,3,4? or 1,2,3,4?
+    // The spec formula is saturating subtraction, so treat it as-is.
+    // Let's verify: command at 0, C at 1, output on lines 1-3, D+A at line 4.
+    // end_line = 4. outputRowCount = 4 - 1 - 1 = 2.
+
+    term.feed("\x1B]133;A\x07");
+    term.feed("\x1B]133;B\x07"); // command at line 0
+    term.feed("\r\n");
+    term.feed("\x1B]133;C\x07"); // output_start at line 1
+    term.feed("L1\r\n"); // line 2
+    term.feed("L2\r\n"); // line 3
+    term.feed("\x1B]133;D;exit_code=0\x07");
+    term.feed("\x1B]133;A\x07"); // boundary at line 3
+
+    const b = term.blockAt(0).?;
+    // end_line=3, output_line=1: outputRowCount = 3 -| 1 -| 1 = 1
+    try testing.expectEqual(@as(usize, 1), b.outputRowCount());
+
+    // No-output block (no C, D at line 1):
+    var term2 = try makeTerminal(20, 10);
+    defer term2.deinit();
+    term2.feed("\x1B]133;A\x07");
+    term2.feed("\x1B]133;B\x07"); // command at line 0
+    term2.feed("\r\n");
+    term2.feed("\x1B]133;D;exit_code=0\x07");
+    term2.feed("\x1B]133;A\x07"); // boundary at line 1
+
+    const b2 = term2.blockAt(0).?;
+    // output_line == command_line == 0, end_line = 1
+    // outputRowCount = 1 -| 0 -| 1 = 0
+    try testing.expectEqual(@as(usize, 0), b2.outputRowCount());
+}
+
+test "Block: blockAfter returns null when no subsequent block exists" {
+    var term = try makeTerminal(20, 10);
+    defer term.deinit();
+
+    term.feed("\x1B]133;A\x07");
+    term.feed("\x1B]133;B\x07"); // only one block
+    term.feed("\r\n");
+    term.feed("\x1B]133;D;exit_code=0\x07");
+
+    const b = term.blockAt(0).?;
+    _ = b;
+    // No block after the only block.
+    try testing.expect(term.blockAfter(0) == null);
+}
+
+test "Block: blockBefore returns null when no prior block exists" {
+    var term = try makeTerminal(20, 10);
+    defer term.deinit();
+
+    term.feed("\x1B]133;A\x07");
+    term.feed("\x1B]133;B\x07"); // only one block
+    try testing.expect(term.blockBefore(0) == null);
 }
