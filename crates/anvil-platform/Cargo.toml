@@ -11,3 +11,6 @@ anvil-render    = { workspace = true }
 anvil-theme     = { workspace = true }
 anvil-config    = { workspace = true }
 anvil-control   = { workspace = true }
+nix             = { workspace = true }
+thiserror       = { workspace = true }
+libc            = "0.2"
