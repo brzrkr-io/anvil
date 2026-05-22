@@ -293,7 +293,6 @@ fn runAction(action: palette_mod.Action) void {
         .app_quit => g.nsapp.msgSend(void, "terminate:", .{@as(c.id, null)}),
         .hud_toggle => {
             g.hud_visible = !g.hud_visible;
-            resizeAllTabs();
             g.dirty = true;
         },
     }
@@ -444,9 +443,7 @@ fn resizeAllTabs() void {
     const dh: usize = @intFromFloat(@max(b.size.height * g.scale, 1));
     const cw: usize = @intFromFloat(g.font.metrics.cell_w);
     const ch: usize = @intFromFloat(g.font.metrics.cell_h);
-    const raw_cols = @max((dw -| 2 * grid_pad) / cw, 1);
-    const hud_reserve = if (g.hud_visible) hud_mod.hud_cols + 1 else 0;
-    const cols = @max(raw_cols -| hud_reserve, 1);
+    const cols = @max((dw -| 2 * grid_pad) / cw, 1);
     const total_rows = @max((dh -| 2 * grid_pad) / ch, 1);
     const rows = @max(total_rows -| topBarRows() -| bottomBarRows(), 1);
 
@@ -624,7 +621,6 @@ fn handleTabKey(mods: keys.Mods, cp: u21) bool {
     };
     if (g.keys_hud_toggle) |chd| if (chordMatches(chd, mods, cp)) {
         g.hud_visible = !g.hud_visible;
-        resizeAllTabs();
         g.dirty = true;
         return true;
     };
@@ -958,41 +954,6 @@ fn copySelection() void {
 
 // --- HUD data refresh ----------------------------------------------------
 
-/// Query physical RAM size in bytes via sysctl, or 0 on failure.
-fn queryRamTotal() u64 {
-    var val: u64 = 0;
-    var len: usize = @sizeOf(u64);
-    _ = std.c.sysctlbyname("hw.memsize", &val, &len, null, 0);
-    return val;
-}
-
-/// Query macOS vm page counts to estimate memory-in-use percentage.
-/// Returns 0–100, or 0 on failure.
-fn queryMemPct() u8 {
-    // host_statistics64 with HOST_VM_INFO64 fills a vm_statistics64_data_t.
-    // Rather than declaring the full mach struct, we query two sysctl integers:
-    //   vm.page_free_count  — free pages
-    //   vm.page_active_count — active pages  (not available via sysctl on macOS)
-    // Fallback: use "vm.pagesize" + "hw.memsize" + "vm.page_free_count" to
-    // compute  used% = 1 - (free_pages * pagesize / total_ram).
-    const ram = queryRamTotal();
-    if (ram == 0) return 0;
-
-    var page_size: u64 = 4096;
-    var ps_len: usize = @sizeOf(u64);
-    _ = std.c.sysctlbyname("hw.pagesize", &page_size, &ps_len, null, 0);
-
-    var free_pages: u64 = 0;
-    var fp_len: usize = @sizeOf(u64);
-    _ = std.c.sysctlbyname("vm.page_free_count", &free_pages, &fp_len, null, 0);
-
-    const free_bytes = free_pages * page_size;
-    if (free_bytes >= ram) return 0;
-    const used_bytes = ram - free_bytes;
-    const pct = @divTrunc(used_bytes * 100, ram);
-    return @intCast(@min(pct, 100));
-}
-
 // --- background git query ------------------------------------------------
 // `git status` is a subprocess that can take tens to hundreds of ms (up to a
 // 2 s timeout). Running it on the main thread froze the whole app — input,
@@ -1039,9 +1000,15 @@ fn gitJobRun() void {
     git_job.in_flight.store(false, .release);
 }
 
-/// Populate `g.hud` from live data: git status, last-run state, memory.
+/// Populate `g.hud` from live data: cwd, git status, last-run state.
 fn refreshHud() void {
     const cur_term = &g.tabs.current().terminal;
+
+    // --- cwd ---
+    const cwd = cur_term.cwdPath();
+    const cwd_len = @min(cwd.len, g.hud.cwd.len);
+    @memcpy(g.hud.cwd[0..cwd_len], cwd[0..cwd_len]);
+    g.hud.cwd_len = cwd_len;
 
     // --- git: consume a finished result, then kick off the next query ---
     if (git_job.ready.load(.acquire)) {
@@ -1054,7 +1021,6 @@ fn refreshHud() void {
         git_job.ready.store(false, .monotonic);
     }
     if (!git_job.in_flight.load(.acquire)) {
-        const cwd = cur_term.cwdPath();
         if (cwd.len > 0 and cwd.len <= git_job.cwd.len) {
             @memcpy(git_job.cwd[0..cwd.len], cwd);
             git_job.cwd_len = cwd.len;
@@ -1080,9 +1046,6 @@ fn refreshHud() void {
         g.hud.run_exit = lr.exit_code;
         g.hud.run_duration_ms = lr.duration_ms;
     }
-
-    // --- mem ---
-    g.hud.mem_pct = queryMemPct();
 
     g.dirty = true;
 }
@@ -1187,19 +1150,14 @@ fn renderFrame() void {
     }
 
     if (g.hud_visible) {
-        // The HUD occupies the rightmost hud_cols columns of the raster, after
-        // the one-column separator gutter. start_col = terminal cols + 1 gutter.
-        const start_col = cols + 1;
-        const ch: usize = @intFromFloat(g.font.metrics.cell_h);
-        const total_rows_for_hud = @max((g.raster.height -| 2 * grid_pad) / ch, 1);
-        const visible_rows = @max(total_rows_for_hud -| topBarRows() -| bottomBarRows(), 1);
+        // The HUD floats in the top-right corner; terminal keeps full width.
         hud_mod.draw(
             &g.raster,
             g.font,
             g.theme,
             g.hud,
-            start_col,
-            visible_rows,
+            cols,
+            rows,
             topBarRows(),
         );
     }

@@ -1,6 +1,6 @@
-//! Developer-context HUD panel — drawn into the rightmost N columns of the
-//! raster. The terminal grid is already narrowed by `hud_cols + 1` columns
-//! (the +1 is the separator gutter) when the HUD is visible.
+//! Developer-context HUD — a compact floating card in the top-right corner of
+//! the terminal area. The terminal grid always occupies full width; the card is
+//! drawn ON TOP of the grid content.
 //!
 //! Brand: Mineral palette, IBM Plex Mono (the raster font), alloy-grey labels,
 //! semantic status colors (verified green / failure red / attention amber /
@@ -10,16 +10,20 @@ const std = @import("std");
 const Raster = @import("raster.zig").Raster;
 const Font = @import("font.zig").Font;
 const Theme = @import("../config/theme.zig").Theme;
+const color = @import("color.zig");
 
-/// Width of the HUD panel in terminal columns. The separator gutter takes one
-/// additional column, so the terminal grid is narrowed by `hud_cols + 1`.
+/// Width of the HUD card in terminal columns.
 pub const hud_cols: usize = 30;
+
+/// Height of the HUD card in terminal rows (tall enough for all sections with
+/// a couple of blank rows in reserve).
+const card_rows: usize = 11;
 
 // --- Brand color constants (Mineral palette, hex → RGB) ------------------
 
 /// alloy: muted labels / metadata (#86919a)
 const alloy: [3]u8 = .{ 0x86, 0x91, 0x9a };
-/// ash: separator hairline (#374046)
+/// ash: border hairline (#374046)
 const ash: [3]u8 = .{ 0x37, 0x40, 0x46 };
 /// status.verified: success / passing (#3f8a5b)
 const verified: [3]u8 = .{ 0x3f, 0x8a, 0x5b };
@@ -38,6 +42,10 @@ pub const RunState = enum { idle, ok, failed };
 
 /// All display data for one HUD frame. Plain data — no allocations.
 pub const Hud = struct {
+    // cwd section
+    cwd: [64]u8 = undefined,
+    cwd_len: usize = 0,
+
     // git section
     git: GitState = .no_repo,
     branch: [128]u8 = undefined,
@@ -51,11 +59,12 @@ pub const Hud = struct {
     run_exit: i32 = 0,
     run_duration_ms: i64 = 0,
 
-    // system section
-    mem_pct: u8 = 0, // 0-100
-
     pub fn branchSlice(self: *const Hud) []const u8 {
         return self.branch[0..self.branch_len];
+    }
+
+    pub fn cwdSlice(self: *const Hud) []const u8 {
+        return self.cwd[0..self.cwd_len];
     }
 };
 
@@ -96,73 +105,137 @@ pub fn formatAheadBehind(buf: []u8, ahead: u32, behind: u32) []const u8 {
     return std.fmt.bufPrint(buf, "\xe2\x86\x91{d} \xe2\x86\x93{d}", .{ ahead, behind }) catch "";
 }
 
+/// Shorten a filesystem path to its last two components, prefixed with "…/".
+/// E.g. "/Users/foo/projects/anvil" → "…/projects/anvil".
+/// If the path has ≤2 components (or is empty), it is returned as-is into `buf`.
+pub fn formatCwd(buf: []u8, path: []const u8) []const u8 {
+    if (path.len == 0) return "";
+    // Strip trailing slash.
+    var p = path;
+    if (p.len > 1 and p[p.len - 1] == '/') p = p[0 .. p.len - 1];
+    // Find the last slash.
+    const last = std.mem.lastIndexOfScalar(u8, p, '/') orelse {
+        return std.fmt.bufPrint(buf, "{s}", .{p}) catch p;
+    };
+    // Find the second-to-last slash.
+    if (last == 0) {
+        return std.fmt.bufPrint(buf, "{s}", .{p}) catch p;
+    }
+    const prev = std.mem.lastIndexOfScalar(u8, p[0..last], '/') orelse {
+        return std.fmt.bufPrint(buf, "{s}", .{p}) catch p;
+    };
+    const tail = p[prev + 1 ..];
+    return std.fmt.bufPrint(buf, "\xe2\x80\xa6/{s}", .{tail}) catch p;
+}
+
 // --- Draw ----------------------------------------------------------------
 
-/// Draw the HUD panel starting at raster column `start_col`. `total_rows` is
-/// the full cell-row count of the visible area (tab bar rows already excluded
-/// by the caller — pass the grid rows count so we draw into the right region,
-/// adding `top_offset` for the tab bar).
+/// Draw the HUD as a floating card in the top-right corner of the terminal
+/// area. `total_cols` is the full terminal column count; `total_rows` is the
+/// full visible row count (grid rows only, tab bar excluded); `top_offset` is
+/// the number of rows taken by the tab bar above the grid.
+///
+/// The card sits 1 column in from the right edge and 1 row below the tab bar.
+/// It is `hud_cols` wide and `card_rows` tall.
 pub fn draw(
     raster: *Raster,
     font: Font,
     theme: Theme,
     hud: Hud,
-    start_col: usize,
+    total_cols: usize,
     total_rows: usize,
     top_offset: usize,
 ) void {
-    if (total_rows == 0) return;
+    if (total_rows == 0 or total_cols < hud_cols + 2) return;
 
-    // Separator gutter: one thin vertical rule in the column just before start_col.
-    const sep_col = start_col -| 1;
-    const sep_rgb = ash;
-    raster.colRule(font, sep_col, sep_rgb);
+    // Card top-left cell: 1 column margin from the right edge, 1 row below tab bar.
+    const card_col = total_cols - hud_cols - 1;
+    const card_row = top_offset + 1;
 
-    // Fill the HUD background (panel surface = charcoal-ish mix).
-    // We re-use theme.ansi[8] (the muted bg slot) as the panel surface — it is
-    // slightly lifted from the terminal background, which provides quiet contrast.
-    const panel_bg = theme.ansi[0]; // darkest ansi slot = deep surface
-    var c = start_col;
-    while (c < start_col + hud_cols) : (c += 1) {
-        var r = top_offset;
-        while (r < top_offset + total_rows) : (r += 1) {
-            raster.cellBg(font, c, r, panel_bg);
-        }
+    // How many rows are actually available below the tab bar.
+    const available = total_rows; // total_rows already excludes top_offset rows
+    const actual_card_rows = @min(card_rows, available);
+    if (actual_card_rows == 0) return;
+
+    // --- Panel background — a translucent frosted card --------------------
+    // Card pixel extents (raster device-pixel space, y=0 at top).
+    const cw = font.metrics.cell_w;
+    const ch = font.metrics.cell_h;
+    const left_px = raster.pad_x + @as(f64, @floatFromInt(card_col)) * cw;
+    const top_px = raster.pad_y + @as(f64, @floatFromInt(card_row)) * ch;
+    const card_w_px = @as(f64, @floatFromInt(hud_cols)) * cw;
+    const card_h_px = @as(f64, @floatFromInt(actual_card_rows)) * ch;
+
+    // Fill with alpha so the terminal content behind shows through faintly.
+    const panel_bg = color.mix(theme.background, theme.foreground, 0.08);
+    raster.fillPixelRectAlpha(left_px, top_px, card_w_px, card_h_px, panel_bg, 0.85);
+
+    // --- Border (1-device-pixel strips around the card) -------------------
+    const border: f64 = 1.0;
+    // Top edge
+    raster.fillPixelRect(left_px, top_px, card_w_px, border, ash);
+    // Bottom edge
+    raster.fillPixelRect(left_px, top_px + card_h_px - border, card_w_px, border, ash);
+    // Left edge
+    raster.fillPixelRect(left_px, top_px, border, card_h_px, ash);
+    // Right edge
+    raster.fillPixelRect(left_px + card_w_px - border, top_px, border, card_h_px, ash);
+
+    // --- Content rows (top-to-bottom inside card) --------------------------
+    var row = card_row;
+    const max_row = card_row + actual_card_rows;
+
+    // --- cwd section -------------------------------------------------------
+    if (row < max_row) {
+        row = drawSectionDot(raster, font, theme, card_col, row, "cwd", info_teal);
+    }
+    if (row < max_row) {
+        var cwdbuf: [80]u8 = undefined;
+        const cwdtxt = formatCwd(&cwdbuf, hud.cwdSlice());
+        row = drawValueRow(raster, font, theme, card_col, row, cwdtxt, theme.foreground);
     }
 
-    // Current raster row cursor — draw rows top-to-bottom inside the grid area.
-    var row = top_offset;
+    // blank row
+    row += 1;
 
     // --- git section -------------------------------------------------------
-    row = drawSectionDot(raster, font, theme, start_col, row, "git", info_teal);
+    if (row < max_row) {
+        row = drawSectionDot(raster, font, theme, card_col, row, "git", info_teal);
+    }
     switch (hud.git) {
         .no_repo => {
-            row = drawValueRow(raster, font, theme, start_col, row, "not a repo", alloy);
+            if (row < max_row) {
+                row = drawValueRow(raster, font, theme, card_col, row, "not a repo", alloy);
+            }
         },
         .ok, .dirty => {
-            const branch = hud.branchSlice();
-            row = drawValueRow(raster, font, theme, start_col, row, branch, theme.foreground);
-            // dirty count line
-            if (hud.git_dirty > 0) {
+            if (row < max_row) {
+                const branch = hud.branchSlice();
+                row = drawValueRow(raster, font, theme, card_col, row, branch, theme.foreground);
+            }
+            if (row < max_row and hud.git_dirty > 0) {
                 var dbuf: [32]u8 = undefined;
                 const dtxt = std.fmt.bufPrint(&dbuf, "{d} dirty", .{hud.git_dirty}) catch "";
-                row = drawValueRow(raster, font, theme, start_col, row, dtxt, attention);
+                row = drawValueRow(raster, font, theme, card_col, row, dtxt, attention);
             }
-            // ahead/behind line
-            var abbuf: [32]u8 = undefined;
-            const abtxt = formatAheadBehind(&abbuf, hud.git_ahead, hud.git_behind);
-            if (abtxt.len > 0) {
-                row = drawValueRow(raster, font, theme, start_col, row, abtxt, alloy);
+            if (row < max_row) {
+                var abbuf: [32]u8 = undefined;
+                const abtxt = formatAheadBehind(&abbuf, hud.git_ahead, hud.git_behind);
+                if (abtxt.len > 0) {
+                    row = drawValueRow(raster, font, theme, card_col, row, abtxt, alloy);
+                }
             }
         },
     }
 
-    // blank row between sections
+    // blank row
     row += 1;
 
     // --- last-run section --------------------------------------------------
-    row = drawSectionDot(raster, font, theme, start_col, row, "last run", info_teal);
-    {
+    if (row < max_row) {
+        row = drawSectionDot(raster, font, theme, card_col, row, "last run", info_teal);
+    }
+    if (row < max_row) {
         var rbuf: [48]u8 = undefined;
         const rtxt = formatRunStatus(&rbuf, hud.run, hud.run_exit, hud.run_duration_ms);
         const run_color: [3]u8 = switch (hud.run) {
@@ -170,17 +243,7 @@ pub fn draw(
             .ok => verified,
             .failed => failure,
         };
-        row = drawValueRow(raster, font, theme, start_col, row, rtxt, run_color);
-    }
-
-    // blank row between sections
-    row += 1;
-
-    // --- system section (only if still in bounds) --------------------------
-    if (row < top_offset + total_rows) {
-        var mbuf: [24]u8 = undefined;
-        const mtxt = std.fmt.bufPrint(&mbuf, "mem {d}%", .{hud.mem_pct}) catch "mem ?";
-        _ = drawSectionDot(raster, font, theme, start_col, row, mtxt, info_teal);
+        _ = drawValueRow(raster, font, theme, card_col, row, rtxt, run_color);
     }
 }
 
@@ -196,7 +259,7 @@ fn drawText(
     col: usize,
     row: usize,
     text: []const u8,
-    color: [3]u8,
+    color_: [3]u8,
     max_col: usize,
 ) void {
     var cx = col;
@@ -204,7 +267,7 @@ fn drawText(
     var it = view.iterator();
     while (it.nextCodepoint()) |cp| {
         if (cx >= max_col) break;
-        raster.cellGlyph(font, cx, row, font.glyph(cp), color);
+        raster.cellGlyph(font, cx, row, font.glyph(cp), color_);
         cx += 1;
     }
 }
@@ -237,10 +300,10 @@ fn drawValueRow(
     start_col: usize,
     row: usize,
     text: []const u8,
-    color: [3]u8,
+    color_: [3]u8,
 ) usize {
     _ = theme;
-    drawText(raster, font, start_col + 2, row, text, color, start_col + hud_cols);
+    drawText(raster, font, start_col + 2, row, text, color_, start_col + hud_cols);
     return row + 1;
 }
 
@@ -309,5 +372,24 @@ test "formatAheadBehind both" {
 test "formatAheadBehind neither returns empty" {
     var buf: [16]u8 = undefined;
     const s = formatAheadBehind(&buf, 0, 0);
+    try testing.expectEqualStrings("", s);
+}
+
+test "formatCwd last two components" {
+    var buf: [80]u8 = undefined;
+    const s = formatCwd(&buf, "/Users/foo/projects/anvil");
+    // Should contain "projects/anvil" prefixed with ellipsis
+    try testing.expect(std.mem.indexOf(u8, s, "projects/anvil") != null);
+}
+
+test "formatCwd short path returned as-is" {
+    var buf: [80]u8 = undefined;
+    const s = formatCwd(&buf, "/anvil");
+    try testing.expectEqualStrings("/anvil", s);
+}
+
+test "formatCwd empty" {
+    var buf: [80]u8 = undefined;
+    const s = formatCwd(&buf, "");
     try testing.expectEqualStrings("", s);
 }

@@ -164,6 +164,36 @@ pub const Raster = struct {
         };
     }
 
+    /// Fill an arbitrary rectangle in device-pixel coordinates.
+    /// `px`, `py` are the top-left corner in raster space (y=0 is the top row
+    /// of the bitmap). The CG context is y-up, so we convert here.
+    pub fn fillPixelRect(self: *Raster, px: f64, py: f64, pw: f64, ph: f64, rgb: [3]u8) void {
+        setFill(self.ctx, rgb);
+        // CG y origin is bottom-left; raster py is from top.
+        const cg_y = @as(f64, @floatFromInt(self.height)) - py - ph;
+        capi.CGContextFillRect(self.ctx, .{
+            .origin = .{ .x = px, .y = cg_y },
+            .size = .{ .width = pw, .height = ph },
+        });
+    }
+
+    /// Like `fillPixelRect`, but composites the fill over the existing content
+    /// at `alpha` (0 = clear, 1 = opaque) — used for the translucent HUD card.
+    pub fn fillPixelRectAlpha(self: *Raster, px: f64, py: f64, pw: f64, ph: f64, rgb: [3]u8, alpha: f64) void {
+        capi.CGContextSetRGBFillColor(
+            self.ctx,
+            @as(f64, @floatFromInt(rgb[0])) / 255.0,
+            @as(f64, @floatFromInt(rgb[1])) / 255.0,
+            @as(f64, @floatFromInt(rgb[2])) / 255.0,
+            alpha,
+        );
+        const cg_y = @as(f64, @floatFromInt(self.height)) - py - ph;
+        capi.CGContextFillRect(self.ctx, .{
+            .origin = .{ .x = px, .y = cg_y },
+            .size = .{ .width = pw, .height = ph },
+        });
+    }
+
     /// The BGRA8 pixel buffer, ready for texture upload.
     pub fn bytes(self: *Raster) []const u8 {
         return self.pixels;
