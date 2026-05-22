@@ -1,5 +1,7 @@
 //! Control surface: dual-transport (keyboard + agent) input handling.
 
+pub mod bridge;
+
 use anvil_agent::{SessionStartRequest, SessionStartResponse};
 use anvil_caldera::{CalderaClient, CalderaError};
 use thiserror::Error;

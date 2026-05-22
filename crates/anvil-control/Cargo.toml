@@ -10,3 +10,5 @@ anvil-workspace = { workspace = true }
 anvil-agent     = { workspace = true }
 anvil-caldera   = { workspace = true }
 thiserror       = { workspace = true }
+serde           = { workspace = true }
+serde_json      = { workspace = true }
