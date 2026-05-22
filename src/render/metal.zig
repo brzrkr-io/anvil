@@ -64,11 +64,10 @@ pub const Renderer = struct {
 
         layer.msgSend(void, "setDevice:", .{device});
         layer.msgSend(void, "setPixelFormat:", .{pixel_format});
-        // Present synchronously inside the CoreAnimation transaction so the
-        // drawable updates atomically with a live-resize step — otherwise the
-        // window server stretches the previous (stale) drawable to fill the
-        // new bounds for a frame, which reads as ghosted / double-vision text.
-        layer.msgSend(void, "setPresentsWithTransaction:", .{true});
+        // presentsWithTransaction is toggled per-frame in present(): true only
+        // during live resize (to prevent ghosting), false otherwise (lower
+        // latency). Start with false; the first frame is never a live resize.
+        layer.msgSend(void, "setPresentsWithTransaction:", .{false});
         layer.msgSend(void, "setDrawableSize:", .{extern struct { w: f64, h: f64 }{
             .w = @floatFromInt(width),
             .h = @floatFromInt(height),
@@ -114,9 +113,15 @@ pub const Renderer = struct {
     }
 
     /// Upload a `width*height*4` BGRA8 bitmap and present it as the frame.
-    pub fn present(self: *Renderer, pixels: []const u8) void {
+    /// Pass `sync = true` during a live resize to prevent ghosting; for all
+    /// other frames, `sync = false` uses async presentDrawable: for lower
+    /// latency.
+    pub fn present(self: *Renderer, pixels: []const u8, sync: bool) void {
         const pool = objc.AutoreleasePool.init();
         defer pool.deinit();
+
+        // Toggle the layer property so the command-buffer path matches.
+        self.layer.msgSend(void, "setPresentsWithTransaction:", .{sync});
 
         const region: MTLRegion = .{
             .origin = .{ .x = 0, .y = 0, .z = 0 },
@@ -148,12 +153,20 @@ pub const Renderer = struct {
             @as(c_ulong, 3), @as(c_ulong, 0), @as(c_ulong, 6),
         });
         enc.msgSend(void, "endEncoding", .{});
-        // presentsWithTransaction is on: commit, wait until the work is
-        // scheduled, then present the drawable on this (main) thread so the
-        // frame lands in lockstep with the layer's resize.
-        cmd.msgSend(void, "commit", .{});
-        cmd.msgSend(void, "waitUntilScheduled", .{});
-        drawable.msgSend(void, "present", .{});
+
+        if (sync) {
+            // Synchronous path: commit, wait until scheduled, then present on
+            // the main thread so the frame lands in lockstep with the layer's
+            // resize — prevents ghosting during live resize.
+            cmd.msgSend(void, "commit", .{});
+            cmd.msgSend(void, "waitUntilScheduled", .{});
+            drawable.msgSend(void, "present", .{});
+        } else {
+            // Async path: let the GPU present when ready — lower latency for
+            // normal (non-resize) frames.
+            cmd.msgSend(void, "presentDrawable:", .{drawable});
+            cmd.msgSend(void, "commit", .{});
+        }
     }
 };
 

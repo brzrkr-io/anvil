@@ -104,6 +104,7 @@ const App = struct {
     theme: Theme,
     cursor_cfg: cfg_mod.Config.CursorCfg,
     blink_phase: f32 = 0, // 0..1 cursor blink-fade phase
+    last_blink_opacity: f32 = -1, // last opacity value that triggered a redraw
     cursor_ax: f32 = 0, // animated cursor column (viewport cells)
     cursor_ay: f32 = 0, // animated cursor row (viewport cells)
     scroll_pos: f32 = 0, // displayed viewport offset, fractional, driven by the gesture
@@ -375,9 +376,17 @@ fn onTick() void {
     if (effective_blink and windowIsKey()) {
         g.blink_phase += 1.0 / 64.0;
         if (g.blink_phase >= 1.0) g.blink_phase -= 1.0;
-        g.dirty = true;
+        // Only redraw for blink when the opacity value actually changes.
+        // cursorOpacity is constant during the solid-hold (0..0.5) and off-hold
+        // (0.62..0.88) stretches, so skip the dirty mark during those holds.
+        const new_opacity = cursorOpacity(g.blink_phase);
+        if (new_opacity != g.last_blink_opacity) {
+            g.last_blink_opacity = new_opacity;
+            g.dirty = true;
+        }
     } else if (g.blink_phase != 0) {
         g.blink_phase = 0;
+        g.last_blink_opacity = -1; // force redraw on next blink start
         g.dirty = true;
     }
 
@@ -1516,7 +1525,7 @@ fn renderFrame() void {
         );
     }
 
-    g.renderer.present(g.raster.bytes());
+    g.renderer.present(g.raster.bytes(), viewInLiveResize());
 }
 
 fn drawCell(x: usize, y: usize, content_row: usize, cell: term.Cell) void {
