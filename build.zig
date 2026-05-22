@@ -42,10 +42,27 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
+    // --- caldera-prompt: the shell prompt program -------------------------
+    const prompt_mod = b.createModule(.{
+        .root_source_file = b.path("src/prompt/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const prompt_exe = b.addExecutable(.{
+        .name = "caldera-prompt",
+        .root_module = prompt_mod,
+    });
+    b.installArtifact(prompt_exe);
+
+    const prompt_tests = b.addTest(.{ .root_module = prompt_mod });
+    const run_prompt_tests = b.addRunArtifact(prompt_tests);
+
     const exe_tests = b.addTest(.{ .root_module = exe_mod });
     const run_exe_tests = b.addRunArtifact(exe_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_exe_tests.step);
+    test_step.dependOn(&run_prompt_tests.step);
 
     // Coverage build: kcov deadlocks tracing the child processes the pty tests
     // spawn on macOS, so the report is built from a root that imports every
