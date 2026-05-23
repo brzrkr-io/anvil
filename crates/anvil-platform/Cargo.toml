@@ -63,6 +63,8 @@ objc2-metal        = { workspace = true, features = [
     "MTLResource",
     "MTLDefines",
     "MTLTypes",
+    "MTLBuffer",
+    "block2",
 ] }
 objc2-quartz-core  = { workspace = true, features = ["CAMetalLayer"] }
 objc2-core-text    = { workspace = true, features = [
