@@ -2,7 +2,7 @@
 //!
 //! Phase P4a port: `raster` and `draw` are pure-Rust modules.
 //! Phase P4b port: panel renderers — workspace, tabbar, agent_panel, searchbar,
-//! filetree, cheatsheet.
+//! cheatsheet.
 //! Phase P10a: `atlas` — `GlyphRasterizer` trait + `ShelfPacker` (infrastructure only).
 //! Phase P10b: `batch` — `CellBatch` + `CellInstance` for GPU instance submission.
 
@@ -11,7 +11,6 @@ pub mod atlas;
 pub mod batch;
 pub mod cheatsheet;
 pub mod draw;
-pub mod filetree;
 pub mod raster;
 pub mod searchbar;
 pub mod statusbar;

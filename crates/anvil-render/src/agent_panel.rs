@@ -89,8 +89,6 @@ pub enum Placement {
         total_rows: usize,
         top_offset: usize,
     },
-    /// IDE mode: caller supplies an explicit pixel rect. Not exercised in AG1.
-    Docked { x: f64, y: f64, w: f64, h: f64 },
 }
 
 /// Width of the agent-panel card in terminal columns.
@@ -272,27 +270,7 @@ pub fn draw(
     _expanded: bool,
 ) {
     // Resolve card coordinates from placement.
-    let (card_col, card_row, available, is_docked) = match placement {
-        Placement::Docked { x, y, w, h } => {
-            let cw = metrics.cell_w;
-            let ch = metrics.cell_h;
-            if *w < PANEL_COLS as f64 * cw || *h < 4.0 * ch {
-                return;
-            }
-            let px = *x;
-            let py = *y;
-            let pw = *w;
-            let ph = *h;
-            // Panel background (theme.surface).
-            raster.fill_pixel_rect(px, py, pw, ph, theme.surface);
-            // 1px left-edge border in theme.border.
-            raster.fill_pixel_rect(px, py, 1.0, ph, theme.border);
-            // Derive cell-grid coordinates from pixel rect.
-            let cc = ((px - raster.pad_x) / cw).round() as usize;
-            let cr = ((py - raster.pad_y) / ch).round() as usize;
-            let avail_rows = (ph / ch) as usize;
-            (cc, cr, cr + avail_rows, true)
-        }
+    let (card_col, card_row, available) = match placement {
         Placement::Floating {
             total_cols,
             total_rows,
@@ -306,7 +284,7 @@ pub fn draw(
             }
             let cc = tc - PANEL_COLS - 2;
             let cr = to + 1;
-            (cc, cr, tr, false)
+            (cc, cr, tr)
         }
     };
 
@@ -323,30 +301,21 @@ pub fn draw(
     let card_w_px = PANEL_COLS as f64 * cw;
     let card_h_px = actual_rows as f64 * ch;
 
-    // For floating: draw halo shadow + surface card.
-    // For docked: background was already painted above; skip the floating card.
-    if !is_docked {
-        // Minimal card: surface fill + single 1-device-pixel border.
-        // Codex/Claude-Desktop style — no halo, no bevel; the surface tone
-        // does the lifting and a hairline edge keeps it anchored.
-        let border = mix(theme.border, theme.foreground, 0.25);
-        // Top
-        raster.fill_pixel_rect(left_px - 1.0, top_px - 1.0, card_w_px + 2.0, 1.0, border);
-        // Bottom
-        raster.fill_pixel_rect(
-            left_px - 1.0,
-            top_px + card_h_px,
-            card_w_px + 2.0,
-            1.0,
-            border,
-        );
-        // Left
-        raster.fill_pixel_rect(left_px - 1.0, top_px, 1.0, card_h_px, border);
-        // Right
-        raster.fill_pixel_rect(left_px + card_w_px, top_px, 1.0, card_h_px, border);
-        // Inner surface
-        raster.fill_pixel_rect(left_px, top_px, card_w_px, card_h_px, theme.surface);
-    }
+    // Minimal card: surface fill + single 1-device-pixel border.
+    // Codex/Claude-Desktop style — no halo, no bevel; the surface tone
+    // does the lifting and a hairline edge keeps it anchored.
+    let border = mix(theme.border, theme.foreground, 0.25);
+    raster.fill_pixel_rect(left_px - 1.0, top_px - 1.0, card_w_px + 2.0, 1.0, border);
+    raster.fill_pixel_rect(
+        left_px - 1.0,
+        top_px + card_h_px,
+        card_w_px + 2.0,
+        1.0,
+        border,
+    );
+    raster.fill_pixel_rect(left_px - 1.0, top_px, 1.0, card_h_px, border);
+    raster.fill_pixel_rect(left_px + card_w_px, top_px, 1.0, card_h_px, border);
+    raster.fill_pixel_rect(left_px, top_px, card_w_px, card_h_px, theme.surface);
 
     // --- Content rows --------------------------------------------------------
     let mut row = card_row + 1; // one row breathing room at the top
@@ -868,46 +837,6 @@ mod tests {
             false,
         );
         // Should produce glyph calls for the bullet and text.
-        assert!(!painter.calls.is_empty());
-    }
-
-    /// draw with docked placement renders content (surface background + text rows).
-    #[test]
-    fn draw_docked_renders_content() {
-        let m = metrics();
-        // Raster large enough for a docked panel (PANEL_COLS=36, cell_w=10 → 360px wide)
-        // plus padding (pad_x=24).
-        let mut r = Raster::new(800, 600);
-        r.pad_x = 24.0;
-        r.pad_y = 24.0;
-        let mut painter = StubPainter::default();
-        let theme = anvil_theme::MINERAL_DARK;
-        let snap = Snapshot {
-            connection: anvil_agent::Connection::Live,
-            running_count: 1,
-            ..Default::default()
-        };
-        let local = LocalContext::default();
-        // Place docked panel at pad_x offset so cell col math works out.
-        let panel_w = PANEL_COLS as f64 * m.cell_w; // 36 * 10 = 360px
-        let panel_h = 8.0 * m.cell_h; // 8 rows * 20px = 160px
-        let placement = Placement::Docked {
-            x: r.pad_x,
-            y: r.pad_y,
-            w: panel_w,
-            h: panel_h,
-        };
-        draw(
-            &mut r,
-            &mut painter,
-            m,
-            &theme,
-            &snap,
-            &local,
-            &placement,
-            false,
-        );
-        // Should produce glyph calls for the header and content rows.
         assert!(!painter.calls.is_empty());
     }
 

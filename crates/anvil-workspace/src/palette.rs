@@ -13,7 +13,6 @@ pub enum Action {
     ScrollBottom,
     AppQuit,
     HudToggle,
-    TreeToggle,
     CheatsheetShow,
 }
 
@@ -73,12 +72,6 @@ pub const CATALOG: &[Entry] = &[
         title: "Toggle HUD",
         subtitle: Some("Show or hide the developer context panel"),
         action: Action::HudToggle,
-    },
-    Entry {
-        id: "tree.toggle",
-        title: "Toggle File Tree",
-        subtitle: Some("Show or hide the file explorer panel"),
-        action: Action::TreeToggle,
     },
     Entry {
         id: "cheatsheet.show",

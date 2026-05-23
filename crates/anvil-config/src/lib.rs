@@ -135,7 +135,6 @@ pub struct Keybindings {
     pub search_next: String,
     pub search_prev: String,
     pub hud_toggle: String,
-    pub tree_toggle: String,
     pub cheatsheet_toggle: String,
     pub split_right: String,
     pub split_down: String,
@@ -144,7 +143,6 @@ pub struct Keybindings {
     pub focus_right: String,
     pub focus_up: String,
     pub focus_down: String,
-    pub layout_mode_toggle: String,
     pub fold_block: String,
 }
 
@@ -168,7 +166,6 @@ impl Default for Keybindings {
             search_next: "cmd+g".into(),
             search_prev: "cmd+shift+g".into(),
             hud_toggle: "cmd+j".into(),
-            tree_toggle: "cmd+e".into(),
             cheatsheet_toggle: "cmd+/".into(),
             split_right: "cmd+d".into(),
             split_down: "cmd+shift+d".into(),
@@ -177,9 +174,6 @@ impl Default for Keybindings {
             focus_right: "cmd+shift+l".into(),
             focus_up: "cmd+shift+k".into(),
             focus_down: "cmd+shift+j".into(),
-            // Cmd+I — mnemonic for IDE; single-key chord avoids shift
-            // case-folding edge cases and any system-shortcut conflicts.
-            layout_mode_toggle: "cmd+i".into(),
             fold_block: "cmd+.".into(),
         }
     }
