@@ -64,9 +64,10 @@ const PALETTE_HTML: &str = include_str!("../../../ui/palette/index.html");
 // ── Constants ────────────────────────────────────────────────────────────────
 
 /// Uniform inset in device pixels between the window edge and the terminal grid.
-/// 32 dp at 2× = the Codex/Claude-Desktop "premium" breathing room — wider
-/// than a stock terminal, intentional to read as a product surface not a tty.
-const GRID_PAD: usize = 32;
+/// 24 device px (= 12 logical pt at 2× Retina) sits between a stock terminal's
+/// near-zero inset and a product app's heavy chrome — readable as deliberate
+/// breathing room without burning content columns.
+const GRID_PAD: usize = 24;
 
 /// HUD refresh: once every N ticks (~60 fps → ~1 s).
 const HUD_REFRESH_TICKS: u32 = 60;
@@ -1562,7 +1563,7 @@ impl AppHandler for AppShell {
             }
         }
 
-        // HUD refresh throttle (agent panel is always visible in IDE mode).
+        // HUD refresh throttle — only when the floating agent panel is on.
         if app.hud_visible {
             app.hud_tick += 1;
             if app.hud_tick >= HUD_REFRESH_TICKS {

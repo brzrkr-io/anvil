@@ -63,10 +63,6 @@ pub const ROWS: &[Row] = &[
         desc: "toggle HUD",
     },
     Row::Shortcut {
-        chord: "Cmd E",
-        desc: "toggle file tree",
-    },
-    Row::Shortcut {
         chord: "Cmd /",
         desc: "this cheatsheet",
     },
