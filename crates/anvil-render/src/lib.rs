@@ -3,8 +3,10 @@
 //! Phase P4a port: `raster` and `draw` are pure-Rust modules.
 //! Phase P4b port: panel renderers — workspace, tabbar, agent_panel, searchbar,
 //! filetree, cheatsheet.
+//! Phase P10a: `atlas` — `GlyphRasterizer` trait + `ShelfPacker` (infrastructure only).
 
 pub mod agent_panel;
+pub mod atlas;
 pub mod cheatsheet;
 pub mod draw;
 pub mod filetree;
@@ -14,6 +16,7 @@ pub mod statusbar;
 pub mod tabbar;
 pub mod workspace;
 
+pub use atlas::{GlyphRasterizer, GlyphSlot, ShelfPacker};
 pub use draw::{
     CursorConfig, CursorParams, CursorStyle, FoldedBlocks, cursor_opacity, draw_cell, draw_cursor,
     draw_viewport, resolve_color, rule_row,
