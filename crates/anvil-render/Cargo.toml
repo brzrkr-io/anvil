@@ -9,6 +9,7 @@ anvil-term      = { workspace = true }
 anvil-workspace = { workspace = true }
 anvil-theme     = { workspace = true }
 anvil-agent     = { workspace = true }
+libc            = "0.2"
 
 [dev-dependencies]
 criterion     = { workspace = true }

@@ -145,6 +145,7 @@ dependencies = [
  "anvil-theme",
  "anvil-workspace",
  "criterion",
+ "libc",
 ]
 
 [[package]]

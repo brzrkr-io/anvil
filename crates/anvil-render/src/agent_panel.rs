@@ -12,9 +12,10 @@
 //! agent violet / info teal).
 
 use std::fmt::Write as FmtWrite;
+use std::time::SystemTime;
 
 use anvil_agent::{Connection, FindingSeverity, RunStatus, Snapshot};
-use anvil_theme::{Theme, mix};
+use anvil_theme::Theme;
 
 use crate::raster::{FontMetrics, GlyphPainter, Raster};
 
@@ -301,20 +302,9 @@ pub fn draw(
     let card_w_px = PANEL_COLS as f64 * cw;
     let card_h_px = actual_rows as f64 * ch;
 
-    // Minimal card: surface fill + single 1-device-pixel border.
-    // Codex/Claude-Desktop style — no halo, no bevel; the surface tone
-    // does the lifting and a hairline edge keeps it anchored.
-    let border = mix(theme.border, theme.foreground, 0.25);
-    raster.fill_pixel_rect(left_px - 1.0, top_px - 1.0, card_w_px + 2.0, 1.0, border);
-    raster.fill_pixel_rect(
-        left_px - 1.0,
-        top_px + card_h_px,
-        card_w_px + 2.0,
-        1.0,
-        border,
-    );
-    raster.fill_pixel_rect(left_px - 1.0, top_px, 1.0, card_h_px, border);
-    raster.fill_pixel_rect(left_px + card_w_px, top_px, 1.0, card_h_px, border);
+    // Subtle: surface fill only — no border. The fill differentiates the
+    // panel from terminal content; the absence of a border lets it read as
+    // an inset note, not a chrome window.
     raster.fill_pixel_rect(left_px, top_px, card_w_px, card_h_px, theme.surface);
 
     // --- Content rows --------------------------------------------------------
@@ -520,7 +510,8 @@ fn draw_hairline(
     raster.fill_pixel_rect(sep_x, sep_y, sep_w, 1.0, theme.border);
 }
 
-/// Draw the Local footer: one dim row with cwd · branch · last-run.
+/// Compact local-context footer packed with useful state.
+/// Format: `cwd · branch *N ↑A ↓B · run · HH:MM`
 fn draw_local_footer(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
@@ -531,28 +522,37 @@ fn draw_local_footer(
     cols: usize,
 ) {
     let max_col = start_col + cols - 1;
+    let mut buf = String::with_capacity(96);
 
-    // Build a compact line: "cwd · branch · run"
-    let mut buf = String::with_capacity(80);
-
-    // cwd (last component only to save space)
+    // cwd: keep only the basename to save columns.
     let cwd_short = format_cwd(&local.cwd);
-    // Use only the last path component for the footer (very compact).
     let tail = match cwd_short.rfind('/') {
         Some(sep) => &cwd_short[sep + 1..],
         None => &cwd_short,
     };
     let _ = write!(buf, "{tail}");
 
-    // · branch (if in a repo)
+    // git: branch + dirty count + ahead/behind, condensed.
     if local.git != GitState::NoRepo && !local.branch.is_empty() {
         let _ = write!(buf, " \u{00b7} {}", local.branch);
+        if local.git_dirty > 0 {
+            let _ = write!(buf, " *{}", local.git_dirty);
+        }
+        let ab = format_ahead_behind(local.git_ahead, local.git_behind);
+        if !ab.is_empty() {
+            let _ = write!(buf, " {ab}");
+        }
     }
 
-    // · run state
+    // last run.
     {
         let rtxt = format_run_status(local.run, local.run_exit, local.run_duration_ms);
         let _ = write!(buf, " \u{00b7} {rtxt}");
+    }
+
+    // local clock — HH:MM. Trailing position so it stays out of the way.
+    if let Some(hm) = format_local_hm() {
+        let _ = write!(buf, " \u{00b7} {hm}");
     }
 
     draw_text(
@@ -565,6 +565,39 @@ fn draw_local_footer(
         ALLOY,
         max_col,
     );
+}
+
+/// Local time as `HH:MM` (24h). Returns None when system time is unavailable.
+fn format_local_hm() -> Option<String> {
+    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).ok()?;
+    let secs = now.as_secs();
+    // Pure conversion: seconds → wall HH:MM in local TZ. We use a fixed
+    // offset from the TZ env var to avoid depending on a date crate.
+    // Best-effort: if $TZ_OFFSET_SEC is set use that; otherwise treat the
+    // system clock as already-local (correct in practice for macOS where
+    // SystemTime returns local wall-clock seconds via libc).
+    let offset: i64 = std::env::var("TZ_OFFSET_SEC")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(local_offset_seconds);
+    let local = secs as i64 + offset;
+    let day_secs = local.rem_euclid(86_400);
+    let h = day_secs / 3_600;
+    let m = (day_secs % 3_600) / 60;
+    Some(format!("{:02}:{:02}", h, m))
+}
+
+/// Compute local UTC offset in seconds via libc's `localtime_r`.
+fn local_offset_seconds() -> i64 {
+    // SAFETY: we read time and pass into thread-safe localtime_r with a
+    // local-stack tm struct. No mutation of process state.
+    unsafe {
+        let mut now: libc::time_t = 0;
+        libc::time(&mut now as *mut libc::time_t);
+        let mut tm: libc::tm = std::mem::zeroed();
+        libc::localtime_r(&now as *const libc::time_t, &mut tm as *mut libc::tm);
+        tm.tm_gmtoff as i64
+    }
 }
 
 // --- Shared draw utilities --------------------------------------------------
