@@ -38,23 +38,18 @@ pub fn draw_tab_bar(
     for t in 0..n {
         let start_col = t * seg_cols;
         let is_active = t == tabs.active;
-        // Active tab: raised surface. Inactive: recessed between canvas and surface.
-        let bg = if is_active {
-            theme.surface
-        } else {
-            anvil_theme::mix(theme.background, theme.surface, 0.4)
-        };
-        // Fill the segment background across row 0.
         let end_col = if t == n - 1 {
             total_cols
         } else {
             start_col + seg_cols
         };
-        for col in start_col..end_col {
-            raster.cell_bg(metrics, col, 0, bg);
-        }
-        // 2px accent bar along the top edge of the active tab segment.
+        // Active tab: raised surface fill. Inactive: transparent — sits flush
+        // with the canvas so the bar reads as a row of labels, not a panel.
         if is_active {
+            for col in start_col..end_col {
+                raster.cell_bg(metrics, col, 0, theme.surface);
+            }
+            // 2px accent bar along the top edge of the active segment.
             let start_px = raster.pad_x + start_col as f64 * cell_w;
             let tab_top_px = raster.pad_y;
             let seg_w_px = (end_col - start_col) as f64 * cell_w;
@@ -64,7 +59,7 @@ pub fn draw_tab_bar(
         let fg = if is_active {
             theme.foreground
         } else {
-            theme.ansi[8]
+            theme.ansi[8] // dim
         };
         let seg_w = end_col - start_col;
         let label = tab_label(tabs, t);
@@ -76,11 +71,12 @@ pub fn draw_tab_bar(
         }
     }
 
-    // Thin border line along the bottom of the tab bar (bottom of row 0).
+    // 1px hairline along the bottom of the tab bar — the boundary between
+    // chrome and content, drawn in theme.border (subtle).
     let bar_bottom_px = raster.pad_y + cell_h - 1.0;
     let bar_left_px = raster.pad_x;
     let bar_w_px = total_cols as f64 * cell_w;
-    raster.fill_pixel_rect(bar_left_px, bar_bottom_px, bar_w_px, 2.0, theme.border);
+    raster.fill_pixel_rect(bar_left_px, bar_bottom_px, bar_w_px, 1.0, theme.border);
 }
 
 /// Derive a display label for tab `t`:

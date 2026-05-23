@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::thread;
+#[cfg(debug_assertions)]
 use std::time::Instant;
 
 use anyhow::Result;

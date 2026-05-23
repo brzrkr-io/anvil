@@ -13,14 +13,12 @@ pub const STATUS_BAR_ROWS: usize = 1;
 
 // --- Brand color constants (Mineral palette) --------------------------------
 
-/// alloy: muted labels / metadata (#86919a)
+/// alloy: muted labels / metadata (#86919a) — the default tone for the bar
 const ALLOY: [u8; 3] = [0x86, 0x91, 0x9a];
 /// status.attention: reviewable warning / pending action (#b07a14)
 const ATTENTION: [u8; 3] = [0xb0, 0x7a, 0x14];
 /// status.agent: agent / automation / model activity — violet (#6a5fa3)
 const AGENT_VIOLET: [u8; 3] = [0x6a, 0x5f, 0xa3];
-/// status.info: info teal (#2f7f86)
-const INFO_TEAL: [u8; 3] = [0x2f, 0x7f, 0x86];
 
 /// Draw the status bar across `bottom_row` (a cell-row index into the raster).
 ///
@@ -51,93 +49,53 @@ pub fn draw_status_bar(
         return;
     }
 
-    // Background: surface tone across the whole row.
-    for c in 0..total_cols {
-        raster.cell_bg(metrics, c, bottom_row, theme.surface);
-    }
+    // Transparent bar: no surface fill, no top border. Status reads as a
+    // quiet caption floating on the terminal background. Colours pull
+    // attention only when they need to.
+    let _ = theme;
 
-    // 1px border rule above the bar.
-    let bar_top_px = raster.pad_y + bottom_row as f64 * metrics.cell_h;
-    let bar_left_px = raster.pad_x;
-    let bar_w_px = total_cols as f64 * cell_w;
-    raster.fill_pixel_rect(bar_left_px, bar_top_px, bar_w_px, 1.0, theme.border);
-
-    // --- Build left segments ---
-
-    // Each segment is a (text, color) pair. We write them left-to-right with a
-    // ALLOY `·` separator between non-empty segments.
-    let mut segments: Vec<(&str, [u8; 3], String)> = Vec::new();
-
-    let branch_label;
-    let dirty_label;
-    let clean_label = "clean".to_string();
+    // --- Left: git branch + dirty count, condensed ---------------------------
+    //
+    // Layout: ` main` in ALLOY, then ` *3` in ATTENTION when dirty.
+    // No "modified" / "clean" words — the symbol carries the meaning and the
+    // bar stays narrow.
+    let mut col = 2usize; // 2-col inner left pad
 
     if local_ctx.git != GitState::NoRepo && !local_ctx.branch.is_empty() {
-        branch_label = format!(" {}", local_ctx.branch);
-        segments.push(("", INFO_TEAL, branch_label));
-    }
-
-    if local_ctx.git_dirty > 0 {
-        dirty_label = format!("{} modified", local_ctx.git_dirty);
-        segments.push(("", ATTENTION, dirty_label));
-    } else if local_ctx.git != GitState::NoRepo && !local_ctx.branch.is_empty() {
-        segments.push(("", ALLOY, clean_label));
-    }
-
-    // Write left segments with `·` separator.
-    let mut col = 2usize; // 2-col inner left pad
-    for (idx, (_prefix, color, text)) in segments.iter().enumerate() {
-        if idx > 0 {
-            // separator
-            if col + 3 < total_cols {
-                raster.cell_glyph(painter, metrics, col, bottom_row, '·' as u32, ALLOY);
-                col += 2; // separator + 1 space
-            }
-        }
-        for ch in text.chars() {
-            if col + 1 >= total_cols.saturating_sub(2) {
+        let branch_label = format!("\u{e0a0} {}", local_ctx.branch); // U+E0A0 branch nerd-font glyph
+        for ch in branch_label.chars() {
+            if col + 2 >= total_cols {
                 break;
             }
-            raster.cell_glyph(painter, metrics, col, bottom_row, ch as u32, *color);
+            raster.cell_glyph(painter, metrics, col, bottom_row, ch as u32, ALLOY);
             col += 1;
+        }
+
+        if local_ctx.git_dirty > 0 {
+            // " *N" in attention amber
+            let dirty = format!(" *{}", local_ctx.git_dirty);
+            for ch in dirty.chars() {
+                if col + 2 >= total_cols {
+                    break;
+                }
+                raster.cell_glyph(painter, metrics, col, bottom_row, ch as u32, ATTENTION);
+                col += 1;
+            }
         }
     }
 
-    // --- Right section ---
+    // --- Right: agent runs ---------------------------------------------------
 
     if agent_snap.connection == Connection::Live && agent_snap.running_count > 0 {
-        let count = agent_snap.running_count;
-        let label = format!("{} running", count);
-        // Diamond glyph + space + label text. We draw right-to-left from the
-        // right edge (with 2-col inner right pad), then flip.
-        // Simpler: compute start col from the right.
-        let diamond = '◆';
-        // Total chars: 1 (diamond) + 1 (space) + label.len()
-        let right_text_len = 1 + 1 + label.chars().count();
+        let label = format!("\u{25c6} {} running", agent_snap.running_count); // ◆
+        let right_text_len = label.chars().count();
         if right_text_len + 2 < total_cols && col + right_text_len + 2 < total_cols {
             let start = total_cols - 2 - right_text_len;
-            raster.cell_glyph(
-                painter,
-                metrics,
-                start,
-                bottom_row,
-                diamond as u32,
-                AGENT_VIOLET,
-            );
-            let mut c = start + 1;
-            // space
-            raster.cell_glyph(
-                painter,
-                metrics,
-                c,
-                bottom_row,
-                ' ' as u32,
-                theme.foreground,
-            );
-            c += 1;
-            for ch in label.chars() {
-                raster.cell_glyph(painter, metrics, c, bottom_row, ch as u32, theme.foreground);
-                c += 1;
+            for (i, (c, ch)) in (start..).zip(label.chars()).enumerate() {
+                // First char is the diamond — colour it AGENT_VIOLET; the rest
+                // are quiet ALLOY so the right side reads as one unit.
+                let fg = if i == 0 { AGENT_VIOLET } else { ALLOY };
+                raster.cell_glyph(painter, metrics, c, bottom_row, ch as u32, fg);
             }
         }
     }
@@ -187,7 +145,8 @@ mod tests {
 
     // --- draw_status_bar_smoke -----------------------------------------------
 
-    /// Smoke test: no panic, and the row is painted in theme.surface.
+    /// Smoke test: no panic, and the bar leaves the background untouched
+    /// (transparent — no surface fill, no border).
     #[test]
     fn draw_status_bar_smoke() {
         let m = metrics();
@@ -210,19 +169,16 @@ mod tests {
             row,
         );
 
-        // A pixel at the center of the bottom row should carry theme.surface.
+        // With no git + no agent runs, the bar emits zero pixels.
         let cell_h = m.cell_h as usize;
         let px_y = row * cell_h + cell_h / 2;
         let px = pixel_at(&r, 4, px_y);
-        assert_eq!(
-            px, theme.surface,
-            "expected surface at bottom row, got {px:?}"
-        );
+        assert_eq!(px, [0, 0, 0], "expected background untouched, got {px:?}");
     }
 
     // --- branch_shown_when_git_ok --------------------------------------------
 
-    /// Branch name chars are drawn in INFO_TEAL when git state is Ok.
+    /// Branch name chars are drawn in ALLOY (quiet) when git state is Ok.
     #[test]
     fn branch_shown_when_git_ok() {
         let m = metrics();
@@ -250,25 +206,18 @@ mod tests {
             row,
         );
 
-        // At least one glyph call in INFO_TEAL for a branch char.
-        let teal_calls: Vec<_> = painter
+        let alloy_calls: Vec<_> = painter
             .calls
             .iter()
-            .filter(|(_, fg)| *fg == INFO_TEAL)
+            .filter(|(_, fg)| *fg == ALLOY)
             .collect();
-        assert!(
-            !teal_calls.is_empty(),
-            "expected branch chars in INFO_TEAL, got calls: {:?}",
-            painter.calls
-        );
-        // The branch name 'main' chars should be present.
-        let teal_chars: Vec<char> = teal_calls
+        let alloy_chars: Vec<char> = alloy_calls
             .iter()
             .filter_map(|(cp, _)| char::from_u32(*cp))
             .collect();
         assert!(
-            teal_chars.contains(&'m'),
-            "expected 'm' from 'main' in INFO_TEAL, got {teal_chars:?}"
+            alloy_chars.contains(&'m'),
+            "expected 'm' from 'main' in ALLOY, got {alloy_chars:?}"
         );
     }
 
@@ -349,7 +298,6 @@ mod tests {
         );
 
         // With NoRepo and no agent runs, expect zero glyph calls.
-        // (The surface fill + border use cell_bg / fill_pixel_rect, not cell_glyph.)
         assert!(
             painter.calls.is_empty(),
             "expected no glyph calls for default state, got {:?}",
@@ -359,7 +307,8 @@ mod tests {
 
     // --- running_count_shown_when_live ---------------------------------------
 
-    /// "running" chars are recorded when connection == Live and running_count > 0.
+    /// "running" chars are recorded in ALLOY when connection == Live; the
+    /// leading diamond is in AGENT_VIOLET.
     #[test]
     fn running_count_shown_when_live() {
         let m = metrics();
@@ -386,21 +335,16 @@ mod tests {
             row,
         );
 
-        // "running" chars should appear in theme.foreground.
-        let fg_calls: Vec<_> = painter
+        let alloy_chars: Vec<char> = painter
             .calls
             .iter()
-            .filter(|(_, fg)| *fg == theme.foreground)
-            .collect();
-        let fg_chars: Vec<char> = fg_calls
-            .iter()
+            .filter(|(_, fg)| *fg == ALLOY)
             .filter_map(|(cp, _)| char::from_u32(*cp))
             .collect();
         assert!(
-            fg_chars.contains(&'r'),
-            "expected 'r' from 'running' in foreground color, got {fg_chars:?}"
+            alloy_chars.contains(&'r'),
+            "expected 'r' from 'running' in ALLOY, got {alloy_chars:?}"
         );
-        // Diamond glyph should appear in AGENT_VIOLET.
         let violet_calls: Vec<_> = painter
             .calls
             .iter()

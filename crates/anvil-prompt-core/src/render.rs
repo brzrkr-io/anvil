@@ -19,7 +19,6 @@ pub enum Shell {
 }
 
 const RESET: &str = "\x1b[0m";
-const EDGE: &str = "\u{258e}"; // ▎
 
 // Indexed ANSI colors — resolved through the active theme each frame.
 const ANCHOR: &str = "\x1b[39m"; // default foreground — cwd anchor; flips with theme
@@ -78,24 +77,19 @@ fn esc(buf: &mut String, shell: Shell, seq: &str) {
 }
 
 /// The full two-line prompt block.
+///
+/// Pure/Starship-inspired: a context row of colored segments separated by
+/// double spaces (colour does the dividing — no middots, no edge bar), then a
+/// bare `❯ ` on its own line. The `❯` flips to red when the previous command
+/// failed.
 pub fn full(segments: &[Segment], opts: Options) -> String {
     let mut buf = String::new();
     let sh = opts.shell;
 
-    let edge_color = if opts.failed { ACCENT_ERR } else { ACCENT };
-    // Line 1: edge + segments.
-    esc(&mut buf, sh, edge_color);
-    buf.push_str(EDGE);
-    esc(&mut buf, sh, RESET);
-    buf.push_str("  ");
+    // Line 1: segments, space-separated. Two spaces between segments so the
+    // grouping reads as deliberate.
     for (idx, s) in segments.iter().enumerate() {
         if idx != 0 {
-            // Dim middot separator gives the line real structure instead of
-            // reading as a row of unrelated word gaps.
-            buf.push_str("  ");
-            esc(&mut buf, sh, DIM);
-            buf.push('\u{00b7}'); // ·
-            esc(&mut buf, sh, RESET);
             buf.push_str("  ");
         }
         esc(&mut buf, sh, seg_color(s));
@@ -107,13 +101,11 @@ pub fn full(segments: &[Segment], opts: Options) -> String {
         esc(&mut buf, sh, RESET);
     }
     buf.push('\n');
-    // Line 2: edge + prompt glyph, aligned under the segments.
-    esc(&mut buf, sh, edge_color);
-    buf.push_str(EDGE);
-    esc(&mut buf, sh, RESET);
-    buf.push_str("  ");
-    esc(&mut buf, sh, edge_color);
-    buf.push('\u{276f}'); // ❯ — heavier than U+203A, the modern prompt glyph
+
+    // Line 2: just the prompt glyph.
+    let glyph_color = if opts.failed { ACCENT_ERR } else { ACCENT };
+    esc(&mut buf, sh, glyph_color);
+    buf.push('\u{276f}'); // ❯
     esc(&mut buf, sh, RESET);
     buf.push(' ');
     esc(&mut buf, sh, "\x1b]133;B\x07");
@@ -144,7 +136,7 @@ mod tests {
     }
 
     #[test]
-    fn full_renders_two_lines_with_the_accent_edge() {
+    fn full_renders_two_lines() {
         let segs = sample_segs();
         let out = full(
             &segs,
@@ -155,9 +147,10 @@ mod tests {
             },
         );
         assert!(out.contains('\n'));
-        assert!(out.contains(EDGE));
         assert!(out.contains("anvil"));
         assert!(out.contains("main"));
+        // No leading edge bar — minimal prompt style.
+        assert!(!out.contains('\u{258e}'));
     }
 
     #[test]
