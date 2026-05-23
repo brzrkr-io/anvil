@@ -83,3 +83,11 @@ objc2-core-graphics = { workspace = true, features = [
     "CGFont",
     "CGImage",
 ] }
+
+[dev-dependencies]
+criterion = { workspace = true }
+anvil-render = { workspace = true }
+
+[[bench]]
+name = "glyph_cache"
+harness = false

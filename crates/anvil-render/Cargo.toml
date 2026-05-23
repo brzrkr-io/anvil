@@ -9,3 +9,13 @@ anvil-term      = { workspace = true }
 anvil-workspace = { workspace = true }
 anvil-theme     = { workspace = true }
 anvil-agent     = { workspace = true }
+
+[dev-dependencies]
+criterion     = { workspace = true }
+anvil-term    = { workspace = true }
+anvil-theme   = { workspace = true }
+anvil-workspace = { workspace = true }
+
+[[bench]]
+name = "draw_viewport"
+harness = false

@@ -333,7 +333,13 @@ pub fn draw(
         // Top
         raster.fill_pixel_rect(left_px - 1.0, top_px - 1.0, card_w_px + 2.0, 1.0, border);
         // Bottom
-        raster.fill_pixel_rect(left_px - 1.0, top_px + card_h_px, card_w_px + 2.0, 1.0, border);
+        raster.fill_pixel_rect(
+            left_px - 1.0,
+            top_px + card_h_px,
+            card_w_px + 2.0,
+            1.0,
+            border,
+        );
         // Left
         raster.fill_pixel_rect(left_px - 1.0, top_px, 1.0, card_h_px, border);
         // Right
