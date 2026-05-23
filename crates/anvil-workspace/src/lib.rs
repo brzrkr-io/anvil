@@ -23,6 +23,7 @@ pub mod filetree;
 pub mod interact;
 pub mod keys;
 pub mod layout;
+pub mod mode;
 pub mod palette;
 pub mod pane;
 pub mod selection;

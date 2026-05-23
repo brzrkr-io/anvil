@@ -44,6 +44,7 @@ use anvil_workspace::filetree::FileTree;
 use anvil_workspace::interact;
 use anvil_workspace::keys::{Key, Mods, encode as encode_key, encode_mouse};
 use anvil_workspace::layout::{NavDir, PaneId, Rect, SplitDir};
+use anvil_workspace::mode::{LayoutMode, next as next_layout_mode};
 use anvil_workspace::palette::{Action, CATALOG, Palette, action_for_id};
 use anvil_workspace::tab::{Tab, TabManager};
 
@@ -101,6 +102,7 @@ struct Keybindings {
     focus_right: Option<Chord>,
     focus_up: Option<Chord>,
     focus_down: Option<Chord>,
+    layout_mode_toggle: Option<Chord>,
 }
 
 impl Keybindings {
@@ -132,6 +134,7 @@ impl Keybindings {
             focus_right: parse_chord(&kb.focus_right),
             focus_up: parse_chord(&kb.focus_up),
             focus_down: parse_chord(&kb.focus_down),
+            layout_mode_toggle: parse_chord(&kb.layout_mode_toggle),
         }
     }
 }
@@ -173,6 +176,7 @@ pub struct App {
     tree_visible: bool,
     tree: FileTree,
     focused: bool, // window is key window
+    layout_mode: LayoutMode,
 
     // -- agent panel ---
     agent_snap: AgentSnapshot,
@@ -219,23 +223,36 @@ impl App {
         (dw, dh)
     }
 
-    /// Inner content rect in device pixels: window minus bars and padding.
+    /// Inner content rect in device pixels: window minus bars, padding, and
+    /// any always-visible panels (file tree left, docked agent panel right in
+    /// IDE mode).
     fn inner_rect(&self) -> Rect {
         let (dw, dh) = self.device_size();
         let pad = GRID_PAD as f64;
         let cw = self.font.metrics.cell_w;
         let ch = self.font.metrics.cell_h;
-        let tree_offset = if self.tree_visible {
+
+        let effective_tree = self.tree_visible || self.layout_mode == LayoutMode::Ide;
+        let tree_offset = if effective_tree {
             TREE_COLS as f64 * cw
         } else {
             0.0
         };
+
+        // In IDE mode the agent panel is docked on the right at PANEL_COLS width.
+        let agent_offset = if self.layout_mode == LayoutMode::Ide {
+            use anvil_render::agent_panel::PANEL_COLS;
+            PANEL_COLS as f64 * cw
+        } else {
+            0.0
+        };
+
         let top_bar_px = self.top_bar_rows() as f64 * ch;
         let bot_bar_px = self.bottom_bar_rows() as f64 * ch;
         Rect {
             x: pad + tree_offset,
             y: pad + top_bar_px,
-            w: dw as f64 - 2.0 * pad - tree_offset,
+            w: dw as f64 - 2.0 * pad - tree_offset - agent_offset,
             h: dh as f64 - 2.0 * pad - top_bar_px - bot_bar_px,
         }
     }
@@ -583,6 +600,18 @@ impl App {
         self.dirty = true;
     }
 
+    fn toggle_layout_mode(&mut self) {
+        self.layout_mode = next_layout_mode(self.layout_mode);
+        // In IDE mode, ensure the file tree is rooted at the current cwd.
+        if self.layout_mode == LayoutMode::Ide {
+            if let Some(cwd) = self.current_cwd() {
+                self.tree.set_root(Path::new(&cwd));
+            }
+        }
+        self.resize_all_tabs();
+        self.dirty = true;
+    }
+
     fn jump_to_prev_prompt(&mut self) {
         let bounce = self.bounce_impulse();
         let Some(tab) = self.tabs.current_mut() else {
@@ -793,22 +822,25 @@ impl App {
     }
 
     fn render_frame(&mut self, painter: &mut dyn anvil_render::GlyphPainter) {
+        use anvil_render::agent_panel::PANEL_COLS;
+
         self.raster.clear(self.theme.background);
 
         let cw = self.font.metrics.cell_w;
         let ch = self.font.metrics.cell_h;
         let pad = GRID_PAD as f64;
-        let tree_offset = if self.tree_visible {
-            TREE_COLS as f64 * cw
-        } else {
-            0.0
-        };
+        let ide = self.layout_mode == LayoutMode::Ide;
+        // Effective tree/hud visibility for layout (doesn't mutate user flags).
+        let eff_tree = self.tree_visible || ide;
+        let eff_hud = self.hud_visible || ide;
+        let tree_offset = if eff_tree { TREE_COLS as f64 * cw } else { 0.0 };
+        let agent_offset = if ide { PANEL_COLS as f64 * cw } else { 0.0 };
         let (dw, dh) = self.device_size();
 
         let inner = Rect {
             x: self.raster.pad_x + tree_offset,
             y: self.raster.pad_y + self.top_bar_rows() as f64 * ch,
-            w: dw as f64 - 2.0 * pad - tree_offset,
+            w: dw as f64 - 2.0 * pad - tree_offset - agent_offset,
             h: dh as f64
                 - 2.0 * pad
                 - self.top_bar_rows() as f64 * ch
@@ -873,10 +905,32 @@ impl App {
         }
 
         // HUD / agent panel.
-        if self.hud_visible {
+        if eff_hud {
             let total_rows = (((dh.saturating_sub(2 * GRID_PAD)) as f64 / ch) as usize).max(1);
             let total_cols = (((dw.saturating_sub(2 * GRID_PAD)) as f64 / cw) as usize).max(1);
             let top_offset = self.top_bar_rows();
+            let placement = if ide {
+                // Docked on the right: x at (dw - pad - agent_offset), y just
+                // below the tab bar, h spanning down to just above the status bar.
+                let panel_x = dw as f64 - pad - agent_offset;
+                let panel_y = pad + top_offset as f64 * ch;
+                let panel_h = dh as f64
+                    - 2.0 * pad
+                    - top_offset as f64 * ch
+                    - self.bottom_bar_rows() as f64 * ch;
+                Placement::Docked {
+                    x: panel_x,
+                    y: panel_y,
+                    w: agent_offset,
+                    h: panel_h,
+                }
+            } else {
+                Placement::Floating {
+                    total_cols,
+                    total_rows,
+                    top_offset,
+                }
+            };
             draw_agent_panel(
                 &mut self.raster,
                 painter,
@@ -884,17 +938,13 @@ impl App {
                 &self.theme,
                 &self.agent_snap,
                 &self.local_ctx,
-                &Placement::Floating {
-                    total_cols,
-                    total_rows,
-                    top_offset,
-                },
+                &placement,
                 false,
             );
         }
 
         // File tree.
-        if self.tree_visible {
+        if eff_tree {
             let total_rows = (((dh.saturating_sub(2 * GRID_PAD)) as f64 / ch) as usize).max(1);
             let top_bar = self.top_bar_rows();
             draw_filetree(
@@ -1157,6 +1207,10 @@ impl App {
             self.dirty = true;
             return true;
         });
+        test!(kb.layout_mode_toggle, {
+            self.toggle_layout_mode();
+            return true;
+        });
 
         // ⌘K — command palette.
         if ascii_lower(ch) == 'k' && !mods.shift && !mods.control && !mods.option {
@@ -1337,8 +1391,8 @@ impl AppHandler for AppShell {
             }
         }
 
-        // HUD refresh throttle.
-        if app.hud_visible {
+        // HUD refresh throttle (agent panel is always visible in IDE mode).
+        if app.hud_visible || app.layout_mode == LayoutMode::Ide {
             app.hud_tick += 1;
             if app.hud_tick >= HUD_REFRESH_TICKS {
                 app.hud_tick = 0;
@@ -2110,6 +2164,7 @@ fn main() -> Result<()> {
         tree_visible: false,
         tree: FileTree::default(),
         focused: true,
+        layout_mode: LayoutMode::Terminal,
         agent_snap: AgentSnapshot::default(),
         local_ctx: LocalContext::default(),
         // The caldera poller is started lazily once we know the repo root

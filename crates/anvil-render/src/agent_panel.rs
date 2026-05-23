@@ -272,8 +272,27 @@ pub fn draw(
     _expanded: bool,
 ) {
     // Resolve card coordinates from placement.
-    let (card_col, card_row, available) = match placement {
-        Placement::Docked { .. } => return, // not exercised in AG1
+    let (card_col, card_row, available, is_docked) = match placement {
+        Placement::Docked { x, y, w, h } => {
+            let cw = metrics.cell_w;
+            let ch = metrics.cell_h;
+            if *w < PANEL_COLS as f64 * cw || *h < 4.0 * ch {
+                return;
+            }
+            let px = *x;
+            let py = *y;
+            let pw = *w;
+            let ph = *h;
+            // Panel background (theme.surface).
+            raster.fill_pixel_rect(px, py, pw, ph, theme.surface);
+            // 1px left-edge border in theme.border.
+            raster.fill_pixel_rect(px, py, 1.0, ph, theme.border);
+            // Derive cell-grid coordinates from pixel rect.
+            let cc = ((px - raster.pad_x) / cw).round() as usize;
+            let cr = ((py - raster.pad_y) / ch).round() as usize;
+            let avail_rows = (ph / ch) as usize;
+            (cc, cr, cr + avail_rows, true)
+        }
         Placement::Floating {
             total_cols,
             total_rows,
@@ -287,7 +306,7 @@ pub fn draw(
             }
             let cc = tc - PANEL_COLS - 2;
             let cr = to + 1;
-            (cc, cr, tr)
+            (cc, cr, tr, false)
         }
     };
 
@@ -304,19 +323,23 @@ pub fn draw(
     let card_w_px = PANEL_COLS as f64 * cw;
     let card_h_px = actual_rows as f64 * ch;
 
-    // 4px filled gutter: draw a slightly larger rect first (the halo) then the
-    // inner card surface. theme.border alone disappears against the bone canvas
-    // on mineral-light (~1.5:1), so mix it 50% toward anvil.ash (#374046) — a
-    // shadow-band that reads on both themes (~3.5:1 on bone, sane on dark).
-    let halo_color = mix(theme.border, [0x37, 0x40, 0x46], 0.5);
-    raster.fill_pixel_rect(
-        left_px - 4.0,
-        top_px - 4.0,
-        card_w_px + 8.0,
-        card_h_px + 8.0,
-        halo_color,
-    );
-    raster.fill_pixel_rect(left_px, top_px, card_w_px, card_h_px, theme.surface);
+    // For floating: draw halo shadow + surface card.
+    // For docked: background was already painted above; skip the floating card.
+    if !is_docked {
+        // 4px filled gutter: draw a slightly larger rect first (the halo) then the
+        // inner card surface. theme.border alone disappears against the bone canvas
+        // on mineral-light (~1.5:1), so mix it 50% toward anvil.ash (#374046) — a
+        // shadow-band that reads on both themes (~3.5:1 on bone, sane on dark).
+        let halo_color = mix(theme.border, [0x37, 0x40, 0x46], 0.5);
+        raster.fill_pixel_rect(
+            left_px - 4.0,
+            top_px - 4.0,
+            card_w_px + 8.0,
+            card_h_px + 8.0,
+            halo_color,
+        );
+        raster.fill_pixel_rect(left_px, top_px, card_w_px, card_h_px, theme.surface);
+    }
 
     // --- Content rows --------------------------------------------------------
     let mut row = card_row + 1; // one row breathing room at the top
@@ -841,20 +864,31 @@ mod tests {
         assert!(!painter.calls.is_empty());
     }
 
-    /// draw returns early for docked placement (not exercised in AG1).
+    /// draw with docked placement renders content (surface background + text rows).
     #[test]
-    fn draw_docked_returns_early() {
+    fn draw_docked_renders_content() {
         let m = metrics();
+        // Raster large enough for a docked panel (PANEL_COLS=36, cell_w=10 → 360px wide)
+        // plus padding (pad_x=24).
         let mut r = Raster::new(800, 600);
+        r.pad_x = 24.0;
+        r.pad_y = 24.0;
         let mut painter = StubPainter::default();
         let theme = anvil_theme::MINERAL_DARK;
-        let snap = Snapshot::default();
+        let snap = Snapshot {
+            connection: anvil_agent::Connection::Live,
+            running_count: 1,
+            ..Default::default()
+        };
         let local = LocalContext::default();
+        // Place docked panel at pad_x offset so cell col math works out.
+        let panel_w = PANEL_COLS as f64 * m.cell_w; // 36 * 10 = 360px
+        let panel_h = 8.0 * m.cell_h; // 8 rows * 20px = 160px
         let placement = Placement::Docked {
-            x: 0.0,
-            y: 0.0,
-            w: 100.0,
-            h: 100.0,
+            x: r.pad_x,
+            y: r.pad_y,
+            w: panel_w,
+            h: panel_h,
         };
         draw(
             &mut r,
@@ -866,7 +900,8 @@ mod tests {
             &placement,
             false,
         );
-        assert!(painter.calls.is_empty());
+        // Should produce glyph calls for the header and content rows.
+        assert!(!painter.calls.is_empty());
     }
 
     fn make_snap_with_approval() -> Snapshot {

@@ -144,6 +144,7 @@ pub struct Keybindings {
     pub focus_right: String,
     pub focus_up: String,
     pub focus_down: String,
+    pub layout_mode_toggle: String,
 }
 
 impl Default for Keybindings {
@@ -175,6 +176,7 @@ impl Default for Keybindings {
             focus_right: "cmd+shift+l".into(),
             focus_up: "cmd+shift+k".into(),
             focus_down: "cmd+shift+j".into(),
+            layout_mode_toggle: "cmd+shift+e".into(),
         }
     }
 }
