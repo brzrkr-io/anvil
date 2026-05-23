@@ -47,7 +47,10 @@ impl Default for FontCfg {
     fn default() -> Self {
         FontCfg {
             family: "IBM Plex Mono".into(),
-            size: 14.0,
+            // IBM Plex Mono's letterforms are visually compact; 15pt reads
+            // closer to other terminals' 14pt and gives the grid real presence
+            // on Retina without crowding columns. Override in TOML if needed.
+            size: 15.0,
         }
     }
 }
