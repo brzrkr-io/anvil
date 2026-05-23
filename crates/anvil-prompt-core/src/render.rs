@@ -76,19 +76,18 @@ fn esc(buf: &mut String, shell: Shell, seq: &str) {
     }
 }
 
-/// The full single-line prompt.
+/// The full two-line prompt.
 ///
-/// One line, all context + the prompt glyph at the end:
-///   `anvil · rust-port · rust  ❯ `
+/// Line 1 is the context row: colored segments joined by a dim middot.
+/// Line 2 is just `❯ ` at column 0 — typed input starts at column 2, near
+/// the left edge so the cursor is where the eye naturally lands.
 ///
-/// Single-line is denser and lets terminal output dominate. Segments are
-/// joined by a dim middot so the line reads as structured, not a wall of
-/// words. The `❯` flips to red when the previous command failed.
+/// The `❯` flips to red when the previous command failed.
 pub fn full(segments: &[Segment], opts: Options) -> String {
     let mut buf = String::new();
     let sh = opts.shell;
 
-    // Context segments: `glyph text` per segment, joined by ` · ` in DIM.
+    // Line 1: context segments, dim-middot-separated.
     for (idx, s) in segments.iter().enumerate() {
         if idx != 0 {
             buf.push(' ');
@@ -105,12 +104,9 @@ pub fn full(segments: &[Segment], opts: Options) -> String {
         buf.push_str(&s.text);
         esc(&mut buf, sh, RESET);
     }
+    buf.push('\n');
 
-    // Gap before the prompt glyph so it doesn't collide with the last segment.
-    if !segments.is_empty() {
-        buf.push_str("  ");
-    }
-
+    // Line 2: just the prompt glyph, anchored at column 0.
     let glyph_color = if opts.failed { ACCENT_ERR } else { ACCENT };
     esc(&mut buf, sh, glyph_color);
     buf.push('\u{276f}'); // ❯
@@ -144,7 +140,7 @@ mod tests {
     }
 
     #[test]
-    fn full_renders_single_line() {
+    fn full_renders_two_lines() {
         let segs = sample_segs();
         let out = full(
             &segs,
@@ -154,8 +150,7 @@ mod tests {
                 shell: Shell::Plain,
             },
         );
-        // Single-line prompt: no embedded newline; segments + ❯ on one row.
-        assert!(!out.contains('\n'));
+        assert!(out.contains('\n')); // context + ❯ row
         assert!(out.contains("anvil"));
         assert!(out.contains("main"));
         assert!(out.contains('\u{276f}')); // ❯
