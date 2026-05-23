@@ -21,11 +21,12 @@ use objc2::runtime::ProtocolObject;
 use objc2_core_foundation::CGSize;
 use objc2_foundation::NSString;
 use objc2_metal::{
-    MTLBuffer, MTLClearColor, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue,
-    MTLCreateSystemDefaultDevice, MTLDevice, MTLDrawable, MTLFunction, MTLLibrary, MTLLoadAction,
-    MTLOrigin, MTLPixelFormat, MTLPrimitiveType, MTLRegion, MTLRenderCommandEncoder,
-    MTLRenderPassDescriptor, MTLRenderPipelineDescriptor, MTLRenderPipelineState,
-    MTLResourceOptions, MTLSize, MTLStoreAction, MTLTexture, MTLTextureDescriptor,
+    MTLBlendFactor, MTLBlendOperation, MTLBuffer, MTLClearColor, MTLCommandBuffer,
+    MTLCommandEncoder, MTLCommandQueue, MTLCreateSystemDefaultDevice, MTLDevice, MTLDrawable,
+    MTLFunction, MTLLibrary, MTLLoadAction, MTLOrigin, MTLPixelFormat, MTLPrimitiveType, MTLRegion,
+    MTLRenderCommandEncoder, MTLRenderPassDescriptor, MTLRenderPipelineDescriptor,
+    MTLRenderPipelineState, MTLResourceOptions, MTLSize, MTLStoreAction, MTLTexture,
+    MTLTextureDescriptor,
 };
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
 use thiserror::Error;
@@ -554,6 +555,212 @@ impl Renderer {
             }
         });
     }
+
+    /// Draw a full frame: first paint the chrome BGRA bitmap (CPU raster),
+    /// then draw cell instances on top using the GPU cell pipeline.
+    ///
+    /// Phase C — called by `App::render_frame` when `ANVIL_RENDER=gpu`.
+    ///
+    /// `chrome_pixels` is the full-window BGRA8 raster produced by the CPU path
+    /// (only chrome; viewport cells are skipped on the CPU side).
+    /// `cells` is the `CellBatch` filled by `draw_viewport_gpu` for all visible
+    /// panes.  `atlas` is the R8Unorm atlas texture from `AtlasPainter`.
+    ///
+    /// Single render pass, two sequential draws:
+    /// 1. CPU pipeline full-screen quad paints the chrome bitmap.
+    /// 2. Cell pipeline instanced draw paints the glyph cells on top (alpha blend).
+    pub fn present_layered(
+        &mut self,
+        chrome_pixels: &[u8],
+        cells: &CellBatch,
+        atlas: &ProtocolObject<dyn MTLTexture>,
+        atlas_px: [f32; 2],
+        sync: bool,
+    ) {
+        // 1. Block until a slot is available (mirrors present_cells).
+        {
+            let (lock, cvar) = &*self.instance_semaphore;
+            let mut count = lock.lock().unwrap();
+            while *count <= 0 {
+                count = cvar.wait(count).unwrap();
+            }
+            *count -= 1;
+        }
+
+        objc2::rc::autoreleasepool(|_| {
+            // 2. Upload chrome pixels to the BGRA texture (same as present()).
+            let region = MTLRegion {
+                origin: MTLOrigin { x: 0, y: 0, z: 0 },
+                size: MTLSize {
+                    width: self.width,
+                    height: self.height,
+                    depth: 1,
+                },
+            };
+            // SAFETY: chrome_pixels is a non-empty slice; pointer is non-null.
+            let bytes_ptr = NonNull::new(chrome_pixels.as_ptr() as *mut std::ffi::c_void).unwrap();
+            unsafe {
+                self.texture
+                    .replaceRegion_mipmapLevel_withBytes_bytesPerRow(
+                        region,
+                        0,
+                        bytes_ptr,
+                        self.width * 4,
+                    );
+            }
+
+            // 3. Pick the next instance buffer (round-robin) and copy cell data.
+            let buf_idx = self.instance_buffer_idx;
+            self.instance_buffer_idx = (self.instance_buffer_idx + 1) % IN_FLIGHT;
+
+            let instance_bytes = cells.instance_bytes();
+            let needed = instance_bytes.len();
+
+            if needed > 0 {
+                let current_len = self.instance_buffers[buf_idx].length();
+                if needed > current_len {
+                    let new_len = needed.next_power_of_two();
+                    if let Some(new_buf) = make_buffer(&self.device, new_len) {
+                        self.instance_buffers[buf_idx] = new_buf;
+                    }
+                }
+                let buf_len = self.instance_buffers[buf_idx].length();
+                let copy_len = needed.min(buf_len);
+                // SAFETY: instance buffer is shared storage; dst pointer is valid.
+                let dst = self.instance_buffers[buf_idx].contents();
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        instance_bytes.as_ptr(),
+                        dst.as_ptr() as *mut u8,
+                        copy_len,
+                    );
+                }
+            }
+
+            // 4. Update uniforms buffer.
+            let uniforms = Uniforms {
+                viewport_px: cells.viewport_px,
+                atlas_px,
+            };
+            let udst = self.uniforms_buffer.contents();
+            // SAFETY: Uniforms is a plain POD struct; buffer is shared storage.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    &uniforms as *const Uniforms as *const u8,
+                    udst.as_ptr() as *mut u8,
+                    std::mem::size_of::<Uniforms>(),
+                );
+            }
+
+            // 5. Acquire drawable.
+            self.layer.setPresentsWithTransaction(sync);
+            let drawable = match self.layer.nextDrawable() {
+                Some(d) => d,
+                None => {
+                    let (lock, cvar) = &*self.instance_semaphore;
+                    *lock.lock().unwrap() += 1;
+                    cvar.notify_one();
+                    return;
+                }
+            };
+            let dst_texture = drawable.texture();
+
+            // 6. Build render pass descriptor.
+            let rpd = MTLRenderPassDescriptor::renderPassDescriptor();
+            let color_attachments = rpd.colorAttachments();
+            // SAFETY: index 0 always exists on a freshly created descriptor.
+            let att = unsafe { color_attachments.objectAtIndexedSubscript(0) };
+            att.setTexture(Some(&dst_texture));
+            att.setLoadAction(MTLLoadAction::Clear);
+            att.setStoreAction(MTLStoreAction::Store);
+            att.setClearColor(self.clear);
+
+            // 7. Command buffer.
+            let cmd = match self.queue.commandBuffer() {
+                Some(c) => c,
+                None => {
+                    let (lock, cvar) = &*self.instance_semaphore;
+                    *lock.lock().unwrap() += 1;
+                    cvar.notify_one();
+                    return;
+                }
+            };
+            let enc = match cmd.renderCommandEncoderWithDescriptor(&rpd) {
+                Some(e) => e,
+                None => {
+                    let (lock, cvar) = &*self.instance_semaphore;
+                    *lock.lock().unwrap() += 1;
+                    cvar.notify_one();
+                    return;
+                }
+            };
+
+            // 8. First draw: CPU pipeline paints the chrome BGRA bitmap fullscreen.
+            enc.setRenderPipelineState(&self.pipeline);
+            // SAFETY: fragment texture at index 0; texture is valid.
+            unsafe {
+                enc.setFragmentTexture_atIndex(Some(&self.texture), 0);
+            }
+            // SAFETY: 6 vertices, triangle primitive.
+            unsafe {
+                enc.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::Triangle, 0, 6);
+            }
+
+            // 9. Second draw: cell pipeline paints glyph instances on top.
+            let instance_count = cells.instance_count();
+            if instance_count > 0 {
+                enc.setRenderPipelineState(&self.cell_pipeline);
+                // SAFETY: buffer indices match MSL bindings; all buffers valid.
+                unsafe {
+                    enc.setVertexBuffer_offset_atIndex(Some(&self.uniforms_buffer), 0, 1);
+                    enc.setVertexBuffer_offset_atIndex(Some(&self.instance_buffers[buf_idx]), 0, 2);
+                    enc.setFragmentBuffer_offset_atIndex(Some(&self.uniforms_buffer), 0, 1);
+                    enc.setFragmentTexture_atIndex(Some(atlas), 0);
+                }
+                // SAFETY: 6 vertices per instance, triangle primitive.
+                unsafe {
+                    enc.drawPrimitives_vertexStart_vertexCount_instanceCount(
+                        MTLPrimitiveType::Triangle,
+                        0,
+                        6,
+                        instance_count,
+                    );
+                }
+            }
+
+            enc.endEncoding();
+
+            // 10. Signal semaphore on GPU completion.
+            let sem = Arc::clone(&self.instance_semaphore);
+            // SAFETY: block is called exactly once by Metal after completion.
+            let handler =
+                RcBlock::new(move |_cmd: NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
+                    let (lock, cvar) = &*sem;
+                    *lock.lock().unwrap() += 1;
+                    cvar.notify_one();
+                });
+            // SAFETY: handler is a valid block pointer; Arc keeps data alive.
+            unsafe {
+                cmd.addCompletedHandler(RcBlock::as_ptr(&handler));
+            }
+
+            // 11. Present (sync or async, mirrors the CPU path).
+            if sync {
+                cmd.commit();
+                cmd.waitUntilScheduled();
+                let draw_ref: &ProtocolObject<dyn MTLDrawable> = unsafe {
+                    &*(Retained::as_ptr(&drawable) as *const ProtocolObject<dyn MTLDrawable>)
+                };
+                draw_ref.present();
+            } else {
+                let draw_ref: &ProtocolObject<dyn MTLDrawable> = unsafe {
+                    &*(Retained::as_ptr(&drawable) as *const ProtocolObject<dyn MTLDrawable>)
+                };
+                cmd.presentDrawable(draw_ref);
+                cmd.commit();
+            }
+        });
+    }
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -619,9 +826,17 @@ fn build_cell_pipeline(
     desc.setFragmentFunction(Some(&ffn));
     // SAFETY: index 0 always exists on a freshly created descriptor.
     unsafe {
-        desc.colorAttachments()
-            .objectAtIndexedSubscript(0)
-            .setPixelFormat(PIXEL_FORMAT);
+        let att = desc.colorAttachments().objectAtIndexedSubscript(0);
+        att.setPixelFormat(PIXEL_FORMAT);
+        // Enable src-alpha blending so cell glyphs compose over whatever the
+        // chrome pass painted underneath (used by present_layered).
+        att.setBlendingEnabled(true);
+        att.setSourceRGBBlendFactor(MTLBlendFactor::SourceAlpha);
+        att.setDestinationRGBBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
+        att.setRgbBlendOperation(MTLBlendOperation::Add);
+        att.setSourceAlphaBlendFactor(MTLBlendFactor::One);
+        att.setDestinationAlphaBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
+        att.setAlphaBlendOperation(MTLBlendOperation::Add);
     }
 
     let pipeline = device

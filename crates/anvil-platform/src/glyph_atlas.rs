@@ -74,6 +74,17 @@ impl AtlasPainter {
         Self::new_with_size(device, font, ATLAS_INITIAL)
     }
 
+    /// Create an `AtlasPainter` using the system default Metal device.
+    ///
+    /// Returns `None` when no Metal device is available (e.g., headless CI).
+    /// This is a convenience constructor that avoids callers depending on
+    /// `objc2-metal` directly.
+    pub fn new_with_default_device(font: Font) -> Option<Result<Self, AtlasError>> {
+        use objc2_metal::MTLCreateSystemDefaultDevice;
+        let device = MTLCreateSystemDefaultDevice()?;
+        Some(Self::new(&device, font))
+    }
+
     /// Create an `AtlasPainter` with a custom atlas side length. Exposed for
     /// testing (a tiny atlas exercises the full-atlas fallback path).
     pub fn new_with_size(
@@ -100,6 +111,12 @@ impl AtlasPainter {
     /// The underlying Metal R8Unorm texture (for GPU sampling in later phases).
     pub fn texture(&self) -> &Retained<ProtocolObject<dyn MTLTexture>> {
         &self.texture
+    }
+
+    /// The atlas texture dimensions in pixels, `(width, height)`.
+    pub fn texture_size(&self) -> (usize, usize) {
+        use objc2_metal::MTLTexture as _;
+        (self.texture.width(), self.texture.height())
     }
 
     /// The font this painter was created with.

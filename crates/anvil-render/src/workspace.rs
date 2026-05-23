@@ -115,6 +115,33 @@ pub fn draw_workspace(
     draw_dividers(raster, &entries, div_px, theme, focused_id);
 }
 
+/// Draw only the chrome portion of the workspace (divider hairlines, focused
+/// pane accent border) without drawing any terminal viewport content.
+///
+/// Used by the GPU rendering path (`ANVIL_RENDER=gpu`) where viewport cells
+/// are drawn by the GPU cell pipeline instead of the CPU raster.  The caller
+/// is responsible for calling `draw_viewport_gpu` per pane separately.
+///
+/// After this function returns, raster.origin_x and raster.origin_y are both 0.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_workspace_chrome(
+    raster: &mut Raster,
+    tree: &PaneTree,
+    registry: &PaneRegistry,
+    inner: Rect,
+    div_px: f64,
+    theme: &Theme,
+    focused_id: PaneId,
+) {
+    let entries = tree.layout(inner, div_px);
+    let _ = registry; // registry not needed for chrome-only draw
+    // Reset origin (no pane origins needed — we skip viewport drawing).
+    raster.origin_x = 0.0;
+    raster.origin_y = 0.0;
+    // Draw divider hairlines.
+    draw_dividers(raster, &entries, div_px, theme, focused_id);
+}
+
 /// Fill divider gutters between all adjacent leaf pairs. Called after all pane
 /// content is drawn so the dividers overdraw any scroll bleed.
 /// When there are 2+ panes, also draws a 2px accent border around the focused pane.

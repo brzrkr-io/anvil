@@ -21,6 +21,7 @@ use anyhow::Result;
 
 use anvil_agent::Snapshot as AgentSnapshot;
 use anvil_config::{Chord, Config, Watcher, parse_chord};
+use anvil_platform::AtlasPainter;
 use anvil_platform::appkit::{AppHandler, AppKitApp, KeyEvent, KeyInput, Modifiers, MouseLocation};
 use anvil_platform::font::{Font, register_bundled};
 use anvil_platform::metal::{PresentMode, Renderer, present_mode};
@@ -38,7 +39,8 @@ use anvil_render::raster::Raster;
 use anvil_render::searchbar::draw_search_bar;
 use anvil_render::statusbar::{STATUS_BAR_ROWS, draw_status_bar};
 use anvil_render::tabbar::draw_tab_bar;
-use anvil_render::workspace::{DIVIDER_PX, draw_workspace};
+use anvil_render::workspace::{DIVIDER_PX, draw_workspace, draw_workspace_chrome};
+use anvil_render::{CellBatch, FoldedBlocks, draw_viewport_gpu};
 use anvil_theme::{Theme, resolve as resolve_theme};
 use anvil_workspace::filetree::FileTree;
 use anvil_workspace::interact;
@@ -157,6 +159,15 @@ pub struct App {
     /// Heap-allocated so its address is stable; `AppShell.painter` borrows it.
     font: Box<Font>,
     dirty: bool,
+    /// When true, the terminal viewport is drawn via the GPU cell pipeline.
+    /// Enabled by `ANVIL_RENDER=gpu`; default false (CPU path).
+    use_gpu_render: bool,
+    /// Instance batch for the GPU cell pipeline.  Cleared at the start of each
+    /// GPU-path frame; accumulated by `draw_viewport_gpu` per pane.
+    cell_batch: CellBatch,
+    /// GPU glyph atlas painter.  `None` until the Metal device is available
+    /// (filled during renderer init in `AppHandler::resize`).
+    atlas_painter: Option<AtlasPainter>,
 
     // -- theme / config ---
     theme: Theme,
@@ -882,23 +893,50 @@ impl App {
         };
         let metrics = self.font.metrics;
 
-        if let Some(tab) = self.tabs.current_mut() {
-            let focused_id = tab.focused_id();
-            draw_workspace(
-                &mut self.raster,
-                painter,
-                &tab.tree,
-                &mut tab.registry,
-                inner,
-                DIVIDER_PX,
-                metrics,
-                &self.theme,
-                search_ref,
-                focused_id,
-                self.blink_phase,
-                self.cursor_cfg,
-            );
+        // ── Terminal viewport draw ────────────────────────────────────────────
+        //
+        // CPU path: `draw_workspace` draws viewport cells into the raster.
+        // GPU path: `draw_workspace_chrome` draws only dividers; viewport cells
+        //           are pushed into `self.cell_batch` by `draw_viewport_gpu`.
+
+        if !self.use_gpu_render {
+            // CPU path — existing behaviour.
+            if let Some(tab) = self.tabs.current_mut() {
+                let focused_id = tab.focused_id();
+                draw_workspace(
+                    &mut self.raster,
+                    painter,
+                    &tab.tree,
+                    &mut tab.registry,
+                    inner,
+                    DIVIDER_PX,
+                    metrics,
+                    &self.theme,
+                    search_ref,
+                    focused_id,
+                    self.blink_phase,
+                    self.cursor_cfg,
+                );
+            }
+        } else {
+            // GPU path — draw only dividers to raster; fill cell_batch per pane.
+            if let Some(tab) = self.tabs.current_mut() {
+                let focused_id = tab.focused_id();
+                draw_workspace_chrome(
+                    &mut self.raster,
+                    &tab.tree,
+                    &tab.registry,
+                    inner,
+                    DIVIDER_PX,
+                    &self.theme,
+                    focused_id,
+                );
+            }
         }
+
+        // ── Chrome (tab bar, bars, panels) ────────────────────────────────────
+        //
+        // Always drawn to CPU raster regardless of render path.
 
         // Tab bar.
         if self.tabs.bar_visible() {
@@ -1000,10 +1038,80 @@ impl App {
             );
         }
 
-        // Present.
-        if let Some(r) = &mut self.renderer {
+        // ── Present ───────────────────────────────────────────────────────────
+
+        if !self.use_gpu_render {
+            // CPU path: upload the full raster as a single fullscreen quad.
+            if let Some(r) = &mut self.renderer {
+                let sync = present_mode(false) == PresentMode::Sync;
+                r.present(self.raster.bytes(), sync);
+            }
+        } else if let (Some(r), Some(ap)) = (&mut self.renderer, self.atlas_painter.as_mut()) {
+            // GPU path: fill cell_batch from all visible panes, then composite.
+            let (dw_f, dh_f) = (dw as f32, dh as f32);
+            self.cell_batch.clear([dw_f, dh_f]);
+
+            // Iterate panes and call draw_viewport_gpu per leaf.
+            if let Some(tab) = self.tabs.current_mut() {
+                let focused_id = tab.focused_id();
+                let entries = tab.tree.layout(inner, DIVIDER_PX);
+                for e in &entries {
+                    let pane = match tab.registry.get_mut(e.id) {
+                        Some(p) => p,
+                        None => continue,
+                    };
+
+                    // Set raster origin so cell_rect math in draw_viewport_gpu
+                    // computes absolute drawable pixel positions.
+                    self.raster.origin_x = e.rect.x;
+                    self.raster.origin_y = e.rect.y;
+
+                    let cursor_params = if e.id == focused_id {
+                        Some(anvil_render::CursorParams {
+                            ax: pane.cursor_ax,
+                            ay: pane.cursor_ay,
+                            blink_phase: self.blink_phase,
+                            cfg: self.cursor_cfg,
+                        })
+                    } else {
+                        None
+                    };
+
+                    let folded = FoldedBlocks::new(&pane.folded[..pane.folded_count]);
+
+                    draw_viewport_gpu(
+                        &mut self.cell_batch,
+                        &self.raster,
+                        ap,
+                        &mut pane.terminal,
+                        metrics,
+                        &self.theme,
+                        pane.scroll_pos,
+                        pane.overscroll,
+                        pane.selection,
+                        search_ref,
+                        0, // top_bar_rows: encoded in origin_y
+                        cursor_params,
+                        folded,
+                    );
+                }
+                // Reset raster origin for chrome draws.
+                self.raster.origin_x = 0.0;
+                self.raster.origin_y = 0.0;
+            }
+
+            // Composite: chrome raster + GPU cells.
+            let atlas_tex = ap.texture().as_ref();
+            let (atlas_w, atlas_h) = ap.texture_size();
+            let atlas_px = [atlas_w as f32, atlas_h as f32];
             let sync = present_mode(false) == PresentMode::Sync;
-            r.present(self.raster.bytes(), sync);
+            r.present_layered(
+                self.raster.bytes(),
+                &self.cell_batch,
+                atlas_tex,
+                atlas_px,
+                sync,
+            );
         }
     }
 
@@ -2096,9 +2204,11 @@ fn main() -> Result<()> {
     let dh = ((win_h * window_scale) as usize).max(1);
 
     // -- Font -----------------------------------------------------------------
+    // Save font family + size as owned values so they outlive the `config` move.
+    let font_family = config.font.family.clone();
     let font_names: Vec<&str> = vec![
         "BlexMono Nerd Font Mono",
-        config.font.family.as_str(),
+        font_family.as_str(),
         "SFMono-Regular",
         "Menlo",
     ];
@@ -2172,6 +2282,13 @@ fn main() -> Result<()> {
     // -- Build App ------------------------------------------------------------
     let watcher = cfg_path.map(Watcher::new);
 
+    // -- Render path selection ------------------------------------------------
+    let use_gpu_render = matches!(std::env::var("ANVIL_RENDER").as_deref(), Ok("gpu"));
+    eprintln!(
+        "anvil: render = {}",
+        if use_gpu_render { "gpu" } else { "cpu" }
+    );
+
     let app = App {
         tabs,
         ptys,
@@ -2179,6 +2296,9 @@ fn main() -> Result<()> {
         raster,
         font, // Box<Font> — heap-stable
         dirty: true,
+        use_gpu_render,
+        cell_batch: CellBatch::new(),
+        atlas_painter: None, // filled when Metal device is available
         theme,
         cursor_cfg,
         config,
@@ -2339,6 +2459,27 @@ fn main() -> Result<()> {
     real_app.renderer = Some(renderer);
     real_app.window_scale = actual_scale;
     real_app.raster.resize(actual_dw, actual_dh);
+
+    // -- GPU atlas painter (only when GPU path is active) ----------------------
+    if real_app.use_gpu_render {
+        // Construct a second Font with the same metrics as the CPU path's font.
+        // Font::init_first_available is cheap (CoreText API calls only;
+        // register_bundled() has already been called above).
+        let font2 = Font::init_first_available(&font_names, pixel_size)
+            .or_else(|_| Font::init("Menlo", pixel_size))
+            .expect("GPU atlas font must be available");
+        match AtlasPainter::new_with_default_device(font2) {
+            Some(Ok(ap)) => real_app.atlas_painter = Some(ap),
+            Some(Err(e)) => {
+                eprintln!("anvil: GPU atlas painter init failed ({e}); falling back to cpu");
+                real_app.use_gpu_render = false;
+            }
+            None => {
+                eprintln!("anvil: no Metal device for GPU atlas; falling back to cpu");
+                real_app.use_gpu_render = false;
+            }
+        }
+    }
 
     // Build the AppShell and stash it in the shared slot.
     let mut shell = AppShell::new(real_app, webview);

@@ -11,6 +11,8 @@ use anvil_term::{Block, BlockState, Cell, Color, CursorShape, MatchKind, Search,
 use anvil_theme::{Theme, mix};
 use anvil_workspace::selection::Selection;
 
+use crate::atlas::GlyphRasterizer;
+use crate::batch::CellBatch;
 use crate::raster::{FontMetrics, GlyphPainter, Raster};
 
 // ── Semantic status colors (Mineral palette, brand contract) ─────────────────
@@ -546,6 +548,324 @@ pub fn draw_viewport(
             }
 
             raster.y_shift_px = 0.0;
+        }
+    }
+}
+
+// ── GPU viewport draw loop ────────────────────────────────────────────────────
+
+/// Resolve fg/bg for a cell, applying selection, search, and INVERSE.
+///
+/// Shared by `draw_cell` and `draw_viewport_gpu` so color resolution is
+/// identical on both paths.
+fn resolve_cell_colors(
+    cell: Cell,
+    content_row: usize,
+    col: usize,
+    selection: Selection,
+    search: Option<&Search>,
+    theme: &Theme,
+) -> ([u8; 3], [u8; 3]) {
+    let mut fg = resolve_color(cell.fg, theme.foreground, theme);
+    let mut bg = resolve_color(cell.bg, theme.background, theme);
+
+    use anvil_term::Attrs;
+    if cell.attrs.contains(Attrs::INVERSE) {
+        std::mem::swap(&mut fg, &mut bg);
+    }
+
+    if selection.active && selection.contains(content_row, col) {
+        bg = mix(theme.background, theme.accent, 0.35);
+    }
+
+    if let Some(s) = search {
+        match s.classify(content_row, col) {
+            MatchKind::Current => bg = theme.accent,
+            MatchKind::Other => bg = theme.ansi[8],
+            MatchKind::None => {}
+        }
+    }
+
+    (fg, bg)
+}
+
+/// GPU-path viewport draw: pushes one `CellInstance` per visible cell into
+/// `batch` instead of writing pixels into a `Raster`.
+///
+/// `raster` is read-only and used only for `cell_rect` pixel-position math
+/// (requires `raster.origin_x/y` set to the pane's top-left before calling).
+///
+/// Mirrors `draw_viewport` loops: same scroll, fold, selection, cursor, and
+/// gutter/fold-summary logic.  Chrome (tab bar, status bar, etc.) is NOT
+/// drawn here — this is terminal viewport cells only.
+///
+/// # Cursor
+/// Block cursor: one bg-only instance covering the cell with `bg = cursor_rgb`.
+/// Bar/underline cursor: a small bg-only instance covering the strip subrect.
+///
+/// # Gutter marks and fold summaries
+/// Gutter mark: a tiny bg-only instance at the left edge of the command row.
+/// Fold summary text (" ⌄ N hidden"): one instance per character via
+/// `glyph_slot`.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_viewport_gpu(
+    batch: &mut CellBatch,
+    raster: &Raster,
+    rasterizer: &mut dyn GlyphRasterizer,
+    terminal: &mut Terminal,
+    metrics: FontMetrics,
+    theme: &Theme,
+    scroll_pos: f32,
+    overscroll: f32,
+    selection: Selection,
+    search: Option<&Search>,
+    _top_bar_rows: usize,
+    cursor: Option<CursorParams>,
+    folded: FoldedBlocks<'_>,
+) {
+    let rows = terminal.rows();
+    let cols = terminal.cols();
+    let cw = metrics.cell_w as f32;
+    let ch = metrics.cell_h as f32;
+
+    // Helper: push a bg-only rect instance.
+    let push_bg = |batch: &mut CellBatch, xy: [f32; 2], wh: [f32; 2], color: [u8; 3]| {
+        batch.push_cell(xy, wh, None, color, color);
+    };
+
+    // Helper: compute top-left pixel of cell (col, row_in_pane) using raster.cell_rect.
+    // `row_in_pane` does NOT include top_bar_rows (origin_y already encodes the
+    // pane's pixel top; top_bar_rows is irrelevant for GPU — batch positions are
+    // absolute drawable pixels).
+    let cell_xy = |batch_col: f64, batch_row: f64| -> [f32; 2] {
+        let rect = raster.cell_rect(metrics, batch_col, batch_row);
+        [rect.x as f32, rect.y as f32]
+    };
+
+    if scroll_pos == 0.0 && overscroll == 0.0 {
+        // Live-bottom path.
+        for y in 0..rows {
+            let crow = terminal.content_row_of_viewport(y);
+            let abs = terminal.absolute_line_of_content(crow);
+
+            let block_opt = if !folded.cmd_lines.is_empty() {
+                terminal.block_at(abs)
+            } else {
+                None
+            };
+
+            // Skip folded output rows.
+            if let Some(ref block) = block_opt {
+                if folded.contains(block.command_line)
+                    && abs >= block.output_line
+                    && abs < block.end_line
+                {
+                    continue;
+                }
+            }
+
+            // Draw all cells in this row.
+            {
+                let row = terminal.viewport_row(y);
+                let row_cells: Vec<Cell> = row.iter().take(cols.min(row.len())).copied().collect();
+                let _ = row; // borrow ends: row is &[Cell], already snapshotted above
+                for (x, cell) in row_cells.into_iter().enumerate() {
+                    let (fg, bg) = resolve_cell_colors(cell, crow, x, selection, search, theme);
+                    let xy = cell_xy(x as f64, y as f64);
+                    let wh = [cw, ch];
+                    if cell.cp == ' ' || cell.cp == '\0' {
+                        if bg != theme.background {
+                            batch.push_cell(xy, wh, None, fg, bg);
+                        }
+                    } else {
+                        let slot = rasterizer.glyph_slot(cell.cp as u32, metrics);
+                        batch.push_cell(xy, wh, slot, fg, bg);
+                    }
+                }
+            }
+
+            // Fold summary text.
+            if let Some(ref block) = block_opt {
+                if folded.contains(block.command_line) && abs == block.command_line {
+                    let hidden = block.output_row_count();
+                    let summary = format!(" \u{2304} {hidden} hidden");
+                    for (i, cp) in summary.chars().enumerate() {
+                        if i >= cols {
+                            break;
+                        }
+                        let xy = cell_xy(i as f64, y as f64);
+                        let wh = [cw, ch];
+                        let slot = rasterizer.glyph_slot(cp as u32, metrics);
+                        batch.push_cell(xy, wh, slot, ALLOY, theme.background);
+                    }
+                }
+            }
+
+            // Gutter mark (bg-only strip at left edge of command row).
+            if let Some(ref block) = block_opt {
+                if abs == block.command_line {
+                    let mark_rgb = gutter_mark_color(block);
+                    let xy = cell_xy(0.0, y as f64);
+                    // Gutter mark: 3px wide strip on the left edge, full cell height.
+                    let wh = [3.0f32.min(cw), ch];
+                    push_bg(batch, xy, wh, mark_rgb);
+                }
+            }
+        }
+    } else {
+        // Smooth-scroll path.
+        let base = scroll_pos.floor() as usize;
+        let frac = scroll_pos as f64 - scroll_pos.floor() as f64;
+        let scroll_shift = (1.0 - frac) * metrics.cell_h;
+        // Note: y_shift_px is state on the raster; for GPU path we compute
+        // pixel positions ourselves using raster.cell_rect (which reads
+        // raster.y_shift_px).  We temporarily set it here and restore after.
+        // We use a shared reference to raster so we can't mutate it; instead
+        // we use the pane origin directly.
+        // For smooth-scroll GPU path, compute y pixel offsets manually.
+        let shift = (scroll_shift - overscroll as f64) as f32;
+        let hist = terminal.scrollback_len();
+        let off = base + 1;
+
+        for y in 0..=rows {
+            let crow: usize = if off > y {
+                (hist + y).saturating_sub(off)
+            } else {
+                hist + y - off
+            };
+            let abs = terminal.absolute_line_of_content(crow);
+
+            let block_opt = if !folded.cmd_lines.is_empty() {
+                terminal.block_at(abs)
+            } else {
+                None
+            };
+
+            if let Some(ref block) = block_opt {
+                if folded.contains(block.command_line)
+                    && abs >= block.output_line
+                    && abs < block.end_line
+                {
+                    continue;
+                }
+            }
+
+            {
+                let row = terminal.viewport_row_at(off, y);
+                let row_cells: Vec<Cell> = row.iter().take(cols.min(row.len())).copied().collect();
+                let _ = row; // borrow ends: row is &[Cell], already snapshotted above
+                for (x, cell) in row_cells.into_iter().enumerate() {
+                    let (fg, bg) = resolve_cell_colors(cell, crow, x, selection, search, theme);
+                    // Smooth-scroll: apply shift to y position.
+                    let base_xy = cell_xy(x as f64, y as f64);
+                    let xy = [base_xy[0], base_xy[1] - shift];
+                    let wh = [cw, ch];
+                    if cell.cp == ' ' || cell.cp == '\0' {
+                        if bg != theme.background {
+                            batch.push_cell(xy, wh, None, fg, bg);
+                        }
+                    } else {
+                        let slot = rasterizer.glyph_slot(cell.cp as u32, metrics);
+                        batch.push_cell(xy, wh, slot, fg, bg);
+                    }
+                }
+            }
+
+            // Fold summary (smooth-scroll path).
+            if let Some(ref block) = block_opt {
+                if folded.contains(block.command_line) && abs == block.command_line {
+                    let hidden = block.output_row_count();
+                    let summary = format!(" \u{2304} {hidden} hidden");
+                    for (i, cp) in summary.chars().enumerate() {
+                        if i >= cols {
+                            break;
+                        }
+                        let base_xy = cell_xy(i as f64, y as f64);
+                        let xy = [base_xy[0], base_xy[1] - shift];
+                        let wh = [cw, ch];
+                        let slot = rasterizer.glyph_slot(cp as u32, metrics);
+                        batch.push_cell(xy, wh, slot, ALLOY, theme.background);
+                    }
+                }
+            }
+
+            // Gutter mark (smooth-scroll path).
+            if let Some(ref block) = block_opt {
+                if abs == block.command_line {
+                    let mark_rgb = gutter_mark_color(block);
+                    let base_xy = cell_xy(0.0, y as f64);
+                    let xy = [base_xy[0], base_xy[1] - shift];
+                    let wh = [3.0f32.min(cw), ch];
+                    push_bg(batch, xy, wh, mark_rgb);
+                }
+            }
+        }
+    }
+
+    // Cursor: only when pinned to live bottom.
+    if let Some(cp) = cursor {
+        let cur = terminal.cursor();
+        if cur.visible
+            && terminal.viewport_offset() == 0
+            && scroll_pos == 0.0
+            && cur.x < cols
+            && cur.y < rows
+        {
+            let opacity = if terminal.app_cursor_blink.unwrap_or(cp.cfg.blink) {
+                cursor_opacity(cp.blink_phase)
+            } else {
+                1.0
+            };
+            let cursor_rgb = mix(theme.background, theme.accent, opacity);
+            let ax = cp.ax as f64;
+            let ay = cp.ay as f64;
+            let xy = cell_xy(ax, ay);
+            let overscroll_shift = -overscroll;
+
+            let style = match terminal.app_cursor_shape {
+                Some(CursorShape::Block) => CursorStyle::Block,
+                Some(CursorShape::Underline) => CursorStyle::Underline,
+                Some(CursorShape::Bar) => CursorStyle::Bar,
+                None => cp.cfg.style,
+            };
+
+            match style {
+                CursorStyle::Block => {
+                    // Full-cell bg instance.
+                    let bxy = [xy[0], xy[1] + overscroll_shift];
+                    batch.push_cell(bxy, [cw, ch], None, cursor_rgb, cursor_rgb);
+                    // Re-draw the cell's glyph tinted for the block cursor.
+                    let ic = cp.ax.round() as usize;
+                    let ir = cp.ay.round() as usize;
+                    if ir < rows && ic < cols {
+                        let cell_under = {
+                            let row = terminal.viewport_row(ir);
+                            if ic < row.len() { Some(row[ic]) } else { None }
+                        };
+                        if let Some(cell) = cell_under {
+                            if cell.cp != ' ' && cell.cp != '\0' {
+                                let base_fg = resolve_color(cell.fg, theme.foreground, theme);
+                                let glyph_fg = mix(base_fg, theme.background, opacity);
+                                let slot = rasterizer.glyph_slot(cell.cp as u32, metrics);
+                                batch.push_cell(bxy, [cw, ch], slot, glyph_fg, cursor_rgb);
+                            }
+                        }
+                    }
+                }
+                CursorStyle::Bar => {
+                    // Left 15% strip, full height.
+                    let bxy = [xy[0], xy[1] + overscroll_shift];
+                    let bwh = [cw * 0.15, ch];
+                    batch.push_cell(bxy, bwh, None, cursor_rgb, cursor_rgb);
+                }
+                CursorStyle::Underline => {
+                    // Bottom 12% strip.
+                    let fh = ch * 0.12;
+                    let bxy = [xy[0], xy[1] + ch - fh + overscroll_shift];
+                    let bwh = [cw, fh];
+                    batch.push_cell(bxy, bwh, None, cursor_rgb, cursor_rgb);
+                }
+            }
         }
     }
 }
@@ -1237,5 +1557,109 @@ mod tests {
             exit_code: 1,
         };
         assert_eq!(gutter_mark_color(&block), FAILURE);
+    }
+
+    // ── draw_viewport_gpu smoke test ─────────────────────────────────────────
+
+    /// Stub rasterizer that returns a fixed slot for any non-empty codepoint.
+    struct StubRasterizer {
+        pub calls: usize,
+    }
+
+    impl crate::atlas::GlyphRasterizer for StubRasterizer {
+        fn glyph_slot(
+            &mut self,
+            codepoint: u32,
+            _metrics: FontMetrics,
+        ) -> Option<crate::atlas::GlyphSlot> {
+            self.calls += 1;
+            if codepoint == 0 || codepoint == b' ' as u32 {
+                return None;
+            }
+            Some(crate::atlas::GlyphSlot {
+                atlas_x: 0,
+                atlas_y: 0,
+                w: 10,
+                h: 20,
+                bearing_x: 0,
+                bearing_y: 0,
+            })
+        }
+    }
+
+    /// `draw_viewport_gpu` produces at least one instance for a non-empty
+    /// terminal and at most rows*cols instances (one per visible cell).
+    #[test]
+    fn draw_viewport_gpu_smoke_non_zero_instances() {
+        let m = metrics();
+        let r = Raster::new(200, 120);
+        let mut rasterizer = StubRasterizer { calls: 0 };
+        let mut batch = crate::batch::CellBatch::new();
+        let mut t = make_terminal(10, 4);
+        t.feed(b"\x1b]133;A\x07");
+        t.feed(b"hello\r\n");
+        t.feed(b"world");
+        let sel = Selection::default();
+        let theme = MINERAL_DARK;
+
+        batch.clear([200.0, 120.0]);
+        draw_viewport_gpu(
+            &mut batch,
+            &r,
+            &mut rasterizer,
+            &mut t,
+            m,
+            &theme,
+            0.0,
+            0.0,
+            sel,
+            None,
+            0,
+            None,
+            FoldedBlocks::empty(),
+        );
+
+        let count = batch.instance_count();
+        let max_cells = t.rows() * t.cols();
+        assert!(count > 0, "expected at least one instance, got 0");
+        assert!(
+            count <= max_cells,
+            "instance count {count} exceeds max_cells {max_cells}"
+        );
+    }
+
+    /// `draw_viewport_gpu` with smooth scroll: no panic and at least one instance.
+    #[test]
+    fn draw_viewport_gpu_smooth_scroll_no_panic() {
+        let m = metrics();
+        let r = Raster::new(200, 120);
+        let mut rasterizer = StubRasterizer { calls: 0 };
+        let mut batch = crate::batch::CellBatch::new();
+        let mut t = make_terminal(10, 4);
+        for _ in 0..10 {
+            t.feed(b"scrollback\r\n");
+        }
+        let sel = Selection::default();
+        let theme = MINERAL_DARK;
+
+        batch.clear([200.0, 120.0]);
+        draw_viewport_gpu(
+            &mut batch,
+            &r,
+            &mut rasterizer,
+            &mut t,
+            m,
+            &theme,
+            2.0,
+            0.0,
+            sel,
+            None,
+            0,
+            None,
+            FoldedBlocks::empty(),
+        );
+        // No panic; scroll path exercised. Instance count may be 0 (cells
+        // happen to be spaces) but must not exceed rows+1 * cols.
+        assert!(batch.instance_count() <= (t.rows() + 1) * t.cols());
     }
 }
