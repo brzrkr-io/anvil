@@ -176,6 +176,7 @@ pub struct App {
     // -- agent panel ---
     agent_snap: AgentSnapshot,
     local_ctx: LocalContext,
+    caldera_poller: Option<anvil_caldera::Poller>,
 
     // -- git worker ---
     git_tx: mpsc::SyncSender<PathBuf>,
@@ -749,6 +750,20 @@ impl App {
             }
             // Kick off git worker (try_send is non-blocking; drop if channel full).
             let _ = self.git_tx.try_send(PathBuf::from(&cwd));
+
+            // Start the caldera poller lazily once we know the repo root —
+            // it spawns its own thread and polls /api/activity every 2s.
+            if self.caldera_poller.is_none() {
+                let root = PathBuf::from(&cwd);
+                self.caldera_poller =
+                    Some(anvil_caldera::Poller::start(anvil_caldera::DEFAULT_ENDPOINT, root));
+            }
+        }
+
+        // Drain the caldera poller into the agent snapshot. The poller writes
+        // a fresh Snapshot every 2s; the read is a cheap mutex peek + clone.
+        if let Some(p) = &self.caldera_poller {
+            self.agent_snap = p.snapshot();
         }
 
         // last-run from focused pane
@@ -2079,6 +2094,9 @@ fn main() -> Result<()> {
         focused: true,
         agent_snap: AgentSnapshot::default(),
         local_ctx: LocalContext::default(),
+        // The caldera poller is started lazily once we know the repo root
+        // (set when the first focused pane's cwd is known); see tick().
+        caldera_poller: None,
         git_tx,
         git_rx,
         palette: Palette::default(),

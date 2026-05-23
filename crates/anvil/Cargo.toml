@@ -16,6 +16,7 @@ anvil-render     = { workspace = true }
 anvil-theme      = { workspace = true }
 anvil-config     = { workspace = true }
 anvil-agent      = { workspace = true }
+anvil-caldera    = { workspace = true }
 anvil-control    = { workspace = true }
 anvil-prompt-core = { path = "../../crates/anvil-prompt-core" }
 anyhow           = { workspace = true }
