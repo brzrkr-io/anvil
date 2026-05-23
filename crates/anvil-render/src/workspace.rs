@@ -155,7 +155,6 @@ pub fn draw_workspace_chrome(
 
 /// Fill divider gutters between all adjacent leaf pairs. Called after all pane
 /// content is drawn so the dividers overdraw any scroll bleed.
-/// When there are 2+ panes, also draws a 2px accent border around the focused pane.
 fn draw_dividers(
     raster: &mut Raster,
     entries: &[LayoutEntry],
@@ -163,6 +162,7 @@ fn draw_dividers(
     theme: &Theme,
     focused_id: PaneId,
 ) {
+    let _ = focused_id; // focus is indicated by the cursor, not a pane border
     // For each pair of leaves, if they share a boundary (with a gutter between
     // them), fill the gutter rectangle.
     for (ai, a) in entries.iter().enumerate() {
@@ -206,26 +206,6 @@ fn draw_dividers(
         }
     }
 
-    // Focused-pane accent border: only when there are 2+ panes.
-    if entries.len() >= 2 {
-        for e in entries {
-            if e.id != focused_id {
-                continue;
-            }
-            let r = e.rect;
-            let bw = 2.0_f64; // border width in device pixels
-            let color = theme.accent;
-            // Top edge.
-            raster.fill_pixel_rect(r.x, r.y - bw, r.w, bw, color);
-            // Bottom edge.
-            raster.fill_pixel_rect(r.x, r.y + r.h, r.w, bw, color);
-            // Left edge.
-            raster.fill_pixel_rect(r.x - bw, r.y - bw, bw, r.h + bw * 2.0, color);
-            // Right edge.
-            raster.fill_pixel_rect(r.x + r.w, r.y - bw, bw, r.h + bw * 2.0, color);
-            break;
-        }
-    }
 }
 
 // --- Tests ------------------------------------------------------------------
@@ -402,12 +382,10 @@ mod tests {
         );
     }
 
-    /// Port of "cursor_params only for focused pane, accent border only for multi-pane"
-    ///
-    /// Single-pane: no accent border at the inner edges.
-    /// Two-pane: focused pane (id1) gets accent border at gutter boundary.
+    /// Two-pane: gutter carries theme.border; no accent border around the
+    /// focused pane (focus is indicated by the cursor).
     #[test]
-    fn accent_border_only_for_multi_pane() {
+    fn focused_pane_has_no_accent_border() {
         let m = metrics();
         let w = 800_usize;
         let h = 400_usize;
@@ -424,78 +402,40 @@ mod tests {
         let id1 = reg.create_and_register(20, 6, 0);
         let id2 = reg.create_and_register(20, 6, 0);
 
-        // --- Single-pane: no accent border ---
-        {
-            let tree = PaneTree::init_single(id1);
-            let mut r = Raster::new(w, h);
-            let mut painter = StubPainter::default();
-            r.clear(theme.background);
-            draw_workspace(
-                &mut r,
-                &mut painter,
-                &tree,
-                &mut reg,
-                inner,
-                DIVIDER_PX,
-                m,
-                &theme,
-                None,
-                id1,
-                0.0,
-                CursorConfig::default(),
-                None,
-            );
+        let mut tree = PaneTree::init_single(id1);
+        tree.split(SplitDir::Horizontal, id2).unwrap();
 
-            // The inner left edge pixel should NOT be theme.accent.
-            let edge_x = (inner.x + 0.5) as usize;
-            let mid_y = (inner.y + inner.h * 0.5) as usize;
-            let px = pixel_at(&r, edge_x, mid_y);
-            assert_ne!(px, theme.accent, "single-pane must not show accent border");
-        }
+        let mut r = Raster::new(w, h);
+        let mut painter = StubPainter::default();
+        r.clear(theme.background);
+        draw_workspace(
+            &mut r,
+            &mut painter,
+            &tree,
+            &mut reg,
+            inner,
+            DIVIDER_PX,
+            m,
+            &theme,
+            None,
+            id1,
+            0.0,
+            CursorConfig::default(),
+            None,
+        );
 
-        // --- Two-pane (horizontal): focused pane gets accent border ---
-        {
-            let mut tree = PaneTree::init_single(id1);
-            tree.split(SplitDir::Horizontal, id2).unwrap();
-
-            let mut r = Raster::new(w, h);
-            let mut painter = StubPainter::default();
-            r.clear(theme.background);
-            draw_workspace(
-                &mut r,
-                &mut painter,
-                &tree,
-                &mut reg,
-                inner,
-                DIVIDER_PX,
-                m,
-                &theme,
-                None,
-                id1,
-                0.0,
-                CursorConfig::default(),
-                None,
-            );
-
-            // Gutter center should carry border.
-            let pane1_w = (inner.w - DIVIDER_PX) * 0.5;
-            let gutter_x = inner.x + pane1_w;
-            let gutter_cx = (gutter_x + DIVIDER_PX * 0.5) as usize;
-            let mid_y = (inner.y + inner.h * 0.5) as usize;
-            let gutter_px = pixel_at(&r, gutter_cx, mid_y);
-            // With a 1px hairline divider the gutter may be theme.border or
-            // theme.accent (focused-pane accent border overlaps the hairline).
-            assert!(
-                gutter_px == theme.border || gutter_px == theme.accent,
-                "gutter must be border or accent, got {gutter_px:?}"
-            );
-
-            // The accent border for pane1 sits at the right edge of pane1's rect.
-            let border_x = (gutter_x + 0.5) as usize;
-            let border_px = pixel_at(&r, border_x, mid_y);
-            assert_eq!(
-                border_px, theme.accent,
-                "focused pane1 must have accent border at right edge"
+        // The focused pane must not paint an accent ring on any of its edges.
+        let pane1_w = (inner.w - DIVIDER_PX) * 0.5;
+        let mid_y = (inner.y + inner.h * 0.5) as usize;
+        for x in [
+            (inner.x + 0.5) as usize,                            // left edge
+            ((inner.x + pane1_w - 1.0) as usize).max(1),         // right inside
+            (inner.x + pane1_w + DIVIDER_PX + 0.5) as usize,     // right of gutter
+        ] {
+            let px = pixel_at(&r, x, mid_y);
+            assert_ne!(
+                px, theme.accent,
+                "no accent ring around focused pane (x={x}, got {px:?})"
             );
         }
     }
