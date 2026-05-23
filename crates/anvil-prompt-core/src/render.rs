@@ -76,21 +76,26 @@ fn esc(buf: &mut String, shell: Shell, seq: &str) {
     }
 }
 
-/// The full two-line prompt block.
+/// The full single-line prompt.
 ///
-/// Pure/Starship-inspired: a context row of colored segments separated by
-/// double spaces (colour does the dividing — no middots, no edge bar), then a
-/// bare `❯ ` on its own line. The `❯` flips to red when the previous command
-/// failed.
+/// One line, all context + the prompt glyph at the end:
+///   `anvil · rust-port · rust  ❯ `
+///
+/// Single-line is denser and lets terminal output dominate. Segments are
+/// joined by a dim middot so the line reads as structured, not a wall of
+/// words. The `❯` flips to red when the previous command failed.
 pub fn full(segments: &[Segment], opts: Options) -> String {
     let mut buf = String::new();
     let sh = opts.shell;
 
-    // Line 1: segments, space-separated. Two spaces between segments so the
-    // grouping reads as deliberate.
+    // Context segments: `glyph text` per segment, joined by ` · ` in DIM.
     for (idx, s) in segments.iter().enumerate() {
         if idx != 0 {
-            buf.push_str("  ");
+            buf.push(' ');
+            esc(&mut buf, sh, DIM);
+            buf.push('\u{00b7}'); // ·
+            esc(&mut buf, sh, RESET);
+            buf.push(' ');
         }
         esc(&mut buf, sh, seg_color(s));
         if opts.rich {
@@ -100,9 +105,12 @@ pub fn full(segments: &[Segment], opts: Options) -> String {
         buf.push_str(&s.text);
         esc(&mut buf, sh, RESET);
     }
-    buf.push('\n');
 
-    // Line 2: just the prompt glyph.
+    // Gap before the prompt glyph so it doesn't collide with the last segment.
+    if !segments.is_empty() {
+        buf.push_str("  ");
+    }
+
     let glyph_color = if opts.failed { ACCENT_ERR } else { ACCENT };
     esc(&mut buf, sh, glyph_color);
     buf.push('\u{276f}'); // ❯
@@ -136,7 +144,7 @@ mod tests {
     }
 
     #[test]
-    fn full_renders_two_lines() {
+    fn full_renders_single_line() {
         let segs = sample_segs();
         let out = full(
             &segs,
@@ -146,11 +154,12 @@ mod tests {
                 shell: Shell::Plain,
             },
         );
-        assert!(out.contains('\n'));
+        // Single-line prompt: no embedded newline; segments + ❯ on one row.
+        assert!(!out.contains('\n'));
         assert!(out.contains("anvil"));
         assert!(out.contains("main"));
-        // No leading edge bar — minimal prompt style.
-        assert!(!out.contains('\u{258e}'));
+        assert!(out.contains('\u{276f}')); // ❯
+        assert!(!out.contains('\u{258e}')); // no edge bar
     }
 
     #[test]

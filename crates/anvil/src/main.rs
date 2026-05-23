@@ -1542,7 +1542,12 @@ impl AppHandler for AppShell {
             app.dirty = true;
         }
 
-        // Cursor glide + rubber-band overscroll (focused pane only).
+        // Cursor: snap to target every frame. No animation.
+        //
+        // The previous code glided the cursor over ~6 ticks (~100ms). During
+        // that glide the cursor was drawn at fractional rows that the dirty
+        // tracker didn't know about, leaving stale cursor pixels at every
+        // intermediate row — the "cursor trail" bug.
         let approach = |cur: f32, target: f32, rate: f32| -> f32 { cur + (target - cur) * rate };
         if let Some(tab) = app.tabs.current_mut() {
             let id = tab.focused_id();
@@ -1550,17 +1555,9 @@ impl AppHandler for AppShell {
                 let cur = pane.terminal.cursor();
                 let tx = cur.x as f32;
                 let ty = cur.y as f32;
-                if (tx - pane.cursor_ax).abs() > 0.002 || (ty - pane.cursor_ay).abs() > 0.002 {
-                    // 0.45 approach per tick @ 60Hz settles in ~6 ticks (~100ms);
-                    // 0.30 felt sluggish and laggy in user testing.
-                    pane.cursor_ax = approach(pane.cursor_ax, tx, 0.45);
-                    pane.cursor_ay = approach(pane.cursor_ay, ty, 0.45);
-                    if (tx - pane.cursor_ax).abs() <= 0.002 {
-                        pane.cursor_ax = tx;
-                    }
-                    if (ty - pane.cursor_ay).abs() <= 0.002 {
-                        pane.cursor_ay = ty;
-                    }
+                if (tx - pane.cursor_ax).abs() > 0.0 || (ty - pane.cursor_ay).abs() > 0.0 {
+                    pane.cursor_ax = tx;
+                    pane.cursor_ay = ty;
                     app.dirty = true;
                 }
                 if pane.overscroll != 0.0 || pane.overscroll_target != 0.0 {
