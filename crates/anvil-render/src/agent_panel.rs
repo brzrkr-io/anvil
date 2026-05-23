@@ -326,17 +326,24 @@ pub fn draw(
     // For floating: draw halo shadow + surface card.
     // For docked: background was already painted above; skip the floating card.
     if !is_docked {
-        // 4px filled gutter: draw a slightly larger rect first (the halo) then the
-        // inner card surface. theme.border alone disappears against the bone canvas
-        // on mineral-light (~1.5:1), so mix it 50% toward anvil.ash (#374046) — a
-        // shadow-band that reads on both themes (~3.5:1 on bone, sane on dark).
-        let halo_color = mix(theme.border, [0x37, 0x40, 0x46], 0.5);
+        // Two-layer shadow halo for real card depth (Codex/Claude-Desktop style):
+        // a wider, lighter outer band + a tighter, darker inner edge. Mineral-
+        // palette only: no drop shadows, just structured fills.
+        let outer = mix(theme.border, [0x37, 0x40, 0x46], 0.35);
+        let inner = mix(theme.border, [0x37, 0x40, 0x46], 0.6);
         raster.fill_pixel_rect(
-            left_px - 4.0,
-            top_px - 4.0,
-            card_w_px + 8.0,
-            card_h_px + 8.0,
-            halo_color,
+            left_px - 6.0,
+            top_px - 6.0,
+            card_w_px + 12.0,
+            card_h_px + 12.0,
+            outer,
+        );
+        raster.fill_pixel_rect(
+            left_px - 2.0,
+            top_px - 2.0,
+            card_w_px + 4.0,
+            card_h_px + 4.0,
+            inner,
         );
         raster.fill_pixel_rect(left_px, top_px, card_w_px, card_h_px, theme.surface);
     }

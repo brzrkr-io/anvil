@@ -66,7 +66,9 @@ const PALETTE_HTML: &str = include_str!("../../../ui/palette/index.html");
 // ── Constants ────────────────────────────────────────────────────────────────
 
 /// Uniform inset in device pixels between the window edge and the terminal grid.
-const GRID_PAD: usize = 24;
+/// 32 dp at 2× = the Codex/Claude-Desktop "premium" breathing room — wider
+/// than a stock terminal, intentional to read as a product surface not a tty.
+const GRID_PAD: usize = 32;
 
 /// HUD refresh: once every N ticks (~60 fps → ~1 s).
 const HUD_REFRESH_TICKS: u32 = 60;

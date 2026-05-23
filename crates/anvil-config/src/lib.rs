@@ -177,7 +177,9 @@ impl Default for Keybindings {
             focus_right: "cmd+shift+l".into(),
             focus_up: "cmd+shift+k".into(),
             focus_down: "cmd+shift+j".into(),
-            layout_mode_toggle: "cmd+shift+e".into(),
+            // Cmd+I — mnemonic for IDE; single-key chord avoids shift
+            // case-folding edge cases and any system-shortcut conflicts.
+            layout_mode_toggle: "cmd+i".into(),
             fold_block: "cmd+.".into(),
         }
     }
