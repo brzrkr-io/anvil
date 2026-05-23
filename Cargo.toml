@@ -13,6 +13,7 @@ members = [
     "crates/anvil-platform",
     "crates/anvil",
     "crates/anvil-prompt",
+    "crates/anvil-editor",
 ]
 default-members = ["crates/anvil"]
 
