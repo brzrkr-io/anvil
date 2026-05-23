@@ -164,6 +164,10 @@ pub struct App {
     /// Tracks the cursor's last-drawn row per pane (for dirty-row wiring).
     /// Keyed by `PaneId`; value is the viewport row the cursor was on last frame.
     cursor_row_prev: HashMap<PaneId, usize>,
+    /// Tracks the scrollback length per pane between frames. When scrollback
+    /// grows, content auto-scrolled — every visible row's pixels shifted, so
+    /// damage tracking by row index alone is wrong and we force a full redraw.
+    scrollback_len_prev: HashMap<PaneId, usize>,
     /// For debug instrumentation: frame counter and last-report time.
     #[cfg(debug_assertions)]
     debug_render_frame: u64,
@@ -914,6 +918,16 @@ impl App {
                             if scroll_changed {
                                 ds.force_full();
                             }
+                            // Auto-scroll: scrollback grew since last frame. Every
+                            // visible row's pixels shifted up; per-row dirty tracking
+                            // leaves the old cursor's pixels orphaned at their old
+                            // device-pixel y. Force a full redraw to flush them.
+                            let sbl = pane.terminal.scrollback_len();
+                            let prev_sbl = self.scrollback_len_prev.get(&e.id).copied().unwrap_or(sbl);
+                            if sbl != prev_sbl {
+                                ds.force_full();
+                            }
+                            self.scrollback_len_prev.insert(e.id, sbl);
                             // Search active → force full (highlights may span many rows).
                             if search_ref.is_some() {
                                 ds.force_full();
@@ -1611,6 +1625,13 @@ impl AppHandler for AppShell {
             return;
         }
 
+        // HUD: Esc closes it (Cmd+J still toggles).
+        if self.app.hud_visible && event.key == KeyInput::Escape && !event.mods.command {
+            self.app.hud_visible = false;
+            self.app.dirty = true;
+            return;
+        }
+
         // Search bar handling.
         if self.app.search_open {
             match event.key {
@@ -2301,6 +2322,7 @@ fn main() -> Result<()> {
         dirty: true,
         force_full_redraw: true,
         cursor_row_prev: HashMap::new(),
+        scrollback_len_prev: HashMap::new(),
         #[cfg(debug_assertions)]
         debug_render_frame: 0,
         #[cfg(debug_assertions)]
