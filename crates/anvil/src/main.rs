@@ -1275,9 +1275,8 @@ impl AppHandler for AppShell {
         };
         let blink_on = effective_blink.unwrap_or(app_blink_cfg);
         if blink_on && app.focused {
-            // 1/32 per tick at 60Hz = ~0.53s full blink cycle — modern terminals
-            // sit in the 500–700ms range; 1.07s (the previous 1/64) read as slow.
-            app.blink_phase += 1.0 / 32.0;
+            // 1/64 per tick at 60Hz = ~1.07s full blink cycle — calm, deliberate.
+            app.blink_phase += 1.0 / 64.0;
             if app.blink_phase >= 1.0 {
                 app.blink_phase -= 1.0;
             }
