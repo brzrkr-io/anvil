@@ -247,7 +247,9 @@ pub fn draw_viewport(
 ) {
     let rows = terminal.rows();
     let cols = terminal.cols();
-    let rule_rgb = mix(theme.background, theme.foreground, 0.45);
+    // Prompt-rule hairline drawn above each command. 0.55 mix gives ~3:1 on
+    // bone (deliberate, legible) without competing with content or the edge.
+    let rule_rgb = mix(theme.background, theme.foreground, 0.55);
 
     if scroll_pos == 0.0 && overscroll == 0.0 {
         // Live bottom: no fractional offset.
