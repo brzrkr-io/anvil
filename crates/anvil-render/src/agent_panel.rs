@@ -552,6 +552,11 @@ fn draw_local_footer(
         let _ = write!(buf, " \u{00b7} {rtxt}");
     }
 
+    // load average (1m) — system pulse at a glance.
+    if let Some(la) = format_load_1m() {
+        let _ = write!(buf, " \u{00b7} {la}");
+    }
+
     // local clock — HH:MM. Trailing position so it stays out of the way.
     if let Some(hm) = format_local_hm() {
         let _ = write!(buf, " \u{00b7} {hm}");
@@ -587,6 +592,17 @@ fn format_local_hm() -> Option<String> {
     let h = day_secs / 3_600;
     let m = (day_secs % 3_600) / 60;
     Some(format!("{:02}:{:02}", h, m))
+}
+
+/// 1-minute load average as a compact string e.g. `1.42`. None on failure.
+fn format_load_1m() -> Option<String> {
+    let mut samples = [0.0_f64; 3];
+    // SAFETY: getloadavg writes up to nelem floats into the array.
+    let n = unsafe { libc::getloadavg(samples.as_mut_ptr(), 3) };
+    if n < 1 {
+        return None;
+    }
+    Some(format!("{:.2}", samples[0]))
 }
 
 /// Compute local UTC offset in seconds via libc's `localtime_r`.
