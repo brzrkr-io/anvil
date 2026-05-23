@@ -14,7 +14,7 @@
 use std::fmt::Write as FmtWrite;
 
 use anvil_agent::{Connection, FindingSeverity, RunStatus, Snapshot};
-use anvil_theme::Theme;
+use anvil_theme::{Theme, mix};
 
 use crate::raster::{FontMetrics, GlyphPainter, Raster};
 
@@ -304,15 +304,17 @@ pub fn draw(
     let card_w_px = PANEL_COLS as f64 * cw;
     let card_h_px = actual_rows as f64 * ch;
 
-    // 4px filled gutter: draw a slightly larger rect in border color first,
-    // then fill the inner card with surface. This gives a visible halo on
-    // light mode where hairline strokes alone disappear.
+    // 4px filled gutter: draw a slightly larger rect first (the halo) then the
+    // inner card surface. theme.border alone disappears against the bone canvas
+    // on mineral-light (~1.5:1), so mix it 50% toward anvil.ash (#374046) — a
+    // shadow-band that reads on both themes (~3.5:1 on bone, sane on dark).
+    let halo_color = mix(theme.border, [0x37, 0x40, 0x46], 0.5);
     raster.fill_pixel_rect(
         left_px - 4.0,
         top_px - 4.0,
         card_w_px + 8.0,
         card_h_px + 8.0,
-        theme.border,
+        halo_color,
     );
     raster.fill_pixel_rect(left_px, top_px, card_w_px, card_h_px, theme.surface);
 
@@ -865,5 +867,223 @@ mod tests {
             false,
         );
         assert!(painter.calls.is_empty());
+    }
+
+    fn make_snap_with_approval() -> Snapshot {
+        use anvil_agent::{ApprovalRow, AgentRunRow};
+        Snapshot {
+            connection: Connection::Live,
+            approvals: vec![ApprovalRow {
+                approval_id: "a1".to_string(),
+                connector: "bash".to_string(),
+                pattern: "rm *".to_string(),
+                reason: "risky".to_string(),
+            }],
+            runs: vec![AgentRunRow {
+                run_id: "r1".to_string(),
+                agent: "codex".to_string(),
+                task: "review".to_string(),
+                status: RunStatus::Running,
+                created_at_unix: 0,
+            }],
+            findings: vec![anvil_agent::FindingRow {
+                severity: FindingSeverity::Failure,
+                summary: "test failure".to_string(),
+                action: "fix".to_string(),
+            }],
+            running_count: 1,
+            pending_approvals_count: 1,
+            ..Default::default()
+        }
+    }
+
+    /// draw: exercises priority rows (approvals, running, findings).
+    #[test]
+    fn draw_with_priority_rows_no_panic() {
+        let m = metrics();
+        let mut r = Raster::new(1200, 800);
+        let mut painter = StubPainter::default();
+        let theme = anvil_theme::MINERAL_DARK;
+        let snap = make_snap_with_approval();
+        let local = LocalContext {
+            cwd: "/home/user/projects/anvil".to_string(),
+            git: GitState::Ok,
+            branch: "main".to_string(),
+            git_dirty: 2,
+            git_ahead: 1,
+            git_behind: 0,
+            run: RunState::Ok,
+            run_exit: 0,
+            run_duration_ms: 1200,
+        };
+        let placement = Placement::Floating {
+            total_cols: 100,
+            total_rows: 40,
+            top_offset: 0,
+        };
+        draw(
+            &mut r,
+            &mut painter,
+            m,
+            &theme,
+            &snap,
+            &local,
+            &placement,
+            false,
+        );
+        assert!(!painter.calls.is_empty());
+    }
+
+    /// draw: exercises the footer with git branch and run status.
+    #[test]
+    fn draw_with_local_context_branch_and_run_no_panic() {
+        let m = metrics();
+        let mut r = Raster::new(1200, 800);
+        let mut painter = StubPainter::default();
+        let theme = anvil_theme::MINERAL_DARK;
+        let snap = Snapshot {
+            connection: Connection::Live,
+            running_count: 0,
+            ..Default::default()
+        };
+        let local = LocalContext {
+            cwd: "/usr/src/anvil".to_string(),
+            git: GitState::Dirty,
+            branch: "feature/something".to_string(),
+            git_dirty: 3,
+            git_ahead: 0,
+            git_behind: 1,
+            run: RunState::Failed,
+            run_exit: 1,
+            run_duration_ms: 500,
+        };
+        let placement = Placement::Floating {
+            total_cols: 100,
+            total_rows: 40,
+            top_offset: 0,
+        };
+        draw(
+            &mut r,
+            &mut painter,
+            m,
+            &theme,
+            &snap,
+            &local,
+            &placement,
+            false,
+        );
+        assert!(!painter.calls.is_empty());
+    }
+
+    /// draw: returns early when too few columns.
+    #[test]
+    fn draw_returns_early_when_too_few_cols() {
+        let m = metrics();
+        let mut r = Raster::new(200, 200);
+        let mut painter = StubPainter::default();
+        let theme = anvil_theme::MINERAL_DARK;
+        let snap = Snapshot {
+            connection: Connection::Live,
+            ..Default::default()
+        };
+        let local = LocalContext::default();
+        // PANEL_COLS is 36; total_cols=10 < PANEL_COLS+2 → returns early.
+        let placement = Placement::Floating {
+            total_cols: 10,
+            total_rows: 30,
+            top_offset: 0,
+        };
+        draw(
+            &mut r,
+            &mut painter,
+            m,
+            &theme,
+            &snap,
+            &local,
+            &placement,
+            false,
+        );
+        assert!(painter.calls.is_empty());
+    }
+
+    /// draw_local_footer: exercises the "no repo / no branch" path.
+    #[test]
+    fn draw_with_no_repo_local_context() {
+        let m = metrics();
+        let mut r = Raster::new(1200, 800);
+        let mut painter = StubPainter::default();
+        let theme = anvil_theme::MINERAL_DARK;
+        let snap = Snapshot {
+            connection: Connection::Live,
+            ..Default::default()
+        };
+        let local = LocalContext {
+            cwd: "/tmp".to_string(),
+            git: GitState::NoRepo,
+            branch: String::new(),
+            ..LocalContext::default()
+        };
+        let placement = Placement::Floating {
+            total_cols: 100,
+            total_rows: 40,
+            top_offset: 0,
+        };
+        draw(
+            &mut r,
+            &mut painter,
+            m,
+            &theme,
+            &snap,
+            &local,
+            &placement,
+            false,
+        );
+        assert!(!painter.calls.is_empty());
+    }
+
+    /// card_rows: base case (no priority items) returns 4.
+    #[test]
+    fn card_rows_base_is_4() {
+        let snap = Snapshot::default();
+        assert_eq!(card_rows(&snap), 4);
+    }
+
+    /// card_rows: one running run adds 1 priority row.
+    #[test]
+    fn card_rows_with_running_run_adds_one() {
+        use anvil_agent::AgentRunRow;
+        let snap = Snapshot {
+            runs: vec![AgentRunRow {
+                status: RunStatus::Running,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(card_rows(&snap), 5);
+    }
+
+    /// card_rows: capped at 3 priority rows → max 7.
+    #[test]
+    fn card_rows_capped_at_3_priority() {
+        use anvil_agent::{AgentRunRow, ApprovalRow, FindingRow};
+        let snap = Snapshot {
+            approvals: vec![
+                ApprovalRow::default(),
+                ApprovalRow::default(),
+                ApprovalRow::default(),
+                ApprovalRow::default(), // 4th should be ignored
+            ],
+            runs: vec![AgentRunRow {
+                status: RunStatus::Running,
+                ..Default::default()
+            }],
+            findings: vec![FindingRow {
+                severity: FindingSeverity::Failure,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        // min(3 + 1 + 1, 3) = 3 priority → 7 total
+        assert_eq!(card_rows(&snap), 7);
     }
 }

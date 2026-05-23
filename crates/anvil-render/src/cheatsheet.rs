@@ -200,6 +200,7 @@ pub fn draw(
                     raster.fill_pixel_rect(rule_px_x, rule_px_y, rule_w, 1.0, theme.border);
                 }
                 first_header = false;
+                // Section headers recede below content: alloy-muted, not foreground.
                 draw_text(
                     raster,
                     painter,
@@ -207,7 +208,7 @@ pub fn draw(
                     card_col + 3,
                     r,
                     label,
-                    theme.foreground,
+                    ALLOY,
                     max_col,
                 );
                 r += 1;

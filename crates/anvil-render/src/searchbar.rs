@@ -62,7 +62,8 @@ pub fn draw_search_bar(
         }
     }
 
-    // Right-aligned counter.
+    // Right-aligned counter — metadata, drawn muted (the current-match highlight
+    // in the grid itself uses theme.accent — the counter doesn't need to compete).
     if counter.len() <= total_cols {
         let start = total_cols - counter.len();
         for (j, ch) in counter.chars().enumerate() {
@@ -72,7 +73,7 @@ pub fn draw_search_bar(
                 start + j,
                 bottom_row,
                 ch as u32,
-                theme.foreground,
+                theme.ansi[8],
             );
         }
     }

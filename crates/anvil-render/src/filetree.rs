@@ -76,7 +76,7 @@ pub fn draw(
             2,
             header_raster_row,
             "FILES",
-            INFO_TEAL,
+            ALLOY, // structural label — recedes below the file rows
             TREE_COLS - 1,
         );
         let header_rule_y = pad_y + (header_raster_row + 1) as f64 * ch;
@@ -302,5 +302,169 @@ mod tests {
         draw(&mut r, &mut painter, m, &theme, &tree, 0, 0);
         // No glyph calls (early return).
         assert!(painter.calls.is_empty());
+    }
+
+    /// Construct a FileTree manually with file and dir entries.
+    fn make_tree_with_entries() -> FileTree {
+        use anvil_workspace::filetree::Entry;
+        let mut tree = FileTree::default();
+        tree.entries.push(Entry {
+            name: "src".to_string(),
+            path: std::path::PathBuf::from("/tmp/src"),
+            depth: 0,
+            is_dir: true,
+            expanded: false,
+        });
+        tree.entries.push(Entry {
+            name: "main.rs".to_string(),
+            path: std::path::PathBuf::from("/tmp/src/main.rs"),
+            depth: 1,
+            is_dir: false,
+            expanded: false,
+        });
+        tree.entries.push(Entry {
+            name: "lib.rs".to_string(),
+            path: std::path::PathBuf::from("/tmp/src/lib.rs"),
+            depth: 1,
+            is_dir: false,
+            expanded: false,
+        });
+        tree
+    }
+
+    /// draw: renders file and dir entries without panicking.
+    #[test]
+    fn draw_with_file_and_dir_entries_no_panic() {
+        let m = metrics();
+        let mut r = Raster::new(600, 600);
+        let mut painter = StubPainter::default();
+        r.clear([0, 0, 0]);
+        let tree = make_tree_with_entries();
+        let theme = anvil_theme::MINERAL_DARK;
+        draw(&mut r, &mut painter, m, &theme, &tree, 20, 0);
+        // Should have drawn glyphs for "FILES" plus entry names.
+        assert!(!painter.calls.is_empty());
+    }
+
+    /// draw: renders with top_offset=1 (tab bar present).
+    #[test]
+    fn draw_with_top_offset_no_panic() {
+        let m = metrics();
+        let mut r = Raster::new(600, 600);
+        let mut painter = StubPainter::default();
+        r.clear([0, 0, 0]);
+        let tree = make_tree_with_entries();
+        let theme = anvil_theme::MINERAL_DARK;
+        draw(&mut r, &mut painter, m, &theme, &tree, 20, 1);
+        assert!(!painter.calls.is_empty());
+    }
+
+    /// draw: renders with a selected entry (highlights that row).
+    #[test]
+    fn draw_with_selected_entry_no_panic() {
+        let m = metrics();
+        let mut r = Raster::new(600, 600);
+        let mut painter = StubPainter::default();
+        r.clear([0, 0, 0]);
+        let mut tree = make_tree_with_entries();
+        tree.selected_idx = Some(0);
+        let theme = anvil_theme::MINERAL_DARK;
+        draw(&mut r, &mut painter, m, &theme, &tree, 20, 0);
+        assert!(!painter.calls.is_empty());
+    }
+
+    /// draw: expanded dir uses open-folder icon.
+    #[test]
+    fn draw_expanded_dir_uses_open_folder_icon() {
+        use anvil_workspace::filetree::Entry;
+        let m = metrics();
+        let mut r = Raster::new(600, 600);
+        let mut painter = StubPainter::default();
+        r.clear([0, 0, 0]);
+
+        let mut tree = FileTree::default();
+        tree.entries.push(Entry {
+            name: "lib".to_string(),
+            path: std::path::PathBuf::from("/tmp/lib"),
+            depth: 0,
+            is_dir: true,
+            expanded: true, // expanded dir
+        });
+
+        let theme = anvil_theme::MINERAL_DARK;
+        draw(&mut r, &mut painter, m, &theme, &tree, 10, 0);
+        // Open folder icon codepoint = 0xf07c.
+        assert!(painter.calls.iter().any(|(cp, _)| *cp == 0xf07c));
+    }
+
+    /// draw: closed dir uses closed-folder icon.
+    #[test]
+    fn draw_closed_dir_uses_closed_folder_icon() {
+        use anvil_workspace::filetree::Entry;
+        let m = metrics();
+        let mut r = Raster::new(600, 600);
+        let mut painter = StubPainter::default();
+        r.clear([0, 0, 0]);
+
+        let mut tree = FileTree::default();
+        tree.entries.push(Entry {
+            name: "lib".to_string(),
+            path: std::path::PathBuf::from("/tmp/lib"),
+            depth: 0,
+            is_dir: true,
+            expanded: false, // closed dir
+        });
+
+        let theme = anvil_theme::MINERAL_DARK;
+        draw(&mut r, &mut painter, m, &theme, &tree, 10, 0);
+        // Closed folder icon codepoint = 0xf07b.
+        assert!(painter.calls.iter().any(|(cp, _)| *cp == 0xf07b));
+    }
+
+    /// draw: file entry uses file icon.
+    #[test]
+    fn draw_file_entry_uses_file_icon() {
+        use anvil_workspace::filetree::Entry;
+        let m = metrics();
+        let mut r = Raster::new(600, 600);
+        let mut painter = StubPainter::default();
+        r.clear([0, 0, 0]);
+
+        let mut tree = FileTree::default();
+        tree.entries.push(Entry {
+            name: "main.rs".to_string(),
+            path: std::path::PathBuf::from("/tmp/main.rs"),
+            depth: 0,
+            is_dir: false,
+            expanded: false,
+        });
+
+        let theme = anvil_theme::MINERAL_DARK;
+        draw(&mut r, &mut painter, m, &theme, &tree, 10, 0);
+        // File icon codepoint = 0xf15b.
+        assert!(painter.calls.iter().any(|(cp, _)| *cp == 0xf15b));
+    }
+
+    /// tree_row_at_click: zero header_rows returns entry index directly.
+    #[test]
+    fn tree_row_at_click_zero_header_rows() {
+        let tree_top = 20.0_f64;
+        let cell_h = 20.0_f64;
+        // With 0 header rows, any click >= tree_top should map to an entry.
+        assert_eq!(tree_row_at_click(tree_top + 5.0, tree_top, cell_h, 0), Some(0));
+        assert_eq!(tree_row_at_click(tree_top + cell_h + 1.0, tree_top, cell_h, 0), Some(1));
+    }
+
+    /// tree_row_at_click: multiple header rows.
+    #[test]
+    fn tree_row_at_click_multiple_header_rows() {
+        let tree_top = 0.0_f64;
+        let cell_h = 20.0_f64;
+        let header_rows = 2;
+        // Clicks in the first 2 rows (headers) → None.
+        assert_eq!(tree_row_at_click(10.0, tree_top, cell_h, header_rows), None);
+        assert_eq!(tree_row_at_click(30.0, tree_top, cell_h, header_rows), None);
+        // Click in third row → entry 0.
+        assert_eq!(tree_row_at_click(41.0, tree_top, cell_h, header_rows), Some(0));
     }
 }
