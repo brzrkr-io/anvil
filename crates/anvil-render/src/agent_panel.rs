@@ -217,17 +217,19 @@ pub fn header_bullet_color(snap: &Snapshot) -> [u8; 3] {
 /// Build the single-line summary that appears next to "agents" in the header.
 pub fn build_header_summary(snap: &Snapshot) -> String {
     match snap.connection {
-        Connection::NotInstalled => "caldera-local not found".to_string(),
-        Connection::NoProject => "no .caldera in this repo".to_string(),
-        Connection::Disabled => "caldera disabled for this repo".to_string(),
-        Connection::Offline => "caldera-local not running".to_string(),
-        Connection::ErrorState => "caldera api error".to_string(),
+        // No-signal states: stay quiet. The dim header bullet already
+        // says "no signal"; a diagnostic sentence in the HUD reads as a
+        // complaint, not context. If the user wants details, status
+        // commands surface them.
+        Connection::NotInstalled | Connection::NoProject | Connection::Disabled => String::new(),
+        Connection::Offline => "offline".to_string(),
+        Connection::ErrorState => "error".to_string(),
         Connection::Live => {
             if snap.running_count == 0
                 && snap.pending_approvals_count == 0
                 && snap.attention_count == 0
             {
-                return "no active runs".to_string();
+                return "idle".to_string();
             }
             let mut parts: Vec<String> = Vec::with_capacity(3);
             if snap.running_count > 0 {
@@ -810,22 +812,22 @@ mod tests {
 
     /// Port of "buildHeaderSummary: not_installed"
     #[test]
-    fn build_header_summary_not_installed() {
+    fn build_header_summary_not_installed_is_quiet() {
         let snap = Snapshot {
             connection: Connection::NotInstalled,
             ..Default::default()
         };
-        assert_eq!(build_header_summary(&snap), "caldera-local not found");
+        // Quiet HUD: no signal states don't shout a diagnostic.
+        assert_eq!(build_header_summary(&snap), "");
     }
 
-    /// Port of "buildHeaderSummary: live empty"
     #[test]
-    fn build_header_summary_live_empty() {
+    fn build_header_summary_live_empty_is_idle() {
         let snap = Snapshot {
             connection: Connection::Live,
             ..Default::default()
         };
-        assert_eq!(build_header_summary(&snap), "no active runs");
+        assert_eq!(build_header_summary(&snap), "idle");
     }
 
     /// Port of "buildHeaderSummary: live with running"
