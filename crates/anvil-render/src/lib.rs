@@ -10,6 +10,7 @@ pub mod draw;
 pub mod filetree;
 pub mod raster;
 pub mod searchbar;
+pub mod statusbar;
 pub mod tabbar;
 pub mod workspace;
 
@@ -18,3 +19,4 @@ pub use draw::{
     resolve_color, rule_row,
 };
 pub use raster::{FontMetrics, GlyphPainter, PixelRect, Raster};
+pub use statusbar::STATUS_BAR_ROWS;

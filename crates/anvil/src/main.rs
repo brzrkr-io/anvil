@@ -36,6 +36,7 @@ use anvil_render::draw::CursorConfig;
 use anvil_render::filetree::{TREE_COLS, draw as draw_filetree};
 use anvil_render::raster::Raster;
 use anvil_render::searchbar::draw_search_bar;
+use anvil_render::statusbar::{STATUS_BAR_ROWS, draw_status_bar};
 use anvil_render::tabbar::draw_tab_bar;
 use anvil_render::workspace::{DIVIDER_PX, draw_workspace};
 use anvil_theme::{Theme, resolve as resolve_theme};
@@ -244,7 +245,8 @@ impl App {
     }
 
     fn bottom_bar_rows(&self) -> usize {
-        if self.search_open { 1 } else { 0 }
+        // Status bar is always present (+1); search bar adds another row when open.
+        STATUS_BAR_ROWS + if self.search_open { 1 } else { 0 }
     }
 
     /// Snap cursor + scroll animation state to current terminal values.
@@ -755,8 +757,10 @@ impl App {
             // it spawns its own thread and polls /api/activity every 2s.
             if self.caldera_poller.is_none() {
                 let root = PathBuf::from(&cwd);
-                self.caldera_poller =
-                    Some(anvil_caldera::Poller::start(anvil_caldera::DEFAULT_ENDPOINT, root));
+                self.caldera_poller = Some(anvil_caldera::Poller::start(
+                    anvil_caldera::DEFAULT_ENDPOINT,
+                    root,
+                ));
             }
         }
 
@@ -841,7 +845,7 @@ impl App {
             draw_tab_bar(&mut self.raster, painter, metrics, &self.theme, &self.tabs);
         }
 
-        // Search bar.
+        // Search bar (second-to-last row when status bar is present).
         if self.search_open {
             let total_rows = (((dh.saturating_sub(2 * GRID_PAD)) as f64 / ch) as usize).max(1);
             draw_search_bar(
@@ -850,7 +854,21 @@ impl App {
                 metrics,
                 &self.theme,
                 &self.search,
-                total_rows - 1,
+                total_rows.saturating_sub(1 + STATUS_BAR_ROWS),
+            );
+        }
+
+        // Status bar (always visible, bottom row).
+        {
+            let total_rows = (((dh.saturating_sub(2 * GRID_PAD)) as f64 / ch) as usize).max(1);
+            draw_status_bar(
+                &mut self.raster,
+                painter,
+                metrics,
+                &self.theme,
+                &self.local_ctx,
+                &self.agent_snap,
+                total_rows.saturating_sub(STATUS_BAR_ROWS),
             );
         }
 
