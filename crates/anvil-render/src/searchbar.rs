@@ -27,15 +27,10 @@ pub fn draw_search_bar(
     }
 
     // Bar background across the whole bottom row (opaque surface tone).
+    // The fill alone signals modal-input mode — no top border needed.
     for c in 0..total_cols {
         raster.cell_bg(metrics, c, bottom_row, theme.surface);
     }
-
-    // 1px border rule above the bar (same pattern as the tab bar bottom rule).
-    let bar_top_px = raster.pad_y + bottom_row as f64 * metrics.cell_h;
-    let bar_left_px = raster.pad_x;
-    let bar_w_px = total_cols as f64 * cell_w;
-    raster.fill_pixel_rect(bar_left_px, bar_top_px, bar_w_px, 1.0, theme.border);
 
     // Compose the bar text: "find: <query>" left-aligned, "<cur>/<total>" right.
     let count = search.count();

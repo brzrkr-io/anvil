@@ -139,8 +139,9 @@ pub fn draw(
     // Fully opaque surface panel — occludes the terminal beneath it.
     raster.fill_pixel_rect(left_px, top_px, card_w_px, card_h_px, theme.surface);
 
-    // 2px border on all four edges.
-    let b = 2.0_f64;
+    // 1px hairline border on all four edges — the surface fill carries the
+    // panel definition; the border is just an anchor edge.
+    let b = 1.0_f64;
     raster.fill_pixel_rect(left_px, top_px, card_w_px, b, theme.border);
     raster.fill_pixel_rect(left_px, top_px + card_h_px - b, card_w_px, b, theme.border);
     raster.fill_pixel_rect(left_px, top_px, b, card_h_px, theme.border);

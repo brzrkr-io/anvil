@@ -105,23 +105,17 @@ pub fn resolve_color(col: Color, default: [u8; 3], theme: &Theme) -> [u8; 3] {
 
 // ── Cursor opacity ────────────────────────────────────────────────────────────
 
-/// Cursor opacity for blink phase `p` in [0,1): solid → fade out → dim hold
-/// → fade in.  Ported faithfully from `draw.zig`'s `cursorOpacity`.
+/// Cursor opacity for blink phase `p` in [0,1).
+///
+/// A smooth pulse that never fully disappears — floors at MIN so the cursor
+/// stays continuously locatable while still breathing. Aesthetic over the
+/// original Zig "solid → off → solid" hard square-wave: a hard off-phase
+/// reads as "did it move?" jitter, especially on dense lines.
 pub fn cursor_opacity(p: f32) -> f32 {
-    fn smoothstep(t: f32) -> f32 {
-        let c = t.clamp(0.0, 1.0);
-        c * c * (3.0 - 2.0 * c)
-    }
-    if p < 0.50 {
-        return 1.0;
-    }
-    if p < 0.62 {
-        return 1.0 - smoothstep((p - 0.50) / 0.12);
-    }
-    if p < 0.88 {
-        return 0.0;
-    }
-    smoothstep((p - 0.88) / 0.12)
+    const MIN: f32 = 0.35; // dim floor — visible but quiet
+    // (1 + cos(2πp)) / 2 → smooth 1.0 → 0 → 1.0 across [0, 1).
+    let pulse = 0.5 + 0.5 * (std::f32::consts::TAU * p).cos();
+    MIN + (1.0 - MIN) * pulse
 }
 
 // ── Prompt-rule predicate ─────────────────────────────────────────────────────
@@ -979,20 +973,28 @@ mod tests {
     // ── cursor_opacity
 
     #[test]
-    fn cursor_opacity_solid_in_first_half() {
-        assert_eq!(cursor_opacity(0.0), 1.0);
-        assert_eq!(cursor_opacity(0.49), 1.0);
+    fn cursor_opacity_peaks_at_phase_zero_and_one() {
+        // (1+cos(0))/2 = 1 → opacity = 1.0
+        assert!((cursor_opacity(0.0) - 1.0).abs() < 1e-5);
     }
 
     #[test]
-    fn cursor_opacity_zero_in_dim_hold() {
-        assert_eq!(cursor_opacity(0.75), 0.0);
+    fn cursor_opacity_dips_to_floor_at_mid_phase() {
+        // (1+cos(π))/2 = 0 → opacity = MIN (0.35).
+        let v = cursor_opacity(0.5);
+        assert!(
+            (v - 0.35).abs() < 1e-5,
+            "expected floor at phase=0.5, got {v}"
+        );
     }
 
     #[test]
-    fn cursor_opacity_fades_in_at_end() {
-        let v = cursor_opacity(0.94);
-        assert!(v > 0.0 && v < 1.0, "expected fade-in, got {v}");
+    fn cursor_opacity_never_drops_below_floor() {
+        for i in 0..1000 {
+            let p = i as f32 / 1000.0;
+            let v = cursor_opacity(p);
+            assert!(v >= 0.35 - 1e-5, "phase={p} opacity={v} dipped below floor");
+        }
     }
 
     // ── draw_viewport zero-allocation guarantee (by-construction note)
@@ -1452,19 +1454,14 @@ mod tests {
 
     #[test]
     fn cursor_opacity_full_range_coverage() {
-        // Covers all four branches of cursor_opacity.
-        // Phase < 0.50: solid (1.0)
-        assert_eq!(cursor_opacity(0.0), 1.0);
-        assert_eq!(cursor_opacity(0.49), 1.0);
-        // Phase in [0.50, 0.62): smoothstep fade from 1 to 0
-        let v = cursor_opacity(0.56);
-        assert!(v > 0.0 && v < 1.0);
-        // Phase in [0.62, 0.88): zero
-        assert_eq!(cursor_opacity(0.75), 0.0);
-        assert_eq!(cursor_opacity(0.62), 0.0);
-        // Phase in [0.88, 1.0): fade back up
-        let v = cursor_opacity(0.94);
-        assert!(v > 0.0 && v < 1.0);
+        // Smooth pulse with a 0.35 floor — peak at phase 0, trough at 0.5.
+        assert!((cursor_opacity(0.0) - 1.0).abs() < 1e-5);
+        assert!((cursor_opacity(0.5) - 0.35).abs() < 1e-5);
+        // Quarter-phase points sit between floor and peak.
+        for p in [0.25_f32, 0.75] {
+            let v = cursor_opacity(p);
+            assert!(v > 0.35 && v < 1.0, "phase={p} opacity={v}");
+        }
     }
 
     // ── draw_viewport fold smoke test ─────────────────────────────────────────
