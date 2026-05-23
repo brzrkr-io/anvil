@@ -163,7 +163,9 @@ pub fn draw_cell(
     }
 
     if selection.active && selection.contains(content_row, x) {
-        bg = mix(theme.background, theme.accent, 0.35);
+        // 0.25 mix reads as a quiet wash, not a loud highlight; the
+        // foreground glyph stays readable through it.
+        bg = mix(theme.background, theme.accent, 0.25);
     }
 
     if let Some(s) = search {
