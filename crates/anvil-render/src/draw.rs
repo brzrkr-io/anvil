@@ -7,7 +7,9 @@
 //!
 //! Ported from `src/render/draw.zig`.
 
-use anvil_term::{Block, BlockState, Cell, Color, CursorShape, MatchKind, Search, Terminal};
+use anvil_term::{
+    Block, BlockState, Cell, Color, CursorShape, DirtySet, MatchKind, Search, Terminal,
+};
 use anvil_theme::{Theme, mix};
 use anvil_workspace::selection::Selection;
 
@@ -306,6 +308,13 @@ fn gutter_mark_color(block: &Block) -> [u8; 3] {
 /// pass `FoldedBlocks::empty()` to draw all rows normally.
 /// Pass `cursor_params = None` to suppress cursor drawing (e.g. in tests).
 ///
+/// `dirty` restricts drawing to only the rows that have changed. `None` or
+/// `Some(full)` redraws all rows. For each dirty row the row's background band
+/// is first cleared to `theme.background` so stale pixels from the previous
+/// frame are overwritten.  Non-dirty rows are left untouched in the raster.
+///
+/// In the smooth-scroll path all rows are always redrawn (content shifts).
+///
 /// # Zero-allocation guarantee
 /// The draw loop writes into the pre-allocated `Raster` pixel buffer.  No
 /// `Vec` growth or heap allocation occurs per frame by construction.
@@ -325,6 +334,7 @@ pub fn draw_viewport(
     rule_x_start: f64,
     rule_x_end: f64,
     folded: FoldedBlocks<'_>,
+    dirty: Option<&DirtySet>,
 ) {
     let rows = terminal.rows();
     let cols = terminal.cols();
@@ -335,6 +345,22 @@ pub fn draw_viewport(
     if scroll_pos == 0.0 && overscroll == 0.0 {
         // Live bottom: no fractional offset.
         for y in 0..rows {
+            // Dirty-row gate: skip rows that haven't changed.
+            // None = always draw (full redraw).
+            let is_dirty = dirty.is_none_or(|d| d.contains(y));
+            if !is_dirty {
+                continue;
+            }
+
+            // Clear this row's background before redrawing so stale pixels
+            // from the previous frame are overwritten.
+            {
+                let ry = y + top_bar_rows;
+                let y_top = (raster.origin_y + ry as f64 * metrics.cell_h) as usize;
+                let y_bot = (raster.origin_y + (ry + 1) as f64 * metrics.cell_h) as usize;
+                raster.clear_pixel_rows(y_top, y_bot, theme.background);
+            }
+
             let crow = terminal.content_row_of_viewport(y);
             let abs = terminal.absolute_line_of_content(crow);
 
@@ -1007,6 +1033,7 @@ mod tests {
             0.0,
             200.0,
             FoldedBlocks::empty(),
+            None,
         );
         // "hello" starts with 'h' (non-space): expect at least one glyph call.
         assert!(!painter.calls.is_empty());
@@ -1041,6 +1068,7 @@ mod tests {
             0.0,
             200.0,
             FoldedBlocks::empty(),
+            None,
         );
         // No panic; scroll path exercised.
     }
@@ -1265,6 +1293,7 @@ mod tests {
             0.0,
             200.0,
             FoldedBlocks::empty(),
+            None,
         );
     }
 
@@ -1302,6 +1331,7 @@ mod tests {
             0.0,
             200.0,
             FoldedBlocks::empty(),
+            None,
         );
     }
 
@@ -1339,6 +1369,7 @@ mod tests {
             0.0,
             200.0,
             FoldedBlocks::empty(),
+            None,
         );
     }
 
@@ -1372,6 +1403,7 @@ mod tests {
             0.0,
             200.0,
             FoldedBlocks::empty(),
+            None,
         );
     }
 
@@ -1412,6 +1444,7 @@ mod tests {
             0.0,
             200.0,
             FoldedBlocks::empty(),
+            None,
         );
     }
 
@@ -1478,6 +1511,7 @@ mod tests {
                 0.0,
                 400.0,
                 FoldedBlocks::empty(),
+                None,
             );
             painter.calls.len()
         };
@@ -1508,6 +1542,7 @@ mod tests {
                 0.0,
                 400.0,
                 FoldedBlocks::new(&folded_arr),
+                None,
             );
             painter.calls.len()
         };
@@ -1625,6 +1660,96 @@ mod tests {
         assert!(
             count <= max_cells,
             "instance count {count} exceeds max_cells {max_cells}"
+        );
+    }
+
+    // ── dirty-row optimization ─────────────────────────────────────────────────
+    //
+    // When `draw_viewport` receives a partial `DirtySet` it must skip rows that
+    // are not in the set.  This test populates three rows, marks only row 0 dirty,
+    // then asserts that the painter receives glyphs only from that row.
+
+    #[test]
+    fn draw_viewport_partial_dirty_skips_clean_rows() {
+        let m = metrics();
+        let mut r = Raster::new(300, 120);
+        let mut t = make_terminal(10, 4);
+        // Row 0: "hello"
+        t.feed(b"hello\r\n");
+        // Row 1: "world"
+        t.feed(b"world\r\n");
+        // Row 2: "xxxxx"
+        t.feed(b"xxxxx");
+
+        let theme = MINERAL_DARK;
+        r.clear(theme.background);
+
+        // Build a DirtySet that marks only row 0.
+        let mut dirty = anvil_term::DirtySet::none(t.rows());
+        dirty.mark(0);
+
+        let mut painter = StubPainter::default();
+        let sel = Selection::default();
+        draw_viewport(
+            &mut r,
+            &mut painter,
+            &mut t,
+            m,
+            &theme,
+            0.0,
+            0.0,
+            sel,
+            None,
+            0,
+            None,
+            0.0,
+            300.0,
+            FoldedBlocks::empty(),
+            Some(&dirty),
+        );
+
+        // The painter must have received at least one call (row 0 has "hello").
+        assert!(
+            !painter.calls.is_empty(),
+            "expected glyph calls for dirty row 0 but got none"
+        );
+
+        // Now do a full redraw to discover which glyph_ids appear in each row.
+        // Any glyph_id found in the partial draw must also exist in the full draw
+        // — but the partial draw must NOT contain glyph_ids that are exclusive to
+        // rows 1 and 2.
+        //
+        // Concrete check: the partial-dirty pass must emit fewer glyph calls than
+        // a full redraw of all three rows, because rows 1 and 2 are both skipped.
+        let mut painter_full = StubPainter::default();
+        r.clear(theme.background);
+        let mut t2 = make_terminal(10, 4);
+        t2.feed(b"hello\r\n");
+        t2.feed(b"world\r\n");
+        t2.feed(b"xxxxx");
+        draw_viewport(
+            &mut r,
+            &mut painter_full,
+            &mut t2,
+            m,
+            &theme,
+            0.0,
+            0.0,
+            Selection::default(),
+            None,
+            0,
+            None,
+            0.0,
+            300.0,
+            FoldedBlocks::empty(),
+            None, // full redraw
+        );
+
+        assert!(
+            painter.calls.len() < painter_full.calls.len(),
+            "partial draw ({} calls) should be less than full draw ({} calls)",
+            painter.calls.len(),
+            painter_full.calls.len()
         );
     }
 

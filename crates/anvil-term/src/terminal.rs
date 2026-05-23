@@ -18,6 +18,80 @@ use crate::{
     scrollback::Scrollback,
 };
 
+// ── DirtySet ──────────────────────────────────────────────────────────────────
+
+/// The set of viewport rows that changed since the last call to
+/// [`Terminal::take_dirty_rows`].
+///
+/// `is_full()` is `true` when every row is dirty (e.g. after a resize or
+/// screen switch). When `is_full()`, callers should redraw all rows rather
+/// than iterating `iter()`.
+pub struct DirtySet {
+    /// Per-row dirty flags, indexed by viewport row.
+    bitmap: Vec<bool>,
+    /// When true every row is dirty; `bitmap` is not consulted.
+    full: bool,
+}
+
+impl DirtySet {
+    /// Construct a full-dirty set for `rows` viewport rows.
+    pub fn all(rows: usize) -> Self {
+        DirtySet {
+            bitmap: vec![true; rows],
+            full: true,
+        }
+    }
+
+    /// Construct a clean set for `rows` viewport rows (no rows dirty).
+    /// Use `mark` to add specific dirty rows.
+    pub fn none(rows: usize) -> Self {
+        DirtySet {
+            bitmap: vec![false; rows],
+            full: false,
+        }
+    }
+
+    /// Construct from a raw bitmap (from `Grid::take_dirty`) and the `all` flag.
+    fn from_raw(bitmap: Vec<bool>, all: bool) -> Self {
+        DirtySet { bitmap, full: all }
+    }
+
+    /// True when every viewport row needs redrawing.
+    pub fn is_full(&self) -> bool {
+        self.full
+    }
+
+    /// True when the given row needs redrawing.
+    pub fn contains(&self, row: usize) -> bool {
+        if self.full {
+            return true;
+        }
+        self.bitmap.get(row).copied().unwrap_or(true)
+    }
+
+    /// Iterate dirty row indices. When `is_full()` this yields `0..bitmap.len()`.
+    pub fn iter(&self) -> impl Iterator<Item = usize> + '_ {
+        let len = self.bitmap.len();
+        (0..len).filter(move |&r| self.contains(r))
+    }
+
+    /// Mark an additional row dirty (used by callers that know cursor rows etc.).
+    pub fn mark(&mut self, row: usize) {
+        if row < self.bitmap.len() {
+            self.bitmap[row] = true;
+        } else {
+            self.full = true;
+        }
+    }
+
+    /// Force the entire set full (equivalent to marking every row dirty).
+    pub fn force_full(&mut self) {
+        self.full = true;
+    }
+}
+
+// =============================================================================
+
 /// Cursor shape requested by the application via DECSCUSR.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CursorShape {
@@ -254,6 +328,18 @@ impl Terminal {
             y: g.cur_y,
             visible: self.modes.cursor_visible,
         }
+    }
+
+    // --- dirty row tracking ---------------------------------------------------
+
+    /// Drain the set of viewport rows dirtied since the last call.
+    ///
+    /// After returning, the internal dirty state is cleared. The caller should
+    /// redraw every row in the returned set. Rows outside `0..self.rows()` are
+    /// conservatively represented as `DirtySet::all`.
+    pub fn take_dirty_rows(&mut self) -> DirtySet {
+        let (bitmap, all) = self.active().take_dirty();
+        DirtySet::from_raw(bitmap, all)
     }
 
     // --- feeding bytes --------------------------------------------------------
@@ -708,6 +794,8 @@ impl Terminal {
         self.g0_line_drawing = false;
         self.on_alt = false;
         self.viewport_offset = 0;
+        // Full reset: everything needs redrawing.
+        self.primary.mark_all_dirty();
     }
 
     fn set_alt_screen(&mut self, on: bool) {
@@ -720,10 +808,14 @@ impl Terminal {
             self.alternate.erase_display(2);
             self.on_alt = true;
             self.modes.alt_screen = true;
+            // Switching to alt screen: entire viewport is new content.
+            self.alternate.mark_all_dirty();
         } else {
             self.on_alt = false;
             self.primary.restore_cursor();
             self.modes.alt_screen = false;
+            // Returning to primary: entire viewport must be repainted.
+            self.primary.mark_all_dirty();
         }
     }
 

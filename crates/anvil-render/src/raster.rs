@@ -131,6 +131,28 @@ impl Raster {
         }
     }
 
+    /// Fill a horizontal pixel-row band with one color.
+    ///
+    /// `y_top` and `y_bottom` are device-pixel Y coordinates (top-down).
+    /// Rows outside `[0, height)` are silently clamped.
+    pub fn clear_pixel_rows(&mut self, y_top: usize, y_bottom: usize, rgb: [u8; 3]) {
+        let [r, g, b] = rgb;
+        let y0 = y_top.min(self.height);
+        let y1 = y_bottom.min(self.height);
+        if y0 >= y1 {
+            return;
+        }
+        let stride = self.width * 4;
+        let start = y0 * stride;
+        let end = y1 * stride;
+        for px in self.pixels[start..end].chunks_exact_mut(4) {
+            px[0] = b;
+            px[1] = g;
+            px[2] = r;
+            px[3] = 0xff;
+        }
+    }
+
     /// Fill one cell's background at integer cell coordinates.
     pub fn cell_bg(&mut self, metrics: FontMetrics, col: usize, row: usize, rgb: [u8; 3]) {
         let rect = self.cell_rect(metrics, col as f64, row as f64);

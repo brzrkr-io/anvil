@@ -10,7 +10,9 @@
 //! divider gutter is overdrawn by the divider fill, which is drawn LAST over
 //! all panes.
 
-use anvil_term::Search;
+use std::collections::HashMap;
+
+use anvil_term::{DirtySet, Search};
 use anvil_theme::Theme;
 use anvil_workspace::{
     layout::{LayoutEntry, PaneId, PaneTree, Rect},
@@ -41,6 +43,8 @@ pub const DIVIDER_PX: f64 = 1.0;
 ///   focused_id   — the pane that receives cursor rendering.
 ///   blink_phase  — cursor blink phase [0, 1).
 ///   cursor_cfg   — cursor style + blink preference from config.
+///   dirty        — per-pane dirty sets from `Terminal::take_dirty_rows`. When
+///                  `None`, every row of every pane is redrawn (full frame).
 ///
 /// After this function returns, raster.origin_x and raster.origin_y are both 0.
 #[allow(clippy::too_many_arguments)]
@@ -57,6 +61,7 @@ pub fn draw_workspace(
     focused_id: PaneId,
     blink_phase: f32,
     cursor_cfg: CursorConfig,
+    dirty: Option<&HashMap<PaneId, DirtySet>>,
 ) {
     let entries = tree.layout(inner, div_px);
 
@@ -89,6 +94,9 @@ pub fn draw_workspace(
         // Fold state for this pane.
         let folded = FoldedBlocks::new(&pane.folded[..pane.folded_count]);
 
+        // Per-pane dirty set: None means "draw all rows".
+        let pane_dirty: Option<&DirtySet> = dirty.and_then(|m| m.get(&e.id));
+
         draw_viewport(
             raster,
             painter,
@@ -104,6 +112,7 @@ pub fn draw_workspace(
             rule_x_start,
             rule_x_end,
             folded,
+            pane_dirty,
         );
     }
 
@@ -312,6 +321,7 @@ mod tests {
             first_id,
             0.0,
             cursor_cfg,
+            None,
         );
 
         assert_eq!(r.origin_x, 0.0, "origin_x must be reset to 0");
@@ -371,6 +381,7 @@ mod tests {
             id1,
             0.0,
             CursorConfig::default(),
+            None,
         );
 
         // Gutter center: pane1_w = (inner.w - TEST_DIV) * 0.5
@@ -430,6 +441,7 @@ mod tests {
                 id1,
                 0.0,
                 CursorConfig::default(),
+                None,
             );
 
             // The inner left edge pixel should NOT be theme.accent.
@@ -460,6 +472,7 @@ mod tests {
                 id1,
                 0.0,
                 CursorConfig::default(),
+                None,
             );
 
             // Gutter center should carry border.
@@ -517,6 +530,7 @@ mod tests {
             id,
             0.0,
             CursorConfig::default(),
+            None,
         );
         // "hello world" starts with 'h' — expect glyph calls.
         assert!(!painter.calls.is_empty());

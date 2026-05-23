@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::thread;
+use std::time::Instant;
 
 use anyhow::Result;
 
@@ -41,6 +42,7 @@ use anvil_render::statusbar::{STATUS_BAR_ROWS, draw_status_bar};
 use anvil_render::tabbar::draw_tab_bar;
 use anvil_render::workspace::{DIVIDER_PX, draw_workspace, draw_workspace_chrome};
 use anvil_render::{CellBatch, FoldedBlocks, draw_viewport_gpu};
+use anvil_term::DirtySet;
 use anvil_theme::{Theme, resolve as resolve_theme};
 use anvil_workspace::filetree::FileTree;
 use anvil_workspace::interact;
@@ -159,6 +161,17 @@ pub struct App {
     /// Heap-allocated so its address is stable; `AppShell.painter` borrows it.
     font: Box<Font>,
     dirty: bool,
+    /// When true, the next CPU-path frame must redraw ALL rows (full clear).
+    /// Set on theme change, resize, search toggle, etc. Cleared after the frame.
+    force_full_redraw: bool,
+    /// Tracks the cursor's last-drawn row per pane (for dirty-row wiring).
+    /// Keyed by `PaneId`; value is the viewport row the cursor was on last frame.
+    cursor_row_prev: HashMap<PaneId, usize>,
+    /// For debug instrumentation: frame counter and last-report time.
+    #[cfg(debug_assertions)]
+    debug_render_frame: u64,
+    #[cfg(debug_assertions)]
+    debug_render_last_report: Option<Instant>,
     /// When true, the terminal viewport is drawn via the GPU cell pipeline.
     /// Enabled by `ANVIL_RENDER=gpu`; default false (CPU path).
     use_gpu_render: bool,
@@ -325,6 +338,7 @@ impl App {
         }
         self.snap_anim();
         self.dirty = true;
+        self.force_full_redraw = true;
     }
 
     /// Resize the raster and renderer to match the current window device size.
@@ -348,6 +362,7 @@ impl App {
         self.keybindings = Keybindings::from_config(&cfg.keybindings);
         self.config = cfg;
         self.dirty = true;
+        self.force_full_redraw = true;
     }
 
     fn open_search(&mut self) {
@@ -365,6 +380,7 @@ impl App {
         }
         self.resize_all_tabs();
         self.dirty = true;
+        self.force_full_redraw = true;
     }
 
     fn close_search(&mut self) {
@@ -374,6 +390,7 @@ impl App {
         self.search_open = false;
         self.resize_all_tabs();
         self.dirty = true;
+        self.force_full_redraw = true;
     }
 
     fn scroll_to_current_match(&mut self) {
@@ -863,7 +880,32 @@ impl App {
     fn render_frame(&mut self, painter: &mut dyn anvil_render::GlyphPainter) {
         use anvil_render::agent_panel::PANEL_COLS;
 
-        self.raster.clear(self.theme.background);
+        let is_full_redraw = self.force_full_redraw;
+        self.force_full_redraw = false;
+
+        if is_full_redraw {
+            self.raster.clear(self.theme.background);
+        } else {
+            // On a partial frame, clear only the chrome rows so that chrome
+            // draws (tab bar, status bar, panels) always paint on a clean
+            // background regardless of what the terminal wrote there before.
+            let ch = self.font.metrics.cell_h;
+            let pad = GRID_PAD;
+            let top_bar_h = (self.top_bar_rows() as f64 * ch) as usize;
+            let bot_bar_h = (self.bottom_bar_rows() as f64 * ch) as usize;
+            let (_, dh) = self.device_size();
+            // Clear top chrome (tab bar).
+            if top_bar_h > 0 {
+                self.raster
+                    .clear_pixel_rows(0, pad + top_bar_h, self.theme.background);
+            }
+            // Clear bottom chrome (search bar + status bar).
+            if bot_bar_h > 0 {
+                let bot_start = dh.saturating_sub(pad + bot_bar_h);
+                self.raster
+                    .clear_pixel_rows(bot_start, dh, self.theme.background);
+            }
+        }
 
         let cw = self.font.metrics.cell_w;
         let ch = self.font.metrics.cell_h;
@@ -900,7 +942,90 @@ impl App {
         //           are pushed into `self.cell_batch` by `draw_viewport_gpu`.
 
         if !self.use_gpu_render {
-            // CPU path — existing behaviour.
+            // CPU path — build per-pane dirty sets when not doing a full redraw.
+            let dirty_map: Option<HashMap<PaneId, DirtySet>> = if is_full_redraw {
+                None // full redraw: draw_workspace passes None to draw_viewport
+            } else {
+                let mut map = HashMap::new();
+                if let Some(tab) = self.tabs.current_mut() {
+                    let focused_id = tab.focused_id();
+                    let entries = tab.tree.layout(inner, DIVIDER_PX);
+                    for e in &entries {
+                        if let Some(pane) = tab.registry.get_mut(e.id) {
+                            let rows = pane.terminal.rows();
+                            // Drain dirty rows from the terminal model.
+                            let mut ds = pane.terminal.take_dirty_rows();
+                            // Always redraw the cursor row (blink, move).
+                            let cur = pane.terminal.cursor();
+                            ds.mark(cur.y);
+                            // Also redraw the previous cursor row so stale cursor is erased.
+                            if let Some(&prev) = self.cursor_row_prev.get(&e.id) {
+                                ds.mark(prev);
+                            }
+                            // Viewport scroll change → force full for this pane.
+                            let scroll_changed = pane.scroll_pos != 0.0
+                                || pane.overscroll != 0.0
+                                || pane.terminal.viewport_offset() != 0;
+                            if scroll_changed {
+                                ds.force_full();
+                            }
+                            // Search active → force full (highlights may span many rows).
+                            if search_ref.is_some() {
+                                ds.force_full();
+                            }
+                            // If this pane has a selection, force full.
+                            if pane.selection.active {
+                                ds.force_full();
+                            }
+                            // Update cursor_row_prev for next frame.
+                            self.cursor_row_prev.insert(e.id, cur.y);
+                            let _ = rows;
+                            map.insert(e.id, ds);
+                        }
+                    }
+                    // Focused-pane blink: cursor row already marked above.
+                    let _ = focused_id;
+                }
+                Some(map)
+            };
+
+            // Debug instrumentation: report dirty-row counts once per second.
+            #[cfg(debug_assertions)]
+            if std::env::var_os("ANVIL_RENDER_DEBUG").is_some() {
+                self.debug_render_frame += 1;
+                let now = Instant::now();
+                let report = match self.debug_render_last_report {
+                    None => true,
+                    Some(last) => now.duration_since(last).as_secs_f64() >= 1.0,
+                };
+                if report {
+                    self.debug_render_last_report = Some(now);
+                    if let Some(ref map) = dirty_map {
+                        for (pid, ds) in map {
+                            if let Some(tab) = self.tabs.current() {
+                                if let Some(pane) = tab.registry.get(*pid) {
+                                    let total = pane.terminal.rows();
+                                    let dirty_count = if ds.is_full() {
+                                        total
+                                    } else {
+                                        ds.iter().count()
+                                    };
+                                    eprintln!(
+                                        "anvil-render: frame {}: pane {} dirty rows={}/{}",
+                                        self.debug_render_frame, pid, dirty_count, total
+                                    );
+                                }
+                            }
+                        }
+                    } else {
+                        eprintln!(
+                            "anvil-render: frame {}: full redraw",
+                            self.debug_render_frame
+                        );
+                    }
+                }
+            }
+
             if let Some(tab) = self.tabs.current_mut() {
                 let focused_id = tab.focused_id();
                 draw_workspace(
@@ -916,6 +1041,7 @@ impl App {
                     focused_id,
                     self.blink_phase,
                     self.cursor_cfg,
+                    dirty_map.as_ref(),
                 );
             }
         } else {
@@ -2296,6 +2422,12 @@ fn main() -> Result<()> {
         raster,
         font, // Box<Font> — heap-stable
         dirty: true,
+        force_full_redraw: true,
+        cursor_row_prev: HashMap::new(),
+        #[cfg(debug_assertions)]
+        debug_render_frame: 0,
+        #[cfg(debug_assertions)]
+        debug_render_last_report: None,
         use_gpu_render,
         cell_batch: CellBatch::new(),
         atlas_painter: None, // filled when Metal device is available

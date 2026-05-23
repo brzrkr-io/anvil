@@ -67,6 +67,12 @@ pub struct Grid {
     /// The SGR pen: a template cell whose color/attrs are stamped onto every
     /// printed character. `cp` is ignored.
     pub pen: Cell,
+
+    /// Per-row dirty bitmap. `dirty[y]` is true if row `y` has been mutated
+    /// since the last call to `take_dirty`. Always `height` elements long.
+    dirty: Vec<bool>,
+    /// When true the entire grid is dirty; `dirty` bitmap is ignored.
+    dirty_all: bool,
 }
 
 impl Grid {
@@ -93,7 +99,34 @@ impl Grid {
             },
             modes: Modes::default(),
             pen: Cell::default(),
+            dirty: vec![true; h], // start fully dirty
+            dirty_all: true,
         }
+    }
+
+    // --- dirty tracking -------------------------------------------------------
+
+    /// Mark row `y` dirty. Out-of-range rows set `dirty_all`.
+    pub(crate) fn mark_dirty(&mut self, y: usize) {
+        if y < self.height {
+            self.dirty[y] = true;
+        } else {
+            self.dirty_all = true;
+        }
+    }
+
+    /// Mark every row dirty.
+    pub(crate) fn mark_all_dirty(&mut self) {
+        self.dirty_all = true;
+    }
+
+    /// Drain the dirty state: returns `(dirty_bitmap, all_dirty)`.
+    /// After the call every row is clean and `dirty_all` is false.
+    pub(crate) fn take_dirty(&mut self) -> (Vec<bool>, bool) {
+        let all = self.dirty_all;
+        self.dirty_all = false;
+        let bitmap = std::mem::replace(&mut self.dirty, vec![false; self.height]);
+        (bitmap, all)
     }
 
     /// Borrow row `y` as a mutable slice of exactly `width` cells.
@@ -131,6 +164,7 @@ impl Grid {
         let mut written = self.pen;
         written.cp = cp;
         *self.cell_mut(self.cur_x, self.cur_y) = written;
+        self.mark_dirty(self.cur_y);
 
         if self.cur_x + 1 >= self.width {
             // At the last column: latch a pending wrap rather than moving.
@@ -286,6 +320,7 @@ impl Grid {
                 self.erase_line(1);
             }
             _ => {
+                self.mark_all_dirty();
                 for y in 0..self.height {
                     self.blank_row(y);
                 }
@@ -306,6 +341,7 @@ impl Grid {
             1 => blank_cells_with_bg(&mut r[..cur_x.saturating_add(1).min(width)], pen_bg),
             _ => blank_cells_with_bg(r, pen_bg),
         }
+        self.mark_dirty(cur_y);
     }
 
     /// Erase Character (ECH): blank `n` cells from the cursor without moving.
@@ -318,12 +354,14 @@ impl Grid {
         let r = self.row_mut(cur_y);
         let end = (cur_x + count).min(width);
         blank_cells_with_bg(&mut r[cur_x..end], pen_bg);
+        self.mark_dirty(cur_y);
     }
 
     fn blank_row(&mut self, y: usize) {
         let pen_bg = self.pen.bg;
         let r = self.row_mut(y);
         blank_cells_with_bg(r, pen_bg);
+        self.mark_dirty(y);
     }
 
     // --- insert / delete -----------------------------------------------------
@@ -334,6 +372,7 @@ impl Grid {
         let cur_x = self.cur_x;
         let cur_y = self.cur_y;
         self.shift_row_right(cur_y, cur_x, n.max(1));
+        self.mark_dirty(cur_y);
     }
 
     /// Delete Character (DCH): shift the cursor row left by `n`, blanking the
@@ -355,6 +394,7 @@ impl Grid {
         // Blank the vacated tail.
         let tail_start = row_start + cur_x + move_len;
         blank_cells_with_bg(&mut self.cells[tail_start..row_start + width], pen_bg);
+        self.mark_dirty(cur_y);
     }
 
     /// Insert `n` blank lines at the cursor row, pushing lower lines down
@@ -375,6 +415,7 @@ impl Grid {
             let dst_start = y * width;
             self.cells
                 .copy_within(src_start..src_start + width, dst_start);
+            self.mark_dirty(y);
             if y == self.cur_y + count {
                 break;
             }
@@ -385,6 +426,7 @@ impl Grid {
         for blank in self.cur_y..self.cur_y + count {
             let row_start = blank * width;
             blank_cells_with_bg(&mut self.cells[row_start..row_start + width], pen_bg);
+            self.mark_dirty(blank);
         }
     }
 
@@ -402,12 +444,14 @@ impl Grid {
             let dst_start = y * width;
             self.cells
                 .copy_within(src_start..src_start + width, dst_start);
+            self.mark_dirty(y);
             y += 1;
         }
         let pen_bg = self.pen.bg;
         while y <= self.region.bottom {
             let row_start = y * width;
             blank_cells_with_bg(&mut self.cells[row_start..row_start + width], pen_bg);
+            self.mark_dirty(y);
             y += 1;
         }
     }
@@ -427,6 +471,9 @@ impl Grid {
         let top_start = self.region.top * width;
         self.scrolled_off
             .copy_from_slice(&self.cells[top_start..top_start + width]);
+
+        // All visible rows shift: mark the whole region dirty.
+        self.mark_all_dirty();
 
         // Shift rows up.
         let mut y = self.region.top;
@@ -453,6 +500,9 @@ impl Grid {
         let count = n.max(1).min(span);
         let width = self.width;
         let pen_bg = self.pen.bg;
+
+        // All visible rows shift: mark the whole region dirty.
+        self.mark_all_dirty();
 
         let mut y = self.region.bottom;
         loop {
@@ -551,6 +601,9 @@ impl Grid {
         self.cur_x = self.cur_x.min(w - 1);
         self.cur_y = self.cur_y.min(h - 1);
         self.wrap_pending = false;
+        // After resize the whole visible area must be redrawn.
+        self.dirty = vec![true; h];
+        self.dirty_all = true;
     }
 
     /// The current `scrolled_off` buffer length — equals `width` after any
