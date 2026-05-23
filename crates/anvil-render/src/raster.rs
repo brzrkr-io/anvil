@@ -270,8 +270,8 @@ impl Raster {
     ) {
         let ch = metrics.cell_h;
         // In top-down bitmap space: the top of row N is at bitmap-y = origin_y + N*ch - y_shift_px.
-        // We draw a 2px strip starting at that top edge.
-        let strip_h = 2.0;
+        // 1px hairline — matches the tab-bar bottom rule and cheatsheet edge.
+        let strip_h = 1.0;
         let top_y = self.origin_y + row * ch - self.y_shift_px;
         let rect = PixelRect {
             x: x_start,
