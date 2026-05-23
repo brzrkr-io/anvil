@@ -90,7 +90,13 @@ pub fn full(segments: &[Segment], opts: Options) -> String {
     buf.push_str("  ");
     for (idx, s) in segments.iter().enumerate() {
         if idx != 0 {
-            buf.push_str("   ");
+            // Dim middot separator gives the line real structure instead of
+            // reading as a row of unrelated word gaps.
+            buf.push_str("  ");
+            esc(&mut buf, sh, DIM);
+            buf.push('\u{00b7}'); // ·
+            esc(&mut buf, sh, RESET);
+            buf.push_str("  ");
         }
         esc(&mut buf, sh, seg_color(s));
         if opts.rich {
@@ -107,7 +113,7 @@ pub fn full(segments: &[Segment], opts: Options) -> String {
     esc(&mut buf, sh, RESET);
     buf.push_str("  ");
     esc(&mut buf, sh, edge_color);
-    buf.push('\u{203a}');
+    buf.push('\u{276f}'); // ❯ — heavier than U+203A, the modern prompt glyph
     esc(&mut buf, sh, RESET);
     buf.push(' ');
     esc(&mut buf, sh, "\x1b]133;B\x07");
@@ -119,7 +125,7 @@ pub fn transient(opts: Options) -> String {
     let mut buf = String::new();
     let col = if opts.failed { ACCENT_ERR } else { DIM };
     esc(&mut buf, opts.shell, col);
-    buf.push('\u{203a}');
+    buf.push('\u{276f}'); // ❯ — matches the full prompt's heavier glyph
     esc(&mut buf, opts.shell, RESET);
     buf.push(' ');
     buf
