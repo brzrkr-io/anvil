@@ -29,6 +29,9 @@ use anvil_term::Terminal;
 use crate::layout::PaneId;
 use crate::selection::Selection;
 
+/// Maximum number of simultaneously folded blocks per pane.
+const MAX_FOLDED: usize = 32;
+
 /// Per-pane view state and terminal emulator.  No PTY, no threads.
 pub struct Pane {
     pub id: PaneId,
@@ -41,6 +44,10 @@ pub struct Pane {
     pub cursor_ax: f32,
     pub cursor_ay: f32,
     pub selection: Selection,
+
+    // Folded blocks, keyed by absolute command_line. Bounded.
+    pub folded: [usize; MAX_FOLDED],
+    pub folded_count: usize,
 }
 
 impl Pane {
@@ -58,7 +65,31 @@ impl Pane {
             cursor_ax: 0.0,
             cursor_ay: 0.0,
             selection: Selection::default(),
+            folded: [0; MAX_FOLDED],
+            folded_count: 0,
         }
+    }
+
+    /// Toggle fold state for the block whose command starts at `cmd_line`.
+    /// If already folded, unfolds it.  If not folded, adds it (up to the cap).
+    pub fn toggle_fold(&mut self, cmd_line: usize) {
+        for i in 0..self.folded_count {
+            if self.folded[i] == cmd_line {
+                // Remove by swapping with the last element.
+                self.folded_count -= 1;
+                self.folded[i] = self.folded[self.folded_count];
+                return;
+            }
+        }
+        if self.folded_count < MAX_FOLDED {
+            self.folded[self.folded_count] = cmd_line;
+            self.folded_count += 1;
+        }
+    }
+
+    /// Returns true if the block whose command starts at `cmd_line` is folded.
+    pub fn is_folded(&self, cmd_line: usize) -> bool {
+        self.folded[..self.folded_count].contains(&cmd_line)
     }
 
     pub fn terminal(&self) -> &Terminal {
@@ -136,6 +167,56 @@ mod tests {
         assert_eq!(p.cursor_ax, 0.0);
         assert_eq!(p.cursor_ay, 0.0);
         assert!(!p.selection.active);
+        assert_eq!(p.folded_count, 0);
+    }
+
+    // ── Fold state ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn toggle_fold_folds_and_unfolds_round_trip() {
+        let mut p = Pane::new(1, 80, 24, 0);
+        assert!(!p.is_folded(10));
+        p.toggle_fold(10);
+        assert!(p.is_folded(10));
+        p.toggle_fold(10);
+        assert!(!p.is_folded(10));
+    }
+
+    #[test]
+    fn toggle_fold_multiple_distinct_blocks() {
+        let mut p = Pane::new(1, 80, 24, 0);
+        p.toggle_fold(5);
+        p.toggle_fold(20);
+        assert!(p.is_folded(5));
+        assert!(p.is_folded(20));
+        assert!(!p.is_folded(0));
+        assert_eq!(p.folded_count, 2);
+    }
+
+    #[test]
+    fn toggle_fold_unfold_leaves_other_blocks_intact() {
+        let mut p = Pane::new(1, 80, 24, 0);
+        p.toggle_fold(1);
+        p.toggle_fold(2);
+        p.toggle_fold(3);
+        p.toggle_fold(2); // unfold middle
+        assert!(p.is_folded(1));
+        assert!(!p.is_folded(2));
+        assert!(p.is_folded(3));
+        assert_eq!(p.folded_count, 2);
+    }
+
+    #[test]
+    fn toggle_fold_saturates_at_cap() {
+        let mut p = Pane::new(1, 80, 24, 0);
+        for i in 0..MAX_FOLDED {
+            p.toggle_fold(i + 100);
+        }
+        assert_eq!(p.folded_count, MAX_FOLDED);
+        // Extra toggle beyond cap is silently dropped.
+        p.toggle_fold(999);
+        assert_eq!(p.folded_count, MAX_FOLDED);
+        assert!(!p.is_folded(999));
     }
 
     // ── Pane::terminal / terminal_mut ─────────────────────────────────────────

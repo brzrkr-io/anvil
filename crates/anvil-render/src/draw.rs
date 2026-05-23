@@ -1,16 +1,53 @@
 //! Per-frame viewport draw loop.
 //!
-//! `draw_viewport` renders the visible cell grid (plus prompt-rule hairlines
-//! and the text cursor) into a `Raster`.  It reads only the arguments it is
-//! given — no global state — and performs no heap allocation per frame.
+//! `draw_viewport` renders the visible cell grid (plus prompt-rule hairlines,
+//! gutter exit-status markers, fold summaries, and the text cursor) into a
+//! `Raster`.  It reads only the arguments it is given — no global state — and
+//! performs no heap allocation per frame.
 //!
 //! Ported from `src/render/draw.zig`.
 
-use anvil_term::{Cell, Color, CursorShape, MatchKind, Search, Terminal};
+use anvil_term::{Block, BlockState, Cell, Color, CursorShape, MatchKind, Search, Terminal};
 use anvil_theme::{Theme, mix};
 use anvil_workspace::selection::Selection;
 
 use crate::raster::{FontMetrics, GlyphPainter, Raster};
+
+// ── Semantic status colors (Mineral palette, brand contract) ─────────────────
+
+/// status.info / trace teal — "command active" (#2f7f86)
+const INFO_TEAL: [u8; 3] = [0x2f, 0x7f, 0x86];
+/// status.verified — exit 0 (#3f8a5b)
+const VERIFIED: [u8; 3] = [0x3f, 0x8a, 0x5b];
+/// status.failure — non-zero exit (#b13a30)
+const FAILURE: [u8; 3] = [0xb1, 0x3a, 0x30];
+/// alloy — muted text for fold summaries (#86919a)
+const ALLOY: [u8; 3] = [0x86, 0x91, 0x9a];
+
+// ── Folded blocks ─────────────────────────────────────────────────────────────
+
+/// A thin view into the set of folded command_line values for one pane.
+/// Passed into `draw_viewport` so the draw loop can skip folded output rows.
+pub struct FoldedBlocks<'a> {
+    /// Absolute `command_line` values of folded blocks.
+    pub cmd_lines: &'a [usize],
+}
+
+impl<'a> FoldedBlocks<'a> {
+    /// Construct from a pane's folded array slice.
+    pub fn new(cmd_lines: &'a [usize]) -> Self {
+        Self { cmd_lines }
+    }
+
+    /// Empty set — no blocks folded.
+    pub fn empty() -> Self {
+        Self { cmd_lines: &[] }
+    }
+
+    pub fn contains(&self, cmd_line: usize) -> bool {
+        self.cmd_lines.contains(&cmd_line)
+    }
+}
 
 // ── Cursor style ─────────────────────────────────────────────────────────────
 
@@ -216,14 +253,55 @@ pub fn draw_cursor(
     }
 }
 
+// ── Private text helper ───────────────────────────────────────────────────────
+
+/// Draw a short string starting at cell `(col, row)`, clipping at `max_col`.
+#[allow(clippy::too_many_arguments)]
+fn draw_text_row(
+    raster: &mut Raster,
+    painter: &mut dyn GlyphPainter,
+    metrics: FontMetrics,
+    col: usize,
+    row: usize,
+    text: &str,
+    color: [u8; 3],
+    max_col: usize,
+) {
+    for (i, cp) in text.chars().enumerate() {
+        let cx = col + i;
+        if cx >= max_col {
+            break;
+        }
+        raster.cell_glyph(painter, metrics, cx, row, cp as u32, color);
+    }
+}
+
+// ── Gutter mark color ─────────────────────────────────────────────────────────
+
+fn gutter_mark_color(block: &Block) -> [u8; 3] {
+    match block.state {
+        BlockState::Running => INFO_TEAL,
+        BlockState::Exited => {
+            if block.exit_code == 0 {
+                VERIFIED
+            } else {
+                FAILURE
+            }
+        }
+    }
+}
+
 // ── Viewport draw loop ────────────────────────────────────────────────────────
 
-/// Draw the viewport: visible cell grid, prompt-rule hairlines, and cursor.
+/// Draw the viewport: visible cell grid, prompt-rule hairlines, gutter markers,
+/// fold summaries, and cursor.
 ///
 /// This is the per-frame draw body, ported from `draw.zig`'s `drawViewport`.
 ///
 /// `scroll_pos` and `overscroll` drive smooth scrolling (0/0 = pinned).
 /// `top_bar_rows` offsets every cell row by the tab-bar height.
+/// `folded` carries the set of folded `command_line` values for this pane;
+/// pass `FoldedBlocks::empty()` to draw all rows normally.
 /// Pass `cursor_params = None` to suppress cursor drawing (e.g. in tests).
 ///
 /// # Zero-allocation guarantee
@@ -244,6 +322,7 @@ pub fn draw_viewport(
     cursor_params: Option<CursorParams>,
     rule_x_start: f64,
     rule_x_end: f64,
+    folded: FoldedBlocks<'_>,
 ) {
     let rows = terminal.rows();
     let cols = terminal.cols();
@@ -255,6 +334,25 @@ pub fn draw_viewport(
         // Live bottom: no fractional offset.
         for y in 0..rows {
             let crow = terminal.content_row_of_viewport(y);
+            let abs = terminal.absolute_line_of_content(crow);
+
+            // Fold check: look up the block at this content row.
+            let block_opt = if !folded.cmd_lines.is_empty() {
+                terminal.block_at(abs)
+            } else {
+                None
+            };
+
+            // If this row is inside a folded block's OUTPUT region, skip it.
+            if let Some(ref block) = block_opt {
+                if folded.contains(block.command_line)
+                    && abs >= block.output_line
+                    && abs < block.end_line
+                {
+                    continue;
+                }
+            }
+
             // Draw all cells while the row-slice borrow is live, then let it
             // drop so the &self prompt-rule calls below can proceed.  Cell is
             // Copy so each loop iteration clones the value out of the slice.
@@ -277,7 +375,27 @@ pub fn draw_viewport(
                     );
                 }
             } // row borrow ends here
-            let abs = terminal.absolute_line_of_content(crow);
+
+            // Fold summary: if this is the command row of a folded block,
+            // append " ⌄ N hidden" after any command text.
+            if let Some(ref block) = block_opt {
+                if folded.contains(block.command_line) && abs == block.command_line {
+                    let hidden = block.output_row_count();
+                    let summary = format!(" \u{2304} {hidden} hidden");
+                    let ry = y + top_bar_rows;
+                    draw_text_row(raster, painter, metrics, 0, ry, &summary, ALLOY, cols);
+                }
+            }
+
+            // Gutter mark: draw on the command row of every block.
+            if let Some(ref block) = block_opt {
+                if abs == block.command_line {
+                    let ry = y + top_bar_rows;
+                    let mark_rgb = gutter_mark_color(block);
+                    raster.gutter_mark(metrics, ry, mark_rgb);
+                }
+            }
+
             if terminal.is_prompt_start(abs) {
                 let ry = (y + top_bar_rows) as f64;
                 raster.row_rule(metrics, ry, rule_rgb, rule_x_start, rule_x_end);
@@ -298,6 +416,24 @@ pub fn draw_viewport(
             } else {
                 hist + y - off
             };
+            let abs = terminal.absolute_line_of_content(crow);
+
+            // Fold check (smooth-scroll path).
+            let block_opt = if !folded.cmd_lines.is_empty() {
+                terminal.block_at(abs)
+            } else {
+                None
+            };
+
+            if let Some(ref block) = block_opt {
+                if folded.contains(block.command_line)
+                    && abs >= block.output_line
+                    && abs < block.end_line
+                {
+                    continue;
+                }
+            }
+
             {
                 let row = terminal.viewport_row_at(off, y);
                 for (x, &cell) in row.iter().enumerate().take(cols.min(row.len())) {
@@ -316,7 +452,26 @@ pub fn draw_viewport(
                     );
                 }
             } // row borrow ends here
-            let abs = terminal.absolute_line_of_content(crow);
+
+            // Fold summary (smooth-scroll path).
+            if let Some(ref block) = block_opt {
+                if folded.contains(block.command_line) && abs == block.command_line {
+                    let hidden = block.output_row_count();
+                    let summary = format!(" \u{2304} {hidden} hidden");
+                    let ry = y + top_bar_rows;
+                    draw_text_row(raster, painter, metrics, 0, ry, &summary, ALLOY, cols);
+                }
+            }
+
+            // Gutter mark (smooth-scroll path).
+            if let Some(ref block) = block_opt {
+                if abs == block.command_line {
+                    let ry = y + top_bar_rows;
+                    let mark_rgb = gutter_mark_color(block);
+                    raster.gutter_mark(metrics, ry, mark_rgb);
+                }
+            }
+
             if terminal.is_prompt_start(abs) {
                 let ry = (y + top_bar_rows) as f64;
                 raster.row_rule(metrics, ry, rule_rgb, rule_x_start, rule_x_end);
@@ -531,6 +686,7 @@ mod tests {
             None,
             0.0,
             200.0,
+            FoldedBlocks::empty(),
         );
         // "hello" starts with 'h' (non-space): expect at least one glyph call.
         assert!(!painter.calls.is_empty());
@@ -564,6 +720,7 @@ mod tests {
             None,
             0.0,
             200.0,
+            FoldedBlocks::empty(),
         );
         // No panic; scroll path exercised.
     }
@@ -787,6 +944,7 @@ mod tests {
             Some(params),
             0.0,
             200.0,
+            FoldedBlocks::empty(),
         );
     }
 
@@ -823,6 +981,7 @@ mod tests {
             Some(params),
             0.0,
             200.0,
+            FoldedBlocks::empty(),
         );
     }
 
@@ -859,6 +1018,7 @@ mod tests {
             Some(params),
             0.0,
             200.0,
+            FoldedBlocks::empty(),
         );
     }
 
@@ -891,6 +1051,7 @@ mod tests {
             None,
             0.0,
             200.0,
+            FoldedBlocks::empty(),
         );
     }
 
@@ -930,6 +1091,7 @@ mod tests {
             Some(params),
             0.0,
             200.0,
+            FoldedBlocks::empty(),
         );
     }
 
@@ -950,5 +1112,130 @@ mod tests {
         // Phase in [0.88, 1.0): fade back up
         let v = cursor_opacity(0.94);
         assert!(v > 0.0 && v < 1.0);
+    }
+
+    // ── draw_viewport fold smoke test ─────────────────────────────────────────
+
+    /// Verify that rows inside a folded block's output region are NOT drawn:
+    /// glyph-call count with fold enabled is strictly less than without fold.
+    #[test]
+    fn draw_viewport_fold_skips_output_rows() {
+        let m = metrics();
+        let theme = MINERAL_DARK;
+        let sel = Selection::default();
+
+        // Build a terminal with one complete command block (OSC 133 B/C/D).
+        let mut t = make_terminal(20, 8);
+        // command row
+        t.feed(b"\x1b]133;B\x07");
+        t.feed(b"ls\r\n");
+        // output start
+        t.feed(b"\x1b]133;C\x07");
+        // output rows
+        t.feed(b"file1.txt\r\n");
+        t.feed(b"file2.txt\r\n");
+        t.feed(b"file3.txt\r\n");
+        // done
+        t.feed(b"\x1b]133;D;exit_code=0\x07");
+
+        // Count glyph calls WITHOUT fold.
+        let calls_unfolded = {
+            let mut r = Raster::new(400, 200);
+            let mut painter = StubPainter::default();
+            r.clear(theme.background);
+            draw_viewport(
+                &mut r,
+                &mut painter,
+                &mut t,
+                m,
+                &theme,
+                0.0,
+                0.0,
+                sel,
+                None,
+                0,
+                None,
+                0.0,
+                400.0,
+                FoldedBlocks::empty(),
+            );
+            painter.calls.len()
+        };
+
+        // Determine the command_line abs value (it's 0 since no prior scrollback).
+        let block = t.block_at(0);
+        assert!(block.is_some(), "block_at(0) should return Some");
+        let cmd_line = block.unwrap().command_line;
+
+        // Count glyph calls WITH the block folded.
+        let calls_folded = {
+            let mut r = Raster::new(400, 200);
+            let mut painter = StubPainter::default();
+            r.clear(theme.background);
+            let folded_arr = [cmd_line];
+            draw_viewport(
+                &mut r,
+                &mut painter,
+                &mut t,
+                m,
+                &theme,
+                0.0,
+                0.0,
+                sel,
+                None,
+                0,
+                None,
+                0.0,
+                400.0,
+                FoldedBlocks::new(&folded_arr),
+            );
+            painter.calls.len()
+        };
+
+        assert!(
+            calls_folded < calls_unfolded,
+            "folded viewport should produce fewer glyph calls ({calls_folded}) than unfolded ({calls_unfolded})"
+        );
+    }
+
+    // ── gutter_mark_color helper ──────────────────────────────────────────────
+
+    #[test]
+    fn gutter_mark_color_running_is_info_teal() {
+        use anvil_term::{Block, BlockState};
+        let block = Block {
+            command_line: 0,
+            output_line: 0,
+            end_line: 5,
+            state: BlockState::Running,
+            exit_code: 0,
+        };
+        assert_eq!(gutter_mark_color(&block), INFO_TEAL);
+    }
+
+    #[test]
+    fn gutter_mark_color_exit_zero_is_verified() {
+        use anvil_term::{Block, BlockState};
+        let block = Block {
+            command_line: 0,
+            output_line: 0,
+            end_line: 5,
+            state: BlockState::Exited,
+            exit_code: 0,
+        };
+        assert_eq!(gutter_mark_color(&block), VERIFIED);
+    }
+
+    #[test]
+    fn gutter_mark_color_exit_nonzero_is_failure() {
+        use anvil_term::{Block, BlockState};
+        let block = Block {
+            command_line: 0,
+            output_line: 0,
+            end_line: 5,
+            state: BlockState::Exited,
+            exit_code: 1,
+        };
+        assert_eq!(gutter_mark_color(&block), FAILURE);
     }
 }

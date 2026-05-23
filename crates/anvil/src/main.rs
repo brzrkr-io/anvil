@@ -103,6 +103,7 @@ struct Keybindings {
     focus_up: Option<Chord>,
     focus_down: Option<Chord>,
     layout_mode_toggle: Option<Chord>,
+    fold_block: Option<Chord>,
 }
 
 impl Keybindings {
@@ -135,6 +136,7 @@ impl Keybindings {
             focus_up: parse_chord(&kb.focus_up),
             focus_down: parse_chord(&kb.focus_down),
             layout_mode_toggle: parse_chord(&kb.layout_mode_toggle),
+            fold_block: parse_chord(&kb.fold_block),
         }
     }
 }
@@ -610,6 +612,32 @@ impl App {
         }
         self.resize_all_tabs();
         self.dirty = true;
+    }
+
+    /// Toggle fold on the block whose `command_line` is at or just above the
+    /// viewport top of the focused pane (⌘. keybinding).
+    fn toggle_fold_at_viewport_top(&mut self) {
+        let Some(tab) = self.tabs.current_mut() else {
+            return;
+        };
+        let id = tab.focused_id();
+        let Some(pane) = tab.registry.get_mut(id) else {
+            return;
+        };
+        // The content row currently at the top of the viewport.
+        let top_content = pane.terminal.content_row_of_viewport(0);
+        let top_abs = pane.terminal.absolute_line_of_content(top_content);
+
+        // Find the block at or just before the viewport top.
+        let block_opt = pane
+            .terminal
+            .block_at(top_abs)
+            .or_else(|| pane.terminal.block_before(top_abs + 1));
+
+        if let Some(block) = block_opt {
+            pane.toggle_fold(block.command_line);
+            self.dirty = true;
+        }
     }
 
     fn jump_to_prev_prompt(&mut self) {
@@ -1209,6 +1237,10 @@ impl App {
         });
         test!(kb.layout_mode_toggle, {
             self.toggle_layout_mode();
+            return true;
+        });
+        test!(kb.fold_block, {
+            self.toggle_fold_at_viewport_top();
             return true;
         });
 

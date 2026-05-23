@@ -18,7 +18,7 @@ use anvil_workspace::{
 };
 
 use crate::{
-    draw::{CursorConfig, CursorParams, draw_viewport},
+    draw::{CursorConfig, CursorParams, FoldedBlocks, draw_viewport},
     raster::{FontMetrics, GlyphPainter, Raster},
 };
 
@@ -86,6 +86,9 @@ pub fn draw_workspace(
         let rule_x_start = e.rect.x;
         let rule_x_end = e.rect.x + e.rect.w;
 
+        // Fold state for this pane.
+        let folded = FoldedBlocks::new(&pane.folded[..pane.folded_count]);
+
         draw_viewport(
             raster,
             painter,
@@ -100,6 +103,7 @@ pub fn draw_workspace(
             cursor_params,
             rule_x_start,
             rule_x_end,
+            folded,
         );
     }
 

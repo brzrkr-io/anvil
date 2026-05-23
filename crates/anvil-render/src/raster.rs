@@ -190,6 +190,34 @@ impl Raster {
         painter.draw_glyph(glyph_id, dest, rgb, metrics, &mut self.pixels, w, h);
     }
 
+    /// Draw a small filled square in the left gutter (the `pad_x` band) on the
+    /// given viewport `row`, vertically centered on that cell row.
+    ///
+    /// The square is 6×6 device pixels, placed 2px inside the left padding band:
+    ///   x = origin_x - pad_x + 2
+    ///   y = row midpoint - 3  (centered)
+    ///
+    /// This positions the marker inside the visual margin, not on cell content.
+    pub fn gutter_mark(&mut self, metrics: FontMetrics, row: usize, rgb: [u8; 3]) {
+        const MARK_SIZE: f64 = 6.0;
+        const MARK_INSET: f64 = 2.0;
+        let ch = metrics.cell_h;
+        // Horizontal: inside the pad_x band, 2px from the content edge.
+        let x = self.origin_x - self.pad_x + MARK_INSET;
+        // Vertical: center of the row in top-down space (respects y_shift_px).
+        let row_top = self.origin_y + row as f64 * ch - self.y_shift_px;
+        let y = row_top + (ch - MARK_SIZE) * 0.5;
+        self.fill_pixel_rect_internal(
+            PixelRect {
+                x,
+                y,
+                w: MARK_SIZE,
+                h: MARK_SIZE,
+            },
+            rgb,
+        );
+    }
+
     /// Draw a thin full-height vertical hairline at the LEFT edge of cell-column
     /// `col`.  The strip is 2 device pixels wide.
     pub fn col_rule(&mut self, metrics: FontMetrics, col: usize, rgb: [u8; 3]) {
@@ -617,6 +645,48 @@ mod tests {
         assert!((rect.y - 60.0).abs() < 1e-9); // 3 * 20
         assert!((rect.w - 10.0).abs() < 1e-9);
         assert!((rect.h - 20.0).abs() < 1e-9);
+    }
+
+    // ── gutter_mark ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn gutter_mark_paints_small_rect_at_expected_position() {
+        let m = default_metrics(); // cell_w=10, cell_h=20
+        let w = 400usize;
+        let h = 200usize;
+        let mut r = Raster::new(w, h);
+        r.clear([0, 0, 0]);
+        // Use pad_x=8, origin_x=10 so the mark falls at x = 10 - 8 + 2 = 4.
+        r.pad_x = 8.0;
+        r.origin_x = 10.0;
+        r.origin_y = 0.0;
+
+        // Draw a gutter mark on row 1.
+        // Row 1 top = 20, cell center = 30; mark top = 30 - 3 = 27; [27, 33).
+        // Mark x: 10 - 8 + 2 = 4; size 6 → [4, 10).
+        let mark_rgb = [0xff, 0x00, 0x80];
+        r.gutter_mark(m, 1, mark_rgb);
+
+        let center_x = 7usize; // inside [4, 10)
+        let center_y = 30usize; // inside [27, 33)
+        assert_eq!(
+            pixel_at(&r, center_x, center_y),
+            mark_rgb,
+            "center pixel must be mark color"
+        );
+
+        // Pixel just outside the mark to the left.
+        assert_eq!(
+            pixel_at(&r, 3, center_y),
+            [0, 0, 0],
+            "left of mark must be clear"
+        );
+        // Pixel just outside the mark above.
+        assert_eq!(
+            pixel_at(&r, center_x, 26),
+            [0, 0, 0],
+            "above mark must be clear"
+        );
     }
 
     // ── fill_pixel_rect ───────────────────────────────────────────────────────

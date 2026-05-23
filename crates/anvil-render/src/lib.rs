@@ -15,8 +15,8 @@ pub mod tabbar;
 pub mod workspace;
 
 pub use draw::{
-    CursorConfig, CursorParams, CursorStyle, cursor_opacity, draw_cell, draw_cursor, draw_viewport,
-    resolve_color, rule_row,
+    CursorConfig, CursorParams, CursorStyle, FoldedBlocks, cursor_opacity, draw_cell, draw_cursor,
+    draw_viewport, resolve_color, rule_row,
 };
 pub use raster::{FontMetrics, GlyphPainter, PixelRect, Raster};
 pub use statusbar::STATUS_BAR_ROWS;
