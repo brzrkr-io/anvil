@@ -2444,7 +2444,11 @@ fn main() -> Result<()> {
         last_blink_opacity: -1.0,
         search: anvil_term::Search::new(),
         search_open: false,
-        hud_visible: true,
+        // Agent panel hidden by default in terminal mode — it's part of IDE
+        // mode's chrome, not a floating widget that should sit on top of
+        // terminal output. Cmd+J still toggles it on demand; Cmd+I (IDE mode)
+        // force-docks it on the right.
+        hud_visible: false,
         hud_tick: 0,
         cheatsheet_visible: false,
         tree_visible: false,
