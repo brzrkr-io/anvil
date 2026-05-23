@@ -1178,4 +1178,55 @@ mod tests {
         feed(&mut p, &mut h, b"\x1B^private\x07message\x1B\\X");
         assert!(matches!(h.events[h.events.len() - 1], Event::Print('X')));
     }
+
+    // ── dcs_put / dcs_unhook default impls via TestHandler (lines 58, 60) ────
+
+    #[test]
+    fn dcs_with_test_handler_calls_dcs_put_and_dcs_unhook_defaults() {
+        // TestHandler does not override dcs_put or dcs_unhook — the default
+        // no-op impls (lines 58, 60) are exercised here.
+        let mut h = TestHandler::new();
+        let mut p = Parser::new();
+        // ESC P <final> PAYLOAD ST — DCS with no params
+        feed(&mut p, &mut h, b"\x1BPqHI\x9C");
+        // No event is recorded (TestHandler's DCS stubs do nothing),
+        // but parsing must complete without panic.
+        // Feed a printable after to verify parser state recovered.
+        feed(&mut p, &mut h, b"Z");
+        assert!(h.events.iter().any(|e| matches!(e, Event::Print('Z'))));
+    }
+
+    // ── DcsHandler stubs called when text precedes DCS (lines 620-624) ────────
+
+    #[test]
+    fn dcs_handler_stubs_invoked_by_text_and_execute_before_dcs() {
+        // Feed printable text and a control char to DcsHandler before the DCS.
+        // This causes the parser to invoke print(), execute(), etc.
+        // on DcsHandler, exercising the no-op stubs.
+        let mut h = DcsHandler::new();
+        let mut p = Parser::new();
+        feed(&mut p, &mut h, b"A\x08\x1B[1mX");
+        // After those, send a DCS so the actual payload is captured.
+        feed(&mut p, &mut h, b"\x1BPqDATA\x9C");
+        assert_eq!(h.put, b"DATA");
+    }
+
+    // ── append_digit: idx >= MAX_PARAMS early return (line 477) ──────────────
+
+    #[test]
+    fn csi_with_more_than_max_params_is_truncated_without_panic() {
+        // Build a CSI sequence with 40 semicolons (41 params) — well above MAX_PARAMS=32.
+        let mut seq: Vec<u8> = b"\x1B[".to_vec();
+        for _ in 0..40 {
+            seq.extend_from_slice(b"1;");
+        }
+        seq.push(b'm');
+
+        let mut h = TestHandler::new();
+        let mut p = Parser::new();
+        feed(&mut p, &mut h, &seq);
+        // The sequence dispatches successfully (no panic), truncated to MAX_PARAMS.
+        assert_eq!(1, h.events.len());
+        assert!(matches!(h.events[0], Event::Csi { .. }));
+    }
 }

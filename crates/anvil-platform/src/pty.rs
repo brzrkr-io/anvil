@@ -130,9 +130,7 @@ impl Pty {
         // SAFETY: fd is valid and buf is a valid writable slice.
         let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
         if n < 0 {
-            let errno = std::io::Error::last_os_error()
-                .raw_os_error()
-                .unwrap_or(0);
+            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
             if errno == libc::EAGAIN || errno == libc::EWOULDBLOCK {
                 return Ok(0); // no data available right now
             }

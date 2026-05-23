@@ -127,4 +127,79 @@ mod tests {
         assert!(!attrs.contains(Attrs::INVISIBLE));
         assert!(!attrs.contains(Attrs::STRIKETHROUGH));
     }
+
+    // ── serde round-trips ────────────────────────────────────────────────────
+
+    #[test]
+    fn attrs_serde_round_trip_via_json() {
+        let a = Attrs::BOLD | Attrs::INVERSE;
+        let json = serde_json::to_string(&a).unwrap();
+        let recovered: Attrs = serde_json::from_str(&json).unwrap();
+        assert_eq!(recovered, a);
+    }
+
+    #[test]
+    fn attrs_serde_empty_round_trip() {
+        let a = Attrs::empty();
+        let json = serde_json::to_string(&a).unwrap();
+        let recovered: Attrs = serde_json::from_str(&json).unwrap();
+        assert_eq!(recovered, Attrs::empty());
+    }
+
+    #[test]
+    fn cell_serde_round_trip_via_json() {
+        let cell = Cell {
+            cp: 'Z',
+            fg: Color::Rgb([10, 20, 30]),
+            bg: Color::Palette(7),
+            attrs: Attrs::UNDERLINE,
+        };
+        let json = serde_json::to_string(&cell).unwrap();
+        let recovered: Cell = serde_json::from_str(&json).unwrap();
+        assert_eq!(recovered, cell);
+    }
+
+    #[test]
+    fn color_default_serde_round_trip() {
+        let c = Color::Default;
+        let json = serde_json::to_string(&c).unwrap();
+        let recovered: Color = serde_json::from_str(&json).unwrap();
+        assert_eq!(recovered, Color::Default);
+    }
+
+    #[test]
+    fn color_palette_serde_round_trip() {
+        let c = Color::Palette(42);
+        let json = serde_json::to_string(&c).unwrap();
+        let recovered: Color = serde_json::from_str(&json).unwrap();
+        assert_eq!(recovered, Color::Palette(42));
+    }
+
+    #[test]
+    fn color_rgb_serde_round_trip() {
+        let c = Color::Rgb([255, 128, 0]);
+        let json = serde_json::to_string(&c).unwrap();
+        let recovered: Color = serde_json::from_str(&json).unwrap();
+        assert_eq!(recovered, Color::Rgb([255, 128, 0]));
+    }
+
+    // ── all Attrs flags ──────────────────────────────────────────────────────
+
+    #[test]
+    fn attrs_all_flags_individually() {
+        let all_flags = [
+            Attrs::BOLD,
+            Attrs::DIM,
+            Attrs::ITALIC,
+            Attrs::UNDERLINE,
+            Attrs::BLINK,
+            Attrs::INVERSE,
+            Attrs::INVISIBLE,
+            Attrs::STRIKETHROUGH,
+        ];
+        for flag in all_flags {
+            assert!(flag.contains(flag));
+            assert!(!(Attrs::empty().contains(flag)));
+        }
+    }
 }

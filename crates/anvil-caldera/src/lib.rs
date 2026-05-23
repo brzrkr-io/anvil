@@ -497,4 +497,87 @@ mod tests {
         let _ = resp;
         server.join().unwrap();
     }
+
+    fn mock_server(body: &'static str) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf).unwrap();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        (format!("http://{}", addr), handle)
+    }
+
+    #[test]
+    fn activity_returns_approvals_and_findings() {
+        let body = r#"{"pending_approvals":[{"approval_id":"ap1","connector":"git","pattern":"*.rs","reason":"CI"}],"attention":[]}"#;
+        let (url, handle) = mock_server(body);
+        let client = CalderaClient::new(url);
+        let resp = client.activity().unwrap();
+        assert_eq!(1, resp.approvals.len());
+        assert_eq!(0, resp.findings.len());
+        assert_eq!("ap1", resp.approvals[0].approval_id);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn agent_runs_returns_run_rows() {
+        let body = r#"{"agent_runs":[{"run_id":"r1","agent":"codex","task":"fix bug","status":"completed","created_at":"2026-01-01T00:00:00Z"}]}"#;
+        let (url, handle) = mock_server(body);
+        let client = CalderaClient::new(url);
+        let resp = client.agent_runs().unwrap();
+        assert_eq!(1, resp.runs.len());
+        assert_eq!("r1", resp.runs[0].run_id);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn project_returns_enabled_project() {
+        let body = r#"{"project":{"name":"my-project","enabled":true}}"#;
+        let (url, handle) = mock_server(body);
+        let client = CalderaClient::new(url);
+        let resp = client.project().unwrap();
+        assert!(resp.project.is_some());
+        assert!(resp.project.unwrap().enabled);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn activity_maps_all_finding_severities() {
+        // Each severity variant in map_severity that isn't covered by the simple test.
+        let body = r#"{"pending_approvals":[],"attention":[
+            {"severity":"critical","summary":"c","recommended_action":""},
+            {"severity":"failure","summary":"f","recommended_action":""},
+            {"severity":"error","summary":"e","recommended_action":""},
+            {"severity":"risk","summary":"r","recommended_action":""},
+            {"severity":"info","summary":"i","recommended_action":""},
+            {"severity":"unknown_xyz","summary":"u","recommended_action":""}
+        ]}"#;
+        let (url, handle) = mock_server(body);
+        let client = CalderaClient::new(url);
+        let resp = client.activity().unwrap();
+        assert_eq!(6, resp.findings.len());
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn agent_runs_maps_all_run_statuses() {
+        let body = r#"{"agent_runs":[
+            {"run_id":"r1","agent":"a","task":"t","status":"failed","created_at":"2026-01-01T00:00:00Z"},
+            {"run_id":"r2","agent":"a","task":"t","status":"abandoned","created_at":"bad-timestamp"},
+            {"run_id":"r3","agent":"a","task":"t","status":"unknown_xyz","created_at":""}
+        ]}"#;
+        let (url, handle) = mock_server(body);
+        let client = CalderaClient::new(url);
+        let resp = client.agent_runs().unwrap();
+        assert_eq!(3, resp.runs.len());
+        handle.join().unwrap();
+    }
 }

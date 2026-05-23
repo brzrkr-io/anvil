@@ -547,4 +547,144 @@ mod tests {
         assert_eq!(result[4], 33); // 32+1
         assert_eq!(result[5], 33); // 32+1
     }
+
+    #[test]
+    fn mouse_legacy_buffer_too_small_returns_empty() {
+        // Buffer < 6 bytes → returns &out[..0].
+        let mut b = [0u8; 4];
+        let result = encode_mouse(0, 1, 1, true, false, &mut b);
+        assert_eq!(result.len(), 0);
+    }
+
+    // ── Home / End / Insert ─────────────────────────────────────────────────
+
+    #[test]
+    fn home_end_insert_plain() {
+        // Home and End are cursor-key variants; Insert is an edit key.
+        assert_eq!(enc(Key::Home, Mods::default(), false), b"\x1b[H");
+        assert_eq!(enc(Key::End, Mods::default(), false), b"\x1b[F");
+        assert_eq!(enc(Key::Insert, Mods::default(), false), b"\x1b[2~");
+    }
+
+    #[test]
+    fn home_end_app_cursor_mode() {
+        // Home/End honor DECCKM like Up/Down/Left/Right.
+        assert_eq!(enc(Key::Home, Mods::default(), true), b"\x1bOH");
+        assert_eq!(enc(Key::End, Mods::default(), true), b"\x1bOF");
+    }
+
+    // ── ctrl+option text encoding ───────────────────────────────────────────
+
+    #[test]
+    fn ctrl_option_control_char_produces_esc_byte() {
+        // Ctrl+Opt+A: ESC + 0x01
+        let result = enc(
+            Key::Text('a'),
+            Mods {
+                control: true,
+                option: true,
+                ..Default::default()
+            },
+            false,
+        );
+        assert_eq!(result, &[0x1b, 0x01]);
+    }
+
+    #[test]
+    fn ctrl_non_control_char_passes_through_without_control_byte() {
+        // '1' has no control_byte mapping; ctrl+1 → just '1' (no control prefix).
+        let result = enc(
+            Key::Text('1'),
+            Mods {
+                control: true,
+                ..Default::default()
+            },
+            false,
+        );
+        assert_eq!(result, b"1");
+    }
+
+    // ── control_byte special characters ────────────────────────────────────
+
+    #[test]
+    fn control_byte_special_chars() {
+        // '@', '[', '\', ']', '^', '_', '?' all have control_byte mappings.
+        assert_eq!(
+            enc(
+                Key::Text('@'),
+                Mods {
+                    control: true,
+                    ..Default::default()
+                },
+                false
+            ),
+            &[0x00]
+        );
+        assert_eq!(
+            enc(
+                Key::Text('['),
+                Mods {
+                    control: true,
+                    ..Default::default()
+                },
+                false
+            ),
+            &[0x1b]
+        );
+        assert_eq!(
+            enc(
+                Key::Text('\\'),
+                Mods {
+                    control: true,
+                    ..Default::default()
+                },
+                false
+            ),
+            &[0x1c]
+        );
+        assert_eq!(
+            enc(
+                Key::Text(']'),
+                Mods {
+                    control: true,
+                    ..Default::default()
+                },
+                false
+            ),
+            &[0x1d]
+        );
+        assert_eq!(
+            enc(
+                Key::Text('^'),
+                Mods {
+                    control: true,
+                    ..Default::default()
+                },
+                false
+            ),
+            &[0x1e]
+        );
+        assert_eq!(
+            enc(
+                Key::Text('_'),
+                Mods {
+                    control: true,
+                    ..Default::default()
+                },
+                false
+            ),
+            &[0x1f]
+        );
+        assert_eq!(
+            enc(
+                Key::Text('?'),
+                Mods {
+                    control: true,
+                    ..Default::default()
+                },
+                false
+            ),
+            &[0x7f]
+        );
+    }
 }

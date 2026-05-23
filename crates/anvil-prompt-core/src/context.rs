@@ -108,4 +108,73 @@ mod tests {
         assert!(!c.has_container);
         assert!(!c.has_k8s);
     }
+
+    #[test]
+    fn detect_rust_project_by_cargo_toml() {
+        let tmp = make_tmp();
+        fs::write(tmp.path().join("Cargo.toml"), "").unwrap();
+        let c = detect(tmp.path());
+        assert_eq!(c.lang, Lang::Rust);
+    }
+
+    #[test]
+    fn detect_go_project_by_go_mod() {
+        let tmp = make_tmp();
+        fs::write(tmp.path().join("go.mod"), "").unwrap();
+        let c = detect(tmp.path());
+        assert_eq!(c.lang, Lang::Go);
+    }
+
+    #[test]
+    fn detect_python_project_by_pyproject_toml() {
+        let tmp = make_tmp();
+        fs::write(tmp.path().join("pyproject.toml"), "").unwrap();
+        let c = detect(tmp.path());
+        assert_eq!(c.lang, Lang::Python);
+    }
+
+    #[test]
+    fn detect_python_project_by_requirements_txt() {
+        let tmp = make_tmp();
+        fs::write(tmp.path().join("requirements.txt"), "").unwrap();
+        let c = detect(tmp.path());
+        assert_eq!(c.lang, Lang::Python);
+    }
+
+    #[test]
+    fn detect_k8s_by_kustomization_yaml() {
+        let tmp = make_tmp();
+        fs::write(tmp.path().join("kustomization.yaml"), "").unwrap();
+        let c = detect(tmp.path());
+        assert!(c.has_k8s);
+    }
+
+    #[test]
+    fn detect_k8s_by_chart_yaml() {
+        let tmp = make_tmp();
+        fs::write(tmp.path().join("Chart.yaml"), "").unwrap();
+        let c = detect(tmp.path());
+        assert!(c.has_k8s);
+    }
+
+    #[test]
+    fn detect_k8s_dir() {
+        let tmp = make_tmp();
+        fs::create_dir(tmp.path().join("k8s")).unwrap();
+        let c = detect(tmp.path());
+        assert!(c.has_k8s);
+    }
+
+    #[test]
+    fn detect_container_by_compose_variants() {
+        let tmp = make_tmp();
+        fs::write(tmp.path().join("docker-compose.yml"), "").unwrap();
+        let c = detect(tmp.path());
+        assert!(c.has_container);
+
+        let tmp2 = make_tmp();
+        fs::write(tmp2.path().join("compose.yaml"), "").unwrap();
+        let c2 = detect(tmp2.path());
+        assert!(c2.has_container);
+    }
 }

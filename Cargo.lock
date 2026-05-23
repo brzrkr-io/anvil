@@ -65,6 +65,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "anvil-editor"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "anvil-platform"
 version = "0.1.0"
 dependencies = [
@@ -121,6 +129,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags",
  "serde",
+ "serde_json",
  "thiserror",
 ]
 

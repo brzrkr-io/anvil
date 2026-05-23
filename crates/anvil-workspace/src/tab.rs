@@ -256,4 +256,142 @@ mod tests {
         assert_eq!(mgr.active, 0);
         assert_eq!(mgr.count(), 2);
     }
+
+    // ── Tab::new (direct constructor) ────────────────────────────────────────
+
+    #[test]
+    fn tab_new_sets_tree_and_registry() {
+        use crate::pane::PaneRegistry;
+        let registry = PaneRegistry::default();
+        let tree = crate::layout::PaneTree::init_single(42);
+        let tab = Tab::new(tree, registry);
+        assert_eq!(tab.focused_id(), 42);
+    }
+
+    // ── Tab::split ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn tab_split_horizontal_adds_pane() {
+        let mut tab = Tab::new_single_pane(80, 24, 0);
+        let id = tab.focused_id();
+        let new_id = tab
+            .split(crate::layout::SplitDir::Horizontal, 40, 24, 0)
+            .unwrap();
+        assert_ne!(new_id, id);
+        // Both panes are in the registry.
+        assert!(tab.registry.get(id).is_some());
+        assert!(tab.registry.get(new_id).is_some());
+    }
+
+    #[test]
+    fn tab_split_vertical_adds_pane() {
+        let mut tab = Tab::new_single_pane(80, 24, 0);
+        let new_id = tab
+            .split(crate::layout::SplitDir::Vertical, 80, 12, 0)
+            .unwrap();
+        assert!(tab.registry.get(new_id).is_some());
+    }
+
+    // ── TabManager::current / current_mut ─────────────────────────────────────
+
+    #[test]
+    fn tab_manager_current_returns_none_when_empty() {
+        let mgr = TabManager::default();
+        assert!(mgr.current().is_none());
+    }
+
+    #[test]
+    fn tab_manager_current_returns_active_tab() {
+        let mut mgr = TabManager::default();
+        mgr.push(Tab::new_single_pane(80, 24, 0));
+        assert!(mgr.current().is_some());
+    }
+
+    #[test]
+    fn tab_manager_current_mut_returns_active_tab() {
+        let mut mgr = TabManager::default();
+        mgr.push(Tab::new_single_pane(80, 24, 0));
+        assert!(mgr.current_mut().is_some());
+    }
+
+    // ── TabManager::push MAX_TABS cap ─────────────────────────────────────────
+
+    #[test]
+    fn tab_manager_push_stops_at_max_tabs() {
+        let mut mgr = TabManager::default();
+        for _ in 0..MAX_TABS + 5 {
+            mgr.push(Tab::new_single_pane(1, 1, 0));
+        }
+        assert_eq!(mgr.count(), MAX_TABS);
+    }
+
+    // ── TabManager::close_at edge cases ───────────────────────────────────────
+
+    #[test]
+    fn close_at_out_of_bounds_returns_nonempty() {
+        let mut mgr = TabManager::default();
+        mgr.push(Tab::new_single_pane(1, 1, 0));
+        // index out of bounds; tabs are not empty so returns true
+        assert!(mgr.close_at(99));
+        assert_eq!(mgr.count(), 1);
+    }
+
+    #[test]
+    fn close_at_last_tab_returns_false() {
+        let mut mgr = TabManager::default();
+        mgr.push(Tab::new_single_pane(1, 1, 0));
+        assert!(!mgr.close_at(0));
+        assert_eq!(mgr.count(), 0);
+    }
+
+    #[test]
+    fn close_active_removes_and_adjusts_index() {
+        let mut mgr = TabManager::default();
+        for _ in 0..3 {
+            mgr.push(Tab::new_single_pane(1, 1, 0));
+        }
+        mgr.active = 1;
+        assert!(mgr.close_active());
+        assert_eq!(mgr.count(), 2);
+    }
+
+    // ── clamp_index edge: count == 0 ─────────────────────────────────────────
+
+    #[test]
+    fn clamp_index_zero_count_returns_zero() {
+        assert_eq!(clamp_index(0, 5), 0);
+    }
+
+    // ── wrap_index edge: count == 0 ──────────────────────────────────────────
+
+    #[test]
+    fn wrap_index_zero_count_returns_zero() {
+        assert_eq!(wrap_index(0, 0, 1), 0);
+        assert_eq!(wrap_index(0, 0, -1), 0);
+    }
+
+    // ── next_active_after_close edge: count <= 1 ─────────────────────────────
+
+    #[test]
+    fn next_active_after_close_count_one_returns_zero() {
+        assert_eq!(next_active_after_close(1, 0, 0), 0);
+        assert_eq!(next_active_after_close(0, 0, 0), 0);
+    }
+
+    // ── TabManager::bar_visible ───────────────────────────────────────────────
+
+    #[test]
+    fn tab_manager_bar_visible_false_for_one_tab() {
+        let mut mgr = TabManager::default();
+        mgr.push(Tab::new_single_pane(1, 1, 0));
+        assert!(!mgr.bar_visible());
+    }
+
+    #[test]
+    fn tab_manager_bar_visible_true_for_two_tabs() {
+        let mut mgr = TabManager::default();
+        mgr.push(Tab::new_single_pane(1, 1, 0));
+        mgr.push(Tab::new_single_pane(1, 1, 0));
+        assert!(mgr.bar_visible());
+    }
 }

@@ -148,4 +148,90 @@ mod tests {
         assert_eq!(last.icon, Icon::Err);
         assert_eq!(last.text, "127");
     }
+
+    #[test]
+    fn assemble_zig_lang_adds_toolchain_segment() {
+        let list = assemble(Inputs {
+            cwd_base: "x",
+            context: Context {
+                lang: Lang::Zig,
+                ..Context::default()
+            },
+            git_info: None,
+            exit_code: 0,
+        });
+        assert!(
+            list.slice()
+                .iter()
+                .any(|s| s.icon == Icon::Toolchain && s.text == "zig")
+        );
+    }
+
+    #[test]
+    fn assemble_rust_lang_adds_toolchain_segment() {
+        let list = assemble(Inputs {
+            cwd_base: "x",
+            context: Context {
+                lang: Lang::Rust,
+                ..Context::default()
+            },
+            git_info: None,
+            exit_code: 0,
+        });
+        assert!(
+            list.slice()
+                .iter()
+                .any(|s| s.icon == Icon::Toolchain && s.text == "rust")
+        );
+    }
+
+    #[test]
+    fn assemble_go_lang_adds_toolchain_segment() {
+        let list = assemble(Inputs {
+            cwd_base: "x",
+            context: Context {
+                lang: Lang::Go,
+                ..Context::default()
+            },
+            git_info: None,
+            exit_code: 0,
+        });
+        assert!(
+            list.slice()
+                .iter()
+                .any(|s| s.icon == Icon::Toolchain && s.text == "go")
+        );
+    }
+
+    #[test]
+    fn assemble_python_lang_adds_toolchain_segment() {
+        let list = assemble(Inputs {
+            cwd_base: "x",
+            context: Context {
+                lang: Lang::Python,
+                ..Context::default()
+            },
+            git_info: None,
+            exit_code: 0,
+        });
+        assert!(
+            list.slice()
+                .iter()
+                .any(|s| s.icon == Icon::Toolchain && s.text == "python")
+        );
+    }
+
+    #[test]
+    fn assemble_k8s_context_adds_cluster_segment() {
+        let list = assemble(Inputs {
+            cwd_base: "x",
+            context: Context {
+                has_k8s: true,
+                ..Context::default()
+            },
+            git_info: None,
+            exit_code: 0,
+        });
+        assert!(list.slice().iter().any(|s| s.icon == Icon::Cluster));
+    }
 }

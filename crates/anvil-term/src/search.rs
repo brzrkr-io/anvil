@@ -314,4 +314,51 @@ mod tests {
         let r0 = t.content_row_of_viewport(0);
         assert_eq!(MatchKind::Current, s.classify(r0, 1));
     }
+
+    #[test]
+    fn search_default_impl_matches_new() {
+        let s: Search = Default::default();
+        assert_eq!(0, s.count());
+        assert_eq!(0, s.current);
+    }
+
+    #[test]
+    fn classify_with_no_matches_returns_none() {
+        let mut t = make_terminal(10, 2);
+        t.feed(b"hello");
+        let mut s = Search::new();
+        s.set_query(&t, "zzz"); // no matches
+        assert_eq!(MatchKind::None, s.classify(0, 0));
+    }
+
+    #[test]
+    fn classify_row_mismatch_returns_none_for_that_row() {
+        // Match on row 0; classify on a different row returns None.
+        let mut t = make_terminal(40, 5);
+        t.feed(b"ab\r\ncd");
+        let mut s = Search::new();
+        s.set_query(&t, "ab");
+        assert_eq!(1, s.count());
+        // Row 1 has 'cd', not 'ab'. classify(1, 0) should be None.
+        let r1 = t.content_row_of_viewport(1);
+        assert_eq!(MatchKind::None, s.classify(r1, 0));
+    }
+
+    #[test]
+    fn max_matches_cap_stops_scan() {
+        // Fill a tall terminal with 'a' to exceed MAX_MATCHES = 2048.
+        // With a 100-col terminal, each row gives 97 matches for "aa".
+        // We need roughly 22 rows of filled 'a' to exceed 2048 (22*97=2134).
+        let mut t = make_terminal(100, 25);
+        for _ in 0..25 {
+            // Fill row with 'a' then LF.
+            let row: Vec<u8> = b"a".repeat(100);
+            t.feed(&row);
+            t.feed(b"\r\n");
+        }
+        let mut s = Search::new();
+        s.set_query(&t, "aa");
+        // Must not exceed MAX_MATCHES.
+        assert_eq!(MAX_MATCHES, s.count());
+    }
 }

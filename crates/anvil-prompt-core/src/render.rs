@@ -264,4 +264,72 @@ mod tests {
         });
         assert!(out.contains(ACCENT_ERR));
     }
+
+    #[test]
+    fn seg_color_state_err_returns_accent_err() {
+        let s = Segment::with_state(Icon::Repo, "x", State::Err);
+        assert_eq!(seg_color(&s), ACCENT_ERR);
+    }
+
+    #[test]
+    fn seg_color_state_ok_returns_ok_color() {
+        let s = Segment::with_state(Icon::Repo, "x", State::Ok);
+        assert_eq!(seg_color(&s), OK_COLOR);
+    }
+
+    #[test]
+    fn seg_color_icon_branch_returns_git_color() {
+        // State::Normal → falls through to icon match → Branch → GIT_COLOR
+        let s = Segment::new(Icon::Branch, "x");
+        assert_eq!(seg_color(&s), GIT_COLOR);
+    }
+
+    #[test]
+    fn seg_color_icon_toolchain_returns_tool_color() {
+        let s = Segment::new(Icon::Toolchain, "x");
+        assert_eq!(seg_color(&s), TOOL_COLOR);
+    }
+
+    #[test]
+    fn seg_color_state_run_returns_accent() {
+        let s = Segment::with_state(Icon::Repo, "x", State::Run);
+        assert_eq!(seg_color(&s), ACCENT);
+    }
+
+    #[test]
+    fn seg_color_state_normal_uses_icon_color() {
+        // State::Normal falls through to the icon match.
+        // Icon::Container => INFRA_COLOR
+        let s = Segment::with_state(Icon::Container, "x", State::Normal);
+        assert_eq!(seg_color(&s), INFRA_COLOR);
+    }
+
+    #[test]
+    fn seg_color_icon_cluster_returns_infra_color() {
+        let s = Segment::new(Icon::Cluster, "x");
+        assert_eq!(seg_color(&s), INFRA_COLOR);
+    }
+
+    #[test]
+    fn seg_color_catch_all_icon_returns_dim() {
+        // Icon::Dirty is not Repo/Branch/Toolchain/Container/Cluster => DIM
+        let s = Segment::new(Icon::Dirty, "x");
+        assert_eq!(seg_color(&s), DIM);
+    }
+
+    #[test]
+    fn bash_mode_wraps_escape_sequences_in_rl_markers() {
+        let segs = sample_segs();
+        let out = full(
+            &segs,
+            Options {
+                rich: false,
+                failed: false,
+                shell: Shell::Bash,
+            },
+        );
+        // Bash zero-width markers are \x01 ... \x02
+        assert!(out.contains('\x01'));
+        assert!(out.contains('\x02'));
+    }
 }

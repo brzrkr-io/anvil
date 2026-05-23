@@ -192,4 +192,25 @@ mod tests {
     fn classify_empty_token() {
         assert_eq!(classify("", ""), Kind::None);
     }
+
+    #[test]
+    fn classify_bare_word_file_exists_relative_to_cwd() {
+        // Create a temp file without any slash or extension so heuristics
+        // won't classify it as a path, but file_exists_relative will.
+        let dir = std::env::temp_dir().join("anvil_interact_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let fname = "Makefile"; // no slash, no extension
+        let fpath = dir.join(fname);
+        std::fs::write(&fpath, b"").expect("write tmp file");
+        let cwd = dir.to_string_lossy().into_owned();
+        assert_eq!(classify(fname, &cwd), Kind::Path);
+        let _ = std::fs::remove_file(&fpath);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn classify_bare_word_file_not_found_returns_none() {
+        // A bare word that doesn't exist on disk with a valid cwd → Kind::None.
+        assert_eq!(classify("nonexistent_bare_word_xyz", "/tmp"), Kind::None);
+    }
 }

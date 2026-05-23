@@ -493,6 +493,57 @@ height = 1.0
         assert_eq!(cfg.scrollback, 100_000);
     }
 
+    #[test]
+    fn load_of_unreadable_file_yields_defaults() {
+        // Write a file, make it unreadable, then load it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "scrollback = 99").unwrap();
+        // chmod 000 so the read fails with a non-NotFound error.
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+        let cfg = load(&path);
+        // Restore permissions so tempdir can clean up.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(cfg.scrollback, 100_000);
+    }
+
+    #[test]
+    fn load_of_oversized_file_yields_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.toml");
+        // Write MAX_CONFIG_BYTES + 1 bytes.
+        let big = vec![b'#'; MAX_CONFIG_BYTES + 1];
+        fs::write(&path, &big).unwrap();
+        let cfg = load(&path);
+        assert_eq!(cfg.scrollback, 100_000);
+    }
+
+    #[test]
+    fn load_of_non_utf8_file_yields_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.toml");
+        // Write invalid UTF-8 bytes.
+        fs::write(&path, &[0xFF, 0xFE, 0x00]).unwrap();
+        let cfg = load(&path);
+        assert_eq!(cfg.scrollback, 100_000);
+    }
+
+    #[test]
+    fn parse_chord_ctrl_and_opt_modifiers() {
+        let c = parse_chord("ctrl+a").unwrap();
+        assert!(c.ctrl);
+        assert_eq!(c.key, 'a');
+
+        let o = parse_chord("opt+b").unwrap();
+        assert!(o.opt);
+        assert_eq!(o.key, 'b');
+
+        let co = parse_chord("ctrl+opt+c").unwrap();
+        assert!(co.ctrl && co.opt);
+        assert_eq!(co.key, 'c');
+    }
+
     // ── Watcher ───────────────────────────────────────────────────────────────
 
     #[test]

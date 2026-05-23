@@ -870,7 +870,7 @@ mod tests {
     }
 
     fn make_snap_with_approval() -> Snapshot {
-        use anvil_agent::{ApprovalRow, AgentRunRow};
+        use anvil_agent::{AgentRunRow, ApprovalRow};
         Snapshot {
             connection: Connection::Live,
             approvals: vec![ApprovalRow {

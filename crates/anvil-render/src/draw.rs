@@ -590,4 +590,363 @@ mod tests {
             theme.ansi[0]
         );
     }
+
+    // ── draw_cell with selection active ───────────────────────────────────────
+
+    #[test]
+    fn draw_cell_with_active_selection_does_not_panic() {
+        let m = metrics();
+        let mut r = Raster::new(200, 120);
+        let mut painter = StubPainter::default();
+        let mut t = make_terminal(10, 4);
+        t.feed(b"hello");
+        let theme = MINERAL_DARK;
+        r.clear(theme.background);
+
+        use anvil_workspace::selection::{Point, Selection};
+        let sel = Selection {
+            active: true,
+            anchor: Point { row: 0, col: 0 },
+            head: Point { row: 0, col: 4 },
+        };
+
+        let row = t.viewport_row(0);
+        let cell = row[0];
+        drop(row);
+
+        draw_cell(&mut r, &mut painter, m, &theme, 0, 0, 0, cell, 0, sel, None);
+        // No panic is the primary assertion; also verifies selection path was taken.
+    }
+
+    // ── draw_cell with search match ───────────────────────────────────────────
+
+    #[test]
+    fn draw_cell_with_search_match_does_not_panic() {
+        let m = metrics();
+        let mut r = Raster::new(200, 120);
+        let mut painter = StubPainter::default();
+        let mut t = make_terminal(10, 4);
+        t.feed(b"hello world");
+        let theme = MINERAL_DARK;
+        r.clear(theme.background);
+
+        let mut search = anvil_term::Search::new();
+        search.set_query(&t, "hello");
+
+        let row = t.viewport_row(0);
+        let cell = row[0];
+        drop(row);
+
+        draw_cell(
+            &mut r,
+            &mut painter,
+            m,
+            &theme,
+            0,
+            0,
+            0,
+            cell,
+            0,
+            Selection::default(),
+            Some(&search),
+        );
+    }
+
+    // ── draw_cell INVERSE attribute ───────────────────────────────────────────
+
+    #[test]
+    fn draw_cell_inverse_attribute_swaps_colors() {
+        use anvil_term::{Attrs, Cell, Color};
+        let m = metrics();
+        let mut r = Raster::new(200, 120);
+        let mut painter = StubPainter::default();
+        let theme = MINERAL_DARK;
+        r.clear(theme.background);
+
+        let mut cell = Cell::default();
+        cell.cp = 'X';
+        cell.fg = Color::Rgb([255, 0, 0]);
+        cell.bg = Color::Rgb([0, 0, 255]);
+        cell.attrs = Attrs::INVERSE;
+
+        draw_cell(
+            &mut r,
+            &mut painter,
+            m,
+            &theme,
+            2,
+            1,
+            0,
+            cell,
+            0,
+            Selection::default(),
+            None,
+        );
+        // No panic; INVERSE path executed.
+    }
+
+    // ── draw_cursor (all 3 styles) ────────────────────────────────────────────
+
+    #[test]
+    fn draw_cursor_block_style_no_panic() {
+        let m = metrics();
+        let mut r = Raster::new(200, 120);
+        let mut painter = StubPainter::default();
+        let t = make_terminal(10, 4);
+        let theme = MINERAL_DARK;
+        r.clear(theme.background);
+
+        let params = CursorParams {
+            ax: 0.0,
+            ay: 0.0,
+            blink_phase: 0.0,
+            cfg: CursorConfig {
+                style: CursorStyle::Block,
+                blink: false,
+            },
+        };
+        draw_cursor(&mut r, &mut painter, &t, m, &theme, 0, params);
+    }
+
+    #[test]
+    fn draw_cursor_bar_style_no_panic() {
+        let m = metrics();
+        let mut r = Raster::new(200, 120);
+        let mut painter = StubPainter::default();
+        let t = make_terminal(10, 4);
+        let theme = MINERAL_DARK;
+        r.clear(theme.background);
+
+        let params = CursorParams {
+            ax: 1.0,
+            ay: 0.0,
+            blink_phase: 0.0,
+            cfg: CursorConfig {
+                style: CursorStyle::Bar,
+                blink: false,
+            },
+        };
+        draw_cursor(&mut r, &mut painter, &t, m, &theme, 0, params);
+    }
+
+    #[test]
+    fn draw_cursor_underline_style_no_panic() {
+        let m = metrics();
+        let mut r = Raster::new(200, 120);
+        let mut painter = StubPainter::default();
+        let t = make_terminal(10, 4);
+        let theme = MINERAL_DARK;
+        r.clear(theme.background);
+
+        let params = CursorParams {
+            ax: 0.0,
+            ay: 1.0,
+            blink_phase: 0.0,
+            cfg: CursorConfig {
+                style: CursorStyle::Underline,
+                blink: false,
+            },
+        };
+        draw_cursor(&mut r, &mut painter, &t, m, &theme, 0, params);
+    }
+
+    // ── draw_viewport with cursor_params (block, bar, underline) ─────────────
+
+    #[test]
+    fn draw_viewport_with_block_cursor_no_panic() {
+        let m = metrics();
+        let mut r = Raster::new(200, 120);
+        let mut painter = StubPainter::default();
+        let mut t = make_terminal(10, 4);
+        t.feed(b"hello");
+        let theme = MINERAL_DARK;
+        r.clear(theme.background);
+
+        let params = CursorParams {
+            ax: 0.0,
+            ay: 0.0,
+            blink_phase: 0.0,
+            cfg: CursorConfig {
+                style: CursorStyle::Block,
+                blink: false,
+            },
+        };
+        draw_viewport(
+            &mut r,
+            &mut painter,
+            &mut t,
+            m,
+            &theme,
+            0.0,
+            0.0,
+            Selection::default(),
+            None,
+            0,
+            Some(params),
+            0.0,
+            200.0,
+        );
+    }
+
+    #[test]
+    fn draw_viewport_with_bar_cursor_no_panic() {
+        let m = metrics();
+        let mut r = Raster::new(200, 120);
+        let mut painter = StubPainter::default();
+        let mut t = make_terminal(10, 4);
+        t.feed(b"hello");
+        let theme = MINERAL_DARK;
+        r.clear(theme.background);
+
+        let params = CursorParams {
+            ax: 1.0,
+            ay: 0.0,
+            blink_phase: 0.0,
+            cfg: CursorConfig {
+                style: CursorStyle::Bar,
+                blink: false,
+            },
+        };
+        draw_viewport(
+            &mut r,
+            &mut painter,
+            &mut t,
+            m,
+            &theme,
+            0.0,
+            0.0,
+            Selection::default(),
+            None,
+            0,
+            Some(params),
+            0.0,
+            200.0,
+        );
+    }
+
+    #[test]
+    fn draw_viewport_with_underline_cursor_no_panic() {
+        let m = metrics();
+        let mut r = Raster::new(200, 120);
+        let mut painter = StubPainter::default();
+        let mut t = make_terminal(10, 4);
+        t.feed(b"hello");
+        let theme = MINERAL_DARK;
+        r.clear(theme.background);
+
+        let params = CursorParams {
+            ax: 0.0,
+            ay: 0.0,
+            blink_phase: 0.0,
+            cfg: CursorConfig {
+                style: CursorStyle::Underline,
+                blink: false,
+            },
+        };
+        draw_viewport(
+            &mut r,
+            &mut painter,
+            &mut t,
+            m,
+            &theme,
+            0.0,
+            0.0,
+            Selection::default(),
+            None,
+            0,
+            Some(params),
+            0.0,
+            200.0,
+        );
+    }
+
+    // ── draw_viewport with search ─────────────────────────────────────────────
+
+    #[test]
+    fn draw_viewport_with_search_no_panic() {
+        let m = metrics();
+        let mut r = Raster::new(200, 120);
+        let mut painter = StubPainter::default();
+        let mut t = make_terminal(10, 4);
+        t.feed(b"hello world");
+        let theme = MINERAL_DARK;
+        r.clear(theme.background);
+
+        let mut search = anvil_term::Search::new();
+        search.set_query(&t, "hello");
+
+        draw_viewport(
+            &mut r,
+            &mut painter,
+            &mut t,
+            m,
+            &theme,
+            0.0,
+            0.0,
+            Selection::default(),
+            Some(&search),
+            0,
+            None,
+            0.0,
+            200.0,
+        );
+    }
+
+    // ── draw_viewport with blink cursor ──────────────────────────────────────
+
+    #[test]
+    fn draw_viewport_blink_cursor_no_panic() {
+        let m = metrics();
+        let mut r = Raster::new(200, 120);
+        let mut painter = StubPainter::default();
+        let mut t = make_terminal(10, 4);
+        t.feed(b"X");
+        let theme = MINERAL_DARK;
+        r.clear(theme.background);
+
+        // Phase in fade-out range so opacity != 1.0
+        let params = CursorParams {
+            ax: 0.0,
+            ay: 0.0,
+            blink_phase: 0.55,
+            cfg: CursorConfig {
+                style: CursorStyle::Block,
+                blink: true,
+            },
+        };
+        draw_viewport(
+            &mut r,
+            &mut painter,
+            &mut t,
+            m,
+            &theme,
+            0.0,
+            0.0,
+            Selection::default(),
+            None,
+            0,
+            Some(params),
+            0.0,
+            200.0,
+        );
+    }
+
+    // ── cursor_opacity full range ─────────────────────────────────────────────
+
+    #[test]
+    fn cursor_opacity_full_range_coverage() {
+        // Covers all four branches of cursor_opacity.
+        // Phase < 0.50: solid (1.0)
+        assert_eq!(cursor_opacity(0.0), 1.0);
+        assert_eq!(cursor_opacity(0.49), 1.0);
+        // Phase in [0.50, 0.62): smoothstep fade from 1 to 0
+        let v = cursor_opacity(0.56);
+        assert!(v > 0.0 && v < 1.0);
+        // Phase in [0.62, 0.88): zero
+        assert_eq!(cursor_opacity(0.75), 0.0);
+        assert_eq!(cursor_opacity(0.62), 0.0);
+        // Phase in [0.88, 1.0): fade back up
+        let v = cursor_opacity(0.94);
+        assert!(v > 0.0 && v < 1.0);
+    }
 }

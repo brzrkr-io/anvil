@@ -665,35 +665,13 @@ impl App {
 
     fn pty_write_open_file(&self, path: &str) {
         self.write_to_focused_pty(b"\x15${EDITOR:-open} '");
-        let bytes = path.as_bytes();
-        let mut i = 0;
-        while i < bytes.len() {
-            if let Some(j) = bytes[i..].iter().position(|&b| b == b'\'') {
-                self.write_to_focused_pty(&bytes[i..i + j]);
-                self.write_to_focused_pty(b"'\\''");
-                i += j + 1;
-            } else {
-                self.write_to_focused_pty(&bytes[i..]);
-                break;
-            }
-        }
+        shell_quote_arg(path, |chunk| self.write_to_focused_pty(chunk));
         self.write_to_focused_pty(b"'\n");
     }
 
     fn pty_write_open_url(&self, url: &str) {
         self.write_to_focused_pty(b"\x15open '");
-        let bytes = url.as_bytes();
-        let mut i = 0;
-        while i < bytes.len() {
-            if let Some(j) = bytes[i..].iter().position(|&b| b == b'\'') {
-                self.write_to_focused_pty(&bytes[i..i + j]);
-                self.write_to_focused_pty(b"'\\''");
-                i += j + 1;
-            } else {
-                self.write_to_focused_pty(&bytes[i..]);
-                break;
-            }
-        }
+        shell_quote_arg(url, |chunk| self.write_to_focused_pty(chunk));
         self.write_to_focused_pty(b"'\n");
     }
 
@@ -1842,6 +1820,27 @@ fn cursor_cfg_from_config(cfg: &Config) -> CursorConfig {
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
+/// Emit the bytes of `s` single-quote-safe: each embedded `'` is replaced by
+/// the four-byte sequence `'\''` so that the caller can wrap the output in
+/// single quotes and get a valid POSIX shell argument.
+///
+/// `emit` is called with successive byte slices whose concatenation equals the
+/// properly escaped content (without the surrounding single quotes).
+fn shell_quote_arg(s: &str, mut emit: impl FnMut(&[u8])) {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if let Some(j) = bytes[i..].iter().position(|&b| b == b'\'') {
+            emit(&bytes[i..i + j]);
+            emit(b"'\\''");
+            i += j + 1;
+        } else {
+            emit(&bytes[i..]);
+            break;
+        }
+    }
+}
+
 fn ascii_lower(ch: char) -> char {
     if ch.is_ascii_uppercase() {
         (ch as u8 + 32) as char
@@ -2441,6 +2440,45 @@ mod tests {
         assert!(ids.contains(&new_id));
     }
 
+    // ── shell_quote_arg ───────────────────────────────────────────────────────
+
+    fn collect_quote(s: &str) -> Vec<u8> {
+        let mut out = Vec::new();
+        shell_quote_arg(s, |chunk| out.extend_from_slice(chunk));
+        out
+    }
+
+    #[test]
+    fn shell_quote_arg_simple_path_unchanged() {
+        assert_eq!(collect_quote("/usr/local/bin"), b"/usr/local/bin");
+    }
+
+    #[test]
+    fn shell_quote_arg_single_quote_in_path_escaped() {
+        // "it's a file" → it'\''s a file
+        assert_eq!(collect_quote("it's"), b"it'\\''s");
+    }
+
+    #[test]
+    fn shell_quote_arg_multiple_quotes_all_escaped() {
+        assert_eq!(collect_quote("a'b'c"), b"a'\\''b'\\''c");
+    }
+
+    #[test]
+    fn shell_quote_arg_empty_string_emits_nothing() {
+        assert_eq!(collect_quote(""), b"");
+    }
+
+    #[test]
+    fn shell_quote_arg_leading_quote_escaped() {
+        assert_eq!(collect_quote("'hello"), b"'\\''hello");
+    }
+
+    #[test]
+    fn shell_quote_arg_trailing_quote_escaped() {
+        assert_eq!(collect_quote("hello'"), b"hello'\\''");
+    }
+
     // ── platform_key_to_zig_key extended coverage ─────────────────────────────
 
     #[test]
@@ -2460,16 +2498,22 @@ mod tests {
     fn platform_key_to_zig_key_all_function_keys() {
         use anvil_workspace::keys::Key;
         let expected = [
-            Key::F1, Key::F2, Key::F3, Key::F4, Key::F5, Key::F6, Key::F7, Key::F8, Key::F9,
-            Key::F10, Key::F11, Key::F12,
+            Key::F1,
+            Key::F2,
+            Key::F3,
+            Key::F4,
+            Key::F5,
+            Key::F6,
+            Key::F7,
+            Key::F8,
+            Key::F9,
+            Key::F10,
+            Key::F11,
+            Key::F12,
         ];
         for (n, exp) in expected.iter().enumerate() {
             let n = n as u8 + 1;
-            assert_eq!(
-                platform_key_to_zig_key(KeyInput::F(n)),
-                Some(*exp),
-                "F{n}"
-            );
+            assert_eq!(platform_key_to_zig_key(KeyInput::F(n)), Some(*exp), "F{n}");
         }
     }
 }

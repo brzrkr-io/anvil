@@ -90,4 +90,10 @@ mod tests {
         }
         assert_eq!(l.slice().len(), MAX_SEGMENTS);
     }
+
+    #[test]
+    fn list_default_is_empty() {
+        let l = List::default();
+        assert_eq!(l.slice().len(), 0);
+    }
 }

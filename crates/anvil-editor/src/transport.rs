@@ -411,4 +411,351 @@ mod tests {
         let err = Transport::connect(&ep).unwrap_err();
         assert!(matches!(err, TransportError::ConnectFailed(_)));
     }
+
+    // ── Additional result-type coverage ──────────────────────────────────────
+
+    #[test]
+    fn call_returns_bool_result() {
+        let dir = tempdir().unwrap();
+        let socket_path = dir.path().join("nvim_bool.sock");
+        let expected = Value::Bool(true);
+        let response = make_response(1, &expected);
+        let _server = spawn_fake_server(&socket_path, response);
+        thread::sleep(Duration::from_millis(50));
+        let ep = Endpoint { path: socket_path };
+        let mut transport = Transport::connect(&ep).unwrap();
+        let result = transport
+            .call("nvim_test", &[], Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn call_returns_uint_large_result() {
+        // Exercises Uint > 0xff and > 0xffff branches in encode_one.
+        let dir = tempdir().unwrap();
+        let socket_path = dir.path().join("nvim_uint.sock");
+        let expected = Value::Uint(0x10000); // > 0xffff
+        let response = make_response(1, &expected);
+        let _server = spawn_fake_server(&socket_path, response);
+        thread::sleep(Duration::from_millis(50));
+        let ep = Endpoint { path: socket_path };
+        let mut transport = Transport::connect(&ep).unwrap();
+        let result = transport
+            .call("nvim_test", &[], Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn call_returns_int_result() {
+        let dir = tempdir().unwrap();
+        let socket_path = dir.path().join("nvim_int.sock");
+        let expected = Value::Int(-100); // exercises Int branch in encode_one
+        let response = make_response(1, &expected);
+        let _server = spawn_fake_server(&socket_path, response);
+        thread::sleep(Duration::from_millis(50));
+        let ep = Endpoint { path: socket_path };
+        let mut transport = Transport::connect(&ep).unwrap();
+        let result = transport
+            .call("nvim_test", &[], Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn call_returns_float_result() {
+        let dir = tempdir().unwrap();
+        let socket_path = dir.path().join("nvim_float.sock");
+        let expected = Value::Float(3.14);
+        let response = make_response(1, &expected);
+        let _server = spawn_fake_server(&socket_path, response);
+        thread::sleep(Duration::from_millis(50));
+        let ep = Endpoint { path: socket_path };
+        let mut transport = Transport::connect(&ep).unwrap();
+        let result = transport
+            .call("nvim_test", &[], Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn call_returns_bin_result() {
+        let dir = tempdir().unwrap();
+        let socket_path = dir.path().join("nvim_bin.sock");
+        let expected = Value::Bin(vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        let response = make_response(1, &expected);
+        let _server = spawn_fake_server(&socket_path, response);
+        thread::sleep(Duration::from_millis(50));
+        let ep = Endpoint { path: socket_path };
+        let mut transport = Transport::connect(&ep).unwrap();
+        let result = transport
+            .call("nvim_test", &[], Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn call_returns_array_result() {
+        let dir = tempdir().unwrap();
+        let socket_path = dir.path().join("nvim_arr.sock");
+        let expected = Value::Array(vec![Value::Uint(1), Value::Uint(2)]);
+        let response = make_response(1, &expected);
+        let _server = spawn_fake_server(&socket_path, response);
+        thread::sleep(Duration::from_millis(50));
+        let ep = Endpoint { path: socket_path };
+        let mut transport = Transport::connect(&ep).unwrap();
+        let result = transport
+            .call("nvim_test", &[], Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn call_returns_map_result() {
+        let dir = tempdir().unwrap();
+        let socket_path = dir.path().join("nvim_map.sock");
+        let expected = Value::Map(vec![(Value::Str("k".into()), Value::Uint(42))]);
+        let response = make_response(1, &expected);
+        let _server = spawn_fake_server(&socket_path, response);
+        thread::sleep(Duration::from_millis(50));
+        let ep = Endpoint { path: socket_path };
+        let mut transport = Transport::connect(&ep).unwrap();
+        let result = transport
+            .call("nvim_test", &[], Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(result, expected);
+    }
+
+    // ── Notification frame is discarded, real response follows ────────────────
+
+    #[test]
+    fn call_discards_notification_before_response() {
+        let dir = tempdir().unwrap();
+        let socket_path = dir.path().join("nvim_notify.sock");
+
+        let expected = Value::Uint(99);
+
+        // Build a notification frame [2, "event", []] followed by the real response.
+        let mut payload = Vec::new();
+        payload.push(0x93); // fixarray len=3
+        payload.push(2); // msg_type = 2 (notification)
+        payload.push(0xa5); // fixstr len=5
+        payload.extend_from_slice(b"event");
+        payload.push(0x90); // fixarray len=0 (empty params)
+
+        // Append the real response.
+        let real_resp = make_response(1, &expected);
+        payload.extend_from_slice(&real_resp);
+
+        let listener = UnixListener::bind(&socket_path).expect("bind");
+        let _server = thread::spawn(move || {
+            let (mut conn, _) = listener.accept().expect("accept");
+            let mut discard = [0u8; 4096];
+            conn.set_read_timeout(Some(Duration::from_millis(200))).ok();
+            let _ = conn.read(&mut discard);
+            conn.write_all(&payload).expect("write");
+        });
+
+        thread::sleep(Duration::from_millis(50));
+        let ep = Endpoint { path: socket_path };
+        let mut transport = Transport::connect(&ep).unwrap();
+        let result = transport
+            .call("nvim_test", &[], Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(result, expected);
+    }
+
+    // ── close() explicitly drops the transport ────────────────────────────────
+
+    #[test]
+    fn close_terminates_transport_cleanly() {
+        let dir = tempdir().unwrap();
+        let socket_path = dir.path().join("nvim_close.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind");
+        let _server = thread::spawn(move || {
+            let (_conn, _) = listener.accept().expect("accept");
+            // Just accept; the connection will be dropped when transport is closed.
+        });
+        thread::sleep(Duration::from_millis(50));
+        let ep = Endpoint { path: socket_path };
+        let transport = Transport::connect(&ep).unwrap();
+        transport.close(); // must not panic
+    }
+
+    // ── Raw-bytes helpers for frame error tests ───────────────────────────────
+
+    fn spawn_raw_server(socket_path: &std::path::Path, bytes: Vec<u8>) -> thread::JoinHandle<()> {
+        let listener = UnixListener::bind(socket_path).expect("bind");
+        thread::spawn(move || {
+            let (mut conn, _) = listener.accept().expect("accept");
+            let mut discard = [0u8; 4096];
+            conn.set_read_timeout(Some(Duration::from_millis(200))).ok();
+            let _ = conn.read(&mut discard);
+            conn.write_all(&bytes).expect("write");
+        })
+    }
+
+    // ── Server closes connection without writing response (lines 143-146) ─────
+
+    #[test]
+    fn call_returns_error_when_server_closes_connection() {
+        let dir = tempdir().unwrap();
+        let socket_path = dir.path().join("nvim_eof.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind");
+        let _server = thread::spawn(move || {
+            let (conn, _) = listener.accept().expect("accept");
+            // Immediately drop — closes the connection.
+            drop(conn);
+        });
+        thread::sleep(Duration::from_millis(50));
+        let ep = Endpoint { path: socket_path };
+        let mut transport = Transport::connect(&ep).unwrap();
+        let err = transport
+            .call("nvim_test", &[], Duration::from_secs(2))
+            .unwrap_err();
+        // Expect either Io or Timeout (timing-dependent).
+        assert!(
+            matches!(err, TransportError::Io(_) | TransportError::Timeout),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    // ── Server returns non-array value → BadFrame (line 184) ─────────────────
+
+    #[test]
+    fn call_returns_bad_frame_for_non_array_response() {
+        let dir = tempdir().unwrap();
+        let socket_path = dir.path().join("nvim_badframe1.sock");
+        // Nil (0xc0) is a valid msgpack value but not an Array.
+        let bytes = vec![0xc0u8];
+        let _server = spawn_raw_server(&socket_path, bytes);
+        thread::sleep(Duration::from_millis(50));
+        let ep = Endpoint { path: socket_path };
+        let mut transport = Transport::connect(&ep).unwrap();
+        let err = transport
+            .call("nvim_test", &[], Duration::from_secs(2))
+            .unwrap_err();
+        assert!(matches!(err, TransportError::BadFrame), "got: {err:?}");
+    }
+
+    // ── Server returns empty array → BadFrame (line 188) ─────────────────────
+
+    #[test]
+    fn call_returns_bad_frame_for_empty_array() {
+        let dir = tempdir().unwrap();
+        let socket_path = dir.path().join("nvim_badframe2.sock");
+        // fixarray len=0
+        let bytes = vec![0x90u8];
+        let _server = spawn_raw_server(&socket_path, bytes);
+        thread::sleep(Duration::from_millis(50));
+        let ep = Endpoint { path: socket_path };
+        let mut transport = Transport::connect(&ep).unwrap();
+        let err = transport
+            .call("nvim_test", &[], Duration::from_secs(2))
+            .unwrap_err();
+        assert!(matches!(err, TransportError::BadFrame), "got: {err:?}");
+    }
+
+    // ── Unknown msg_type → BadFrame (line 220) ───────────────────────────────
+
+    #[test]
+    fn call_returns_bad_frame_for_unknown_msg_type() {
+        let dir = tempdir().unwrap();
+        let socket_path = dir.path().join("nvim_badframe3.sock");
+        // fixarray len=3, msg_type=99, "x", []
+        let bytes = vec![0x93u8, 99, 0xa1, b'x', 0x90];
+        let _server = spawn_raw_server(&socket_path, bytes);
+        thread::sleep(Duration::from_millis(50));
+        let ep = Endpoint { path: socket_path };
+        let mut transport = Transport::connect(&ep).unwrap();
+        let err = transport
+            .call("nvim_test", &[], Duration::from_secs(2))
+            .unwrap_err();
+        assert!(matches!(err, TransportError::BadFrame), "got: {err:?}");
+    }
+
+    // ── Response frame with wrong msgid is discarded, then real response ──────
+
+    #[test]
+    fn call_discards_wrong_msgid_and_waits_for_correct() {
+        let dir = tempdir().unwrap();
+        let socket_path = dir.path().join("nvim_wrongid.sock");
+
+        let expected = Value::Uint(77);
+
+        // Frame with wrong msgid=99, then the correct one (msgid=1).
+        let mut payload = Vec::new();
+        // Wrong: [1, 99, nil, 0]
+        payload.push(0x94); // fixarray len=4
+        payload.push(1); // msg_type=1 (response)
+        payload.push(99); // wrong msgid
+        payload.push(0xc0); // nil
+        payload.push(0); // result=0
+
+        // Correct: make_response(1, &expected)
+        let correct = make_response(1, &expected);
+        payload.extend_from_slice(&correct);
+
+        let listener = UnixListener::bind(&socket_path).expect("bind");
+        let _server = thread::spawn(move || {
+            let (mut conn, _) = listener.accept().expect("accept");
+            let mut discard = [0u8; 4096];
+            conn.set_read_timeout(Some(Duration::from_millis(200))).ok();
+            let _ = conn.read(&mut discard);
+            conn.write_all(&payload).expect("write");
+        });
+
+        thread::sleep(Duration::from_millis(50));
+        let ep = Endpoint { path: socket_path };
+        let mut transport = Transport::connect(&ep).unwrap();
+        let result = transport
+            .call("nvim_test", &[], Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(result, expected);
+    }
+
+    // ── RpcError from server (line 214) ──────────────────────────────────────
+
+    #[test]
+    fn call_returns_rpc_error_when_server_sends_error_frame() {
+        let dir = tempdir().unwrap();
+        let socket_path = dir.path().join("nvim_rpcerr.sock");
+
+        // Response with non-nil error: [1, 1, "oops", nil]
+        let mut bytes = vec![0x94u8]; // fixarray len=4
+        bytes.push(1); // msg_type=1
+        bytes.push(1); // msgid=1
+        bytes.push(0xa4); // fixstr len=4
+        bytes.extend_from_slice(b"oops");
+        bytes.push(0xc0); // result=nil
+
+        let _server = spawn_raw_server(&socket_path, bytes);
+        thread::sleep(Duration::from_millis(50));
+        let ep = Endpoint { path: socket_path };
+        let mut transport = Transport::connect(&ep).unwrap();
+        let err = transport
+            .call("nvim_test", &[], Duration::from_secs(2))
+            .unwrap_err();
+        assert!(matches!(err, TransportError::RpcError(_)), "got: {err:?}");
+    }
+
+    // ── Response frame with wrong number of items → BadFrame (line 201) ───────
+
+    #[test]
+    fn call_returns_bad_frame_for_malformed_response_length() {
+        let dir = tempdir().unwrap();
+        let socket_path = dir.path().join("nvim_badlen.sock");
+
+        // Response type 1 but only 2 items: [1, 1] (needs 4).
+        let bytes = vec![0x92u8, 1, 1];
+        let _server = spawn_raw_server(&socket_path, bytes);
+        thread::sleep(Duration::from_millis(50));
+        let ep = Endpoint { path: socket_path };
+        let mut transport = Transport::connect(&ep).unwrap();
+        let err = transport
+            .call("nvim_test", &[], Duration::from_secs(2))
+            .unwrap_err();
+        assert!(matches!(err, TransportError::BadFrame), "got: {err:?}");
+    }
 }

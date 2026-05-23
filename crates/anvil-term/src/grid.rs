@@ -966,6 +966,179 @@ mod tests {
         },
     ];
 
+    // ── insert mode shifts cells right on print (line 128) ───────────────────
+
+    #[test]
+    fn insert_mode_shifts_existing_cells_right_on_print() {
+        let mut g = Grid::new(5, 2);
+        g.print('A');
+        g.print('B');
+        g.print('C');
+        g.cursor_to(0, 0);
+        g.modes.insert = true;
+        g.print('X');
+        // 'X' inserted at col 0; 'A','B','C' shift right.
+        assert_eq!(g.row(0)[0].cp, 'X');
+        assert_eq!(g.row(0)[1].cp, 'A');
+        assert_eq!(g.row(0)[2].cp, 'B');
+    }
+
+    // ── cursor_to with origin mode (lines 218-219) ────────────────────────────
+
+    #[test]
+    fn cursor_to_with_origin_mode_is_relative_to_region_top() {
+        let mut g = Grid::new(10, 10);
+        g.region = ScrollRegion { top: 3, bottom: 7 };
+        g.modes.origin = true;
+        // y=0 with origin mode → absolute row 3.
+        g.cursor_to(0, 0);
+        assert_eq!(3, g.cur_y);
+        // y=4 → absolute 3+4=7 (clamped to region.bottom=7).
+        g.cursor_to(0, 4);
+        assert_eq!(7, g.cur_y);
+        // y=10 → 3+10=13, clamped to 7.
+        g.cursor_to(0, 10);
+        assert_eq!(7, g.cur_y);
+    }
+
+    // ── cursor_to_row with origin mode (line 233) ─────────────────────────────
+
+    #[test]
+    fn cursor_to_row_with_origin_mode_is_relative_to_region_top() {
+        let mut g = Grid::new(10, 10);
+        g.region = ScrollRegion { top: 2, bottom: 8 };
+        g.modes.origin = true;
+        g.cursor_to_row(1);
+        assert_eq!(3, g.cur_y); // 2 + 1
+        g.cursor_to_row(6);
+        assert_eq!(8, g.cur_y); // 2 + 6 = 8 (= bottom)
+        g.cursor_to_row(99);
+        assert_eq!(8, g.cur_y); // clamped to bottom
+    }
+
+    // ── cursor_top_limit and cursor_bottom_limit with origin mode (241, 249) ──
+
+    #[test]
+    fn cursor_limits_respect_origin_mode() {
+        let mut g = Grid::new(10, 10);
+        g.region = ScrollRegion { top: 2, bottom: 7 };
+
+        // Without origin mode: cursor_up stops at row 0.
+        g.modes.origin = false;
+        g.cur_y = 5;
+        g.cursor_up(10);
+        assert_eq!(0, g.cur_y);
+
+        // With origin mode: cursor_up stops at region.top (2).
+        g.modes.origin = true;
+        g.cur_y = 5;
+        g.cursor_up(10);
+        assert_eq!(2, g.cur_y);
+
+        // cursor_down uses cursor_bottom_limit: should stop at region.bottom (7).
+        g.cur_y = 5;
+        g.cursor_down(10);
+        assert_eq!(7, g.cur_y);
+    }
+
+    // ── erase_display mode 1 (erase above, lines 282-286) ────────────────────
+
+    #[test]
+    fn erase_display_mode_1_erases_above_cursor() {
+        let mut g = Grid::new(5, 3);
+        g.print('A');
+        g.print('B');
+        g.cursor_to(0, 1);
+        g.print('C'); // col 0, row 1
+        g.print('D'); // col 1, row 1
+        g.print('E'); // col 2, row 1
+        g.cursor_to(1, 1); // cursor at col 1, row 1
+        // Erase from top to cursor inclusive (mode 1).
+        g.erase_display(1);
+        // Row 0 fully erased (was in rows 0..cur_y).
+        assert_eq!(' ', g.row(0)[0].cp);
+        assert_eq!(' ', g.row(0)[1].cp);
+        // Row 1: cols 0..=cur_x erased (erase_line(1) with cur_x=1).
+        assert_eq!(' ', g.row(1)[0].cp);
+        assert_eq!(' ', g.row(1)[1].cp);
+        // Col 2 is beyond cursor — untouched.
+        assert_eq!('E', g.row(1)[2].cp);
+    }
+
+    // ── insert_lines outside region is no-op (line 364) ──────────────────────
+
+    #[test]
+    fn insert_lines_outside_scroll_region_is_noop() {
+        let mut g = Grid::new(5, 6);
+        g.region = ScrollRegion { top: 2, bottom: 4 };
+        // Print something at row 0 (outside region.top=2).
+        g.cursor_to(0, 0);
+        g.print('X');
+        // insert_lines with cursor outside region must not move anything.
+        g.insert_lines(1);
+        assert_eq!('X', g.row(0)[0].cp);
+    }
+
+    // ── delete_lines outside region is no-op (line 395) ──────────────────────
+
+    #[test]
+    fn delete_lines_outside_scroll_region_is_noop() {
+        let mut g = Grid::new(5, 6);
+        g.region = ScrollRegion { top: 2, bottom: 4 };
+        g.cursor_to(0, 5); // row 5 is above bottom (4).
+        g.print('Y');
+        g.delete_lines(1);
+        // Row 5 content unchanged.
+        assert_eq!('Y', g.row(5)[0].cp);
+    }
+
+    // ── scroll_down early break (line 460) ────────────────────────────────────
+
+    #[test]
+    fn scroll_down_by_full_region_span_blanks_all_rows() {
+        let mut g = Grid::new(5, 4);
+        g.region = ScrollRegion { top: 0, bottom: 3 };
+        g.print('A');
+        g.cursor_to(0, 1);
+        g.print('B');
+        // Scroll down by the entire height — all rows become blank.
+        g.scroll_down(4);
+        assert_eq!(' ', g.row(0)[0].cp);
+        assert_eq!(' ', g.row(1)[0].cp);
+        assert_eq!(' ', g.row(3)[0].cp);
+    }
+
+    // ── set_scroll_region with zero bottom resets to full screen (482-490) ────
+
+    #[test]
+    fn set_scroll_region_zero_params_reset_to_full_screen() {
+        let mut g = Grid::new(10, 8);
+        // Set a tight region first.
+        g.set_scroll_region(2, 5);
+        assert_eq!(1, g.region.top);
+        assert_eq!(4, g.region.bottom);
+        // Both zero → reset to full screen.
+        g.set_scroll_region(0, 0);
+        assert_eq!(0, g.region.top);
+        assert_eq!(7, g.region.bottom);
+    }
+
+    #[test]
+    fn set_scroll_region_invalid_top_gte_bottom_resets_to_full_screen() {
+        let mut g = Grid::new(10, 8);
+        g.set_scroll_region(5, 3); // top_1based=5 > bottom_1based=3 → invalid
+        assert_eq!(0, g.region.top);
+        assert_eq!(7, g.region.bottom);
+    }
+
+    #[test]
+    fn set_scroll_region_bottom_beyond_height_resets_to_full_screen() {
+        let mut g = Grid::new(10, 4);
+        g.set_scroll_region(1, 99); // bottom >= height → invalid
+        assert_eq!(0, g.region.top);
+        assert_eq!(3, g.region.bottom);
+    }
+
     #[test]
     fn grid_resize_matrix() {
         for c in RESIZE_CASES {

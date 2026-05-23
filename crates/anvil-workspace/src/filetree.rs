@@ -251,6 +251,36 @@ mod tests {
     }
 
     #[test]
+    fn toggle_out_of_bounds_index_is_noop() {
+        let mut tree = FileTree::default();
+        // Empty tree — any idx is out of bounds.
+        tree.toggle(0); // must not panic
+        tree.toggle(99); // must not panic
+        assert_eq!(tree.entries.len(), 0);
+    }
+
+    #[test]
+    fn toggle_expand_empty_dir_marks_expanded_but_no_children() {
+        let tmp = tmp_dir("emptydir");
+        let empty_sub = tmp.join("empty_sub");
+        let _ = fs::create_dir(&empty_sub);
+
+        let mut tree = FileTree::default();
+        tree.set_root(&tmp);
+        // Only the empty_sub directory is an entry.
+        assert_eq!(tree.entries.len(), 1);
+        assert!(tree.entries[0].is_dir);
+
+        // Toggle expand: no children exist so collect_children returns empty.
+        tree.toggle(0);
+        // The expand flag is set but no children are inserted.
+        assert_eq!(tree.entries.len(), 1);
+
+        let _ = fs::remove_dir(&empty_sub);
+        let _ = fs::remove_dir(&tmp);
+    }
+
+    #[test]
     fn toggle_on_a_non_dir_is_a_noop() {
         let tmp = tmp_dir("noop");
         let _ = fs::write(tmp.join("f.txt"), b"");
@@ -262,6 +292,52 @@ mod tests {
         assert_eq!(tree.entries.len(), 1);
 
         let _ = fs::remove_file(tmp.join("f.txt"));
+        let _ = fs::remove_dir(&tmp);
+    }
+
+    #[test]
+    fn set_root_on_nonexistent_path_yields_empty_tree() {
+        let mut tree = FileTree::default();
+        tree.set_root(Path::new("/nonexistent_anvil_test_directory_xyz"));
+        // collect_children returns early on Err — no entries.
+        assert_eq!(0, tree.entries.len());
+    }
+
+    #[test]
+    fn hidden_files_are_skipped_by_collect_children() {
+        let tmp = tmp_dir("hidden");
+        let _ = fs::write(tmp.join(".hidden_file"), b"");
+        let _ = fs::write(tmp.join("visible.txt"), b"");
+
+        let mut tree = FileTree::default();
+        tree.set_root(&tmp);
+        // Only visible.txt shows up.
+        assert_eq!(1, tree.entries.len());
+        assert_eq!("visible.txt", tree.entries[0].name);
+
+        let _ = fs::remove_file(tmp.join(".hidden_file"));
+        let _ = fs::remove_file(tmp.join("visible.txt"));
+        let _ = fs::remove_dir(&tmp);
+    }
+
+    #[test]
+    fn overlong_name_files_are_skipped() {
+        let tmp = tmp_dir("longname");
+        // Create a file with a name exactly 1 char over MAX_NAME (255).
+        let long_name = "a".repeat(MAX_NAME + 1);
+        let long_path = tmp.join(&long_name);
+        match fs::write(&long_path, b"") {
+            Ok(()) => {
+                let mut tree = FileTree::default();
+                tree.set_root(&tmp);
+                // The overlong name must not appear.
+                assert!(tree.entries.iter().all(|e| e.name.len() <= MAX_NAME));
+                let _ = fs::remove_file(&long_path);
+            }
+            Err(_) => {
+                // Some filesystems reject names > 255 bytes at write time — skip.
+            }
+        }
         let _ = fs::remove_dir(&tmp);
     }
 }

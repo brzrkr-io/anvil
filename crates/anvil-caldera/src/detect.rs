@@ -40,3 +40,32 @@ fn is_enabled(path: &Path) -> bool {
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{fs, os::unix::fs::PermissionsExt};
+
+    fn tmp_path(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("anvil_detect_test_{name}_{}", std::process::id()))
+    }
+
+    #[test]
+    fn is_enabled_returns_false_when_file_unreadable() {
+        let path = tmp_path("unreadable.json");
+        fs::write(&path, br#"{"enabled":true}"#).unwrap();
+        // Make unreadable.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+        assert!(!is_enabled(&path));
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn is_enabled_returns_false_for_invalid_json() {
+        let path = tmp_path("bad.json");
+        fs::write(&path, b"not json at all").unwrap();
+        assert!(!is_enabled(&path));
+        let _ = fs::remove_file(&path);
+    }
+}

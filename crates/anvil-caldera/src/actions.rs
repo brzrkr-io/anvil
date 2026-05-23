@@ -54,3 +54,35 @@ pub fn start_run(client: &CalderaClient, task: &str, agent: &str) -> Result<Stri
     });
     client.post_raw("/api/task-handoff", &body.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A client pointed at a port that always refuses connections.
+    /// Used to exercise the function bodies without requiring a real server.
+    fn offline_client() -> CalderaClient {
+        CalderaClient::new("http://127.0.0.1:1")
+    }
+
+    #[test]
+    fn approve_builds_request_and_returns_err_when_offline() {
+        let c = offline_client();
+        let result = approve(&c, "my-connector", "*.txt", "test reason", 300);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn ack_finding_builds_request_and_returns_err_when_offline() {
+        let c = offline_client();
+        let result = ack_finding(&c, "FINDING-001", "acknowledged in test");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn start_run_builds_request_and_returns_err_when_offline() {
+        let c = offline_client();
+        let result = start_run(&c, "my-task", "my-agent");
+        assert!(result.is_err());
+    }
+}

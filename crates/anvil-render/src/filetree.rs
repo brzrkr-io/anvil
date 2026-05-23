@@ -451,8 +451,14 @@ mod tests {
         let tree_top = 20.0_f64;
         let cell_h = 20.0_f64;
         // With 0 header rows, any click >= tree_top should map to an entry.
-        assert_eq!(tree_row_at_click(tree_top + 5.0, tree_top, cell_h, 0), Some(0));
-        assert_eq!(tree_row_at_click(tree_top + cell_h + 1.0, tree_top, cell_h, 0), Some(1));
+        assert_eq!(
+            tree_row_at_click(tree_top + 5.0, tree_top, cell_h, 0),
+            Some(0)
+        );
+        assert_eq!(
+            tree_row_at_click(tree_top + cell_h + 1.0, tree_top, cell_h, 0),
+            Some(1)
+        );
     }
 
     /// tree_row_at_click: multiple header rows.
@@ -465,6 +471,9 @@ mod tests {
         assert_eq!(tree_row_at_click(10.0, tree_top, cell_h, header_rows), None);
         assert_eq!(tree_row_at_click(30.0, tree_top, cell_h, header_rows), None);
         // Click in third row → entry 0.
-        assert_eq!(tree_row_at_click(41.0, tree_top, cell_h, header_rows), Some(0));
+        assert_eq!(
+            tree_row_at_click(41.0, tree_top, cell_h, header_rows),
+            Some(0)
+        );
     }
 }

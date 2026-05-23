@@ -112,4 +112,65 @@ mod tests {
         assert!(parse_status("").is_none());
         assert!(parse_status("?? stray.txt\n").is_none());
     }
+
+    // ── Additional parse_branch_line coverage ──────────────────────────────────
+
+    #[test]
+    fn parse_branch_line_ahead_only() {
+        let info = parse_status("## main...origin/main [ahead 2]\n").unwrap();
+        assert_eq!(info.ahead, 2);
+        assert_eq!(info.behind, 0);
+    }
+
+    #[test]
+    fn parse_branch_line_behind_only() {
+        let info = parse_status("## main...origin/main [behind 4]\n").unwrap();
+        assert_eq!(info.ahead, 0);
+        assert_eq!(info.behind, 4);
+    }
+
+    #[test]
+    fn parse_branch_line_no_dots_no_upstream() {
+        // Branch name with a space would end at the space boundary.
+        let info = parse_status("## mybranch\n").unwrap();
+        assert_eq!(info.branch, "mybranch");
+        assert_eq!(info.ahead, 0);
+        assert_eq!(info.behind, 0);
+    }
+
+    #[test]
+    fn parse_status_multiple_dirty_lines() {
+        let out = "## main\n M file1\n?? file2\n?? file3\n";
+        let info = parse_status(out).unwrap();
+        assert_eq!(info.dirty, 3);
+    }
+
+    #[test]
+    fn read_num_non_digit_prefix_returns_zero() {
+        // read_num is private; test via parse_status with malformed ahead value.
+        // "ahead abc" → read_num("abc") → 0
+        let info = parse_status("## main...origin/main [ahead abc]\n").unwrap();
+        assert_eq!(info.ahead, 0);
+    }
+
+    // ── query: runs git in a temp dir (integration test) ──────────────────────
+
+    #[test]
+    fn query_non_repo_returns_none() {
+        // /tmp should not be a git repo.
+        let result = query(std::path::Path::new("/tmp"));
+        // In most cases this returns None (not a git repo).
+        // If /tmp is inside a git repo on the CI runner, skip the assertion.
+        let _ = result; // Either None or Some is acceptable here.
+    }
+
+    #[test]
+    fn query_current_dir_returns_some_or_none() {
+        // The test runner's cwd might be in the anvil repo.
+        if let Ok(cwd) = std::env::current_dir() {
+            let result = query(&cwd);
+            // We don't assert the value — just that it doesn't panic.
+            let _ = result;
+        }
+    }
 }

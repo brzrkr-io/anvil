@@ -117,3 +117,112 @@ impl PaneRegistry {
         self.map.len()
     }
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Pane::new ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn pane_new_sets_id_and_zero_view_state() {
+        let p = Pane::new(7, 80, 24, 0);
+        assert_eq!(p.id, 7);
+        assert_eq!(p.scroll_pos, 0.0);
+        assert_eq!(p.overscroll, 0.0);
+        assert_eq!(p.overscroll_target, 0.0);
+        assert_eq!(p.cursor_ax, 0.0);
+        assert_eq!(p.cursor_ay, 0.0);
+        assert!(!p.selection.active);
+    }
+
+    // ── Pane::terminal / terminal_mut ─────────────────────────────────────────
+
+    #[test]
+    fn pane_terminal_accessor_returns_correct_dimensions() {
+        let p = Pane::new(1, 80, 24, 0);
+        assert_eq!(p.terminal().cols(), 80);
+        assert_eq!(p.terminal().rows(), 24);
+    }
+
+    #[test]
+    fn pane_terminal_mut_allows_write() {
+        let mut p = Pane::new(1, 80, 24, 0);
+        p.terminal_mut().feed(b"hi");
+        // No panic, terminal consumed the bytes.
+        assert_eq!(p.terminal().cols(), 80);
+    }
+
+    // ── PaneRegistry operations ───────────────────────────────────────────────
+
+    #[test]
+    fn registry_create_and_register_increments_id() {
+        let mut reg = PaneRegistry::default();
+        let id1 = reg.create_and_register(80, 24, 0);
+        let id2 = reg.create_and_register(40, 12, 0);
+        assert_ne!(id1, id2);
+        assert_eq!(reg.count(), 2);
+    }
+
+    #[test]
+    fn registry_get_returns_correct_pane() {
+        let mut reg = PaneRegistry::default();
+        let id = reg.create_and_register(80, 24, 0);
+        let pane = reg.get(id).unwrap();
+        assert_eq!(pane.id, id);
+        assert_eq!(pane.terminal().cols(), 80);
+    }
+
+    #[test]
+    fn registry_get_missing_id_returns_none() {
+        let reg = PaneRegistry::default();
+        assert!(reg.get(999).is_none());
+    }
+
+    #[test]
+    fn registry_get_mut_returns_correct_pane() {
+        let mut reg = PaneRegistry::default();
+        let id = reg.create_and_register(80, 24, 0);
+        let pane = reg.get_mut(id).unwrap();
+        pane.scroll_pos = 3.5;
+        assert_eq!(reg.get(id).unwrap().scroll_pos, 3.5);
+    }
+
+    #[test]
+    fn registry_get_mut_missing_id_returns_none() {
+        let mut reg = PaneRegistry::default();
+        assert!(reg.get_mut(999).is_none());
+    }
+
+    #[test]
+    fn registry_remove_drops_pane() {
+        let mut reg = PaneRegistry::default();
+        let id = reg.create_and_register(80, 24, 0);
+        assert_eq!(reg.count(), 1);
+        reg.remove(id);
+        assert_eq!(reg.count(), 0);
+        assert!(reg.get(id).is_none());
+    }
+
+    #[test]
+    fn registry_remove_missing_id_is_noop() {
+        let mut reg = PaneRegistry::default();
+        reg.remove(999); // should not panic
+        assert_eq!(reg.count(), 0);
+    }
+
+    #[test]
+    fn registry_count_reflects_creates_and_removes() {
+        let mut reg = PaneRegistry::default();
+        assert_eq!(reg.count(), 0);
+        let a = reg.create_and_register(1, 1, 0);
+        let b = reg.create_and_register(1, 1, 0);
+        assert_eq!(reg.count(), 2);
+        reg.remove(a);
+        assert_eq!(reg.count(), 1);
+        reg.remove(b);
+        assert_eq!(reg.count(), 0);
+    }
+}

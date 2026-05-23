@@ -278,13 +278,25 @@ impl GlyphPainter for CoreTextPainter<'_> {
 
         // Rasterize the glyph once; subsequent calls hit the cache.
         if !self.cache.contains_key(&glyph) {
-            let mask = self.rasterizer.as_mut().unwrap().rasterize(&self.font.ct, glyph);
+            let mask = self
+                .rasterizer
+                .as_mut()
+                .unwrap()
+                .rasterize(&self.font.ct, glyph);
             self.cache.insert(glyph, mask);
         }
         let mask = self.cache.get(&glyph).unwrap();
 
         // Composite the mask into the BGRA8 destination, tinted with fg.
-        composite_mask(mask, dest.x, dest.y, fg, pixels, bitmap_width, bitmap_height);
+        composite_mask(
+            mask,
+            dest.x,
+            dest.y,
+            fg,
+            pixels,
+            bitmap_width,
+            bitmap_height,
+        );
     }
 }
 

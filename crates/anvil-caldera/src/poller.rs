@@ -130,7 +130,7 @@ impl Drop for Poller {
 }
 
 /// Run one full poll cycle. Returns a `Snapshot` reflecting the current state.
-fn poll_once(client: &CalderaClient, repo_root: &Path) -> Snapshot {
+pub(crate) fn poll_once(client: &CalderaClient, repo_root: &Path) -> Snapshot {
     // Gate: is a caldera project even configured for this repo?
     if !detect_project(repo_root) {
         return Snapshot {
@@ -226,5 +226,214 @@ fn poll_once(client: &CalderaClient, repo_root: &Path) -> Snapshot {
         pending_approvals_count,
         attention_count,
         polled_at_unix: now_unix,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    /// Spin up a mock TCP server that serves each body in `responses` in order
+    /// (one connection per body), then returns the base URL.
+    fn mock_multi(responses: Vec<&'static str>) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            for body in responses {
+                if let Ok((mut stream, _)) = listener.accept() {
+                    let mut buf = [0u8; 4096];
+                    let _ = stream.read(&mut buf);
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                }
+            }
+        });
+        (format!("http://{}", addr), handle)
+    }
+
+    fn tmp_dir(name: &str) -> PathBuf {
+        let p =
+            std::env::temp_dir().join(format!("anvil_poller_test_{}_{}", name, std::process::id()));
+        fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn write_project_json(dir: &Path, enabled: bool) {
+        let caldera = dir.join(".caldera");
+        fs::create_dir_all(&caldera).unwrap();
+        fs::write(
+            caldera.join("project.json"),
+            format!(r#"{{"enabled":{enabled}}}"#),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn poll_once_no_project_file_returns_no_project() {
+        let dir = tmp_dir("no_project");
+        // No .caldera/project.json — detect_project returns false.
+        let client = CalderaClient::new("http://127.0.0.1:1"); // never reached
+        let snap = poll_once(&client, &dir);
+        assert_eq!(snap.connection, Connection::NoProject);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn poll_once_offline_server_returns_offline() {
+        let dir = tmp_dir("offline");
+        write_project_json(&dir, true);
+        // Port 1 always refuses — health() will Err → Offline.
+        let client = CalderaClient::new("http://127.0.0.1:1");
+        let snap = poll_once(&client, &dir);
+        assert_eq!(snap.connection, Connection::Offline);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn poll_once_project_disabled_returns_disabled() {
+        let dir = tmp_dir("disabled");
+        write_project_json(&dir, true);
+
+        // health response, then project with enabled=false
+        let health_body = r#"{"status":"ok","service":"caldera-local"}"#;
+        let project_body = r#"{"project":{"name":"x","enabled":false}}"#;
+        let (url, handle) = mock_multi(vec![health_body, project_body]);
+
+        let client = CalderaClient::new(url);
+        let snap = poll_once(&client, &dir);
+        assert_eq!(snap.connection, Connection::Disabled);
+        handle.join().unwrap();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn poll_once_project_null_returns_no_project() {
+        let dir = tmp_dir("null_project");
+        write_project_json(&dir, true);
+
+        let health_body = r#"{"status":"ok","service":"caldera-local"}"#;
+        let project_body = r#"{"project":null}"#;
+        let (url, handle) = mock_multi(vec![health_body, project_body]);
+
+        let client = CalderaClient::new(url);
+        let snap = poll_once(&client, &dir);
+        assert_eq!(snap.connection, Connection::NoProject);
+        handle.join().unwrap();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn poll_once_live_returns_snapshot_with_counts() {
+        let dir = tmp_dir("live");
+        write_project_json(&dir, true);
+
+        let health_body = r#"{"status":"ok","service":"caldera-local"}"#;
+        let project_body = r#"{"project":{"name":"x","enabled":true}}"#;
+        let activity_body = r#"{
+            "pending_approvals":[
+                {"approval_id":"ap1","connector":"git","pattern":"*.rs","reason":"CI"}
+            ],
+            "attention":[
+                {"severity":"risk","summary":"s","recommended_action":""},
+                {"severity":"failure","summary":"f","recommended_action":""}
+            ]
+        }"#;
+        let runs_body = r#"{"agent_runs":[
+            {"run_id":"r1","agent":"codex","task":"t","status":"running","created_at":"2026-01-01T00:00:00Z"}
+        ]}"#;
+
+        let (url, handle) = mock_multi(vec![health_body, project_body, activity_body, runs_body]);
+
+        let client = CalderaClient::new(url);
+        let snap = poll_once(&client, &dir);
+        assert_eq!(snap.connection, Connection::Live);
+        assert_eq!(snap.pending_approvals_count, 1);
+        assert_eq!(snap.attention_count, 2);
+        assert_eq!(snap.running_count, 1);
+        handle.join().unwrap();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn poller_start_stop_cleanly() {
+        let dir = tmp_dir("poller_stop");
+        // No project file → poll_once immediately returns NoProject without network.
+        let mut poller = Poller::start("http://127.0.0.1:1", dir.clone());
+        let snap = poller.snapshot();
+        // Just verify it returns a snapshot without panic.
+        let _ = snap.connection;
+        poller.stop();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn poller_kick_does_not_panic() {
+        let dir = tmp_dir("poller_kick");
+        let poller = Poller::start("http://127.0.0.1:1", dir.clone());
+        poller.kick();
+        poller.kick(); // second kick is silently ignored (channel full)
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn poll_once_project_error_returns_no_project() {
+        let dir = tmp_dir("proj_err");
+        write_project_json(&dir, true);
+
+        let health_body = r#"{"status":"ok","service":"caldera-local"}"#;
+        // Invalid JSON for project → client.project() returns Err → NoProject
+        let project_body = "not json";
+        let (url, handle) = mock_multi(vec![health_body, project_body]);
+
+        let client = CalderaClient::new(url);
+        let snap = poll_once(&client, &dir);
+        assert_eq!(snap.connection, Connection::NoProject);
+        handle.join().unwrap();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn poll_once_activity_error_returns_error_state() {
+        let dir = tmp_dir("activity_err");
+        write_project_json(&dir, true);
+
+        let health_body = r#"{"status":"ok","service":"caldera-local"}"#;
+        let project_body = r#"{"project":{"name":"x","enabled":true}}"#;
+        // Invalid JSON for activity → Err → ErrorState
+        let activity_body = "not json";
+        let (url, handle) = mock_multi(vec![health_body, project_body, activity_body]);
+
+        let client = CalderaClient::new(url);
+        let snap = poll_once(&client, &dir);
+        assert_eq!(snap.connection, Connection::ErrorState);
+        handle.join().unwrap();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn poll_once_agent_runs_error_returns_error_state() {
+        let dir = tmp_dir("runs_err");
+        write_project_json(&dir, true);
+
+        let health_body = r#"{"status":"ok","service":"caldera-local"}"#;
+        let project_body = r#"{"project":{"name":"x","enabled":true}}"#;
+        let activity_body = r#"{"pending_approvals":[],"attention":[]}"#;
+        // Invalid JSON for agent_runs → Err → ErrorState
+        let runs_body = "not json";
+        let (url, handle) = mock_multi(vec![health_body, project_body, activity_body, runs_body]);
+
+        let client = CalderaClient::new(url);
+        let snap = poll_once(&client, &dir);
+        assert_eq!(snap.connection, Connection::ErrorState);
+        handle.join().unwrap();
+        let _ = fs::remove_dir_all(&dir);
     }
 }

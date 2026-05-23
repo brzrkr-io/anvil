@@ -185,4 +185,12 @@ mod tests {
         assert_eq!(sb.len(), 1);
         assert_eq!(sb.get(0)[0].cp, 'z');
     }
+
+    #[test]
+    fn is_empty_true_before_any_push_false_after() {
+        let mut sb = Scrollback::new(4);
+        assert!(sb.is_empty());
+        sb.push(&make_row(4, b"a"));
+        assert!(!sb.is_empty());
+    }
 }

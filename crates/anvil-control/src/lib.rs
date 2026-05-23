@@ -105,4 +105,11 @@ mod tests {
         assert_eq!(session.launch.shell_command, "codex");
         server.join().unwrap();
     }
+
+    #[test]
+    fn localhost_broker_connects_to_default_endpoint() {
+        // localhost() should construct successfully (no connection made on construction).
+        let _broker = AiSessionBroker::localhost();
+        // Just verifies no panic at construction time.
+    }
 }

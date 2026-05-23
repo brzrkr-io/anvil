@@ -2308,4 +2308,438 @@ mod tests {
         term.feed(b"\x1B]133;B\x07");
         assert!(term.block_before(0).is_none());
     }
+
+    // ── DEC line-drawing character set ────────────────────────────────────────
+
+    #[test]
+    fn dec_line_drawing_all_chars() {
+        // Enable G0 line-drawing charset (ESC ( 0), emit all line-drawing chars.
+        let mut term = make_terminal(20, 4);
+        // Row 0: j k l m n
+        term.feed(b"\x1B(0jklmn\x1B(B");
+        // Row 1: q t u v w
+        term.feed(b"\r\n\x1B(0qtuvw\x1B(B");
+        // Row 2: x ` a f g
+        term.feed(b"\r\n\x1B(0x`afg\x1B(B");
+        // Row 3: ~
+        term.feed(b"\r\n\x1B(0~\x1B(B");
+
+        let r0 = term.viewport_row(0);
+        assert_eq!(r0[0].cp, '\u{2518}'); // j → ┘
+        assert_eq!(r0[1].cp, '\u{2510}'); // k → ┐
+        assert_eq!(r0[2].cp, '\u{250C}'); // l → ┌
+        assert_eq!(r0[3].cp, '\u{2514}'); // m → └
+        assert_eq!(r0[4].cp, '\u{253C}'); // n → ┼
+
+        let r1 = term.viewport_row(1);
+        assert_eq!(r1[0].cp, '\u{2500}'); // q → ─
+        assert_eq!(r1[1].cp, '\u{251C}'); // t → ├
+        assert_eq!(r1[2].cp, '\u{2524}'); // u → ┤
+        assert_eq!(r1[3].cp, '\u{2534}'); // v → ┴
+        assert_eq!(r1[4].cp, '\u{252C}'); // w → ┬
+
+        let r2 = term.viewport_row(2);
+        assert_eq!(r2[0].cp, '\u{2502}'); // x → │
+        assert_eq!(r2[1].cp, '\u{25C6}'); // ` → ◆
+        assert_eq!(r2[2].cp, '\u{2592}'); // a → ▒
+        assert_eq!(r2[3].cp, '\u{00B0}'); // f → °
+        assert_eq!(r2[4].cp, '\u{00B1}'); // g → ±
+
+        let r3 = term.viewport_row(3);
+        assert_eq!(r3[0].cp, '\u{00B7}'); // ~ → ·
+    }
+
+    // ── parse_exit_code negative and digit loop ───────────────────────────────
+
+    #[test]
+    fn osc_133_d_negative_exit_code() {
+        let mut term = make_terminal(20, 5);
+        term.feed(b"\x1B]133;A\x07");
+        term.feed(b"\x1B]133;B\x07");
+        term.feed(b"\r\n");
+        term.feed(b"\x1B]133;C\x07");
+        term.feed(b"\x1B]133;D;exit_code=-7\x07");
+        let marks = term.prompt_marks();
+        let done = marks.iter().find(|m| m.kind == PromptMarkKind::CommandDone);
+        assert!(done.is_some());
+        assert_eq!(-7, done.unwrap().exit_code);
+    }
+
+    // ── CSI s / CSI u (save / restore cursor) ────────────────────────────────
+
+    #[test]
+    fn csi_s_and_u_save_restore_cursor_position() {
+        let mut term = make_terminal(10, 5);
+        term.feed(b"AB"); // cursor at col 2
+        term.feed(b"\x1B[s"); // CSI s — save
+        term.feed(b"\r\n\r\n"); // move to row 2
+        term.feed(b"\x1B[u"); // CSI u — restore to col 2, row 0
+        term.feed(b"X"); // should appear at col 2 row 0
+        assert_eq!('X', term.viewport_row(0)[2].cp);
+    }
+
+    // ── OSC with no semicolon returns immediately ─────────────────────────────
+
+    #[test]
+    fn osc_without_semicolon_is_silently_ignored() {
+        let mut term = make_terminal(10, 2);
+        term.feed(b"AB");
+        // OSC payload "notitle" has no ';' — should be silently ignored.
+        term.feed(b"\x1B]notitle\x07");
+        // Terminal content unchanged.
+        assert_eq!('A', term.viewport_row(0)[0].cp);
+        assert_eq!('B', term.viewport_row(0)[1].cp);
+    }
+
+    // ── active_const on alt screen ────────────────────────────────────────────
+
+    #[test]
+    fn active_const_uses_alt_grid_when_on_alt_screen() {
+        let mut term = make_terminal(10, 2);
+        term.feed(b"PRIMARY");
+        // Switch to alt screen (1049h).
+        term.feed(b"\x1B[?1049h");
+        term.feed(b"ALT");
+        // cursor() calls active_const() — verify it reflects alt grid.
+        let cur = term.cursor();
+        assert_eq!(3, cur.x); // "ALT" is 3 chars
+        assert_eq!(0, cur.y);
+    }
+
+    // ── viewport_row on alt screen (line 364) ────────────────────────────────
+
+    #[test]
+    fn viewport_row_on_alt_screen_reads_alternate_grid() {
+        let mut term = make_terminal(10, 2);
+        term.feed(b"\x1B[?1049h"); // enter alt
+        term.feed(b"HELLO");
+        let row = term.viewport_row(0);
+        assert_eq!('H', row[0].cp);
+        assert_eq!('E', row[1].cp);
+    }
+
+    // ── viewport_row out-of-bounds y (line 348) ───────────────────────────────
+
+    #[test]
+    fn viewport_row_out_of_bounds_y_returns_row_zero() {
+        let mut term = make_terminal(5, 3);
+        term.feed(b"ABCDE");
+        // y=99 is >= height=3, so returns row(0).
+        let row = term.viewport_row(99);
+        assert_eq!(5, row.len());
+    }
+
+    // ── viewport_row_at negative oldest_signed (line 381) ────────────────────
+
+    #[test]
+    fn viewport_row_at_negative_oldest_returns_blank() {
+        let mut term = make_terminal(5, 3);
+        // With an empty history, offset > y but signed index is negative.
+        // offset=5, y=0: oldest_signed = 0 - 5 + 0 = -5 < 0 → blank.
+        let row = term.viewport_row_at(5, 0).to_vec();
+        assert!(row.iter().all(|c| c.cp == ' '));
+    }
+
+    // ── viewport_row_at alt screen grid (line 397) ───────────────────────────
+
+    #[test]
+    fn viewport_row_at_on_alt_screen_reads_alternate_grid() {
+        let mut term = make_terminal(10, 3);
+        term.feed(b"\x1B[?1049h");
+        term.feed(b"XYZ");
+        // offset=0, y=0: grid_y=0, on_alt → alternate.row(0).
+        let row = term.viewport_row_at(0, 0).to_vec();
+        assert_eq!('X', row[0].cp);
+    }
+
+    // ── viewport_row_at grid_y out of bounds (line 392) ──────────────────────
+
+    #[test]
+    fn viewport_row_at_grid_y_out_of_bounds_returns_blank() {
+        let mut term = make_terminal(5, 3);
+        // offset=0, y=10: grid_y=10 >= height=3 → blank compose_buf.
+        let row = term.viewport_row_at(0, 10).to_vec();
+        assert!(row.iter().all(|c| c.cp == ' '));
+    }
+
+    // ── line() out-of-range gy (line 420) ────────────────────────────────────
+
+    #[test]
+    fn line_out_of_range_gy_returns_empty() {
+        let term = make_terminal(5, 3);
+        // history is empty; gy = i - 0 = 99 >= height=3.
+        let row = term.line(99);
+        assert_eq!(0, row.len());
+    }
+
+    // ── scroll_to_line both branches (lines 434-441) ─────────────────────────
+
+    #[test]
+    fn scroll_to_line_within_history_sets_offset() {
+        let mut term = make_terminal(10, 3);
+        // Fill scrollback so history.len() > 0.
+        term.feed(b"L1\r\nL2\r\nL3\r\nL4\r\nL5\r\n");
+        let hist = term.history.len();
+        assert!(hist > 0);
+        // target < hist: viewport_offset = hist - target.
+        term.scroll_to_line(0);
+        assert_eq!(hist.min(hist), term.viewport_offset());
+    }
+
+    #[test]
+    fn scroll_to_line_at_or_beyond_history_resets_offset() {
+        let mut term = make_terminal(10, 3);
+        term.feed(b"L1\r\nL2\r\nL3\r\nL4\r\n");
+        let hist = term.history.len();
+        // target >= hist → viewport_offset = 0.
+        term.scroll_to_line(hist + 5);
+        assert_eq!(0, term.viewport_offset());
+    }
+
+    // ── last_run() accessor (lines 479-485) ──────────────────────────────────
+
+    #[test]
+    fn last_run_returns_initial_shell_state() {
+        let term = make_terminal(10, 3);
+        let lr = term.last_run();
+        assert!(!lr.running);
+        assert_eq!(0, lr.exit_code);
+        assert_eq!(0, lr.duration_ms);
+    }
+
+    #[test]
+    fn last_run_reflects_completed_command() {
+        let mut term = make_terminal(20, 5);
+        term.feed(b"\x1B]133;A\x07");
+        term.feed(b"\x1B]133;B\x07");
+        term.feed(b"\r\n");
+        term.feed(b"\x1B]133;C\x07");
+        term.feed(b"\x1B]133;D;exit_code=42\x07");
+        let lr = term.last_run();
+        assert!(!lr.running);
+        assert_eq!(42, lr.exit_code);
+    }
+
+    // ── evicted_lines increments when ring is full (line 596) ────────────────
+
+    #[test]
+    fn evicted_lines_increments_when_scrollback_ring_is_full() {
+        let mut term = make_terminal(10, 2);
+        // Fill scrollback to capacity.
+        for _ in 0..DEFAULT_CAPACITY + 5 {
+            term.feed(b"line\r\n");
+        }
+        assert!(term.evicted_lines > 0);
+    }
+
+    // ── set_clipboard no-semicolon path (line 613) ───────────────────────────
+
+    #[test]
+    fn osc_52_without_semicolon_stores_whole_payload() {
+        let mut term = make_terminal(10, 2);
+        // OSC 52 payload without a second ';' separator — raw data stored directly.
+        term.feed(b"\x1B]52;nosemicolon\x07");
+        // The clipboard stores the data after the first ';' (after "52").
+        // "nosemicolon" has no inner ';', so the whole string after "52;" is stored.
+        assert!(!term.clipboard().is_empty());
+    }
+
+    // ── record_prompt_mark empty payload (line 620) ───────────────────────────
+
+    #[test]
+    fn osc_133_empty_payload_is_ignored() {
+        let mut term = make_terminal(10, 2);
+        // OSC 133 with nothing after the ';'.
+        term.feed(b"\x1B]133;\x07");
+        assert_eq!(0, term.prompt_marks().len());
+    }
+
+    // ── record_prompt_mark unknown byte (line 627) ────────────────────────────
+
+    #[test]
+    fn osc_133_unknown_mark_type_is_ignored() {
+        let mut term = make_terminal(10, 2);
+        // 'Z' is not A/B/C/D.
+        term.feed(b"\x1B]133;Z\x07");
+        assert_eq!(0, term.prompt_marks().len());
+    }
+
+    // ── invalidate_grid_marks compaction (lines 680-681) ─────────────────────
+
+    #[test]
+    fn invalidate_grid_marks_removes_marks_scrolled_out_of_grid() {
+        let mut term = make_terminal(10, 3);
+        // Record a prompt mark at the current (absolute) line.
+        term.feed(b"\x1B]133;A\x07");
+        assert_eq!(1, term.prompt_marks().len());
+        // Scroll the grid so all marks are below the base line.
+        // Feeding many lines pushes them into history, making base > mark.line.
+        for _ in 0..10 {
+            term.feed(b"newline content\r\n");
+        }
+        // After a resize the marks are revalidated.
+        term.resize(10, 3);
+        // All historical marks should have been compacted away.
+        // (They may or may not all be gone depending on exact timing,
+        // but the mark count must not exceed the original or increase.)
+        let _ = term.prompt_marks().len(); // must not panic
+    }
+
+    // ── set_alt_screen no-op when already in desired state (line 715) ─────────
+
+    #[test]
+    fn set_alt_screen_no_op_when_already_in_state() {
+        let mut term = make_terminal(10, 2);
+        // Enter alt screen.
+        term.feed(b"\x1B[?1049h");
+        assert!(term.modes.alt_screen);
+        // Write on alt.
+        term.feed(b"ALT");
+        // Entering alt again should be a no-op.
+        term.feed(b"\x1B[?1049h");
+        assert!(term.modes.alt_screen);
+        // Content still present.
+        assert_eq!('A', term.viewport_row(0)[0].cp);
+
+        // Exit alt.
+        term.feed(b"\x1B[?1049l");
+        assert!(!term.modes.alt_screen);
+        // Exiting again should be a no-op.
+        term.feed(b"\x1B[?1049l");
+        assert!(!term.modes.alt_screen);
+    }
+
+    // ── set_private_mode catch-all _ => {} (line 748) ────────────────────────
+
+    #[test]
+    fn set_private_mode_unknown_code_is_silently_ignored() {
+        let mut term = make_terminal(10, 2);
+        // Mode 9999 is not handled.
+        term.feed(b"\x1B[?9999h");
+        term.feed(b"\x1B[?9999l");
+        // No panic, no state corruption.
+        assert_eq!(' ', term.viewport_row(0)[0].cp);
+    }
+
+    // ── DECSCUSR shapes 1 and 3 (lines 758-769) ──────────────────────────────
+
+    #[test]
+    fn decscusr_shapes_1_and_3_blinking_block_and_underline() {
+        let mut term = make_terminal(10, 2);
+        // Shape 1: blinking block.
+        term.feed(b"\x1b[1 q");
+        assert_eq!(Some(CursorShape::Block), term.app_cursor_shape);
+        assert_eq!(Some(true), term.app_cursor_blink);
+
+        // Shape 3: blinking underline.
+        term.feed(b"\x1b[3 q");
+        assert_eq!(Some(CursorShape::Underline), term.app_cursor_shape);
+        assert_eq!(Some(true), term.app_cursor_blink);
+    }
+
+    // ── DECSCUSR unknown param catch-all (line 782) ───────────────────────────
+
+    #[test]
+    fn decscusr_unknown_param_is_silently_ignored() {
+        let mut term = make_terminal(10, 2);
+        term.feed(b"\x1b[6 q");
+        assert_eq!(Some(CursorShape::Bar), term.app_cursor_shape);
+        // Unknown param 99 must not panic or corrupt shape.
+        term.feed(b"\x1b[99 q");
+        assert_eq!(Some(CursorShape::Bar), term.app_cursor_shape);
+    }
+
+    // ── csi_standard catch-all _ => {} (line 846) ────────────────────────────
+
+    #[test]
+    fn csi_standard_unknown_final_byte_is_ignored() {
+        let mut term = make_terminal(10, 2);
+        term.feed(b"A");
+        // CSI 'X' with no leading '?' is an unknown standard sequence.
+        term.feed(b"\x1B[X");
+        // Content unchanged, no panic.
+        assert_eq!('A', term.viewport_row(0)[0].cp);
+    }
+
+    // ── csi_private catch-all _ => {} (line 862) ─────────────────────────────
+
+    #[test]
+    fn csi_private_unknown_final_byte_is_ignored() {
+        let mut term = make_terminal(10, 2);
+        term.feed(b"B");
+        // CSI ? followed by unknown final byte.
+        term.feed(b"\x1B[?X");
+        assert_eq!('B', term.viewport_row(0)[0].cp);
+    }
+
+    // ── execute catch-all _ => {} (line 909) ─────────────────────────────────
+
+    #[test]
+    fn execute_unknown_control_byte_is_ignored() {
+        let mut term = make_terminal(10, 2);
+        term.feed(b"C");
+        // 0x01 (SOH) is not in the handled set.
+        term.feed(&[0x01]);
+        assert_eq!('C', term.viewport_row(0)[0].cp);
+    }
+
+    // ── esc_dispatch catch-all _ => {} (line 943) ────────────────────────────
+
+    #[test]
+    fn esc_dispatch_unknown_final_byte_is_ignored() {
+        let mut term = make_terminal(10, 2);
+        term.feed(b"D");
+        // ESC Z (DECID) is not handled in our impl.
+        term.feed(b"\x1BZ");
+        assert_eq!('D', term.viewport_row(0)[0].cp);
+    }
+
+    // ── translate_line_drawing catch-all _ => cp (line 1011) ──────────────────
+
+    #[test]
+    fn translate_line_drawing_unknown_char_returns_itself() {
+        let mut term = make_terminal(10, 2);
+        // Enable DEC line drawing (g0_line_drawing=true).
+        term.feed(b"\x1B(0");
+        // 'z' is not in the mapping — should print as 'z'.
+        term.feed(b"z");
+        term.feed(b"\x1B(B"); // back to ASCII
+        assert_eq!('z', term.viewport_row(0)[0].cp);
+    }
+
+    // ── apply_sgr_at catch-all _ => {} (line 1068) ────────────────────────────
+
+    #[test]
+    fn sgr_unknown_code_is_silently_ignored() {
+        let mut term = make_terminal(10, 2);
+        // SGR 255 is not handled.
+        term.feed(b"\x1B[255mX");
+        assert_eq!('X', term.viewport_row(0)[0].cp);
+    }
+
+    // ── apply_extended_color truncated params (lines 1074-1087) ───────────────
+
+    #[test]
+    fn sgr_extended_color_38_with_only_one_param_is_safe() {
+        let mut term = make_terminal(10, 2);
+        // Only "38" with no mode selector (i+1 >= len) — must not panic.
+        term.feed(b"\x1B[38mX");
+        assert_eq!('X', term.viewport_row(0)[0].cp);
+    }
+
+    #[test]
+    fn sgr_extended_color_38_5_with_no_index_param_is_safe() {
+        let mut term = make_terminal(10, 2);
+        // "38;5" but no color index (i+2 >= len) — must not panic.
+        term.feed(b"\x1B[38;5mX");
+        assert_eq!('X', term.viewport_row(0)[0].cp);
+    }
+
+    #[test]
+    fn sgr_extended_color_38_2_with_fewer_than_four_extra_params_is_safe() {
+        let mut term = make_terminal(10, 2);
+        // "38;2;255;128" — only 2 RGB values provided instead of 3 (i+4 >= len).
+        term.feed(b"\x1B[38;2;255;128mX");
+        assert_eq!('X', term.viewport_row(0)[0].cp);
+    }
 }

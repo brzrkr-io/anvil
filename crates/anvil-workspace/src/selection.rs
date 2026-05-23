@@ -147,4 +147,17 @@ mod tests {
         assert!(!sel.contains(3, 5)); // zero-width: nothing selected
         assert!(!sel.contains(3, 4));
     }
+
+    #[test]
+    fn clear_deactivates_selection() {
+        let mut sel = Selection {
+            active: true,
+            anchor: Point { row: 0, col: 0 },
+            head: Point { row: 0, col: 5 },
+        };
+        assert!(sel.contains(0, 0));
+        sel.clear();
+        assert!(!sel.active);
+        assert!(!sel.contains(0, 0));
+    }
 }

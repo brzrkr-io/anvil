@@ -1199,4 +1199,309 @@ mod tests {
         let last = tree.close_leaf(1);
         assert_eq!(last, None);
     }
+
+    // ── Rect helpers ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn rect_contains_boundary_conditions() {
+        let r = Rect {
+            x: 10.0,
+            y: 20.0,
+            w: 100.0,
+            h: 50.0,
+        };
+        assert!(r.contains(10.0, 20.0)); // left/top boundary — included
+        assert!(r.contains(50.0, 40.0)); // interior
+        assert!(!r.contains(110.0, 40.0)); // right boundary — excluded
+        assert!(!r.contains(50.0, 70.0)); // bottom boundary — excluded
+        assert!(!r.contains(9.0, 40.0)); // left of rect
+        assert!(!r.contains(50.0, 19.0)); // above rect
+    }
+
+    #[test]
+    fn rect_center_x_and_center_y() {
+        let r = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 60.0,
+        };
+        assert!((r.center_x() - 50.0).abs() < 1e-9);
+        assert!((r.center_y() - 30.0).abs() < 1e-9);
+    }
+
+    // ── find_divider_at on vertical split ─────────────────────────────────────
+
+    #[test]
+    fn find_divider_at_finds_divider_in_vertical_split() {
+        let mut tree = PaneTree::init_single(1);
+        tree.split(SplitDir::Vertical, 2).unwrap();
+
+        let outer = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 200.0,
+            h: 400.0,
+        };
+        let div = 8.0_f64;
+        // Divider center at y: (400 - 8) / 2 + 4 = 200
+        let hit = find_divider_at(&tree, outer, div, 100.0, 200.0, 4.0);
+        assert!(hit.is_some());
+        let miss = find_divider_at(&tree, outer, div, 100.0, 50.0, 4.0);
+        assert!(miss.is_none());
+    }
+
+    // ── find_divider_at on a nested tree (recursive) ──────────────────────────
+
+    #[test]
+    fn find_divider_at_nested_tree_recurses() {
+        // Build [1, [2, 3]] — horizontal outer, vertical inner
+        let mut tree = PaneTree::init_single(1);
+        tree.split(SplitDir::Horizontal, 2).unwrap();
+        // focused is now 2; split vertically to create [1, [2, 3]]
+        tree.split(SplitDir::Vertical, 3).unwrap();
+
+        let outer = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 400.0,
+            h: 400.0,
+        };
+        let div = 4.0_f64;
+
+        // The horizontal divider between pane 1 and [2,3] is at x=200.
+        let horiz_hit = find_divider_at(&tree, outer, div, 200.0, 200.0, 4.0);
+        assert!(horiz_hit.is_some());
+
+        // The vertical divider inside the right side is at y=200 of the right half.
+        let vert_hit = find_divider_at(&tree, outer, div, 300.0, 200.0, 4.0);
+        assert!(vert_hit.is_some());
+    }
+
+    // ── split error path ───────────────────────────────────────────────────────
+
+    #[test]
+    fn split_focused_not_found_returns_error() {
+        let mut tree = PaneTree::init_single(1);
+        // Move focused to a non-existent id
+        tree.focused = 99;
+        let err = tree.split(SplitDir::Horizontal, 2);
+        assert!(matches!(err, Err(LayoutError::FocusedNotFound)));
+    }
+
+    // ── hit_test returns None outside rect ────────────────────────────────────
+
+    #[test]
+    fn hit_test_outside_outer_returns_none() {
+        let tree = PaneTree::init_single(1);
+        let outer = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 400.0,
+            h: 200.0,
+        };
+        assert_eq!(tree.hit_test(outer, 4.0, 500.0, 100.0), None);
+        assert_eq!(tree.hit_test(outer, 4.0, 200.0, 300.0), None);
+    }
+
+    // ── neighbor Up/Down ───────────────────────────────────────────────────────
+
+    #[test]
+    fn neighbor_up_and_down_in_vertical_split() {
+        let mut tree = PaneTree::init_single(1);
+        tree.split(SplitDir::Vertical, 2).unwrap();
+        tree.focused = 1;
+
+        let outer = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 200.0,
+            h: 400.0,
+        };
+        // Pane 1 is on top; 2 is below.
+        let down = tree.neighbor(NavDir::Down, outer, 4.0);
+        assert_eq!(down, Some(2));
+
+        tree.focused = 2;
+        let up = tree.neighbor(NavDir::Up, outer, 4.0);
+        assert_eq!(up, Some(1));
+    }
+
+    #[test]
+    fn neighbor_right_in_horizontal_split() {
+        let mut tree = PaneTree::init_single(1);
+        tree.split(SplitDir::Horizontal, 2).unwrap();
+        tree.focused = 1;
+
+        let outer = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 400.0,
+            h: 200.0,
+        };
+        let right = tree.neighbor(NavDir::Right, outer, 4.0);
+        assert_eq!(right, Some(2));
+    }
+
+    // ── close_leaf on non-focused leaf ────────────────────────────────────────
+
+    #[test]
+    fn close_non_focused_leaf_shrinks_tree() {
+        let mut tree = PaneTree::init_single(1);
+        tree.split(SplitDir::Horizontal, 2).unwrap();
+        tree.split(SplitDir::Horizontal, 3).unwrap();
+        // Close leaf 1 (not the focused leaf which is 3)
+        let next = tree.close_leaf(1);
+        assert!(next.is_some());
+        assert_eq!(tree.leaf_count(), 2);
+        // Focused is updated by close_leaf to the returned next.
+        assert_eq!(tree.focused, next.unwrap());
+        check_ratios_sum(&tree.root);
+    }
+
+    // ── renormalize with zero-sum ──────────────────────────────────────────────
+
+    #[test]
+    fn renormalize_zero_sum_distributes_equally() {
+        let mut ratios = vec![0.0, 0.0, 0.0];
+        renormalize(&mut ratios);
+        for r in &ratios {
+            assert!((r - 1.0 / 3.0).abs() < 1e-9);
+        }
+    }
+
+    // ── PaneTree::split on a 3-child flat split ────────────────────────────────
+
+    #[test]
+    fn split_three_child_flat_split_is_balanced() {
+        // Build [1, 2, 3] horizontal, all same direction.
+        let mut tree = PaneTree::init_single(1);
+        tree.split(SplitDir::Horizontal, 2).unwrap();
+        tree.focused = 2;
+        tree.split(SplitDir::Horizontal, 3).unwrap();
+        assert_eq!(tree.leaf_count(), 3);
+        check_ratios_sum(&tree.root);
+        if let PaneNode::Split(sp) = tree.root.as_ref() {
+            assert_eq!(sp.children.len(), 3);
+            // All ratios should be ~1/3.
+            for r in &sp.ratios {
+                assert!((r - 1.0 / 3.0).abs() < 1e-9);
+            }
+        } else {
+            panic!("expected flat split root");
+        }
+    }
+
+    // ── split_impl / insert_beside coverage ──────────────────────────────────
+
+    #[test]
+    fn split_impl_single_root_wraps_into_split() {
+        let mut tree = PaneTree::init_single(1);
+        tree.split_impl(SplitDir::Horizontal, 2).unwrap();
+        assert_eq!(tree.leaf_count(), 2);
+        assert_eq!(tree.focused, 2);
+        check_ratios_sum(&tree.root);
+    }
+
+    #[test]
+    fn split_impl_same_direction_flat_sibling() {
+        // [1, 2] horizontal — split_impl on focused=2 with same dir → flat [1, 2, 3]
+        let mut tree = PaneTree::init_single(1);
+        tree.split_impl(SplitDir::Horizontal, 2).unwrap();
+        tree.split_impl(SplitDir::Horizontal, 3).unwrap();
+        assert_eq!(tree.leaf_count(), 3);
+        check_ratios_sum(&tree.root);
+    }
+
+    #[test]
+    fn split_impl_cross_direction_nests() {
+        // [1, 2] horizontal — split_impl with Vertical on focused=2 → [1, [2, 3]]
+        let mut tree = PaneTree::init_single(1);
+        tree.split_impl(SplitDir::Horizontal, 2).unwrap();
+        tree.split_impl(SplitDir::Vertical, 3).unwrap();
+        assert_eq!(tree.leaf_count(), 3);
+        assert_eq!(tree_depth(&tree.root), 3);
+        check_ratios_sum(&tree.root);
+    }
+
+    #[test]
+    fn split_impl_focused_not_found_returns_error() {
+        let mut tree = PaneTree::init_single(1);
+        tree.focused = 99; // bogus id
+        let err = tree.split_impl(SplitDir::Horizontal, 2);
+        assert!(matches!(err, Err(LayoutError::FocusedNotFound)));
+    }
+
+    #[test]
+    fn split_impl_deep_tree_recurses_correctly() {
+        // Build [1, [2, 3]] then split_impl with focused=3 same dir → [1, [2, 3, 4]]
+        let mut tree = PaneTree::init_single(1);
+        tree.split_impl(SplitDir::Horizontal, 2).unwrap();
+        tree.split_impl(SplitDir::Vertical, 3).unwrap();
+        // focused is now 3 (inside the inner split)
+        tree.split_impl(SplitDir::Vertical, 4).unwrap();
+        assert_eq!(tree.leaf_count(), 4);
+        check_ratios_sum(&tree.root);
+    }
+
+    #[test]
+    fn split_impl_sibling_splits_retry_path() {
+        // Build [[1,4],[2,3]] so that the root has two vertical inner splits.
+        // Then split_impl with focused=2 exercises the retry path in
+        // insert_beside_in_split: child[0]=[1,4] returns Err, then child[1]=[2,3]
+        // succeeds.
+        let mut tree = PaneTree::init_single(1);
+        tree.split_impl(SplitDir::Horizontal, 2).unwrap(); // [1, 2]
+        tree.split_impl(SplitDir::Vertical, 3).unwrap(); // [1, [2, 3]], focused=3
+        tree.focused = 1;
+        tree.split_impl(SplitDir::Vertical, 4).unwrap(); // [[1,4], [2,3]], focused=4
+
+        // Now root has two vertical splits as children.
+        assert_eq!(tree.leaf_count(), 4);
+
+        // Set focused=2, which is inside the second child split [2,3].
+        tree.focused = 2;
+        // split_impl Vertical with focused=2: must skip [1,4] (Err) → retry [2,3].
+        tree.split_impl(SplitDir::Vertical, 5).unwrap();
+        assert_eq!(tree.leaf_count(), 5);
+        check_ratios_sum(&tree.root);
+    }
+
+    // ── close_leaf on a single-leaf root ─────────────────────────────────────
+
+    #[test]
+    fn close_leaf_on_single_root_returns_none() {
+        let mut tree = PaneTree::init_single(42);
+        let result = tree.close_leaf(42);
+        assert_eq!(result, None);
+        assert!(tree.empty);
+        assert_eq!(tree.focused, 0);
+    }
+
+    // ── close_in_children recursive collapse ─────────────────────────────────
+
+    #[test]
+    fn close_in_children_recurses_into_nested_split() {
+        // Build [1, [2, 3]] — close leaf 3 which is inside the inner split.
+        // close_in_children must recurse into the right child's split.
+        let mut tree = PaneTree::init_single(1);
+        tree.split(SplitDir::Horizontal, 2).unwrap();
+        tree.split(SplitDir::Vertical, 3).unwrap();
+        // tree: [1, [2, 3]], focused = 3
+
+        let next = tree.close_leaf(3);
+        assert!(next.is_some());
+        assert_eq!(tree.leaf_count(), 2);
+        check_ratios_sum(&tree.root);
+    }
+
+    #[test]
+    fn close_in_children_returns_none_for_absent_id() {
+        // close_in_children returns None for an id that isn't in the tree.
+        let mut tree = PaneTree::init_single(1);
+        tree.split(SplitDir::Horizontal, 2).unwrap();
+        // Tree: [1, 2]. Try closing id 99 (absent).
+        let result = tree.close_leaf(99);
+        assert_eq!(result, None);
+    }
 }

@@ -632,4 +632,41 @@ mod tests {
             other => panic!("expected Array, got {other:?}"),
         }
     }
+
+    // ── bin16 and bin32 decode paths ─────────────────────────────────────────
+
+    #[test]
+    fn bin16_roundtrip() {
+        // bin16 requires len 256–65535.
+        let b = vec![0xCDu8; 256];
+        let v = Value::Bin(b);
+        assert_eq!(roundtrip(&v), v);
+    }
+
+    #[test]
+    fn decode_bin16_from_raw_bytes() {
+        // Hand-craft a bin16 (0xc5) with len=3.
+        let buf = vec![0xc5, 0x00, 0x03, 0x01, 0x02, 0x03];
+        let mut r: &[u8] = &buf;
+        let v = decode_value(&mut r).unwrap();
+        assert_eq!(v, Value::Bin(vec![1, 2, 3]));
+    }
+
+    #[test]
+    fn decode_bin32_from_raw_bytes() {
+        // Hand-craft a bin32 (0xc6) with len=2.
+        let buf = vec![0xc6, 0x00, 0x00, 0x00, 0x02, 0xAA, 0xBB];
+        let mut r: &[u8] = &buf;
+        let v = decode_value(&mut r).unwrap();
+        assert_eq!(v, Value::Bin(vec![0xAA, 0xBB]));
+    }
+
+    #[test]
+    fn decode_unsupported_type_other_branch() {
+        // 0xc1 is reserved and unsupported.
+        let buf = [0xc1u8];
+        let mut r: &[u8] = &buf;
+        let err = decode_value(&mut r).unwrap_err();
+        assert!(matches!(err, CodecError::UnsupportedType(0xc1)));
+    }
 }
