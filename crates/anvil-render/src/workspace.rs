@@ -24,9 +24,11 @@ use crate::{
     raster::{FontMetrics, GlyphPainter, Raster},
 };
 
-/// Pane-divider hairline width in device pixels. BRAND.md mandates thin
-/// borders; the previous 8px read as a structural wall instead of a divider.
-pub const DIVIDER_PX: f64 = 1.0;
+/// Pane-divider width in device pixels. 2 device px (= 1 logical pt at 2×
+/// Retina) is the minimum that reads as a deliberate divider on a busy
+/// terminal screen. 1px hairlines disappeared into surrounding content;
+/// the previous 8px read as a structural wall — 2px is the sweet spot.
+pub const DIVIDER_PX: f64 = 2.0;
 
 /// Draw all panes in `tree` into `raster`, then draw divider hairlines over them.
 ///
