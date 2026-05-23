@@ -326,25 +326,19 @@ pub fn draw(
     // For floating: draw halo shadow + surface card.
     // For docked: background was already painted above; skip the floating card.
     if !is_docked {
-        // Two-layer shadow halo for real card depth (Codex/Claude-Desktop style):
-        // a wider, lighter outer band + a tighter, darker inner edge. Mineral-
-        // palette only: no drop shadows, just structured fills.
-        let outer = mix(theme.border, [0x37, 0x40, 0x46], 0.35);
-        let inner = mix(theme.border, [0x37, 0x40, 0x46], 0.6);
-        raster.fill_pixel_rect(
-            left_px - 6.0,
-            top_px - 6.0,
-            card_w_px + 12.0,
-            card_h_px + 12.0,
-            outer,
-        );
-        raster.fill_pixel_rect(
-            left_px - 2.0,
-            top_px - 2.0,
-            card_w_px + 4.0,
-            card_h_px + 4.0,
-            inner,
-        );
+        // Minimal card: surface fill + single 1-device-pixel border.
+        // Codex/Claude-Desktop style — no halo, no bevel; the surface tone
+        // does the lifting and a hairline edge keeps it anchored.
+        let border = mix(theme.border, theme.foreground, 0.25);
+        // Top
+        raster.fill_pixel_rect(left_px - 1.0, top_px - 1.0, card_w_px + 2.0, 1.0, border);
+        // Bottom
+        raster.fill_pixel_rect(left_px - 1.0, top_px + card_h_px, card_w_px + 2.0, 1.0, border);
+        // Left
+        raster.fill_pixel_rect(left_px - 1.0, top_px, 1.0, card_h_px, border);
+        // Right
+        raster.fill_pixel_rect(left_px + card_w_px, top_px, 1.0, card_h_px, border);
+        // Inner surface
         raster.fill_pixel_rect(left_px, top_px, card_w_px, card_h_px, theme.surface);
     }
 
