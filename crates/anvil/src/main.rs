@@ -2112,6 +2112,31 @@ impl AppHandler for AppShell {
             self.app.dirty = true;
             return true;
         }
+
+        // ⌘ shortcuts. macOS dispatches these via performKeyEquivalent BEFORE
+        // keyDown, so unless we claim them here the system menu (or its
+        // absence: a system beep) may eat them. Route through the same
+        // dispatcher as keyDown.
+        if event.mods.command {
+            match event.key {
+                KeyInput::Up if !event.mods.shift && !event.mods.control && !event.mods.option => {
+                    self.app.jump_to_prev_prompt();
+                    return true;
+                }
+                KeyInput::Down
+                    if !event.mods.shift && !event.mods.control && !event.mods.option =>
+                {
+                    self.app.jump_to_next_prompt();
+                    return true;
+                }
+                KeyInput::Char(ch) => {
+                    if self.app.handle_cmd_chord(event.mods, ch, &self.webview) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
         false
     }
 
