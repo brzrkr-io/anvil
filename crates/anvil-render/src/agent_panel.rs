@@ -1476,19 +1476,32 @@ fn draw_section_header(
     color: [u8; 3],
     max_col: usize,
 ) {
+    // Format: `─ LABEL ────────`. Industrial register-label feel; replaces
+    // the older letterspaced `L A B E L` form which read as banner-like at
+    // HUD widths and visually dominated short-label sections.
     let mut c = col;
-    for (i, ch) in label.chars().enumerate() {
-        if i > 0 {
-            // Letterspace: one blank cell between glyphs.
-            if c >= max_col {
-                return;
-            }
-            c += 1;
-        }
+    if c >= max_col {
+        return;
+    }
+    raster.cell_glyph(painter, metrics, c, row, '─' as u32, color);
+    c += 1;
+    if c >= max_col {
+        return;
+    }
+    c += 1; // gap before label
+    for ch in label.chars() {
         if c >= max_col {
             return;
         }
         raster.cell_glyph(painter, metrics, c, row, ch as u32, color);
+        c += 1;
+    }
+    if c >= max_col {
+        return;
+    }
+    c += 1; // gap after label
+    while c < max_col {
+        raster.cell_glyph(painter, metrics, c, row, '─' as u32, color);
         c += 1;
     }
 }

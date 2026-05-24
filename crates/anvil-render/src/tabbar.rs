@@ -49,11 +49,18 @@ pub fn draw_tab_bar(
             for col in start_col..end_col {
                 raster.cell_bg(metrics, col, 0, theme.surface);
             }
-            // 2px accent bar along the top edge of the active segment.
+            // 2px accent bar along the BOTTOM edge of the active segment.
+            // Reads as the tab "connecting" to the content below; also clear
+            // of label descenders so the active tab doesn't appear underlined.
             let start_px = raster.pad_x + start_col as f64 * cell_w;
-            let tab_top_px = raster.pad_y;
             let seg_w_px = (end_col - start_col) as f64 * cell_w;
-            raster.fill_pixel_rect(start_px, tab_top_px, seg_w_px, 2.0, theme.accent);
+            raster.fill_pixel_rect(
+                start_px,
+                raster.pad_y + cell_h - 2.0,
+                seg_w_px,
+                2.0,
+                theme.accent,
+            );
         }
         // Draw the tab label, truncated to the segment width minus a 2-col pad.
         let fg = if is_active {
@@ -79,12 +86,10 @@ pub fn draw_tab_bar(
         }
     }
 
-    // 1px hairline along the bottom of the tab bar — the boundary between
-    // chrome and content, drawn in theme.border (subtle).
-    let bar_bottom_px = raster.pad_y + cell_h - 1.0;
-    let bar_left_px = raster.pad_x;
-    let bar_w_px = total_cols as f64 * cell_w;
-    raster.fill_pixel_rect(bar_left_px, bar_bottom_px, bar_w_px, 1.0, theme.border);
+    // No bottom hairline: the active tab's bottom accent rule is the
+    // separator. The previous 1px hairline at `pad_y + cell_h - 1.0`
+    // overlapped label descenders at typical font sizes and read as a
+    // strikethrough on inactive tab labels.
 }
 
 /// Derive a display label for tab `t`:

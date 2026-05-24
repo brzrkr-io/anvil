@@ -99,42 +99,31 @@ pub fn full(_segments: &[Segment], opts: Options) -> String {
     // Each glyph gets its own colour layer so the eye reads a gradient of
     // attention rather than a flat string. On failure every glyph flips to
     // the error red so the whole prompt screams together.
-    let mark_color = if opts.failed {
+    let arrow_color = if opts.failed {
         ACCENT_ERR
     } else {
         ACCENT_BRIGHT
     };
-    let dot_color = if opts.failed { ACCENT_ERR } else { DIM };
-    let chevron_color = if opts.failed { ACCENT_ERR } else { ACCENT };
 
-    esc(&mut buf, sh, mark_color);
-    buf.push('\u{25d2}'); // ◒
-    esc(&mut buf, sh, RESET);
-    buf.push(' ');
+    let mut left_visible: u16 = 0;
 
-    // Optional dirty count between basin and middot.
-    // visible: `*N ` (3+ chars)
-    let mut left_visible: u16 = 2; // `◒ `
+    // Optional dirty count in attention amber.
     if opts.git_dirty > 0 {
         let dirty_text = format!("*{}", opts.git_dirty);
         esc(&mut buf, sh, ATTENTION);
         buf.push_str(&dirty_text);
         esc(&mut buf, sh, RESET);
         buf.push(' ');
-        left_visible += dirty_text.len() as u16 + 1; // text + space
+        left_visible += dirty_text.chars().count() as u16 + 1;
     }
 
-    esc(&mut buf, sh, dot_color);
-    buf.push('\u{00b7}'); // ·
-    esc(&mut buf, sh, RESET);
-    buf.push(' ');
-    left_visible += 2; // `· `
-
-    esc(&mut buf, sh, chevron_color);
+    // Chevron + two-space gap. ❯ in bright cyan; wide breathing room before
+    // typed input. ❯ (U+276F) is in BlexMonoNerdFontMono — confirmed.
+    esc(&mut buf, sh, arrow_color);
     buf.push('\u{276f}'); // ❯
     esc(&mut buf, sh, RESET);
-    buf.push(' ');
-    left_visible += 2; // `❯ `
+    buf.push_str("  ");
+    left_visible += 3;
 
     // Right-aligned exit code + duration segment.
     // Build the visible text first, measure it, then pad with spaces.
@@ -288,25 +277,20 @@ mod tests {
     }
 
     #[test]
-    fn full_is_three_glyphs_basin_dot_chevron() {
-        // Single-line `◒ · ❯` with graduated accents — no containers, no
-        // segments, no newline.
+    fn full_is_single_line_chevron_only() {
+        // Single-line `❯  ` — no basin, no middot, no newline.
         let segs = sample_segs();
         let out = full(&segs, base_opts(Shell::Plain));
         assert!(!out.contains('\n'));
-        assert!(!out.contains("anvil"));
-        assert!(out.contains('\u{25d2}')); // ◒
-        assert!(out.contains('\u{00b7}')); // ·
         assert!(out.contains('\u{276f}')); // ❯
-        assert!(!out.contains('\u{258e}')); // no edge bar
+        assert!(!out.contains('\u{25d2}')); // no basin
+        assert!(!out.contains('\u{00b7}')); // no middot
     }
 
     #[test]
-    fn full_paints_basin_in_bright_accent_on_success() {
-        // The mark gets the brighter accent so the eye lands on it first.
+    fn full_paints_chevron_in_bright_accent_on_success() {
         let out = full(&[], base_opts(Shell::Plain));
         assert!(out.contains(ACCENT_BRIGHT));
-        assert!(out.contains(ACCENT));
     }
 
     #[test]
@@ -333,12 +317,10 @@ mod tests {
     }
 
     #[test]
-    fn full_uses_the_accent_indexed_color_for_the_glyph() {
-        // With segments gone, the only color the prompt emits is the
-        // accent for the ❯ glyph (or ACCENT_ERR on failure).
+    fn full_uses_bright_accent_for_the_chevron() {
         let segs = sample_segs();
         let out = full(&segs, base_opts(Shell::Plain));
-        assert!(out.contains(ACCENT));
+        assert!(out.contains(ACCENT_BRIGHT));
     }
 
     #[test]
@@ -397,8 +379,7 @@ mod tests {
     // ── New tests for Task #11 and Task #12 ───────────────────────────────────
 
     #[test]
-    fn full_with_dirty_inserts_star_count_between_basin_and_middot() {
-        // `◒ *3 · ❯` — the dirty count appears between ◒ and · in amber.
+    fn full_with_dirty_shows_star_count_before_chevron() {
         let out = full(
             &[],
             Options {
@@ -406,18 +387,12 @@ mod tests {
                 ..base_opts(Shell::Plain)
             },
         );
-        // Dirty text present.
         assert!(out.contains("*3"));
-        // Amber color used.
         assert!(out.contains(ATTENTION));
-        // All three core glyphs still present.
-        assert!(out.contains('\u{25d2}')); // ◒
-        assert!(out.contains('\u{00b7}')); // ·
-        assert!(out.contains('\u{276f}')); // ❯
-        // The dirty count comes before the middot in the string.
+        assert!(out.contains('\u{276f}'));
         let star_pos = out.find("*3").unwrap();
-        let dot_pos = out.find('\u{00b7}').unwrap();
-        assert!(star_pos < dot_pos, "*3 must appear before the middot ·");
+        let chev_pos = out.find('\u{276f}').unwrap();
+        assert!(star_pos < chev_pos, "*3 must appear before the chevron ❯");
     }
 
     #[test]
