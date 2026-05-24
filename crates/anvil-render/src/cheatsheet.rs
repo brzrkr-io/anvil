@@ -164,20 +164,25 @@ pub fn draw(
     total_cols: usize,
     total_rows: usize,
 ) {
-    if total_rows < CARD_ROWS + 2 || total_cols < CARD_COLS + 2 {
+    // Adapt to small windows: shrink the card down to a minimum readable size
+    // rather than refusing to draw. The user wants the cheatsheet visible at
+    // any reasonable terminal size.
+    if total_rows < 6 || total_cols < 20 {
         return;
     }
+    let card_cols = CARD_COLS.min(total_cols.saturating_sub(2)).max(20);
+    let card_rows = CARD_ROWS.min(total_rows.saturating_sub(2)).max(6);
 
     // Center the card.
-    let card_col = (total_cols - CARD_COLS) / 2;
-    let card_row = (total_rows - CARD_ROWS) / 2;
+    let card_col = (total_cols - card_cols) / 2;
+    let card_row = (total_rows - card_rows) / 2;
 
     let cw = metrics.cell_w;
     let ch = metrics.cell_h;
     let left_px = raster.pad_x + card_col as f64 * cw;
     let top_px = raster.pad_y + card_row as f64 * ch;
-    let card_w_px = CARD_COLS as f64 * cw;
-    let card_h_px = CARD_ROWS as f64 * ch;
+    let card_w_px = card_cols as f64 * cw;
+    let card_h_px = card_rows as f64 * ch;
 
     // Fully opaque surface panel — occludes the terminal beneath it.
     raster.fill_pixel_rect(left_px, top_px, card_w_px, card_h_px, theme.surface);
@@ -192,7 +197,7 @@ pub fn draw(
 
     // Content rows inside the card.
     // 3-col inner left margin; 2-col right margin.
-    let max_col = card_col + CARD_COLS - 2;
+    let max_col = card_col + card_cols - 2;
 
     // Row 0: title in accent color.
     draw_text(
