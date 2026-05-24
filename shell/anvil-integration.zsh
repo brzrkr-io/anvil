@@ -10,13 +10,25 @@ ANVIL_ZSH_LOADED=1
 __anvil_precmd() {
   local last=$?
   typeset -g ANVIL_EXIT=$last
+
+  # Compute duration from the epoch timestamp set in preexec.
+  # EPOCHREALTIME is a float (seconds.microseconds); convert to milliseconds.
+  if [[ -n "$__anvil_cmd_start" ]]; then
+    local now=$EPOCHREALTIME
+    typeset -g ANVIL_DURATION_MS=$(( int(($now - $__anvil_cmd_start) * 1000) ))
+    unset __anvil_cmd_start
+  else
+    typeset -g ANVIL_DURATION_MS=""
+  fi
+
   printf '\e]133;D;%s\a' "$last"
   printf '\e]7;file://%s%s\a' "${HOST:-localhost}" "$PWD"
   printf '\e]133;A\a'
 }
 
-# preexec: a command is about to run (133;C).
+# preexec: a command is about to run (133;C). Record the start time.
 __anvil_preexec() {
+  typeset -g __anvil_cmd_start=$EPOCHREALTIME
   printf '\e]133;C\a'
 }
 
@@ -39,7 +51,11 @@ precmd_functions+=(__anvil_mark_prompt)
 if [[ -n "$ANVIL_PROMPT" && -x "$ANVIL_PROMPT" ]]; then
   setopt prompt_subst
   __anvil_prompt() {
-    PROMPT="$("$ANVIL_PROMPT" --exit ${ANVIL_EXIT:-0} --width "${COLUMNS:-80}" --shell zsh 2>/dev/null)"
+    local dur_arg=""
+    if [[ -n "$ANVIL_DURATION_MS" ]]; then
+      dur_arg="--duration-ms $ANVIL_DURATION_MS"
+    fi
+    PROMPT="$("$ANVIL_PROMPT" --exit ${ANVIL_EXIT:-0} --width "${COLUMNS:-80}" --shell zsh $dur_arg 2>/dev/null)"
   }
   precmd_functions+=(__anvil_prompt)
 fi

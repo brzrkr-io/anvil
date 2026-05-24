@@ -1,0 +1,8 @@
+# Anvil workspace cargo config.
+
+[alias]
+# `cargo anvil-build` — build the app *and* its prompt helper in one step.
+# Always pair the two: `cargo run -p anvil` alone leaves
+# `target/debug/anvil-prompt` stale, so shell-prompt edits never reach the
+# spawned login shell. Prefer the `scripts/run.sh` wrapper for run+launch.
+anvil-build = "build -p anvil -p anvil-prompt"

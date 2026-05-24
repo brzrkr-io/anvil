@@ -205,7 +205,6 @@ fn draw_dividers(
             }
         }
     }
-
 }
 
 // --- Tests ------------------------------------------------------------------
@@ -428,9 +427,9 @@ mod tests {
         let pane1_w = (inner.w - DIVIDER_PX) * 0.5;
         let mid_y = (inner.y + inner.h * 0.5) as usize;
         for x in [
-            (inner.x + 0.5) as usize,                            // left edge
-            ((inner.x + pane1_w - 1.0) as usize).max(1),         // right inside
-            (inner.x + pane1_w + DIVIDER_PX + 0.5) as usize,     // right of gutter
+            (inner.x + 0.5) as usize,                        // left edge
+            ((inner.x + pane1_w - 1.0) as usize).max(1),     // right inside
+            (inner.x + pane1_w + DIVIDER_PX + 0.5) as usize, // right of gutter
         ] {
             let px = pixel_at(&r, x, mid_y);
             assert_ne!(

@@ -9,3 +9,4 @@ docs/superpowers/
 
 # Rust / Cargo
 /target
+.claude/worktrees/

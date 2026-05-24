@@ -8,8 +8,9 @@ use anvil_theme::Theme;
 use crate::raster::{FontMetrics, GlyphPainter, Raster};
 
 /// Draw the search bar across the bottom raster row. `bottom_row` is the cell
-/// row index of the last row. Shows a "find:" prefix, the query, and a
-/// `current/total` match counter.
+/// row index of the last row. Shows a "find:" prefix, the query, a
+/// `current/total` match counter, and (when regex mode is on) a dim `.*`
+/// indicator at the right edge.
 pub fn draw_search_bar(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
@@ -37,13 +38,16 @@ pub fn draw_search_bar(
     let cur = if count == 0 { 0 } else { search.current + 1 };
     let counter = format!("{cur}/{count}");
 
+    // Regex indicator: ".*" (2 cols), drawn dim when regex mode is on.
+    // Reserve 2 cols between the query and the counter for it.
+    const REGEX_IND_COLS: usize = 2; // ".*"
     let text = format!("find: {}", search.query());
 
-    // Left text must not reach the counter; leave at least a 1-column gap.
+    // Left text must not reach the counter/indicator; leave at least a 1-column gap.
     // Prefix chars 0–5 ("find: ") are drawn muted; query chars 6+ use foreground.
     const PREFIX_LEN: usize = 6; // "find: "
-    if counter.len() + 1 < total_cols {
-        let left_limit = total_cols - counter.len() - 1 - 2;
+    if counter.len() + 1 + REGEX_IND_COLS < total_cols {
+        let left_limit = total_cols - counter.len() - 1 - REGEX_IND_COLS;
         for (i, ch) in text.chars().enumerate() {
             if i >= left_limit {
                 break;
@@ -55,6 +59,15 @@ pub fn draw_search_bar(
             };
             raster.cell_glyph(painter, metrics, 2 + i, bottom_row, ch as u32, color);
         }
+    }
+
+    // Regex indicator ".*" — dim, 2 cols, just left of the counter.
+    if search.is_regex() && counter.len() + REGEX_IND_COLS < total_cols {
+        let ind_start = total_cols - counter.len() - REGEX_IND_COLS;
+        // Use ansi[8] (dim/alloy) so the indicator is visible but unobtrusive.
+        let dim = theme.ansi[8];
+        raster.cell_glyph(painter, metrics, ind_start, bottom_row, '.' as u32, dim);
+        raster.cell_glyph(painter, metrics, ind_start + 1, bottom_row, '*' as u32, dim);
     }
 
     // Right-aligned counter — metadata, drawn muted (the current-match highlight

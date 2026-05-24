@@ -32,13 +32,22 @@ use anvil_platform::shell_integration;
 use anvil_platform::webview::{Webview, WebviewConfig};
 use anvil_prompt_core::git;
 use anvil_render::agent_panel::{
-    GitState, LocalContext, Placement, RunState, draw as draw_agent_panel,
+    GitState, HUD_COLS as HUD_COLS_DEFAULT, LocalContext, RunState, draw_right_hud,
 };
+
+/// Minimum and maximum HUD width in terminal columns. The drag handler
+/// clamps the user's value to this range so they can't crush the terminal
+/// or eat the whole window.
+const HUD_COLS_MIN: usize = 16;
+const HUD_COLS_MAX: usize = 80;
+/// Width (in device pixels) of the invisible hit zone that catches mouse
+/// down on the HUD's 1px hairline. Wide enough that the user doesn't need
+/// pixel-perfect aim to start a resize.
+const HUD_DRAG_HIT_PX: f64 = 6.0;
 use anvil_render::cheatsheet::draw as draw_cheatsheet;
 use anvil_render::draw::CursorConfig;
 use anvil_render::raster::Raster;
 use anvil_render::searchbar::draw_search_bar;
-use anvil_render::statusbar::{STATUS_BAR_ROWS, draw_status_bar};
 use anvil_render::tabbar::draw_tab_bar;
 use anvil_render::workspace::{DIVIDER_PX, draw_workspace, draw_workspace_chrome};
 use anvil_render::{CellBatch, FoldedBlocks, draw_viewport_gpu};
@@ -83,6 +92,29 @@ struct GitResult {
     dirty: u32,
     ahead: u32,
     behind: u32,
+    head_short: String,
+    head_subject: String,
+}
+
+/// One-shot `git log -1 --format=%h %s` against `cwd`. Returns (sha, subject)
+/// or empty strings on failure / non-repo. Bounded: takes <10ms in practice.
+fn git_head_oneline(cwd: &std::path::Path) -> (String, String) {
+    let output = std::process::Command::new("git")
+        .args(["log", "-1", "--format=%h %s"])
+        .current_dir(cwd)
+        .output();
+    let Ok(out) = output else {
+        return (String::new(), String::new());
+    };
+    if !out.status.success() {
+        return (String::new(), String::new());
+    }
+    let s = String::from_utf8_lossy(&out.stdout);
+    let line = s.lines().next().unwrap_or("").trim_end();
+    match line.split_once(' ') {
+        Some((sha, subject)) => (sha.to_string(), subject.to_string()),
+        None => (line.to_string(), String::new()),
+    }
 }
 
 // ── Keybindings ───────────────────────────────────────────────────────────────
@@ -97,6 +129,8 @@ struct Keybindings {
     search_open: Option<Chord>,
     search_next: Option<Chord>,
     search_prev: Option<Chord>,
+    /// Cmd+Opt+R: toggle regex mode while the search bar is open.
+    search_regex_toggle: Option<Chord>,
     hud_toggle: Option<Chord>,
     cheatsheet: Option<Chord>,
     split_right: Option<Chord>,
@@ -128,6 +162,7 @@ impl Keybindings {
             search_open: parse_chord(&kb.search_open),
             search_next: parse_chord(&kb.search_next),
             search_prev: parse_chord(&kb.search_prev),
+            search_regex_toggle: parse_chord("cmd+opt+r"),
             hud_toggle: parse_chord(&kb.hud_toggle),
             cheatsheet: parse_chord(&kb.cheatsheet_toggle),
             split_right: parse_chord(&kb.split_right),
@@ -199,6 +234,12 @@ pub struct App {
     search_open: bool,
     hud_visible: bool,
     hud_tick: u32,
+    /// Runtime HUD width in terminal columns. Starts at `HUD_COLS_DEFAULT`,
+    /// the user can drag the HUD's left edge to resize at runtime.
+    hud_cols: usize,
+    /// Mouse is currently dragging the HUD's left edge hairline. While true,
+    /// `mouse_dragged` updates `hud_cols` instead of extending a selection.
+    hud_drag_active: bool,
     cheatsheet_visible: bool,
     focused: bool, // window is key window
 
@@ -247,18 +288,29 @@ impl App {
         (dw, dh)
     }
 
-    /// Inner content rect in device pixels: window minus bars and padding.
+    /// Inner content rect in device pixels: window minus bars, padding, and
+    /// (when shown) the docked right HUD column.
+    ///
+    /// The HUD touches the window's right edge, so when it is visible the
+    /// grid skips the usual right `GRID_PAD` — the HUD absorbs it — and
+    /// instead reserves `self.hud_cols * cw` plus one cell of breathing room.
     fn inner_rect(&self) -> Rect {
         let (dw, dh) = self.device_size();
         let pad = GRID_PAD as f64;
+        let cw = self.font.metrics.cell_w;
         let ch = self.font.metrics.cell_h;
 
         let top_bar_px = self.top_bar_rows() as f64 * ch;
         let bot_bar_px = self.bottom_bar_rows() as f64 * ch;
+        let (right_margin_px, right_gutter_px) = if self.hud_visible {
+            (0.0, self.hud_cols as f64 * cw + cw)
+        } else {
+            (pad, 0.0)
+        };
         Rect {
             x: pad,
             y: pad + top_bar_px,
-            w: dw as f64 - 2.0 * pad,
+            w: (dw as f64 - pad - right_margin_px - right_gutter_px).max(cw),
             h: dh as f64 - 2.0 * pad - top_bar_px - bot_bar_px,
         }
     }
@@ -268,8 +320,9 @@ impl App {
     }
 
     fn bottom_bar_rows(&self) -> usize {
-        // Status bar is always present (+1); search bar adds another row when open.
-        STATUS_BAR_ROWS + if self.search_open { 1 } else { 0 }
+        // Search bar adds a row when open; the always-on status bar has been
+        // replaced by the docked right HUD.
+        if self.search_open { 1 } else { 0 }
     }
 
     /// Snap cursor + scroll animation state to current terminal values.
@@ -791,6 +844,8 @@ impl App {
                 self.local_ctx.git_dirty = result.dirty;
                 self.local_ctx.git_ahead = result.ahead;
                 self.local_ctx.git_behind = result.behind;
+                self.local_ctx.head_short = result.head_short;
+                self.local_ctx.head_subject = result.head_subject;
             }
             // Kick off git worker (try_send is non-blocking; drop if channel full).
             let _ = self.git_tx.try_send(PathBuf::from(&cwd));
@@ -860,6 +915,22 @@ impl App {
                 self.raster
                     .clear_pixel_rows(bot_start, dh, self.theme.background);
             }
+            // Right HUD strip — clear and let the HUD draw repaint it. Safe
+            // now that the initial PTY size matches `inner_rect`: no cells
+            // ever extend into this column.
+            if self.hud_visible {
+                let cw = self.font.metrics.cell_w;
+                let (dw, _) = self.device_size();
+                let strip_w_px = self.hud_cols as f64 * cw + GRID_PAD as f64;
+                let x_start = (dw as f64 - strip_w_px).max(0.0);
+                self.raster.fill_pixel_rect(
+                    x_start,
+                    0.0,
+                    dw as f64 - x_start,
+                    dh as f64,
+                    self.theme.background,
+                );
+            }
         }
 
         let ch = self.font.metrics.cell_h;
@@ -923,7 +994,8 @@ impl App {
                             // leaves the old cursor's pixels orphaned at their old
                             // device-pixel y. Force a full redraw to flush them.
                             let sbl = pane.terminal.scrollback_len();
-                            let prev_sbl = self.scrollback_len_prev.get(&e.id).copied().unwrap_or(sbl);
+                            let prev_sbl =
+                                self.scrollback_len_prev.get(&e.id).copied().unwrap_or(sbl);
                             if sbl != prev_sbl {
                                 ds.force_full();
                             }
@@ -1028,7 +1100,7 @@ impl App {
             draw_tab_bar(&mut self.raster, painter, metrics, &self.theme, &self.tabs);
         }
 
-        // Search bar (second-to-last row when status bar is present).
+        // Search bar (last row above any bottom chrome).
         if self.search_open {
             let total_rows = (((dh.saturating_sub(2 * GRID_PAD)) as f64 / ch) as usize).max(1);
             draw_search_bar(
@@ -1037,44 +1109,49 @@ impl App {
                 metrics,
                 &self.theme,
                 &self.search,
-                total_rows.saturating_sub(1 + STATUS_BAR_ROWS),
+                total_rows.saturating_sub(1),
             );
         }
 
-        // Status bar (always visible, bottom row).
-        {
-            let total_rows = (((dh.saturating_sub(2 * GRID_PAD)) as f64 / ch) as usize).max(1);
-            draw_status_bar(
-                &mut self.raster,
-                painter,
-                metrics,
-                &self.theme,
-                &self.local_ctx,
-                &self.agent_snap,
-                total_rows.saturating_sub(STATUS_BAR_ROWS),
-            );
-        }
-
-        // HUD / agent panel.
+        // Right-side HUD: docked, edge-to-edge frosted-glass panel with repo
+        // / git / agent / system state. Replaces the old bottom status bar
+        // and the small floating agent card.
         if eff_hud {
             let cw = self.font.metrics.cell_w;
             let total_rows = (((dh.saturating_sub(2 * GRID_PAD)) as f64 / ch) as usize).max(1);
-            let total_cols = (((dw.saturating_sub(2 * GRID_PAD)) as f64 / cw) as usize).max(1);
             let top_offset = self.top_bar_rows();
-            let placement = Placement::Floating {
-                total_cols,
-                total_rows,
-                top_offset,
+            let rows = total_rows.saturating_sub(top_offset);
+
+            // Surface: rightmost slab of the window, edge-to-edge.
+            let hud_cols = self.hud_cols;
+            let surface_w_px = hud_cols as f64 * cw + GRID_PAD as f64;
+            let surface_rect = anvil_render::raster::PixelRect {
+                x: (dw as f64 - surface_w_px).max(0.0),
+                y: 0.0,
+                w: surface_w_px.min(dw as f64),
+                h: dh as f64,
             };
-            draw_agent_panel(
+
+            // Content column: cell-grid coord whose pixel position sits one
+            // cell in from the window's right edge. Computing this from the
+            // raster origin keeps text monospaced and aligned to the grid.
+            let content_right_px = dw as f64 - cw;
+            let content_left_px = content_right_px - hud_cols as f64 * cw;
+            let start_col =
+                (((content_left_px - self.raster.pad_x) / cw).round() as isize).max(0) as usize;
+
+            draw_right_hud(
                 &mut self.raster,
                 painter,
                 metrics,
                 &self.theme,
                 &self.agent_snap,
                 &self.local_ctx,
-                &placement,
-                false,
+                surface_rect,
+                start_col,
+                hud_cols,
+                top_offset,
+                rows,
             );
         }
 
@@ -1266,6 +1343,9 @@ impl App {
             }
             Action::HudToggle => {
                 self.hud_visible = !self.hud_visible;
+                // Grid width changes when the HUD toggles — reflow the panes
+                // and PTYs to the new inner rect.
+                self.resize_all_tabs();
                 self.dirty = true;
             }
             Action::CheatsheetShow => {
@@ -1383,8 +1463,26 @@ impl App {
             self.dirty = true;
             return true;
         });
+        // Cmd+Opt+R: toggle regex mode (only when search is open).
+        test!(kb.search_regex_toggle, {
+            if self.search_open {
+                let new_mode = !self.search.is_regex();
+                self.search.set_regex(new_mode);
+                // Re-run the scan with the new mode.
+                if let Some(tab) = self.tabs.current_mut() {
+                    let id = tab.focused_id();
+                    if let Some(pane) = tab.registry.get_mut(id) {
+                        self.search.rescan(&pane.terminal);
+                    }
+                }
+                self.scroll_to_current_match();
+                self.dirty = true;
+            }
+            return true;
+        });
         test!(kb.hud_toggle, {
             self.hud_visible = !self.hud_visible;
+            self.resize_all_tabs();
             self.dirty = true;
             return true;
         });
@@ -1463,7 +1561,10 @@ impl AppHandler for AppShell {
             }
         }
 
-        // System dark-mode check (when theme = "system").
+        // System dark-mode check (when theme = "system"). Every cell carries a
+        // theme-resolved color, so on a flip we *must* repaint the whole
+        // raster — partial dirty rows would leave half the grid (and the HUD
+        // strip) in the old palette.
         if app.config.theme == "system" {
             let now_dark = system_is_dark();
             if now_dark != app.system_dark {
@@ -1473,6 +1574,7 @@ impl AppHandler for AppShell {
                 if let Some(r) = &mut app.renderer {
                     r.set_clear_color(app.theme.background);
                 }
+                app.force_full_redraw = true;
                 app.dirty = true;
             }
         }
@@ -1625,6 +1727,7 @@ impl AppHandler for AppShell {
         // HUD: Esc closes it (Cmd+J still toggles).
         if self.app.hud_visible && event.key == KeyInput::Escape && !event.mods.command {
             self.app.hud_visible = false;
+            self.app.resize_all_tabs();
             self.app.dirty = true;
             return;
         }
@@ -1724,6 +1827,23 @@ impl AppHandler for AppShell {
 
         let ch_pt = app.font.metrics.cell_h / app.window_scale;
 
+        // HUD left-edge resize handle. The 1px hairline sits at the left of
+        // the HUD's surface rect; we accept clicks within `HUD_DRAG_HIT_PX`
+        // device pixels of that line for slop. This branch must come before
+        // click-to-focus and selection-start so the drag wins over both.
+        if app.hud_visible {
+            let (rx, _ry) = app.view_pt_to_raster_px(loc);
+            let cw = app.font.metrics.cell_w;
+            let (dw, _) = app.device_size();
+            let surface_w_px = app.hud_cols as f64 * cw + GRID_PAD as f64;
+            let edge_x = (dw as f64 - surface_w_px).max(0.0);
+            if (rx - edge_x).abs() <= HUD_DRAG_HIT_PX {
+                app.hud_drag_active = true;
+                app.dirty = true;
+                return;
+            }
+        }
+
         // Tab bar click (top row of view, y near top = large value in AppKit).
         if app.tabs.bar_visible() && loc.y >= view_h - ch_pt {
             let n = app.tabs.count();
@@ -1736,7 +1856,6 @@ impl AppHandler for AppShell {
             }
             return;
         }
-
 
         // Click-to-focus.
         {
@@ -1832,6 +1951,13 @@ impl AppHandler for AppShell {
     fn mouse_up(&mut self, loc: MouseLocation, _mods: Modifiers) {
         let app = &mut self.app;
 
+        // HUD resize drag: release.
+        if app.hud_drag_active {
+            app.hud_drag_active = false;
+            app.dirty = true;
+            return;
+        }
+
         // Mouse reporting: release.
         let (btn_mode, sgr_mode) = app
             .tabs
@@ -1876,6 +2002,27 @@ impl AppHandler for AppShell {
 
     fn mouse_dragged(&mut self, loc: MouseLocation) {
         let app = &mut self.app;
+
+        // HUD resize drag: convert mouse x to a new column count and reflow.
+        if app.hud_drag_active {
+            let (rx, _) = app.view_pt_to_raster_px(loc);
+            let cw = app.font.metrics.cell_w;
+            let (dw, _) = app.device_size();
+            // Desired surface left edge is at the mouse x. The surface
+            // spans `hud_cols * cw + GRID_PAD` pixels from there to dw, so
+            // new `hud_cols = ((dw - rx) - GRID_PAD) / cw`.
+            let want_w_px = (dw as f64 - rx - GRID_PAD as f64).max(0.0);
+            let want_cols = (want_w_px / cw).round() as i64;
+            let new_cols = want_cols.clamp(HUD_COLS_MIN as i64, HUD_COLS_MAX as i64) as usize;
+            if new_cols != app.hud_cols {
+                app.hud_cols = new_cols;
+                app.resize_all_tabs();
+                app.force_full_redraw = true;
+                app.dirty = true;
+            }
+            return;
+        }
+
         let btn_mode = app
             .tabs
             .current()
@@ -2243,7 +2390,14 @@ fn main() -> Result<()> {
     // -- Cell geometry --------------------------------------------------------
     let cw = font.metrics.cell_w as usize;
     let ch = font.metrics.cell_h as usize;
-    let cols = ((dw.saturating_sub(2 * GRID_PAD)) / cw).max(1);
+    // Initial PTY size must match what `App::inner_rect` will report once the
+    // App is constructed (with `hud_visible = true` by default), otherwise the
+    // first frames render at the wrong column count and scrollback comes back
+    // mis-shaped. Mirror the reservation: drop the right `GRID_PAD` (the HUD
+    // absorbs it) and reserve `HUD_COLS_DEFAULT + 1` cells for the docked panel.
+    let hud_reserve_px = HUD_COLS_DEFAULT * cw + cw;
+    let inner_w_init = dw.saturating_sub(GRID_PAD).saturating_sub(hud_reserve_px);
+    let cols = (inner_w_init / cw).max(1);
     let rows = ((dh.saturating_sub(2 * GRID_PAD)) / ch).max(1);
 
     // -- Initial tab + PTY ----------------------------------------------------
@@ -2265,23 +2419,30 @@ fn main() -> Result<()> {
         for cwd in git_work_rx {
             let info = git::query(&cwd);
             let result = match info {
-                Some(i) => GitResult {
-                    state: if i.dirty > 0 {
-                        GitState::Dirty
-                    } else {
-                        GitState::Ok
-                    },
-                    branch: i.branch,
-                    dirty: i.dirty,
-                    ahead: i.ahead,
-                    behind: i.behind,
-                },
+                Some(i) => {
+                    let (head_short, head_subject) = git_head_oneline(&cwd);
+                    GitResult {
+                        state: if i.dirty > 0 {
+                            GitState::Dirty
+                        } else {
+                            GitState::Ok
+                        },
+                        branch: i.branch,
+                        dirty: i.dirty,
+                        ahead: i.ahead,
+                        behind: i.behind,
+                        head_short,
+                        head_subject,
+                    }
+                }
                 None => GitResult {
                     state: GitState::NoRepo,
                     branch: String::new(),
                     dirty: 0,
                     ahead: 0,
                     behind: 0,
+                    head_short: String::new(),
+                    head_subject: String::new(),
                 },
             };
             let _ = git_result_tx.send(result);
@@ -2338,9 +2499,11 @@ fn main() -> Result<()> {
         last_blink_opacity: -1.0,
         search: anvil_term::Search::new(),
         search_open: false,
-        // Agent panel hidden by default — Cmd+J toggles the floating widget on demand.
-        hud_visible: false,
+        // Docked right HUD on by default — Cmd+J toggles it.
+        hud_visible: true,
         hud_tick: 0,
+        hud_cols: HUD_COLS_DEFAULT,
+        hud_drag_active: false,
         cheatsheet_visible: false,
         focused: true,
         agent_snap: AgentSnapshot::default(),

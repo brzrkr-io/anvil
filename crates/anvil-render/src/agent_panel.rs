@@ -12,12 +12,19 @@
 //! agent violet / info teal).
 
 use std::fmt::Write as FmtWrite;
-use std::time::SystemTime;
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime};
 
 use anvil_agent::{Connection, FindingSeverity, RunStatus, Snapshot};
 use anvil_theme::Theme;
 
-use crate::raster::{FontMetrics, GlyphPainter, Raster};
+use crate::raster::{FontMetrics, GlyphPainter, PixelRect, Raster};
+
+/// HUD-local theme tone — keeps text legible against the deep-glass surface
+/// regardless of the active app theme (light/dark canvas, same dark panel).
+struct TonedTheme {
+    foreground: [u8; 3],
+}
 
 // --- Brand color constants (Mineral palette) --------------------------------
 
@@ -48,7 +55,7 @@ pub enum RunState {
     Failed,
 }
 
-/// Local context: cwd, git, last-run. Used as the footer of the agent panel.
+/// Local context: cwd, git, last-run. Drives the right-side HUD.
 pub struct LocalContext {
     // cwd section
     pub cwd: String,
@@ -59,6 +66,10 @@ pub struct LocalContext {
     pub git_dirty: u32,
     pub git_ahead: u32,
     pub git_behind: u32,
+    /// Short HEAD sha (e.g. `0d6726f`). Empty when unknown.
+    pub head_short: String,
+    /// First line of the HEAD commit message. Empty when unknown.
+    pub head_subject: String,
 
     // last-run section
     pub run: RunState,
@@ -75,6 +86,8 @@ impl Default for LocalContext {
             git_dirty: 0,
             git_ahead: 0,
             git_behind: 0,
+            head_short: String::new(),
+            head_subject: String::new(),
             run: RunState::Idle,
             run_exit: 0,
             run_duration_ms: 0,
@@ -90,10 +103,21 @@ pub enum Placement {
         total_rows: usize,
         top_offset: usize,
     },
+    /// Full-height right-side HUD column.
+    Right {
+        /// First terminal column the HUD occupies (the 1-col gutter sits to its left).
+        start_col: usize,
+        hud_cols: usize,
+        top_row: usize,
+        rows: usize,
+    },
 }
 
 /// Width of the agent-panel card in terminal columns.
 pub const PANEL_COLS: usize = 36;
+
+/// Width of the docked right-side HUD in terminal columns.
+pub const HUD_COLS: usize = 34;
 
 /// Dynamic card height: 4 base rows + up to 3 priority rows.
 fn card_rows(snap: &Snapshot) -> usize {
@@ -289,6 +313,9 @@ pub fn draw(
             let cr = to + 1;
             (cc, cr, tr)
         }
+        // The docked HUD has its own entry point (`draw_right_hud`); this
+        // variant is not handled by the floating-card renderer.
+        Placement::Right { .. } => return,
     };
 
     let actual_rows = card_rows(snap).min(available);
@@ -413,6 +440,639 @@ pub fn draw(
     if row < max_row {
         draw_local_footer(raster, painter, metrics, card_col, row, local, PANEL_COLS);
     }
+}
+
+// --- Right-side HUD ---------------------------------------------------------
+
+/// Brand color constants exported for callers that need to compose rows.
+const INFO_TEAL: [u8; 3] = [0x3a, 0x8a, 0x9d];
+
+/// Theme-aware tones for the docked HUD's frosted-glass surface. Computed
+/// per-frame from `theme.background` luminance so the panel feels like the
+/// right material on either light or dark canvases — light mode gets a warm
+/// pale glass with dark ink; dark mode gets a deep cool slate with light ink.
+struct GlassTones {
+    /// Surface fill color (composited at `surface_alpha` over the canvas).
+    surface: [u8; 3],
+    /// How much of the canvas shows through the surface (0.0–1.0).
+    surface_alpha: f64,
+    /// 1px hairline on the HUD's left edge.
+    edge: [u8; 3],
+    /// Section header text (REPO / GIT / …) — quieter than body text.
+    label: [u8; 3],
+    /// Primary body text on the glass.
+    foreground: [u8; 3],
+    /// Dimmer metadata text on the glass (parent path, time, idle state).
+    meta: [u8; 3],
+}
+
+/// Relative luminance, ITU-R BT.709, on 0–255 sRGB (approximate; not gamma
+/// corrected — good enough to choose a light/dark palette).
+fn luma(rgb: [u8; 3]) -> f64 {
+    0.2126 * rgb[0] as f64 + 0.7152 * rgb[1] as f64 + 0.0722 * rgb[2] as f64
+}
+
+fn glass_tones_for(theme: &Theme) -> GlassTones {
+    if luma(theme.background) < 128.0 {
+        // Dark canvas → deep cool slate panel with warm off-white ink.
+        GlassTones {
+            surface: [0x14, 0x18, 0x21],
+            surface_alpha: 0.88,
+            edge: [0x2a, 0x30, 0x3c],
+            label: [0x6b, 0x76, 0x82],
+            foreground: [0xd6, 0xdc, 0xe4],
+            meta: [0x86, 0x91, 0x9a],
+        }
+    } else {
+        // Light canvas → warm pale glass with cool dark ink — same role as
+        // a macOS Mail / Finder sidebar in light mode.
+        GlassTones {
+            surface: [0xe3, 0xe7, 0xed],
+            surface_alpha: 0.72,
+            edge: [0xc6, 0xcd, 0xd6],
+            label: [0x7a, 0x83, 0x90],
+            foreground: [0x24, 0x2a, 0x33],
+            meta: [0x55, 0x5e, 0x6b],
+        }
+    }
+}
+
+/// Render the always-on right-side HUD.
+///
+/// `surface_rect` is the *pixel* rect the HUD's frosted surface fills —
+/// usually the rightmost slab of the window, top to bottom. Content rows are
+/// positioned by cell coords (`content_col`, `top_row`, `content_cols`,
+/// `rows`) so text aligns to the monospace grid.
+///
+/// Layout (top-to-bottom, no card chrome — just the glass fill + a 1px
+/// left hairline so it reads as a docked panel, not a popup):
+///   REPO     — repo basename + parent path
+///   GIT      — branch · dirty · ahead/behind  (or "no repo" when none)
+///   LAST RUN — outcome + duration
+///   AGENTS   — connection bullet + summary + up to 3 priority rows
+///   SYSTEM   — load 1m + local HH:MM
+#[allow(clippy::too_many_arguments)]
+pub fn draw_right_hud(
+    raster: &mut Raster,
+    painter: &mut dyn GlyphPainter,
+    metrics: FontMetrics,
+    app_theme: &Theme,
+    snap: &Snapshot,
+    local: &LocalContext,
+    surface_rect: PixelRect,
+    content_col: usize,
+    content_cols: usize,
+    top_row: usize,
+    rows: usize,
+) {
+    if rows == 0 || content_cols < 12 {
+        return;
+    }
+
+    let tones = glass_tones_for(app_theme);
+
+    // Frosted glass: composite the surface tone over whatever's behind with
+    // `surface_alpha` < 1, so the canvas tints through. A 1px hairline on
+    // the left edge separates the panel from the terminal grid.
+    raster.fill_pixel_rect_alpha(
+        surface_rect.x,
+        surface_rect.y,
+        surface_rect.w,
+        surface_rect.h,
+        tones.surface,
+        tones.surface_alpha,
+    );
+    raster.fill_pixel_rect(
+        surface_rect.x,
+        surface_rect.y,
+        1.0,
+        surface_rect.h,
+        tones.edge,
+    );
+
+    // Bind cell-grid coords for the rest of the function.
+    let start_col = content_col;
+    let hud_cols = content_cols;
+    let theme = TonedTheme {
+        foreground: tones.foreground,
+    };
+    let label_color = tones.label;
+    let meta_color = tones.meta;
+
+    let inner_col = start_col + 2; // 2-col left pad
+    let max_col = start_col + hud_cols - 1; // 1-col right pad
+    let mut r = top_row + 1; // 1-row top breathing room
+    let bottom = top_row + rows;
+
+    // --- REPO --------------------------------------------------------------
+    if r >= bottom {
+        return;
+    }
+    draw_section_header(
+        raster,
+        painter,
+        metrics,
+        inner_col,
+        r,
+        "REPO",
+        label_color,
+        max_col,
+    );
+    r += 1;
+
+    // Repo name in foreground (the cwd basename for now).
+    if r < bottom {
+        let name = repo_display_name(local);
+        draw_text(
+            raster,
+            painter,
+            metrics,
+            inner_col,
+            r,
+            &name,
+            theme.foreground,
+            max_col,
+        );
+        r += 1;
+    }
+    // Parent path, dim.
+    if r < bottom {
+        if let Some(parent) = parent_path_compact(&local.cwd, hud_cols - 4) {
+            draw_text(
+                raster, painter, metrics, inner_col, r, &parent, meta_color, max_col,
+            );
+            r += 1;
+        }
+    }
+    r = blank(r, bottom);
+
+    // --- GIT ---------------------------------------------------------------
+    if r >= bottom {
+        return;
+    }
+    draw_section_header(
+        raster,
+        painter,
+        metrics,
+        inner_col,
+        r,
+        "GIT",
+        label_color,
+        max_col,
+    );
+    r += 1;
+
+    if r < bottom {
+        if local.git == GitState::NoRepo || local.branch.is_empty() {
+            draw_text(
+                raster, painter, metrics, inner_col, r, "no repo", meta_color, max_col,
+            );
+            r += 1;
+        } else {
+            // Branch line: nf-pl-branch + name, in INFO_TEAL.
+            let glyph = "\u{e0a0}";
+            raster.cell_glyph(
+                painter,
+                metrics,
+                inner_col,
+                r,
+                glyph.chars().next().unwrap() as u32,
+                INFO_TEAL,
+            );
+            draw_text(
+                raster,
+                painter,
+                metrics,
+                inner_col + 2,
+                r,
+                &local.branch,
+                theme.foreground,
+                max_col,
+            );
+            r += 1;
+
+            // Dirty / ahead / behind on the next line, condensed.
+            if r < bottom {
+                let mut bits: Vec<(String, [u8; 3])> = Vec::new();
+                if local.git_dirty > 0 {
+                    bits.push((format!("*{} modified", local.git_dirty), ATTENTION));
+                }
+                let ab = format_ahead_behind(local.git_ahead, local.git_behind);
+                if !ab.is_empty() {
+                    bits.push((ab, INFO_TEAL));
+                }
+                if bits.is_empty() {
+                    bits.push(("clean".to_string(), VERIFIED));
+                }
+                let mut c = inner_col;
+                for (i, (txt, col)) in bits.iter().enumerate() {
+                    if i > 0 {
+                        if c >= max_col {
+                            break;
+                        }
+                        raster.cell_glyph(painter, metrics, c, r, ' ' as u32, meta_color);
+                        c += 1;
+                        if c >= max_col {
+                            break;
+                        }
+                        raster.cell_glyph(painter, metrics, c, r, 0x00b7, meta_color);
+                        c += 1;
+                        if c >= max_col {
+                            break;
+                        }
+                        raster.cell_glyph(painter, metrics, c, r, ' ' as u32, meta_color);
+                        c += 1;
+                    }
+                    for ch in txt.chars() {
+                        if c >= max_col {
+                            break;
+                        }
+                        raster.cell_glyph(painter, metrics, c, r, ch as u32, *col);
+                        c += 1;
+                    }
+                }
+                r += 1;
+            }
+
+            // HEAD commit, when known: short SHA in INFO_TEAL + subject in
+            // meta tone. Subject truncates on cell-width — no wrapping.
+            if r < bottom && !local.head_short.is_empty() {
+                let mut c = inner_col;
+                for ch in local.head_short.chars() {
+                    if c >= max_col {
+                        break;
+                    }
+                    raster.cell_glyph(painter, metrics, c, r, ch as u32, INFO_TEAL);
+                    c += 1;
+                }
+                if !local.head_subject.is_empty() && c + 1 < max_col {
+                    raster.cell_glyph(painter, metrics, c, r, ' ' as u32, meta_color);
+                    c += 1;
+                    for ch in local.head_subject.chars() {
+                        if c >= max_col {
+                            break;
+                        }
+                        raster.cell_glyph(painter, metrics, c, r, ch as u32, meta_color);
+                        c += 1;
+                    }
+                }
+                r += 1;
+            }
+        }
+    }
+    r = blank(r, bottom);
+
+    // --- LAST RUN ----------------------------------------------------------
+    if r >= bottom {
+        return;
+    }
+    draw_section_header(
+        raster,
+        painter,
+        metrics,
+        inner_col,
+        r,
+        "LAST RUN",
+        label_color,
+        max_col,
+    );
+    r += 1;
+    if r < bottom {
+        let (glyph, gcol) = match local.run {
+            RunState::Idle => ("\u{00b7}", meta_color),
+            RunState::Ok => ("\u{2713}", VERIFIED),    // ✓
+            RunState::Failed => ("\u{2717}", FAILURE), // ✗
+        };
+        raster.cell_glyph(
+            painter,
+            metrics,
+            inner_col,
+            r,
+            glyph.chars().next().unwrap() as u32,
+            gcol,
+        );
+        let text = match local.run {
+            RunState::Idle => "idle".to_string(),
+            RunState::Ok => format!("ok  {}", format_duration(local.run_duration_ms)),
+            RunState::Failed => format!(
+                "exit {}  {}",
+                local.run_exit,
+                format_duration(local.run_duration_ms)
+            ),
+        };
+        draw_text(
+            raster,
+            painter,
+            metrics,
+            inner_col + 2,
+            r,
+            &text,
+            theme.foreground,
+            max_col,
+        );
+        r += 1;
+    }
+    r = blank(r, bottom);
+
+    // --- AGENTS ------------------------------------------------------------
+    if r >= bottom {
+        return;
+    }
+    draw_section_header(
+        raster,
+        painter,
+        metrics,
+        inner_col,
+        r,
+        "AGENTS",
+        label_color,
+        max_col,
+    );
+    r += 1;
+    if r < bottom {
+        let bullet_color = header_bullet_color(snap);
+        raster.cell_glyph(painter, metrics, inner_col, r, 0x25CF, bullet_color);
+        let summary = build_header_summary(snap);
+        let label = if summary.is_empty() {
+            "no signal".to_string()
+        } else {
+            summary
+        };
+        draw_text(
+            raster,
+            painter,
+            metrics,
+            inner_col + 2,
+            r,
+            &label,
+            theme.foreground,
+            max_col,
+        );
+        r += 1;
+    }
+
+    // Up to 3 priority rows.
+    let mut emitted = 0_usize;
+    for ap in &snap.approvals {
+        if emitted >= 3 || r >= bottom {
+            break;
+        }
+        draw_hud_row(
+            raster,
+            painter,
+            metrics,
+            inner_col,
+            r,
+            "\u{25b8}",
+            ATTENTION,
+            &ap.connector,
+            max_col,
+            theme.foreground,
+        );
+        r += 1;
+        emitted += 1;
+    }
+    for run in &snap.runs {
+        if emitted >= 3 || r >= bottom {
+            break;
+        }
+        if run.status != RunStatus::Running {
+            continue;
+        }
+        draw_hud_row(
+            raster,
+            painter,
+            metrics,
+            inner_col,
+            r,
+            "\u{25c6}",
+            AGENT_VIOLET,
+            &run.agent,
+            max_col,
+            theme.foreground,
+        );
+        r += 1;
+        emitted += 1;
+    }
+    for f in &snap.findings {
+        if emitted >= 3 || r >= bottom {
+            break;
+        }
+        if f.severity != FindingSeverity::Failure {
+            continue;
+        }
+        draw_hud_row(
+            raster,
+            painter,
+            metrics,
+            inner_col,
+            r,
+            "\u{2717}",
+            FAILURE,
+            &f.summary,
+            max_col,
+            theme.foreground,
+        );
+        r += 1;
+        emitted += 1;
+    }
+    r = blank(r, bottom);
+
+    // --- SYSTEM ------------------------------------------------------------
+    if r >= bottom {
+        return;
+    }
+    draw_section_header(
+        raster,
+        painter,
+        metrics,
+        inner_col,
+        r,
+        "SYSTEM",
+        label_color,
+        max_col,
+    );
+    r += 1;
+
+    // mem line: "mem  ▆▆▆▅▃▁  6.2 / 16 GB"
+    if r < bottom {
+        let ratio = mem_usage_ratio().unwrap_or(0.0);
+        let bar = gauge_bar(ratio, 6);
+        let total_gb = total_mem_gb();
+        let used_gb = ratio * total_gb;
+        let mem_line = if total_gb > 0.0 {
+            format!("mem  {bar}  {:.1} / {:.0} GB", used_gb, total_gb)
+        } else {
+            format!("mem  {bar}")
+        };
+        draw_text(
+            raster,
+            painter,
+            metrics,
+            inner_col,
+            r,
+            &mem_line,
+            theme.foreground,
+            max_col,
+        );
+        r += 1;
+    }
+
+    // disk line: "disk ▇▇▇▇▆▁  72 / 512 GB"
+    if r < bottom {
+        let ratio = disk_usage_ratio().unwrap_or(0.0);
+        let bar = gauge_bar(ratio, 6);
+        let total_gb = total_disk_gb();
+        let used_gb = ratio * total_gb;
+        let disk_line = if total_gb > 0.0 {
+            format!("disk {bar}  {:.0} / {:.0} GB", used_gb, total_gb)
+        } else {
+            format!("disk {bar}")
+        };
+        draw_text(
+            raster,
+            painter,
+            metrics,
+            inner_col,
+            r,
+            &disk_line,
+            theme.foreground,
+            max_col,
+        );
+        r += 1;
+    }
+
+    // load line: "load ▂▂▂▃▂▁  1.42"
+    if r < bottom {
+        let load_val = format_load_1m();
+        let load_str = load_val.as_deref().unwrap_or("—");
+        // Normalize load against CPU count for the gauge (load/ncpu, capped at 1).
+        let ncpu = num_cpus() as f64;
+        let load_num: f64 = load_str.parse().unwrap_or(0.0);
+        let load_ratio = if ncpu > 0.0 {
+            (load_num / ncpu).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let bar = gauge_bar(load_ratio, 6);
+        let line = format!("load {bar}  {load_str}");
+        draw_text(
+            raster,
+            painter,
+            metrics,
+            inner_col,
+            r,
+            &line,
+            theme.foreground,
+            max_col,
+        );
+        r += 1;
+    }
+
+    if r < bottom {
+        if let Some(hm) = format_local_hm() {
+            draw_text(
+                raster, painter, metrics, inner_col, r, &hm, meta_color, max_col,
+            );
+            // Nothing increments r — it's the last line we draw.
+        }
+    }
+}
+
+/// A blank vertical spacer; returns the new row, capped at `bottom`.
+fn blank(r: usize, bottom: usize) -> usize {
+    (r + 1).min(bottom)
+}
+
+/// "REPO", "GIT" etc. drawn in the supplied label color (theme-dependent,
+/// quieter than body text so headers recede on the glass surface).
+#[allow(clippy::too_many_arguments)]
+fn draw_section_header(
+    raster: &mut Raster,
+    painter: &mut dyn GlyphPainter,
+    metrics: FontMetrics,
+    col: usize,
+    row: usize,
+    label: &str,
+    color: [u8; 3],
+    max_col: usize,
+) {
+    draw_text(raster, painter, metrics, col, row, label, color, max_col);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_hud_row(
+    raster: &mut Raster,
+    painter: &mut dyn GlyphPainter,
+    metrics: FontMetrics,
+    col: usize,
+    row: usize,
+    glyph_str: &str,
+    glyph_color: [u8; 3],
+    label: &str,
+    max_col: usize,
+    text_color: [u8; 3],
+) {
+    if let Some(g) = glyph_str.chars().next() {
+        raster.cell_glyph(painter, metrics, col, row, g as u32, glyph_color);
+    }
+    draw_text(
+        raster,
+        painter,
+        metrics,
+        col + 2,
+        row,
+        label,
+        text_color,
+        max_col,
+    );
+}
+
+/// Display name for the REPO section — the basename of cwd. Future: actual
+/// `git rev-parse --show-toplevel`. Falls back to "—".
+fn repo_display_name(local: &LocalContext) -> String {
+    if local.cwd.is_empty() {
+        return "—".to_string();
+    }
+    let trimmed = local.cwd.trim_end_matches('/');
+    let base = trimmed.rsplit('/').next().unwrap_or(trimmed);
+    if base.is_empty() {
+        "—".to_string()
+    } else {
+        base.to_string()
+    }
+}
+
+/// Compact parent-directory display. Truncates with a leading "…/" when too
+/// long. Returns None when there's no parent (root or empty).
+fn parent_path_compact(cwd: &str, max_chars: usize) -> Option<String> {
+    if cwd.is_empty() {
+        return None;
+    }
+    let trimmed = cwd.trim_end_matches('/');
+    let last = trimmed.rfind('/')?;
+    if last == 0 {
+        return None;
+    }
+    let parent = &trimmed[..last];
+    // Replace $HOME with ~ if possible.
+    let home_replaced = match std::env::var("HOME") {
+        Ok(h) if !h.is_empty() && parent.starts_with(&h) => format!("~{}", &parent[h.len()..]),
+        _ => parent.to_string(),
+    };
+    if home_replaced.chars().count() <= max_chars {
+        return Some(home_replaced);
+    }
+    // Truncate from the left.
+    let tail: String = home_replaced
+        .chars()
+        .rev()
+        .take(max_chars.saturating_sub(2))
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    Some(format!("…/{tail}"))
 }
 
 // --- Row draw helpers -------------------------------------------------------
@@ -576,7 +1236,9 @@ fn draw_local_footer(
 
 /// Local time as `HH:MM` (24h). Returns None when system time is unavailable.
 fn format_local_hm() -> Option<String> {
-    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).ok()?;
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .ok()?;
     let secs = now.as_secs();
     // Pure conversion: seconds → wall HH:MM in local TZ. We use a fixed
     // offset from the TZ env var to avoid depending on a date crate.
@@ -615,6 +1277,178 @@ fn local_offset_seconds() -> i64 {
         let mut tm: libc::tm = std::mem::zeroed();
         libc::localtime_r(&now as *const libc::time_t, &mut tm as *mut libc::tm);
         tm.tm_gmtoff as i64
+    }
+}
+
+// --- Gauge rendering -------------------------------------------------------
+
+/// Block characters U+2581–U+2588 (▁▂▃▄▅▆▇█), indexed 0–7.
+const GAUGE_BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+/// Render `cells` block-bar glyphs shaded by `ratio` (0.0–1.0).
+/// Each cell's fill level is proportional to how far along the bar it sits.
+/// Returns a string of exactly `cells` block characters.
+pub fn gauge_bar(ratio: f64, cells: usize) -> String {
+    if cells == 0 {
+        return String::new();
+    }
+    let ratio = ratio.clamp(0.0, 1.0);
+    let mut out = String::with_capacity(cells * 3); // each glyph up to 3 UTF-8 bytes
+    for i in 0..cells {
+        // Fraction of the total bar that this cell represents.
+        let cell_ratio = (i as f64 + 1.0) / cells as f64;
+        // How filled this cell is relative to ratio: 0=empty, 1=full.
+        let fill = (ratio / cell_ratio).clamp(0.0, 1.0);
+        let idx = (fill * 7.0).round() as usize;
+        out.push(GAUGE_BLOCKS[idx.min(7)]);
+    }
+    out
+}
+
+// --- Cached system stats ---------------------------------------------------
+
+/// ~1-second cache for the memory usage ratio (0.0–1.0).
+static MEM_CACHE: Mutex<Option<(Instant, f64)>> = Mutex::new(None);
+/// ~1-second cache for the disk usage ratio (0.0–1.0).
+static DISK_CACHE: Mutex<Option<(Instant, f64)>> = Mutex::new(None);
+
+const CACHE_TTL: Duration = Duration::from_secs(1);
+
+/// Memory pressure ratio via `host_statistics64`. Returns None on failure.
+///
+/// Metric: (active + wire + compressor) / total pages.
+fn mem_usage_ratio() -> Option<f64> {
+    if let Ok(guard) = MEM_CACHE.lock() {
+        if let Some((ts, val)) = *guard {
+            if ts.elapsed() < CACHE_TTL {
+                return Some(val);
+            }
+        }
+    }
+    let ratio = mem_usage_ratio_uncached()?;
+    if let Ok(mut guard) = MEM_CACHE.lock() {
+        *guard = Some((Instant::now(), ratio));
+    }
+    Some(ratio)
+}
+
+fn mem_usage_ratio_uncached() -> Option<f64> {
+    // SAFETY: calls macOS host_statistics64 with the correct flavor and a
+    // properly-sized output buffer; reads only, no process-state mutation.
+    // mach_host_self is deprecated in libc in favour of the mach2 crate; we
+    // suppress the lint here rather than adding a new dependency.
+    #[allow(deprecated)]
+    unsafe {
+        let host = libc::mach_host_self();
+        let mut stats: libc::vm_statistics64 = std::mem::zeroed();
+        let mut count = libc::HOST_VM_INFO64_COUNT;
+        let ret = libc::host_statistics64(
+            host,
+            libc::HOST_VM_INFO64,
+            &mut stats as *mut libc::vm_statistics64 as libc::host_info64_t,
+            &mut count,
+        );
+        if ret != libc::KERN_SUCCESS {
+            return None;
+        }
+        let total = stats.free_count as f64
+            + stats.active_count as f64
+            + stats.inactive_count as f64
+            + stats.wire_count as f64
+            + stats.compressor_page_count as f64;
+        if total == 0.0 {
+            return None;
+        }
+        let used = stats.active_count as f64
+            + stats.wire_count as f64
+            + stats.compressor_page_count as f64;
+        Some((used / total).clamp(0.0, 1.0))
+    }
+}
+
+/// Disk usage ratio for the root volume via `statfs`. Returns None on failure.
+fn disk_usage_ratio() -> Option<f64> {
+    if let Ok(guard) = DISK_CACHE.lock() {
+        if let Some((ts, val)) = *guard {
+            if ts.elapsed() < CACHE_TTL {
+                return Some(val);
+            }
+        }
+    }
+    let ratio = disk_usage_ratio_uncached()?;
+    if let Ok(mut guard) = DISK_CACHE.lock() {
+        *guard = Some((Instant::now(), ratio));
+    }
+    Some(ratio)
+}
+
+fn disk_usage_ratio_uncached() -> Option<f64> {
+    // SAFETY: statfs is a POSIX read-only syscall; path is a valid C string.
+    unsafe {
+        let path = b"/\0";
+        let mut st: libc::statfs = std::mem::zeroed();
+        let ret = libc::statfs(path.as_ptr() as *const libc::c_char, &mut st);
+        if ret != 0 {
+            return None;
+        }
+        if st.f_blocks == 0 {
+            return None;
+        }
+        let used = st.f_blocks - st.f_bfree;
+        Some((used as f64 / st.f_blocks as f64).clamp(0.0, 1.0))
+    }
+}
+
+/// Total physical memory in GB via `sysctlbyname("hw.memsize")`. Returns 0.0 on failure.
+fn total_mem_gb() -> f64 {
+    // SAFETY: sysctlbyname reads a kernel variable; no mutation of process state.
+    unsafe {
+        let name = b"hw.memsize\0";
+        let mut size: u64 = 0;
+        let mut len: libc::size_t = std::mem::size_of::<u64>();
+        let ret = libc::sysctlbyname(
+            name.as_ptr() as *const libc::c_char,
+            &mut size as *mut u64 as *mut libc::c_void,
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        );
+        if ret != 0 {
+            0.0
+        } else {
+            size as f64 / 1_073_741_824.0
+        }
+    }
+}
+
+/// Total disk size in GB for `/`. Returns 0.0 on failure.
+fn total_disk_gb() -> f64 {
+    // SAFETY: statfs read-only syscall.
+    unsafe {
+        let path = b"/\0";
+        let mut st: libc::statfs = std::mem::zeroed();
+        if libc::statfs(path.as_ptr() as *const libc::c_char, &mut st) != 0 {
+            return 0.0;
+        }
+        st.f_blocks as f64 * st.f_bsize as f64 / 1_073_741_824.0
+    }
+}
+
+/// Number of logical CPUs via `sysctl hw.logicalcpu`. Falls back to 1.
+fn num_cpus() -> usize {
+    // SAFETY: sysctlbyname reads a kernel variable; no process-state mutation.
+    unsafe {
+        let name = b"hw.logicalcpu\0";
+        let mut val: libc::c_int = 1;
+        let mut len: libc::size_t = std::mem::size_of::<libc::c_int>();
+        libc::sysctlbyname(
+            name.as_ptr() as *const libc::c_char,
+            &mut val as *mut libc::c_int as *mut libc::c_void,
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        );
+        val.max(1) as usize
     }
 }
 
@@ -934,6 +1768,8 @@ mod tests {
             git_dirty: 2,
             git_ahead: 1,
             git_behind: 0,
+            head_short: String::new(),
+            head_subject: String::new(),
             run: RunState::Ok,
             run_exit: 0,
             run_duration_ms: 1200,
@@ -975,6 +1811,8 @@ mod tests {
             git_dirty: 3,
             git_ahead: 0,
             git_behind: 1,
+            head_short: String::new(),
+            head_subject: String::new(),
             run: RunState::Failed,
             run_exit: 1,
             run_duration_ms: 500,
@@ -1107,5 +1945,239 @@ mod tests {
         };
         // min(3 + 1 + 1, 3) = 3 priority → 7 total
         assert_eq!(card_rows(&snap), 7);
+    }
+
+    // --- glass tones ---------------------------------------------------------
+
+    /// Dark canvas → glass surface is dark, foreground is light.
+    #[test]
+    fn glass_tones_dark_canvas_returns_dark_surface_and_light_ink() {
+        let mut theme = anvil_theme::MINERAL_DARK;
+        theme.background = [0x10, 0x12, 0x18]; // explicit dark
+        let t = glass_tones_for(&theme);
+        let l_surface = 0.2126 * t.surface[0] as f64
+            + 0.7152 * t.surface[1] as f64
+            + 0.0722 * t.surface[2] as f64;
+        let l_fg = 0.2126 * t.foreground[0] as f64
+            + 0.7152 * t.foreground[1] as f64
+            + 0.0722 * t.foreground[2] as f64;
+        assert!(l_surface < 64.0, "expected dark surface, got {l_surface}");
+        assert!(l_fg > 180.0, "expected light foreground, got {l_fg}");
+    }
+
+    /// Light canvas → glass surface is light, foreground is dark.
+    #[test]
+    fn glass_tones_light_canvas_returns_light_surface_and_dark_ink() {
+        let mut theme = anvil_theme::MINERAL_LIGHT;
+        theme.background = [0xee, 0xf1, 0xf2]; // explicit light
+        let t = glass_tones_for(&theme);
+        let l_surface = 0.2126 * t.surface[0] as f64
+            + 0.7152 * t.surface[1] as f64
+            + 0.0722 * t.surface[2] as f64;
+        let l_fg = 0.2126 * t.foreground[0] as f64
+            + 0.7152 * t.foreground[1] as f64
+            + 0.0722 * t.foreground[2] as f64;
+        assert!(l_surface > 200.0, "expected light surface, got {l_surface}");
+        assert!(l_fg < 80.0, "expected dark foreground, got {l_fg}");
+    }
+
+    /// Surface alpha is strictly between 0 and 1 for both palettes — the panel
+    /// is *frosted*, not opaque and not invisible.
+    #[test]
+    fn glass_tones_surface_alpha_is_partially_transparent() {
+        for theme in [anvil_theme::MINERAL_DARK, anvil_theme::MINERAL_LIGHT] {
+            let t = glass_tones_for(&theme);
+            assert!(
+                t.surface_alpha > 0.5 && t.surface_alpha < 1.0,
+                "expected 0.5 < alpha < 1.0, got {}",
+                t.surface_alpha
+            );
+        }
+    }
+
+    // --- draw_right_hud smoke -----------------------------------------------
+
+    /// `draw_right_hud` paints glyphs for the standard sections (REPO / GIT /
+    /// LAST RUN / AGENTS / SYSTEM) and does not panic on a reasonably-sized
+    /// raster.
+    #[test]
+    fn draw_right_hud_smoke_emits_glyphs() {
+        let m = metrics();
+        let mut r = Raster::new(1200, 800);
+        r.pad_x = 24.0;
+        r.pad_y = 24.0;
+        let mut painter = StubPainter::default();
+        let snap = Snapshot {
+            connection: Connection::Live,
+            ..Default::default()
+        };
+        let local = LocalContext {
+            cwd: "/Users/p/projects/anvil".to_string(),
+            git: GitState::Dirty,
+            branch: "main".to_string(),
+            git_dirty: 2,
+            git_ahead: 1,
+            git_behind: 0,
+            head_short: "abc1234".to_string(),
+            head_subject: "fix: scroll".to_string(),
+            run: RunState::Ok,
+            run_duration_ms: 1200,
+            ..LocalContext::default()
+        };
+        let surface_rect = PixelRect {
+            x: 800.0,
+            y: 0.0,
+            w: 400.0,
+            h: 800.0,
+        };
+        draw_right_hud(
+            &mut r,
+            &mut painter,
+            m,
+            &anvil_theme::MINERAL_DARK,
+            &snap,
+            &local,
+            surface_rect,
+            80,
+            34,
+            1,
+            38,
+        );
+        let chars: Vec<char> = painter
+            .calls
+            .iter()
+            .filter_map(|(cp, _)| char::from_u32(*cp))
+            .collect();
+        // Section headers
+        assert!(chars.contains(&'R') && chars.contains(&'E') && chars.contains(&'P'));
+        // Branch name "main"
+        assert!(chars.contains(&'m') && chars.contains(&'a') && chars.contains(&'i'));
+        // Head short sha first char
+        assert!(chars.contains(&'a') && chars.contains(&'b') && chars.contains(&'c'));
+    }
+
+    /// HUD bails cleanly when given too few columns to render anything useful.
+    #[test]
+    fn draw_right_hud_returns_early_when_too_narrow() {
+        let m = metrics();
+        let mut r = Raster::new(400, 200);
+        let mut painter = StubPainter::default();
+        let snap = Snapshot::default();
+        let local = LocalContext::default();
+        let surface_rect = PixelRect {
+            x: 380.0,
+            y: 0.0,
+            w: 20.0,
+            h: 200.0,
+        };
+        draw_right_hud(
+            &mut r,
+            &mut painter,
+            m,
+            &anvil_theme::MINERAL_DARK,
+            &snap,
+            &local,
+            surface_rect,
+            38,
+            2, // far too narrow (< 12)
+            0,
+            10,
+        );
+        assert!(painter.calls.is_empty(), "expected no draws for narrow HUD");
+    }
+
+    // --- gauge_bar -----------------------------------------------------------
+
+    /// Pure function: gauge_bar renders exactly `cells` block glyphs, each
+    /// proportionally shaded. At ratio=0 every cell is ▁ (index 0); at
+    /// ratio=1 every cell is █ (index 7).
+    #[test]
+    fn gauge_bar_renders_proportional_blocks() {
+        // At 0.0, all cells should be ▁ (the lowest block).
+        let zero = gauge_bar(0.0, 6);
+        assert_eq!(zero.chars().count(), 6);
+        assert!(
+            zero.chars().all(|c| c == '▁'),
+            "expected all ▁ at ratio=0, got '{zero}'"
+        );
+
+        // At 1.0, all cells should be █ (the highest block).
+        let full = gauge_bar(1.0, 6);
+        assert_eq!(full.chars().count(), 6);
+        assert!(
+            full.chars().all(|c| c == '█'),
+            "expected all █ at ratio=1, got '{full}'"
+        );
+
+        // At 0.5, the bar should be partially filled — last cells are lighter
+        // than first cells (since fill = ratio / cell_ratio decreases as
+        // cell_ratio grows).
+        let half = gauge_bar(0.5, 6);
+        assert_eq!(half.chars().count(), 6);
+        // First cell (cell_ratio=1/6) has fill = 0.5/(1/6)=3.0 → clamped 1.0 → █
+        assert_eq!(half.chars().next().unwrap(), '█');
+        // Last cell (cell_ratio=6/6=1.0) has fill = 0.5/1.0=0.5 → idx ~4 → ▄
+        let last = half.chars().last().unwrap();
+        assert!(
+            GAUGE_BLOCKS.contains(&last),
+            "last cell should be a block glyph, got '{last}'"
+        );
+    }
+
+    // --- system_section_includes_mem_and_disk_lines -------------------------
+
+    /// Smoke test: draw_right_hud emits mem and disk line characters.
+    /// The SYSTEM section must include 'm', 'e' (from "mem") and 'd', 'i'
+    /// (from "disk") in its glyph output.
+    #[test]
+    fn system_section_includes_mem_and_disk_lines() {
+        let m = metrics();
+        let mut r = Raster::new(1200, 800);
+        r.pad_x = 24.0;
+        r.pad_y = 24.0;
+        let mut painter = StubPainter::default();
+        let snap = Snapshot {
+            connection: Connection::Live,
+            ..Default::default()
+        };
+        let local = LocalContext {
+            cwd: "/Users/p/projects/anvil".to_string(),
+            ..LocalContext::default()
+        };
+        let surface_rect = PixelRect {
+            x: 800.0,
+            y: 0.0,
+            w: 400.0,
+            h: 800.0,
+        };
+        draw_right_hud(
+            &mut r,
+            &mut painter,
+            m,
+            &anvil_theme::MINERAL_DARK,
+            &snap,
+            &local,
+            surface_rect,
+            80,
+            34,
+            1,
+            38,
+        );
+        let chars: Vec<char> = painter
+            .calls
+            .iter()
+            .filter_map(|(cp, _)| char::from_u32(*cp))
+            .collect();
+        // "mem" and "disk" labels must appear in the output.
+        // We check for 'm','e','m' sequence by looking for the letters.
+        assert!(chars.contains(&'m'), "expected 'm' (from 'mem') in output");
+        assert!(chars.contains(&'d'), "expected 'd' (from 'disk') in output");
+        assert!(chars.contains(&'k'), "expected 'k' (from 'disk') in output");
+        // At least one block glyph (▁–█) should be present from the gauges.
+        let has_block = chars.iter().any(|c| GAUGE_BLOCKS.contains(c));
+        assert!(
+            has_block,
+            "expected at least one block glyph in SYSTEM section"
+        );
     }
 }
