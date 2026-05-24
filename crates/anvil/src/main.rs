@@ -612,6 +612,10 @@ impl App {
         if let Some(r) = &mut self.renderer {
             r.resize(dw, dh);
         }
+        // Resize invalidates the entire raster — force a full repaint so the
+        // newly-exposed regions don't show as black / stale content.
+        self.force_full_redraw = true;
+        self.dirty = true;
     }
 
     /// Apply a freshly loaded config.

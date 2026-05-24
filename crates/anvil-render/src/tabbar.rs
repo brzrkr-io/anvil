@@ -172,23 +172,16 @@ pub fn draw_tab_bar(
         };
         let is_active = t == tabs.active;
 
-        // Active tab: filled surface background.
+        // Active tab: filled surface background. (Previously also drew a 2px
+        // teal accent rule beneath it; removed because the rule's pixels
+        // were misaligned visually against the tab's cell edges, and the
+        // surface fill alone is enough to distinguish the active tab.)
         if is_active {
             for c in col..col + tw {
                 if c < total_cols {
                     raster.cell_bg(metrics, c, 0, theme.surface);
                 }
             }
-            // 2px accent rule along the bottom of the active segment.
-            let start_px = raster.pad_x + col as f64 * cell_w;
-            let seg_w_px = tw as f64 * cell_w;
-            raster.fill_pixel_rect(
-                start_px,
-                raster.pad_y + cell_h - 2.0,
-                seg_w_px,
-                2.0,
-                theme.accent,
-            );
         }
 
         let fg = if is_active {
@@ -271,12 +264,14 @@ pub fn draw_tab_bar(
     }
 }
 
-/// Build the right-side indicator string: `⎇ branch · HH:MM` or just `HH:MM`.
+/// Build the right-side indicator string. Uses the Nerd Font branch glyph
+/// (U+E0A0) which IS in BlexMonoNerdFontMono — the previously-used U+2387
+/// (⎇) is not in the font and rendered as nothing.
 fn build_right_str(branch: &str, clock: &str) -> String {
     if branch.is_empty() {
         clock.to_string()
     } else {
-        format!("⎇ {} · {}", branch, clock)
+        format!("\u{e0a0} {} · {}", branch, clock)
     }
 }
 
