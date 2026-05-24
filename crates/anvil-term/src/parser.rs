@@ -1,4 +1,4 @@
-//! VT/ANSI escape-sequence parser — a port of `src/terminal/parser.zig`.
+//! VT/ANSI escape-sequence parser.
 //!
 //! Implements Paul Williams' VT500-series parser DFA. The parser is
 //! byte-oriented and stateful: feed it arbitrary chunks and it drives a

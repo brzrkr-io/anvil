@@ -1,7 +1,5 @@
 //! Multi-pane render coordinator.
 //!
-//! Ported from `src/render/workspace.zig`.
-//!
 //! `draw_workspace` lays out a PaneTree onto an inner content rect, then calls
 //! `draw_viewport` once per leaf with that leaf's pixel origin set on the Raster.
 //!
@@ -249,7 +247,7 @@ mod tests {
         (reg, id)
     }
 
-    /// Port of "drawWorkspace single-leaf: leaf rect equals inner rect"
+    /// drawWorkspace single-leaf: leaf rect equals inner rect
     ///
     /// Verifies that a single-leaf tree gives the full inner rect, and that
     /// raster.origin_x / origin_y are reset to 0 after the call.
@@ -307,7 +305,7 @@ mod tests {
         assert_eq!(r.origin_y, 0.0, "origin_y must be reset to 0");
     }
 
-    /// Port of "drawWorkspace two-pane: divider pixels carry theme.border"
+    /// drawWorkspace two-pane: divider pixels carry theme.border
     ///
     /// Lay out two horizontally-split panes with a deliberately wide divider
     /// so the gutter pixel is comfortably in the middle of the border band

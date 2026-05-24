@@ -1,5 +1,4 @@
 //! Incremental substring search over a `Terminal`'s content rows.
-//! Port of `src/terminal/search.zig`.
 
 use regex::Regex;
 

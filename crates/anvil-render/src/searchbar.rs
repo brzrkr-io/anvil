@@ -1,6 +1,4 @@
 //! The in-terminal search bar — one text row at the bottom of the window.
-//!
-//! Ported from `src/render/searchbar.zig`.
 
 use anvil_term::Search;
 use anvil_theme::Theme;
@@ -124,7 +122,7 @@ mod tests {
         }
     }
 
-    /// Port of "drawSearchBar fills the bottom row background"
+    /// drawSearchBar fills the bottom row background
     ///
     /// Uses cell_bg to paint the surface tone — verifies by checking a pixel
     /// inside the bottom row carries theme.surface after the call.

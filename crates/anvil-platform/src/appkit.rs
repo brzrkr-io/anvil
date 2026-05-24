@@ -1,10 +1,8 @@
 //! AppKit platform shell: NSApplication bootstrap, NSWindow creation, custom
 //! NSView subclass for input, app/window delegates, and the NSTimer run loop.
 //!
-//! Port of the AppKit glue in `src/main.zig` (the Objective-C method
-//! implementations, class registration, and `main()` setup).  The application
-//! *logic* (terminal, renderer, tab management) lives in the `anvil` binary
-//! and is reached through the [`AppHandler`] callback trait.
+//! The application *logic* (terminal, renderer, tab management) lives in the
+//! `anvil` binary and is reached through the [`AppHandler`] callback trait.
 //!
 //! # Architecture
 //!

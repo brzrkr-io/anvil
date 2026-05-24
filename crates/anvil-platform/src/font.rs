@@ -7,8 +7,7 @@
 //!   creates a `CGBitmapContext` over the caller-supplied BGRA8 pixel buffer
 //!   and calls `CTFontDrawGlyphs`.
 //!
-//! Port of `src/render/font.zig`.  Uses `objc2-core-text` and
-//! `objc2-core-graphics` 0.3 typed bindings.
+//! Uses `objc2-core-text` and `objc2-core-graphics` 0.3 typed bindings.
 //!
 //! # Coordinate notes
 //!
@@ -415,7 +414,7 @@ fn composite_mask(
 mod tests {
     use super::*;
 
-    /// Port of "brand mono font stack loads with sane metrics"
+    /// brand mono font stack loads with sane metrics
     #[test]
     fn brand_mono_font_stack_loads_with_sane_metrics() {
         let names = &["IBMPlexMono", "SFMono-Regular", "Menlo"];
@@ -427,7 +426,7 @@ mod tests {
         assert!(f.metrics.cell_w < 64.0 && f.metrics.cell_h < 64.0);
     }
 
-    /// Port of "glyph lookup resolves common characters"
+    /// glyph lookup resolves common characters
     #[test]
     fn glyph_lookup_resolves_common_characters() {
         let names = &["IBMPlexMono", "SFMono-Regular", "Menlo"];
@@ -437,7 +436,7 @@ mod tests {
         assert!(f.glyph('0' as u32) != 0);
     }
 
-    /// Port of "glyph handles an astral-plane codepoint via the surrogate-pair path"
+    /// glyph handles an astral-plane codepoint via the surrogate-pair path
     #[test]
     fn glyph_handles_astral_plane_codepoint() {
         let names = &["IBMPlexMono", "SFMono-Regular", "Menlo"];
@@ -446,7 +445,7 @@ mod tests {
         let _ = f.glyph(0x1F600);
     }
 
-    /// Port of "initFirstAvailable with no names returns NoFontAvailable"
+    /// initFirstAvailable with no names returns NoFontAvailable
     #[test]
     fn init_first_available_empty_returns_error() {
         let result = Font::init_first_available(&[], 26.0);

@@ -1,22 +1,9 @@
 //! Workspace pane layout: PaneTree, split/close/focus model.
 //!
-//! ## Modules ported from Zig
+//! Modules: `layout`, `pane`, `tab`, `selection`, `palette`, `interact`, `keys`.
 //!
-//! | Rust module  | Zig source                     |
-//! |--------------|-------------------------------|
-//! | `layout`     | `src/workspace/layout.zig`    |
-//! | `pane`       | `src/workspace/pane.zig`      |
-//! | `tab`        | `src/app/tab.zig`             |
-//! | `selection`  | `src/app/selection.zig`       |
-//! | `palette`    | `src/app/palette.zig`         |
-//! | `interact`   | `src/app/interact.zig`        |
-//! | `keys`       | `src/app/keys.zig`            |
-//!
-//! ## Deferred (platform-bound)
-//!
-//! - `src/app/shell_integration.zig` — calls `setenv`/`getenv`/`ZDOTDIR`,
-//!   writes files to `~/.cache/anvil/shell`, and embeds zsh/bash script
-//!   sources.  This belongs in `crates/anvil-platform`.
+//! Shell integration (`setenv`/`getenv`/`ZDOTDIR`, `~/.cache/anvil/shell`
+//! scripts) lives in `crates/anvil-platform` — it has platform-specific deps.
 
 pub mod interact;
 pub mod keys;

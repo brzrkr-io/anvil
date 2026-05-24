@@ -8,7 +8,7 @@
 //!   instance data and a glyph atlas texture.  Phase B infrastructure — not yet
 //!   called from `App::render_frame`.
 //!
-//! Port of `src/render/metal.zig`.  Uses `objc2-metal` 0.3 typed bindings.
+//! Uses `objc2-metal` 0.3 typed bindings.
 //! Unsafe blocks are marked with a SAFETY comment explaining the invariant.
 
 use std::ptr::NonNull;
@@ -888,7 +888,7 @@ fn build_pipeline(
 mod tests {
     use super::*;
 
-    /// Port of "presentMode returns sync during live resize and async otherwise"
+    /// presentMode returns sync during live resize and async otherwise
     #[test]
     fn present_mode_sync_during_resize_async_otherwise() {
         assert_eq!(present_mode(true), PresentMode::Sync);

@@ -1,7 +1,5 @@
 //! Agent-panel — the primary developer-context surface for Anvil.
 //!
-//! Ported from `src/render/agent_panel.zig`.
-//!
 //! Draws a floating card (top-right corner by default) showing:
 //!   - A header row: status bullet + "agents" label + a one-line summary.
 //!   - Up to 3 priority rows (pending approvals → running runs → failure findings).
@@ -2040,25 +2038,25 @@ mod tests {
 
     // --- formatDuration ---
 
-    /// Port of "formatDuration sub-second"
+    /// formatDuration sub-second
     #[test]
     fn format_duration_sub_second() {
         assert_eq!(format_duration(350), "0.3s");
     }
 
-    /// Port of "formatDuration seconds with tenths"
+    /// formatDuration seconds with tenths
     #[test]
     fn format_duration_seconds_with_tenths() {
         assert_eq!(format_duration(1250), "1.2s");
     }
 
-    /// Port of "formatDuration large value"
+    /// formatDuration large value
     #[test]
     fn format_duration_large_value() {
         assert_eq!(format_duration(72000), "72s");
     }
 
-    /// Port of "formatDuration negative clamps to zero"
+    /// formatDuration negative clamps to zero
     #[test]
     fn format_duration_negative_clamps() {
         assert_eq!(format_duration(-100), "0s");
@@ -2066,7 +2064,7 @@ mod tests {
 
     // --- formatRunStatus ---
 
-    /// Port of "formatRunStatus ok"
+    /// formatRunStatus ok
     #[test]
     fn format_run_status_ok() {
         let s = format_run_status(RunState::Ok, 0, 1200);
@@ -2077,7 +2075,7 @@ mod tests {
         assert!(s.contains("1.2s"), "expected to contain '1.2s', got '{s}'");
     }
 
-    /// Port of "formatRunStatus failed with exit code"
+    /// formatRunStatus failed with exit code
     #[test]
     fn format_run_status_failed_with_exit_code() {
         let s = format_run_status(RunState::Failed, 127, 500);
@@ -2085,7 +2083,7 @@ mod tests {
         assert!(s.contains("127"), "expected '127' in '{s}'");
     }
 
-    /// Port of "formatRunStatus idle"
+    /// formatRunStatus idle
     #[test]
     fn format_run_status_idle() {
         let s = format_run_status(RunState::Idle, 0, 0);
@@ -2094,14 +2092,14 @@ mod tests {
 
     // --- formatAheadBehind ---
 
-    /// Port of "formatAheadBehind ahead only"
+    /// formatAheadBehind ahead only
     #[test]
     fn format_ahead_behind_ahead_only() {
         let s = format_ahead_behind(2, 0);
         assert!(s.contains('2'), "expected '2' in '{s}'");
     }
 
-    /// Port of "formatAheadBehind both"
+    /// formatAheadBehind both
     #[test]
     fn format_ahead_behind_both() {
         let s = format_ahead_behind(3, 1);
@@ -2109,7 +2107,7 @@ mod tests {
         assert!(s.contains('1'), "expected '1' in '{s}'");
     }
 
-    /// Port of "formatAheadBehind neither returns empty"
+    /// formatAheadBehind neither returns empty
     #[test]
     fn format_ahead_behind_neither_returns_empty() {
         assert_eq!(format_ahead_behind(0, 0), "");
@@ -2117,7 +2115,7 @@ mod tests {
 
     // --- formatCwd ---
 
-    /// Port of "formatCwd last two components"
+    /// formatCwd last two components
     #[test]
     fn format_cwd_last_two_components() {
         let s = format_cwd("/Users/foo/projects/anvil");
@@ -2127,14 +2125,14 @@ mod tests {
         );
     }
 
-    /// Port of "formatCwd short path returned as-is"
+    /// formatCwd short path returned as-is
     #[test]
     fn format_cwd_short_path_as_is() {
         let s = format_cwd("/anvil");
         assert_eq!(s, "/anvil");
     }
 
-    /// Port of "formatCwd empty"
+    /// formatCwd empty
     #[test]
     fn format_cwd_empty() {
         assert_eq!(format_cwd(""), "");
@@ -2142,7 +2140,7 @@ mod tests {
 
     // --- headerBulletColor ---
 
-    /// Port of "headerBulletColor: not_installed is alloy"
+    /// headerBulletColor: not_installed is alloy
     #[test]
     fn header_bullet_color_not_installed_is_alloy() {
         let snap = Snapshot {
@@ -2152,7 +2150,7 @@ mod tests {
         assert_eq!(header_bullet_color(&snap), ALLOY);
     }
 
-    /// Port of "headerBulletColor: live with no activity is verified"
+    /// headerBulletColor: live with no activity is verified
     #[test]
     fn header_bullet_color_live_no_activity_is_verified() {
         let snap = Snapshot {
@@ -2162,7 +2160,7 @@ mod tests {
         assert_eq!(header_bullet_color(&snap), VERIFIED);
     }
 
-    /// Port of "headerBulletColor: live with pending approval is attention"
+    /// headerBulletColor: live with pending approval is attention
     #[test]
     fn header_bullet_color_live_pending_approval_is_attention() {
         let snap = Snapshot {
@@ -2173,7 +2171,7 @@ mod tests {
         assert_eq!(header_bullet_color(&snap), ATTENTION);
     }
 
-    /// Port of "headerBulletColor: live with running count is agent_violet"
+    /// headerBulletColor: live with running count is agent_violet
     #[test]
     fn header_bullet_color_live_running_is_agent_violet() {
         let snap = Snapshot {
@@ -2186,7 +2184,7 @@ mod tests {
 
     // --- buildHeaderSummary ---
 
-    /// Port of "buildHeaderSummary: not_installed"
+    /// buildHeaderSummary: not_installed
     #[test]
     fn build_header_summary_not_installed_is_quiet() {
         let snap = Snapshot {
@@ -2206,7 +2204,7 @@ mod tests {
         assert_eq!(build_header_summary(&snap), "idle");
     }
 
-    /// Port of "buildHeaderSummary: live with running"
+    /// buildHeaderSummary: live with running
     #[test]
     fn build_header_summary_live_with_running() {
         let snap = Snapshot {

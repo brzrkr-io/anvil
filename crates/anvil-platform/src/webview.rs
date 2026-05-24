@@ -2,7 +2,6 @@
 //! view, registers the web→native script-message handler, and exposes
 //! `show` / `hide` / `set_frame` / `eval_js`.
 //!
-//! Port of `src/webview/webview.zig`.  Uses `objc2-web-kit` 0.3 typed bindings.
 //!
 //! Script messages (JSON strings posted by
 //! `window.webkit.messageHandlers.anvil.postMessage(…)`) are forwarded to the

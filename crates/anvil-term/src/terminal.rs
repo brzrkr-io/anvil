@@ -1,4 +1,4 @@
-//! Terminal model — port of `src/terminal/terminal.zig`.
+//! Terminal model.
 //!
 //! `Terminal` owns a primary grid, an alternate grid, the scrollback ring,
 //! and a VT/ANSI parser. It implements `Handler`, translating parsed events

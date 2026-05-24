@@ -1,7 +1,5 @@
 //! PTY layer: spawns a real shell in a pseudo-terminal and lets the caller
 //! read its output, write input, and resize it. macOS/POSIX only.
-//!
-//! This is a port of `src/pty/pty.zig`.
 
 use std::ffi::{CStr, CString};
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};

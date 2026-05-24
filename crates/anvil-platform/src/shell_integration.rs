@@ -1,9 +1,8 @@
 //! Shell integration setup: write the embedded zsh/bash scripts to a runtime
 //! directory and export the env vars that wire spawned shells to them.
 //!
-//! Port of `src/app/shell_integration.zig`. The `setup` function must be
-//! called once at startup, before any PTY is spawned, so that the env vars
-//! are inherited by every shell child process.
+//! The `setup` function must be called once at startup, before any PTY is
+//! spawned, so that the env vars are inherited by every shell child process.
 
 use std::env;
 use std::fs;

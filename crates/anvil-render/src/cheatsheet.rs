@@ -1,21 +1,25 @@
 //! Keyboard-shortcut cheatsheet overlay.
 //!
-//! Ported from `src/render/cheatsheet.zig`.
-//!
 //! Draws a centered modal card listing every shortcut grouped by category.
-//! Brand: Mineral palette — near-opaque theme.surface card, theme.border edges,
-//! alloy group headers, accent (mineral teal) chords, foreground descriptions.
+//! Palette: chrome constants (CHARCOAL panel, CHROME_BORDER edges, MIST title,
+//! TEXT_MUTED group headers, TEXT_SUBTLE chords, TEXT_MUTED descriptions).
 //!
 //! Call `draw` from renderFrame *last* (on top of grid, HUD, tree, tab bar).
 
-use anvil_theme::Theme;
-
 use crate::raster::{FontMetrics, GlyphPainter, Raster};
 
-// --- Brand color constants (Mineral palette) --------------------------------
+// --- Chrome palette constants (match tabbar.rs / statusbar.rs) ---------------
 
-/// alloy: muted labels / group headers (#86919a)
-const ALLOY: [u8; 3] = [0x86, 0x91, 0x9a];
+/// Deep fill: card background.
+const CHARCOAL: [u8; 3] = [0x1d, 0x21, 0x29];
+/// 1px hairline border color.
+const CHROME_BORDER: [u8; 3] = [0x23, 0x26, 0x2b];
+/// Dimmed text: group section headers and descriptions.
+const TEXT_MUTED: [u8; 3] = [0xa1, 0xa4, 0xa9];
+/// Lightest label: card title.
+const MIST: [u8; 3] = [0xd2, 0xd8, 0xdb];
+/// Mid-tone: key chord labels.
+const TEXT_SUBTLE: [u8; 3] = [0x6c, 0x6f, 0x74];
 
 // --- Shortcut data ----------------------------------------------------------
 
@@ -156,137 +160,149 @@ pub const CARD_ROWS: usize = ROWS.len() + 4;
 
 /// Draw the cheatsheet as a centered modal card. Must be called last in
 /// renderFrame so it renders on top of all other UI elements.
+///
+/// `chrome_top_px` / `chrome_bottom_px`: pixel heights of the chrome strips.
+/// The card is centered in the safe area between them.
+/// `total_cols` / `total_rows`: cell grid dimensions of the safe terminal area.
+#[allow(clippy::too_many_arguments)]
 pub fn draw(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
     metrics: FontMetrics,
-    theme: &Theme,
     total_cols: usize,
     total_rows: usize,
+    chrome_top_px: f64,
+    chrome_bottom_px: f64,
 ) {
-    // Adapt to small windows: shrink the card down to a minimum readable size
-    // rather than refusing to draw. The user wants the cheatsheet visible at
-    // any reasonable terminal size.
     if total_rows < 6 || total_cols < 20 {
         return;
     }
-    let card_cols = CARD_COLS.min(total_cols.saturating_sub(2)).max(20);
-    let card_rows = CARD_ROWS.min(total_rows.saturating_sub(2)).max(6);
-
-    // Center the card.
-    let card_col = (total_cols - card_cols) / 2;
-    let card_row = (total_rows - card_rows) / 2;
 
     let cw = metrics.cell_w;
     let ch = metrics.cell_h;
-    let left_px = raster.pad_x + card_col as f64 * cw;
-    let top_px = raster.pad_y + card_row as f64 * ch;
+
+    // Clamp card dimensions to available space (leave 1 col / row margin).
+    let card_cols = CARD_COLS.min(total_cols.saturating_sub(2)).max(20);
+    let card_rows = CARD_ROWS.min(total_rows.saturating_sub(2)).max(6);
+
     let card_w_px = card_cols as f64 * cw;
     let card_h_px = card_rows as f64 * ch;
 
-    // Fully opaque surface panel — occludes the terminal beneath it.
-    raster.fill_pixel_rect(left_px, top_px, card_w_px, card_h_px, theme.surface);
+    // Center horizontally within the terminal grid area.
+    let safe_left_px = raster.pad_x;
+    let safe_w_px = total_cols as f64 * cw;
+    let left_px = (safe_left_px + (safe_w_px - card_w_px) / 2.0).max(safe_left_px);
 
-    // 1px hairline border on all four edges — the surface fill carries the
-    // panel definition; the border is just an anchor edge.
+    // Center vertically within the safe area between chrome strips.
+    let safe_h_px = raster.height as f64 - chrome_top_px - chrome_bottom_px;
+    let top_px = (chrome_top_px + (safe_h_px - card_h_px) / 2.0).max(chrome_top_px);
+
+    // Fully opaque card surface.
+    raster.fill_pixel_rect(left_px, top_px, card_w_px, card_h_px, CHARCOAL);
+
+    // 1px hairline border on all four edges.
     let b = 1.0_f64;
-    raster.fill_pixel_rect(left_px, top_px, card_w_px, b, theme.border);
-    raster.fill_pixel_rect(left_px, top_px + card_h_px - b, card_w_px, b, theme.border);
-    raster.fill_pixel_rect(left_px, top_px, b, card_h_px, theme.border);
-    raster.fill_pixel_rect(left_px + card_w_px - b, top_px, b, card_h_px, theme.border);
+    raster.fill_pixel_rect(left_px, top_px, card_w_px, b, CHROME_BORDER);
+    raster.fill_pixel_rect(left_px, top_px + card_h_px - b, card_w_px, b, CHROME_BORDER);
+    raster.fill_pixel_rect(left_px, top_px, b, card_h_px, CHROME_BORDER);
+    raster.fill_pixel_rect(left_px + card_w_px - b, top_px, b, card_h_px, CHROME_BORDER);
 
-    // Content rows inside the card.
-    // 3-col inner left margin; 2-col right margin.
-    let max_col = card_col + card_cols - 2;
-
-    // Row 0: title in accent color.
-    draw_text(
+    // --- Row 0: title in MIST.
+    draw_text_px(
         raster,
         painter,
         metrics,
-        card_col + 3,
-        card_row,
+        left_px + 3.0 * cw,
+        top_px,
         "Keyboard Shortcuts",
-        theme.accent,
-        max_col,
+        MIST,
+        left_px + card_w_px - 2.0 * cw,
     );
 
-    // Row 1: dim hint.
-    draw_text(
+    // --- Row 1: dim hint in TEXT_MUTED.
+    draw_text_px(
         raster,
         painter,
         metrics,
-        card_col + 3,
-        card_row + 1,
-        "Cmd / or Esc to close",
-        ALLOY,
-        max_col,
+        left_px + 3.0 * cw,
+        top_px + ch,
+        "Cmd+/ or Esc to close",
+        TEXT_MUTED,
+        left_px + card_w_px - 2.0 * cw,
     );
 
-    // Row 2: full-width 1px border rule below the hint text.
-    {
-        let rule_px_x = left_px + 2.0 * cw;
-        let rule_px_y = raster.pad_y + (card_row + 2) as f64 * ch;
-        let rule_w = (CARD_COLS as f64 - 4.0) * cw;
-        raster.fill_pixel_rect(rule_px_x, rule_px_y, rule_w, 1.0, theme.border);
-    }
+    // --- Row 2: 1px separator rule.
+    raster.fill_pixel_rect(
+        left_px + 2.0 * cw,
+        top_px + 2.0 * ch,
+        card_w_px - 4.0 * cw,
+        1.0,
+        CHROME_BORDER,
+    );
 
-    // Rows 3+: content.
-    let mut r = card_row + 3;
+    // --- Rows 3+: shortcut content.
+    let chord_x = left_px + 3.0 * cw;
+    // Description column: 15 cols right of chord start (clears widest chord).
+    let desc_x = left_px + 18.0 * cw;
+    let max_x = left_px + card_w_px - 2.0 * cw;
+    // Stop drawing 1 row before the bottom border.
+    let content_bottom_y = top_px + card_h_px - ch;
+
+    let mut row_y = top_px + 3.0 * ch;
     let mut first_header = true;
+
     for row in ROWS {
+        if row_y + ch > content_bottom_y {
+            break;
+        }
         match row {
             Row::Header(label) => {
-                // Draw a 1px border rule before each header, skipping the first.
                 if !first_header {
-                    let rule_px_x = left_px + 2.0 * cw;
-                    let rule_px_y = raster.pad_y + r as f64 * ch;
-                    let rule_w = (CARD_COLS as f64 - 4.0) * cw;
-                    raster.fill_pixel_rect(rule_px_x, rule_px_y, rule_w, 1.0, theme.border);
+                    raster.fill_pixel_rect(
+                        left_px + 2.0 * cw,
+                        row_y,
+                        card_w_px - 4.0 * cw,
+                        1.0,
+                        CHROME_BORDER,
+                    );
                 }
                 first_header = false;
-                // Section headers recede below content: alloy-muted, not foreground.
-                draw_text(
+                draw_text_px(
                     raster,
                     painter,
                     metrics,
-                    card_col + 3,
-                    r,
+                    chord_x,
+                    row_y,
                     label,
-                    ALLOY,
-                    max_col,
+                    TEXT_MUTED,
+                    max_x,
                 );
-                r += 1;
+                row_y += ch;
             }
             Row::Shortcut { chord, desc } => {
-                // Chord: left-aligned in accent color at col+3.
-                draw_text(
+                draw_text_px(
                     raster,
                     painter,
                     metrics,
-                    card_col + 3,
-                    r,
+                    chord_x,
+                    row_y,
                     chord,
-                    theme.accent,
-                    max_col,
+                    TEXT_SUBTLE,
+                    desc_x - cw,
                 );
-                // Description: starts at a fixed column in foreground, clear
-                // of the widest chord ("Ctrl Shift Tab"). Shifted right by 1
-                // to match the new inner padding.
-                let desc_col = card_col + 18;
-                if desc_col < max_col {
-                    draw_text(
+                if desc_x < max_x {
+                    draw_text_px(
                         raster,
                         painter,
                         metrics,
-                        desc_col,
-                        r,
+                        desc_x,
+                        row_y,
                         desc,
-                        theme.foreground,
-                        max_col,
+                        TEXT_MUTED,
+                        max_x,
                     );
                 }
-                r += 1;
+                row_y += ch;
             }
         }
     }
@@ -294,25 +310,26 @@ pub fn draw(
 
 // --- Internal helpers -------------------------------------------------------
 
-/// Draw a UTF-8 string from cell `col`, one codepoint per cell, stopping at
-/// `max_col`.
+/// Draw a UTF-8 string starting at pixel position `(px, py)` (top-left of the
+/// first cell), stopping when the next glyph would start at or past `max_px`.
 #[allow(clippy::too_many_arguments)]
-fn draw_text(
+fn draw_text_px(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
     metrics: FontMetrics,
-    col: usize,
-    row: usize,
+    px: f64,
+    py: f64,
     text: &str,
     color: [u8; 3],
-    max_col: usize,
+    max_px: f64,
 ) {
+    let cw = metrics.cell_w;
     for (i, cp) in text.chars().enumerate() {
-        let cx = col + i;
-        if cx >= max_col {
+        let gx = px + i as f64 * cw;
+        if gx + cw > max_px {
             break;
         }
-        raster.cell_glyph(painter, metrics, cx, row, cp as u32, color);
+        raster.glyph_at_px(painter, metrics, gx, py, cp as u32, color);
     }
 }
 
@@ -323,7 +340,6 @@ mod tests {
     use super::*;
     use crate::raster::PixelRect;
 
-    // Stub painter that records calls.
     #[derive(Default)]
     struct StubPainter {
         pub calls: Vec<(u32, [u8; 3])>,
@@ -353,27 +369,21 @@ mod tests {
         }
     }
 
-    /// Port of "cheatsheet rows list is non-empty"
     #[test]
     fn rows_list_is_non_empty() {
         assert!(!ROWS.is_empty());
     }
 
-    /// Port of "cheatsheet rows contain at least one header"
     #[test]
     fn rows_contain_at_least_one_header() {
-        let found = ROWS.iter().any(|r| matches!(r, Row::Header(_)));
-        assert!(found);
+        assert!(ROWS.iter().any(|r| matches!(r, Row::Header(_))));
     }
 
-    /// Port of "cheatsheet rows contain at least one shortcut"
     #[test]
     fn rows_contain_at_least_one_shortcut() {
-        let found = ROWS.iter().any(|r| matches!(r, Row::Shortcut { .. }));
-        assert!(found);
+        assert!(ROWS.iter().any(|r| matches!(r, Row::Shortcut { .. })));
     }
 
-    /// Port of "all shortcut chords and descs are non-empty"
     #[test]
     fn all_shortcut_chords_and_descs_are_non_empty() {
         for row in ROWS {
@@ -387,7 +397,6 @@ mod tests {
         }
     }
 
-    /// Port of "cheatsheet rows are valid UTF-8"
     #[test]
     fn rows_are_valid_utf8() {
         for row in ROWS {
@@ -401,27 +410,25 @@ mod tests {
         }
     }
 
-    /// Port of "card_rows covers all content rows"
     #[test]
     fn card_rows_covers_all_content_rows() {
         assert_eq!(ROWS.len() + 4, CARD_ROWS);
     }
 
-    /// Smoke test: draw does not panic on a reasonably-sized raster.
+    /// Smoke: draw does not panic on a reasonably-sized raster.
     #[test]
     fn draw_no_panic() {
         let m = metrics();
-        // Raster sized for CARD_COLS+2 by CARD_ROWS+2 at 10×20 cell metrics.
         let cols = CARD_COLS + 4;
         let rows = CARD_ROWS + 4;
         let mut r = Raster::new(
             (cols as f64 * m.cell_w) as usize,
             (rows as f64 * m.cell_h) as usize,
         );
+        r.pad_x = 0.0;
+        r.pad_y = 0.0;
         let mut painter = StubPainter::default();
-        let theme = anvil_theme::MINERAL_DARK;
-        draw(&mut r, &mut painter, m, &theme, cols, rows);
-        // Title "Keyboard Shortcuts" should produce glyph calls.
+        draw(&mut r, &mut painter, m, cols, rows, 0.0, 0.0);
         assert!(!painter.calls.is_empty());
     }
 
@@ -431,8 +438,7 @@ mod tests {
         let m = metrics();
         let mut r = Raster::new(100, 80);
         let mut painter = StubPainter::default();
-        let theme = anvil_theme::MINERAL_DARK;
-        draw(&mut r, &mut painter, m, &theme, 5, 5);
+        draw(&mut r, &mut painter, m, 5, 5, 0.0, 0.0);
         assert!(painter.calls.is_empty());
     }
 }
