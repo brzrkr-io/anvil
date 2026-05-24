@@ -94,6 +94,15 @@ impl CellBatch {
         });
     }
 
+    /// Push a background-only rect instance (no glyph).
+    ///
+    /// Equivalent to `push_cell(xy, wh, None, color, color)`.  Used for tint
+    /// strips, accent bars, and cursor rectangles where only the background
+    /// color matters.
+    pub fn push_bg(&mut self, xy: [f32; 2], wh: [f32; 2], color: [u8; 3]) {
+        self.push_cell(xy, wh, None, color, color);
+    }
+
     /// Number of instances in this batch.
     pub fn instance_count(&self) -> usize {
         self.instances.len()

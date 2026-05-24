@@ -306,6 +306,68 @@ fn read_command_text(terminal: &Terminal, crow: usize, start_col: usize) -> Stri
     trimmed.to_string()
 }
 
+/// Compute the right-side (char, color) pairs for a block header row.
+///
+/// Returns the starting column and the ordered sequence of `(char, color)`
+/// pairs that make up the right-aligned metadata region: duration (muted),
+/// separator, exit indicator (status color), and fold caret (muted).
+///
+/// Returns `None` when the metadata would overflow the terminal width.
+#[allow(clippy::type_complexity)]
+fn compute_block_header_chars(
+    block: &Block,
+    cols: usize,
+) -> Option<(usize, Vec<(char, [u8; 3])>)> {
+    let muted = ALLOY;
+    let accent_color = block_accent_color(block);
+
+    let dur_str = if block.duration_ms > 0 {
+        format_duration(block.duration_ms)
+    } else {
+        String::new()
+    };
+
+    let (exit_str, exit_color) = match block.state {
+        BlockState::Running => ("\u{2026}".to_string(), accent_color), // …
+        BlockState::Exited => {
+            if block.exit_code == 0 {
+                ("\u{2713}".to_string(), VERIFIED) // ✓
+            } else {
+                (format!("\u{2717} {}", block.exit_code), FAILURE) // ✗ N
+            }
+        }
+    };
+
+    let fold_str = " \u{25be}"; // " ▾"
+    let sep = if dur_str.is_empty() { "" } else { "  " };
+
+    let right_len = dur_str.chars().count()
+        + sep.chars().count()
+        + exit_str.chars().count()
+        + fold_str.chars().count();
+
+    if right_len >= cols {
+        return None;
+    }
+
+    let start_col = cols - right_len;
+    let mut chars: Vec<(char, [u8; 3])> = Vec::with_capacity(right_len);
+    for c in dur_str.chars() {
+        chars.push((c, muted));
+    }
+    for c in sep.chars() {
+        chars.push((c, muted));
+    }
+    for c in exit_str.chars() {
+        chars.push((c, exit_color));
+    }
+    for c in fold_str.chars() {
+        chars.push((c, muted));
+    }
+
+    Some((start_col, chars))
+}
+
 /// Draw the synthesized block header row (CPU path).
 ///
 /// Draws over the raw terminal cells at the command row:
@@ -327,9 +389,7 @@ fn draw_block_header_cpu(
     ry: usize,
     cols: usize,
 ) {
-    let accent_color = block_accent_color(block);
     let fg = theme.foreground;
-    let muted = ALLOY;
 
     // Command text: col 1..cols-18 (leave room for right metadata).
     draw_text_row(
@@ -343,46 +403,11 @@ fn draw_block_header_cpu(
         cols.saturating_sub(18),
     );
 
-    // Build the right-side segments individually so we can color them.
-    // Segment 1: duration (muted).
-    let dur_str = if block.duration_ms > 0 {
-        format_duration(block.duration_ms)
-    } else {
-        String::new()
-    };
-
-    // Segment 2: exit indicator (accent/status color).
-    let (exit_str, exit_color) = match block.state {
-        BlockState::Running => ("\u{2026}".to_string(), accent_color), // …
-        BlockState::Exited => {
-            if block.exit_code == 0 {
-                ("\u{2713}".to_string(), VERIFIED) // ✓
-            } else {
-                (format!("\u{2717} {}", block.exit_code), FAILURE) // ✗ N
-            }
+    if let Some((start_col, chars)) = compute_block_header_chars(block, cols) {
+        for (i, (cp, color)) in chars.into_iter().enumerate() {
+            let col = start_col + i;
+            raster.cell_glyph(painter, metrics, col, ry, cp as u32, color);
         }
-    };
-
-    // Fold indicator (muted), always present.
-    let fold_str = " \u{25be}"; // " ▾"
-
-    // Compute total right width and starting column.
-    let sep = if dur_str.is_empty() { "" } else { "  " };
-    let right_len = dur_str.chars().count()
-        + sep.chars().count()
-        + exit_str.chars().count()
-        + fold_str.chars().count();
-    if right_len < cols {
-        let mut col = cols - right_len;
-        draw_text_row(raster, painter, metrics, col, ry, &dur_str, muted, cols);
-        col += dur_str.chars().count();
-        draw_text_row(raster, painter, metrics, col, ry, sep, muted, cols);
-        col += sep.chars().count();
-        draw_text_row(
-            raster, painter, metrics, col, ry, &exit_str, exit_color, cols,
-        );
-        col += exit_str.chars().count();
-        draw_text_row(raster, painter, metrics, col, ry, fold_str, muted, cols);
     }
 }
 
@@ -404,66 +429,19 @@ fn draw_block_header_gpu(
     cell_xy_fn: impl Fn(usize, usize) -> [f32; 2],
     y_shift: f32,
 ) {
-    let muted = ALLOY;
-    let accent_color = block_accent_color(block);
-
-    let dur_str = if block.duration_ms > 0 {
-        format_duration(block.duration_ms)
-    } else {
-        String::new()
-    };
-
-    let (exit_str, exit_color) = match block.state {
-        BlockState::Running => ("\u{2026}".to_string(), accent_color),
-        BlockState::Exited => {
-            if block.exit_code == 0 {
-                ("\u{2713}".to_string(), VERIFIED)
+    if let Some((start_col, chars)) = compute_block_header_chars(block, cols) {
+        for (i, (cp, color)) in chars.into_iter().enumerate() {
+            let col = start_col + i;
+            let base_xy = cell_xy_fn(col, viewport_y);
+            let xy = [base_xy[0], base_xy[1] - y_shift];
+            let wh = [cw, ch];
+            let bg = PANEL_RAISED;
+            if cp == ' ' {
+                batch.push_cell(xy, wh, None, color, bg);
             } else {
-                (format!("\u{2717} {}", block.exit_code), FAILURE)
+                let slot = rasterizer.glyph_slot(cp as u32, metrics);
+                batch.push_cell(xy, wh, slot, color, bg);
             }
-        }
-    };
-
-    let fold_str = " \u{25be}"; // " ▾"
-    let sep = if dur_str.is_empty() { "" } else { "  " };
-
-    let right_len = dur_str.chars().count()
-        + sep.chars().count()
-        + exit_str.chars().count()
-        + fold_str.chars().count();
-
-    if right_len >= cols {
-        return;
-    }
-
-    // Build a vec of (char, color) pairs for the right segment.
-    let mut chars: Vec<(char, [u8; 3])> = Vec::with_capacity(right_len);
-    for c in dur_str.chars() {
-        chars.push((c, muted));
-    }
-    for c in sep.chars() {
-        chars.push((c, muted));
-    }
-    for c in exit_str.chars() {
-        chars.push((c, exit_color));
-    }
-    for c in fold_str.chars() {
-        chars.push((c, muted));
-    }
-
-    let start_col = cols - right_len;
-    for (i, (cp, color)) in chars.into_iter().enumerate() {
-        let col = start_col + i;
-        let base_xy = cell_xy_fn(col, viewport_y);
-        let xy = [base_xy[0], base_xy[1] - y_shift];
-        let wh = [cw, ch];
-        // Background: PANEL_RAISED so the overlay sits on the card background.
-        let bg = PANEL_RAISED;
-        if cp == ' ' {
-            batch.push_cell(xy, wh, None, color, bg);
-        } else {
-            let slot = rasterizer.glyph_slot(cp as u32, metrics);
-            batch.push_cell(xy, wh, slot, color, bg);
         }
     }
 }
@@ -574,22 +552,10 @@ pub fn draw_viewport(
                 }
             }
 
-            // Block body tint: PANEL_RAISED background across the FULL block
-            // span (command row + output rows). Matches D's `.block { background
-            // var(--charcoal) }` which wraps the command line + its output as
-            // a single card.
-            if let Some(ref block) = block_opt {
-                let is_block_row = abs >= block.command_line && abs < block.end_line;
-                if is_block_row {
-                    let ry = y;
-                    // One row-wide fill (much cheaper than `cols` per-cell fills).
-                    let row_x = raster.origin_x;
-                    let row_y = raster.origin_y + ry as f64 * metrics.cell_h
-                        - raster.y_shift_px;
-                    let row_w = cols as f64 * metrics.cell_w;
-                    raster.fill_pixel_rect(row_x, row_y, row_w, metrics.cell_h, PANEL_RAISED);
-                }
-            }
+            // Block body tint removed per user request — output rows stay
+            // on the canvas. Block status communicated via the header
+            // overlay (` <dur>  ✓|✗ N` right-aligned on the command row).
+            let _ = cols;
 
             // Draw all cells while the row-slice borrow is live, then let it
             // drop so the &self prompt-rule calls below can proceed.  Cell is
@@ -613,17 +579,10 @@ pub fn draw_viewport(
                 }
             } // row borrow ends here
 
-            // Block accent bar: colored stripe along the LEFT edge across
-            // the full block span. Matches D's `.block { border-left: 2px
-            // solid var(--verified) }`.
-            if let Some(ref block) = block_opt {
-                let is_block_row = abs >= block.command_line && abs < block.end_line;
-                if is_block_row {
-                    let ry = y;
-                    let accent_rgb = block_accent_color(block);
-                    raster.block_accent_bar(metrics, ry, accent_rgb);
-                }
-            }
+            // Left-stripe accent removed per user request. Block status
+            // is now carried solely by the inline header overlay (✓ / ✗ N
+            // + duration on the command row). The visible-edge stripe will
+            // be redesigned in a follow-up pass.
 
             // Fold summary: if this is the command row of a folded block,
             // append " ⌄ N hidden" after any command text.
@@ -691,18 +650,7 @@ pub fn draw_viewport(
                 }
             }
 
-            // Block body tint (smooth-scroll path): wraps command + output.
-            if let Some(ref block) = block_opt {
-                let is_block_row = abs >= block.command_line && abs < block.end_line;
-                if is_block_row {
-                    let ry = y;
-                    let row_x = raster.origin_x;
-                    let row_y = raster.origin_y + ry as f64 * metrics.cell_h
-                        - raster.y_shift_px;
-                    let row_w = cols as f64 * metrics.cell_w;
-                    raster.fill_pixel_rect(row_x, row_y, row_w, metrics.cell_h, PANEL_RAISED);
-                }
-            }
+            // Block body tint removed.
 
             {
                 let row = terminal.viewport_row_at(off, y);
@@ -722,15 +670,7 @@ pub fn draw_viewport(
                 }
             } // row borrow ends here
 
-            // Block accent bar (smooth-scroll path): full block span.
-            if let Some(ref block) = block_opt {
-                let is_block_row = abs >= block.command_line && abs < block.end_line;
-                if is_block_row {
-                    let ry = y;
-                    let accent_rgb = block_accent_color(block);
-                    raster.block_accent_bar(metrics, ry, accent_rgb);
-                }
-            }
+            // Left-stripe accent removed (smooth-scroll path).
 
             // Fold summary (smooth-scroll path).
             if let Some(ref block) = block_opt {
@@ -906,11 +846,6 @@ pub fn draw_viewport_gpu(
     let cw = metrics.cell_w as f32;
     let ch = metrics.cell_h as f32;
 
-    // Helper: push a bg-only rect instance.
-    let push_bg = |batch: &mut CellBatch, xy: [f32; 2], wh: [f32; 2], color: [u8; 3]| {
-        batch.push_cell(xy, wh, None, color, color);
-    };
-
     // Helper: compute top-left pixel of cell (col, row_in_pane) using raster.cell_rect.
     // `row_in_pane` is a viewport-relative row (origin_y encodes the pane's
     // pixel top; batch positions are absolute drawable pixels).
@@ -946,15 +881,7 @@ pub fn draw_viewport_gpu(
                 }
             }
 
-            // Block body tint: one row-wide bg push instead of `cols` per-cell
-            // pushes. Big perf win for smooth scrolling over long blocks.
-            if let Some(ref block) = block_opt {
-                let is_block_row = abs >= block.command_line && abs < block.end_line;
-                if is_block_row {
-                    let xy = cell_xy(0.0, y as f64);
-                    push_bg(batch, xy, [cw * cols as f32, ch], PANEL_RAISED);
-                }
-            }
+            // Block body tint removed.
 
             // Draw all cells in this row.
             {
@@ -976,17 +903,7 @@ pub fn draw_viewport_gpu(
                 }
             }
 
-            // Block accent bar: full-height colored stripe at the left edge.
-            // Drawn after cells so it overlays any cell content at col 0.
-            if let Some(ref block) = block_opt {
-                let accent_rgb = block_accent_color(block);
-                let xy = cell_xy(0.0, y as f64);
-                // 2px wide, full cell height, at the left padding edge.
-                // GPU path uses cell_xy which maps to cell col 0; the accent bar
-                // overlaps the first column slightly. This mirrors the CPU path.
-                let wh = [2.0f32.min(cw), ch];
-                push_bg(batch, xy, wh, accent_rgb);
-            }
+            // Left-stripe accent removed (GPU live path).
 
             // Fold summary text.
             if let Some(ref block) = block_opt {
@@ -1060,15 +977,7 @@ pub fn draw_viewport_gpu(
                 }
             }
 
-            // Block body tint (smooth-scroll path): one row-wide push.
-            if let Some(ref block) = block_opt {
-                let is_block_row = abs >= block.command_line && abs < block.end_line;
-                if is_block_row {
-                    let base_xy = cell_xy(0.0, y as f64);
-                    let xy = [base_xy[0], base_xy[1] - shift];
-                    push_bg(batch, xy, [cw * cols as f32, ch], PANEL_RAISED);
-                }
-            }
+            // Block body tint removed (GPU smooth-scroll path).
 
             {
                 let row = terminal.viewport_row_at(off, y);
@@ -1091,14 +1000,7 @@ pub fn draw_viewport_gpu(
                 }
             }
 
-            // Block accent bar (smooth-scroll path).
-            if let Some(ref block) = block_opt {
-                let accent_rgb = block_accent_color(block);
-                let base_xy = cell_xy(0.0, y as f64);
-                let xy = [base_xy[0], base_xy[1] - shift];
-                let wh = [2.0f32.min(cw), ch];
-                push_bg(batch, xy, wh, accent_rgb);
-            }
+            // Left-stripe accent removed (GPU smooth-scroll path).
 
             // Fold summary (smooth-scroll path).
             if let Some(ref block) = block_opt {
@@ -2105,204 +2007,4 @@ mod tests {
         assert!(batch.instance_count() <= (t.rows() + 1) * t.cols());
     }
 
-    // ── Block rendering: accent bar and body tint ─────────────────────────────
-
-    /// A running block's accent bar uses ACCENT_BRIGHT (mineral bright teal).
-    /// Verify: draw a running block and check that the pixel at the accent bar
-    /// position contains the ACCENT_BRIGHT color.
-    #[test]
-    fn draw_viewport_running_block_has_teal_accent_bar() {
-        let m = metrics();
-        let mut r = Raster::new(200, 120);
-        let mut painter = StubPainter::default();
-        let mut t = make_terminal(10, 4);
-        let theme = MINERAL_DARK;
-
-        // Feed a running block (no 133;D yet).
-        t.feed(b"\x1b]133;A\x07");
-        t.feed(b"\x1b]133;B\x07");
-        t.feed(b"ls\r\n");
-        t.feed(b"\x1b]133;C\x07");
-        t.feed(b"file.txt\r\n");
-        // Still running — no 133;D.
-
-        // Set pad_x and origin_x so there is a gutter and the accent bar
-        // lands in the bitmap to the left of origin_x.
-        r.pad_x = 6.0;
-        r.origin_x = 10.0;
-
-        r.clear(theme.background);
-        draw_viewport(
-            &mut r,
-            &mut painter,
-            &mut t,
-            m,
-            &theme,
-            0.0,
-            Selection::default(),
-            None,
-            None,
-            0.0,
-            200.0,
-            FoldedBlocks::empty(),
-            None,
-        );
-
-        // OSC 133;C marks the command-start; the block's command row is the
-        // row where 133;C fired. With A, B, "ls\\r\\n", C, the command row is
-        // row 1 and output starts at row 2.
-        // bar_w = max(3.0, cell_w*0.22) = 3.0; x = max(0, 10-3-2) = 5; sample at 6.
-        use crate::raster::pixel_at;
-        let bar_x = 6_usize;
-        let row2_px = pixel_at(&r, bar_x, (m.cell_h * 2.5) as usize);
-        assert_eq!(
-            row2_px, ACCENT_BRIGHT,
-            "running block output row accent bar should be ACCENT_BRIGHT"
-        );
-    }
-
-    /// A completed successful block's accent bar uses VERIFIED (green).
-    #[test]
-    fn draw_viewport_ok_block_has_green_accent_bar() {
-        let m = metrics();
-        let mut r = Raster::new(200, 120);
-        let mut painter = StubPainter::default();
-        let mut t = make_terminal(10, 6);
-        let theme = MINERAL_DARK;
-
-        t.feed(b"\x1b]133;A\x07");
-        t.feed(b"\x1b]133;B\x07");
-        t.feed(b"ls\r\n");
-        t.feed(b"\x1b]133;C\x07");
-        t.feed(b"file.txt\r\n");
-        t.feed(b"\x1b]133;D;exit_code=0\x07");
-        t.feed(b"\x1b]133;A\x07");
-
-        r.pad_x = 6.0;
-        r.origin_x = 10.0;
-        r.clear(theme.background);
-        draw_viewport(
-            &mut r,
-            &mut painter,
-            &mut t,
-            m,
-            &theme,
-            0.0,
-            Selection::default(),
-            None,
-            None,
-            0.0,
-            200.0,
-            FoldedBlocks::empty(),
-            None,
-        );
-
-        // bar_w = max(3.0, cell_w*0.22) = 3.0; x = max(0, 10-3-2) = 5; sample at 6.
-        use crate::raster::pixel_at;
-        let bar_x = 6_usize;
-        // command_line = 0 (B-mark row), output rows are between command_line
-        // and end_line. After `ls\\r\\n; C; ok\\r\\n; D; A` the next-A
-        // closes end_line at the D's row (1), so output row is row 1.
-        let row1_px = pixel_at(&r, bar_x, (m.cell_h * 1.5) as usize);
-        assert_eq!(
-            row1_px, VERIFIED,
-            "exit-0 block output-row accent bar should be VERIFIED"
-        );
-    }
-
-    /// A failed block's accent bar uses FAILURE (red).
-    #[test]
-    fn draw_viewport_failed_block_has_red_accent_bar() {
-        let m = metrics();
-        let mut r = Raster::new(200, 120);
-        let mut painter = StubPainter::default();
-        let mut t = make_terminal(10, 6);
-        let theme = MINERAL_DARK;
-
-        t.feed(b"\x1b]133;A\x07");
-        t.feed(b"\x1b]133;B\x07");
-        t.feed(b"bad\r\n");
-        t.feed(b"\x1b]133;C\x07");
-        t.feed(b"error\r\n");
-        t.feed(b"\x1b]133;D;exit_code=1\x07");
-        t.feed(b"\x1b]133;A\x07");
-
-        r.pad_x = 6.0;
-        r.origin_x = 10.0;
-        r.clear(theme.background);
-        draw_viewport(
-            &mut r,
-            &mut painter,
-            &mut t,
-            m,
-            &theme,
-            0.0,
-            Selection::default(),
-            None,
-            None,
-            0.0,
-            200.0,
-            FoldedBlocks::empty(),
-            None,
-        );
-
-        // bar_w = max(3.0, cell_w*0.22) = 3.0; x = max(0, 10-3-2) = 5; sample at 6.
-        use crate::raster::pixel_at;
-        let bar_x = 6_usize;
-        let row1_px = pixel_at(&r, bar_x, (m.cell_h * 1.5) as usize);
-        assert_eq!(
-            row1_px, FAILURE,
-            "exit-nonzero block output-row accent bar should be FAILURE"
-        );
-    }
-
-    /// Body rows of a block get PANEL_RAISED background tint.
-    #[test]
-    fn draw_viewport_block_output_rows_have_panel_raised_tint() {
-        let m = metrics();
-        let mut r = Raster::new(200, 160);
-        let mut painter = StubPainter::default();
-        let mut t = make_terminal(10, 6);
-        let theme = MINERAL_DARK;
-
-        t.feed(b"\x1b]133;A\x07");
-        t.feed(b"\x1b]133;B\x07");
-        t.feed(b"ls\r\n");
-        t.feed(b"\x1b]133;C\x07");
-        t.feed(b"   \r\n"); // all spaces — tint should be visible as bg
-        t.feed(b"\x1b]133;D;exit_code=0\x07");
-        t.feed(b"\x1b]133;A\x07");
-
-        // Set origin to avoid accent bar overlap when sampling.
-        r.origin_x = 20.0; // cells start at x=20
-        r.pad_x = 6.0;
-
-        r.clear(theme.background);
-        draw_viewport(
-            &mut r,
-            &mut painter,
-            &mut t,
-            m,
-            &theme,
-            0.0,
-            Selection::default(),
-            None,
-            None,
-            20.0,
-            200.0,
-            FoldedBlocks::empty(),
-            None,
-        );
-
-        // Row 1 is the output row (after 133;C). Sample a pixel in the middle
-        // of the row at a cell column that should have PANEL_RAISED background.
-        use crate::raster::pixel_at;
-        let sample_x = 30_usize; // well into the cell area
-        let sample_y = (m.cell_h * 1.5) as usize; // mid of row 1
-        let px = pixel_at(&r, sample_x, sample_y);
-        assert_eq!(
-            px, PANEL_RAISED,
-            "block output row background should be PANEL_RAISED; got {px:?}"
-        );
-    }
 }

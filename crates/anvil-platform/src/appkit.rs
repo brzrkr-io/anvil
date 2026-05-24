@@ -325,8 +325,11 @@ define_class!(
         #[unsafe(method(scrollWheel:))]
         fn scroll_wheel(&self, event: &NSEvent) {
             let dy = event.scrollingDeltaY();
-            let pixel_precise: bool =
-                unsafe { msg_send![event, hasPreciseScrollingDeltas] };
+            // Use the TYPED binding — the previous `msg_send![event,
+            // hasPreciseScrollingDeltas]` returned garbage for the bool
+            // (BOOL is a signed char, not a Rust bool), so every event
+            // was misclassified as line-mode regardless of input source.
+            let pixel_precise = event.hasPreciseScrollingDeltas();
             let loc = location_in_view(self, event);
             // SAFETY: handler pointer is valid for the app lifetime.
             let mut h = unsafe { self.ivars().handler.borrow_mut() };
