@@ -567,6 +567,10 @@ impl AppKitApp {
         // Give the view a Metal-backing CAMetalLayer.
         // SAFETY: calling +layer on CAMetalLayer and -setLayer:/-setWantsLayer:
         // are all safe on the main thread.
+        //
+        // cornerRadius + masksToBounds: clips Metal-rendered pixels to the
+        // rounded shape so the window looks native (matches Sonoma+ ~10 pt
+        // system radius). hasShadow is true by default for Titled windows.
         unsafe {
             let cls_name = c"CAMetalLayer";
             let cls =
@@ -574,6 +578,8 @@ impl AppKitApp {
             let layer: Retained<NSObject> = msg_send![cls, layer];
             let _: () = msg_send![&*anvil_view, setLayer: &*layer];
             let _: () = msg_send![&*anvil_view, setWantsLayer: true];
+            let _: () = msg_send![&*layer, setCornerRadius: 10.0_f64];
+            let _: () = msg_send![&*layer, setMasksToBounds: true];
         }
 
         // Cast to NSView for window / delegate APIs.
