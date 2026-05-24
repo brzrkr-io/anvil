@@ -1050,7 +1050,6 @@ pub fn draw_right_hud(
     // All priority rows (capped only by remaining HUD vertical space —
     // the AGENTS section is the de-facto agent dock when there are many
     // approvals / runs / failures to show).
-    let mut emitted = 0_usize;
     for ap in &snap.approvals {
         if r >= bottom {
             break;
@@ -1068,7 +1067,6 @@ pub fn draw_right_hud(
             theme.foreground,
         );
         r += 1;
-        emitted += 1;
     }
     for run in &snap.runs {
         if r >= bottom {
@@ -1090,7 +1088,6 @@ pub fn draw_right_hud(
             theme.foreground,
         );
         r += 1;
-        emitted += 1;
     }
     for f in &snap.findings {
         if r >= bottom {
@@ -1112,7 +1109,6 @@ pub fn draw_right_hud(
             theme.foreground,
         );
         r += 1;
-        emitted += 1;
     }
     r = blank(r, bottom);
 
