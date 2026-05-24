@@ -486,11 +486,13 @@ pub fn draw_viewport(
                 }
             }
 
-            // Block body tint: PANEL_RAISED background across the whole block
-            // (command row + output rows) so the block reads as one card.
+            // Block body tint: PANEL_RAISED background on OUTPUT rows only.
+            // The command row stays on the canvas — the shell prompt already
+            // reads as the block's header (anvil-prompt shows command +
+            // duration + exit on that line). Output sits on the raised card.
             if let Some(ref block) = block_opt {
-                let in_block = abs >= block.command_line && abs < block.end_line;
-                if in_block {
+                let is_output_row = abs > block.command_line && abs < block.end_line;
+                if is_output_row {
                     let ry = y + top_bar_rows;
                     for cx in 0..cols {
                         raster.cell_bg(metrics, cx, ry, PANEL_RAISED);
@@ -521,12 +523,16 @@ pub fn draw_viewport(
                 }
             } // row borrow ends here
 
-            // Block accent bar: full-height colored stripe on the left for all
-            // rows belonging to a block.
+            // Block accent bar: colored stripe on the left for OUTPUT rows
+            // only (matches the body tint range). Command row stays on the
+            // canvas with no bar — the shell prompt sits cleanly.
             if let Some(ref block) = block_opt {
-                let ry = y + top_bar_rows;
-                let accent_rgb = block_accent_color(block);
-                raster.block_accent_bar(metrics, ry, accent_rgb);
+                let is_output_row = abs > block.command_line && abs < block.end_line;
+                if is_output_row {
+                    let ry = y + top_bar_rows;
+                    let accent_rgb = block_accent_color(block);
+                    raster.block_accent_bar(metrics, ry, accent_rgb);
+                }
             }
 
             // Fold summary: if this is the command row of a folded block,
@@ -540,18 +546,11 @@ pub fn draw_viewport(
                 }
             }
 
-            // Block header row: synthesize command text + duration + exit indicator.
-            // Drawn AFTER terminal cells so the overlay is on top.
-            if let Some(ref block) = block_opt {
-                if abs == block.command_line && !folded.contains(block.command_line) {
-                    let cmd_text =
-                        read_command_text(terminal, crow, block.command_start_col as usize);
-                    let ry = y + top_bar_rows;
-                    draw_block_header_cpu(
-                        raster, painter, metrics, theme, block, &cmd_text, ry, cols,
-                    );
-                }
-            }
+            // No synth header: the shell prompt line (with anvil-prompt's
+            // chevron + right-segment duration + exit) IS the block's header
+            // row. Synthesizing on top would overlap with what the shell
+            // already wrote, producing messy glyph collisions.
+            let _ = block_opt.as_ref().map(|_| ());
 
             if terminal.is_prompt_start(abs) {
                 let ry = (y + top_bar_rows) as f64;
@@ -2044,17 +2043,11 @@ mod tests {
             None,
         );
 
-        // Accent bar is now drawn at x = origin_x (inside the cell grid)
-        // half-cell wide, for rows that belong to the block.
+        // Accent bar lives on OUTPUT rows only (command row stays on canvas).
+        // Row 0 is the command row → no bar. Row 1 is the first output row.
         use crate::raster::pixel_at;
-        let bar_x = r.origin_x as usize + 1; // 1px in from the left of the bar
-        let row0_px = pixel_at(&r, bar_x, (m.cell_h * 0.5) as usize);
+        let bar_x = r.origin_x as usize + 1;
         let row1_px = pixel_at(&r, bar_x, (m.cell_h * 1.5) as usize);
-
-        assert_eq!(
-            row0_px, ACCENT_BRIGHT,
-            "running block header row accent bar should be ACCENT_BRIGHT"
-        );
         assert_eq!(
             row1_px, ACCENT_BRIGHT,
             "running block output row accent bar should be ACCENT_BRIGHT"
@@ -2101,10 +2094,11 @@ mod tests {
 
         use crate::raster::pixel_at;
         let bar_x = r.origin_x as usize + 1;
-        let row0_px = pixel_at(&r, bar_x, (m.cell_h * 0.5) as usize);
+        // Output row (row 1, command row is row 0).
+        let row1_px = pixel_at(&r, bar_x, (m.cell_h * 1.5) as usize);
         assert_eq!(
-            row0_px, VERIFIED,
-            "exit-0 block accent bar should be VERIFIED"
+            row1_px, VERIFIED,
+            "exit-0 block output-row accent bar should be VERIFIED"
         );
     }
 
@@ -2148,10 +2142,10 @@ mod tests {
 
         use crate::raster::pixel_at;
         let bar_x = r.origin_x as usize + 1;
-        let row0_px = pixel_at(&r, bar_x, (m.cell_h * 0.5) as usize);
+        let row1_px = pixel_at(&r, bar_x, (m.cell_h * 1.5) as usize);
         assert_eq!(
-            row0_px, FAILURE,
-            "exit-nonzero block accent bar should be FAILURE"
+            row1_px, FAILURE,
+            "exit-nonzero block output-row accent bar should be FAILURE"
         );
     }
 
