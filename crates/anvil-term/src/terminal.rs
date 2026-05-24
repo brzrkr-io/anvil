@@ -603,12 +603,17 @@ impl Terminal {
 
     fn block_from_mark(&self, i: usize) -> Block {
         let marks = &self.marks[..self.mark_count];
-        let abs_line_count = self.evicted_lines + self.line_count();
+        // For a running block (no terminator yet), end_line clamps to the
+        // current cursor's absolute row + 1 — just past the last row that
+        // could contain real output. Without this, the block visually
+        // extends across every empty row in the viewport.
+        let cursor_abs = self.evicted_lines + self.line_count().saturating_sub(self.rows())
+            + self.active_const().cur_y as usize;
         let mut b = Block {
             command_line: marks[i].line,
             command_start_col: marks[i].col,
             output_line: marks[i].line,
-            end_line: abs_line_count,
+            end_line: cursor_abs + 1,
             state: BlockState::Running,
             exit_code: 0,
             duration_ms: 0,
@@ -633,6 +638,16 @@ impl Terminal {
                 }
             }
             j += 1;
+        }
+        // Defensive: don't let end_line go past the current cursor for a
+        // running block (e.g. if marks ordering puts a later mark with a
+        // smaller line, or the cursor moved).
+        if b.state == BlockState::Running && b.end_line > cursor_abs + 1 {
+            b.end_line = cursor_abs + 1;
+        }
+        // Always: end_line ≥ command_line + 1, so a block always has a row.
+        if b.end_line < b.command_line + 1 {
+            b.end_line = b.command_line + 1;
         }
         b
     }
@@ -2245,7 +2260,7 @@ mod tests {
     }
 
     #[test]
-    fn block_live_running_command_has_state_running_and_end_line_eq_abs_line_count() {
+    fn block_live_running_command_has_state_running_and_end_line_at_cursor() {
         let mut term = make_terminal(20, 10);
         term.feed(b"\x1B]133;A\x07");
         term.feed(b"\x1B]133;B\x07");
@@ -2253,10 +2268,23 @@ mod tests {
         term.feed(b"\x1B]133;C\x07");
         term.feed(b"partial output\r\n");
 
-        let abs_line_count = term.evicted_lines + term.line_count();
+        // For a running block we clamp end_line to the cursor's absolute
+        // row + 1 so the block visual doesn't extend past the actual output
+        // into empty viewport rows.
         let b = term.block_at(0).unwrap();
         assert_eq!(BlockState::Running, b.state);
-        assert_eq!(abs_line_count, b.end_line);
+        assert!(
+            b.end_line > b.command_line,
+            "end_line {} must be > command_line {}",
+            b.end_line,
+            b.command_line
+        );
+        // end_line must not be far past the last real output row.
+        let line_count = term.line_count();
+        assert!(
+            b.end_line <= term.evicted_lines + line_count,
+            "end_line should be within terminal lines"
+        );
         assert_eq!(0, b.exit_code);
     }
 
