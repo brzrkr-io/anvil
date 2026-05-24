@@ -505,9 +505,12 @@ pub fn draw_viewport(
                 let is_block_row = abs >= block.command_line && abs < block.end_line;
                 if is_block_row {
                     let ry = y + top_bar_rows;
-                    for cx in 0..cols {
-                        raster.cell_bg(metrics, cx, ry, PANEL_RAISED);
-                    }
+                    // One row-wide fill (much cheaper than `cols` per-cell fills).
+                    let row_x = raster.origin_x;
+                    let row_y = raster.origin_y + ry as f64 * metrics.cell_h
+                        - raster.y_shift_px;
+                    let row_w = cols as f64 * metrics.cell_w;
+                    raster.fill_pixel_rect(row_x, row_y, row_w, metrics.cell_h, PANEL_RAISED);
                 }
             }
 
@@ -610,9 +613,11 @@ pub fn draw_viewport(
                 let is_block_row = abs >= block.command_line && abs < block.end_line;
                 if is_block_row {
                     let ry = y + top_bar_rows;
-                    for cx in 0..cols {
-                        raster.cell_bg(metrics, cx, ry, PANEL_RAISED);
-                    }
+                    let row_x = raster.origin_x;
+                    let row_y = raster.origin_y + ry as f64 * metrics.cell_h
+                        - raster.y_shift_px;
+                    let row_w = cols as f64 * metrics.cell_w;
+                    raster.fill_pixel_rect(row_x, row_y, row_w, metrics.cell_h, PANEL_RAISED);
                 }
             }
 
@@ -862,14 +867,13 @@ pub fn draw_viewport_gpu(
                 }
             }
 
-            // Block body tint: full block span (command + output).
+            // Block body tint: one row-wide bg push instead of `cols` per-cell
+            // pushes. Big perf win for smooth scrolling over long blocks.
             if let Some(ref block) = block_opt {
                 let is_block_row = abs >= block.command_line && abs < block.end_line;
                 if is_block_row {
-                    for cx in 0..cols {
-                        let xy = cell_xy(cx as f64, y as f64);
-                        push_bg(batch, xy, [cw, ch], PANEL_RAISED);
-                    }
+                    let xy = cell_xy(0.0, y as f64);
+                    push_bg(batch, xy, [cw * cols as f32, ch], PANEL_RAISED);
                 }
             }
 
@@ -971,15 +975,13 @@ pub fn draw_viewport_gpu(
                 }
             }
 
-            // Block body tint (smooth-scroll path): full block span.
+            // Block body tint (smooth-scroll path): one row-wide push.
             if let Some(ref block) = block_opt {
                 let is_block_row = abs >= block.command_line && abs < block.end_line;
                 if is_block_row {
-                    for cx in 0..cols {
-                        let base_xy = cell_xy(cx as f64, y as f64);
-                        let xy = [base_xy[0], base_xy[1] - shift];
-                        push_bg(batch, xy, [cw, ch], PANEL_RAISED);
-                    }
+                    let base_xy = cell_xy(0.0, y as f64);
+                    let xy = [base_xy[0], base_xy[1] - shift];
+                    push_bg(batch, xy, [cw * cols as f32, ch], PANEL_RAISED);
                 }
             }
 
