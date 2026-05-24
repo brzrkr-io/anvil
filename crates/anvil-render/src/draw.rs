@@ -28,10 +28,9 @@ const FAILURE: [u8; 3] = [0xb1, 0x3a, 0x30];
 /// alloy — muted text for fold summaries (#86919a)
 const ALLOY: [u8; 3] = [0x86, 0x91, 0x9a];
 /// panel-raised — block body background tint (#181a1e)
-// Block body tint. Noticeably lighter than theme.background (#181a21) so the
-// block reads as a raised surface card. Earlier values were too close to the
-// canvas to be perceptible.
-const PANEL_RAISED: [u8; 3] = [0x26, 0x2c, 0x36];
+// Block body tint. SUBTLE lift above theme.background (#181a21) — enough to
+// read as a card without shouting. Earlier (#26 2c 36) was too aggressive.
+const PANEL_RAISED: [u8; 3] = [0x1d, 0x21, 0x29];
 
 // ── Folded blocks ─────────────────────────────────────────────────────────────
 
