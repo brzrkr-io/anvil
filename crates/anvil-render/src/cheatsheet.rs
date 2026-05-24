@@ -150,10 +150,14 @@ pub const ROWS: &[Row] = &[
     },
 ];
 
-/// Card width in terminal columns. Wide enough for the longest row.
-pub const CARD_COLS: usize = 42;
+/// Card width in columns for the single-column layout.
+pub const CARD_COLS_1: usize = 42;
+/// Each half-column width in two-column mode (includes inner margins).
+pub const HALF_COLS: usize = 35;
+/// Card width in columns for the two-column layout (two halves + 1 divider col).
+pub const CARD_COLS_2: usize = HALF_COLS * 2 + 1;
 
-/// Card height in terminal rows (title + hint + rule + all rows + 1 padding).
+/// Card height in terminal rows (title + hint + separator + all rows + 1 padding).
 pub const CARD_ROWS: usize = ROWS.len() + 4;
 
 // --- Draw -------------------------------------------------------------------
@@ -161,8 +165,10 @@ pub const CARD_ROWS: usize = ROWS.len() + 4;
 /// Draw the cheatsheet as a centered modal card. Must be called last in
 /// renderFrame so it renders on top of all other UI elements.
 ///
+/// When the safe vertical area is too short for a single column of shortcuts,
+/// the content is split into two side-by-side columns so every shortcut is visible.
+///
 /// `chrome_top_px` / `chrome_bottom_px`: pixel heights of the chrome strips.
-/// The card is centered in the safe area between them.
 /// `total_cols` / `total_rows`: cell grid dimensions of the safe terminal area.
 #[allow(clippy::too_many_arguments)]
 pub fn draw(
@@ -181,12 +187,57 @@ pub fn draw(
     let cw = metrics.cell_w;
     let ch = metrics.cell_h;
 
-    // Clamp card dimensions to available space (leave 1 col / row margin).
-    let card_cols = CARD_COLS.min(total_cols.saturating_sub(2)).max(20);
-    let card_rows = CARD_ROWS.min(total_rows.saturating_sub(2)).max(6);
+    // Pixel height of the content area for a slice of ROWS (includes half-row
+    // gaps before non-first headers).
+    let content_h_px = |rows: &[Row]| -> f64 {
+        let mut h = 0.0_f64;
+        let mut first = true;
+        for row in rows {
+            if matches!(row, Row::Header(_)) && !first {
+                h += ch * 0.5; // inter-section gap
+            }
+            if matches!(row, Row::Header(_)) {
+                first = false;
+            }
+            h += ch;
+        }
+        h
+    };
+
+    // Header area (title + hint + separator rule) + 1-row bottom padding.
+    let header_px = 3.0 * ch;
+    let padding_px = ch;
+
+    // Single-column card pixel height.
+    let single_h_px = header_px + content_h_px(ROWS) + padding_px;
+
+    // Safe pixel height.
+    let safe_h_px = raster.height as f64 - chrome_top_px - chrome_bottom_px;
+
+    // Choose layout: two-column when single column is taller than the safe area
+    // and the window is wide enough.
+    let two_col = single_h_px > safe_h_px && total_cols >= CARD_COLS_2 + 2;
+
+    let card_cols = if two_col {
+        CARD_COLS_2.min(total_cols.saturating_sub(2))
+    } else {
+        CARD_COLS_1.min(total_cols.saturating_sub(2)).max(20)
+    };
+
+    // In two-col mode each half is HALF_COLS (both halves equal width).
+    let half_cols = if two_col { HALF_COLS } else { card_cols };
+
+    // Card pixel height: in two-col mode use the taller of the two halves.
+    let card_h_px = if two_col {
+        let split = split_index();
+        let left_h = header_px + content_h_px(&ROWS[..split]) + padding_px;
+        let right_h = header_px + content_h_px(&ROWS[split..]) + padding_px;
+        left_h.max(right_h).min(safe_h_px)
+    } else {
+        single_h_px.min(safe_h_px).max(6.0 * ch)
+    };
 
     let card_w_px = card_cols as f64 * cw;
-    let card_h_px = card_rows as f64 * ch;
 
     // Center horizontally within the terminal grid area.
     let safe_left_px = raster.pad_x;
@@ -194,7 +245,6 @@ pub fn draw(
     let left_px = (safe_left_px + (safe_w_px - card_w_px) / 2.0).max(safe_left_px);
 
     // Center vertically within the safe area between chrome strips.
-    let safe_h_px = raster.height as f64 - chrome_top_px - chrome_bottom_px;
     let top_px = (chrome_top_px + (safe_h_px - card_h_px) / 2.0).max(chrome_top_px);
 
     // Fully opaque card surface.
@@ -206,6 +256,12 @@ pub fn draw(
     raster.fill_pixel_rect(left_px, top_px + card_h_px - b, card_w_px, b, CHROME_BORDER);
     raster.fill_pixel_rect(left_px, top_px, b, card_h_px, CHROME_BORDER);
     raster.fill_pixel_rect(left_px + card_w_px - b, top_px, b, card_h_px, CHROME_BORDER);
+
+    // In two-column mode: 1px vertical divider down the centre.
+    if two_col {
+        let mid_x = left_px + half_cols as f64 * cw;
+        raster.fill_pixel_rect(mid_x, top_px + ch, b, card_h_px - 2.0 * ch, CHROME_BORDER);
+    }
 
     // --- Row 0: title in MIST.
     draw_text_px(
@@ -231,7 +287,7 @@ pub fn draw(
         left_px + card_w_px - 2.0 * cw,
     );
 
-    // --- Row 2: 1px separator rule.
+    // --- Row 2: 1px separator rule below the header.
     raster.fill_pixel_rect(
         left_px + 2.0 * cw,
         top_px + 2.0 * ch,
@@ -240,42 +296,114 @@ pub fn draw(
         CHROME_BORDER,
     );
 
-    // --- Rows 3+: shortcut content.
-    let chord_x = left_px + 3.0 * cw;
-    // Description column: 15 cols right of chord start (clears widest chord).
-    let desc_x = left_px + 18.0 * cw;
-    let max_x = left_px + card_w_px - 2.0 * cw;
-    // Stop drawing 1 row before the bottom border.
-    let content_bottom_y = top_px + card_h_px - ch;
+    // --- Content rows (single- or two-column).
+    let content_bottom_y = top_px + card_h_px - ch; // 1 row bottom padding
 
-    let mut row_y = top_px + 3.0 * ch;
+    if two_col {
+        let split = split_index();
+        // Left column.
+        draw_column(
+            raster,
+            painter,
+            metrics,
+            left_px,
+            top_px + 3.0 * ch,
+            content_bottom_y,
+            cw,
+            ch,
+            half_cols,
+            &ROWS[..split],
+        );
+        // Right column: starts immediately after the divider col.
+        let right_x = left_px + (half_cols + 1) as f64 * cw;
+        draw_column(
+            raster,
+            painter,
+            metrics,
+            right_x,
+            top_px + 3.0 * ch,
+            content_bottom_y,
+            cw,
+            ch,
+            half_cols,
+            &ROWS[split..],
+        );
+    } else {
+        draw_column(
+            raster,
+            painter,
+            metrics,
+            left_px,
+            top_px + 3.0 * ch,
+            content_bottom_y,
+            cw,
+            ch,
+            card_cols,
+            ROWS,
+        );
+    }
+}
+
+/// Returns the index in ROWS at which to split for two-column layout.
+/// Splits at the Header boundary nearest to the midpoint.
+fn split_index() -> usize {
+    let mid = ROWS.len() / 2;
+    // Walk forward from mid to find the next Header boundary.
+    for (offset, row) in ROWS[mid..].iter().enumerate() {
+        if matches!(row, Row::Header(_)) {
+            return mid + offset;
+        }
+    }
+    mid
+}
+
+/// Draw a column of shortcut rows starting at pixel `(col_left_px, start_y)`.
+/// `col_width_cols` is the number of cell-columns available (incl. inner margins).
+#[allow(clippy::too_many_arguments)]
+fn draw_column(
+    raster: &mut Raster,
+    painter: &mut dyn GlyphPainter,
+    metrics: FontMetrics,
+    col_left_px: f64,
+    start_y: f64,
+    bottom_y: f64,
+    cw: f64,
+    ch: f64,
+    col_width_cols: usize,
+    rows: &[Row],
+) {
+    let chord_x = col_left_px + 3.0 * cw;
+    // Description at chord_x + 15 cols; clears "Ctrl Shift Tab".
+    let desc_x = col_left_px + 18.0 * cw;
+    let max_x = col_left_px + col_width_cols.saturating_sub(2) as f64 * cw;
+
+    let mut row_y = start_y;
     let mut first_header = true;
 
-    for row in ROWS {
-        if row_y + ch > content_bottom_y {
+    for row in rows {
+        if row_y + ch > bottom_y {
             break;
         }
         match row {
             Row::Header(label) => {
                 if !first_header {
+                    // Half-row gap + hairline before each section after the first.
+                    let gap = ch * 0.5;
+                    if row_y + gap + ch > bottom_y {
+                        break;
+                    }
                     raster.fill_pixel_rect(
-                        left_px + 2.0 * cw,
-                        row_y,
-                        card_w_px - 4.0 * cw,
+                        col_left_px + 2.0 * cw,
+                        row_y + gap * 0.5,
+                        col_width_cols.saturating_sub(4) as f64 * cw,
                         1.0,
                         CHROME_BORDER,
                     );
+                    row_y += gap;
                 }
                 first_header = false;
                 draw_text_px(
-                    raster,
-                    painter,
-                    metrics,
-                    chord_x,
-                    row_y,
-                    label,
-                    TEXT_MUTED,
-                    max_x,
+                    raster, painter, metrics, chord_x, row_y, label, TEXT_MUTED, max_x,
                 );
                 row_y += ch;
             }
@@ -292,14 +420,7 @@ pub fn draw(
                 );
                 if desc_x < max_x {
                     draw_text_px(
-                        raster,
-                        painter,
-                        metrics,
-                        desc_x,
-                        row_y,
-                        desc,
-                        TEXT_MUTED,
-                        max_x,
+                        raster, painter, metrics, desc_x, row_y, desc, TEXT_MUTED, max_x,
                     );
                 }
                 row_y += ch;
@@ -329,7 +450,7 @@ fn draw_text_px(
         if gx + cw > max_px {
             break;
         }
-        raster.glyph_at_px(painter, metrics, gx, py, cp as u32, color);
+        raster.glyph_at(painter, metrics, gx, py, cp as u32, color);
     }
 }
 
@@ -419,7 +540,7 @@ mod tests {
     #[test]
     fn draw_no_panic() {
         let m = metrics();
-        let cols = CARD_COLS + 4;
+        let cols = CARD_COLS_1 + 4;
         let rows = CARD_ROWS + 4;
         let mut r = Raster::new(
             (cols as f64 * m.cell_w) as usize,

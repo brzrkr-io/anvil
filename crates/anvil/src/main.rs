@@ -1537,15 +1537,19 @@ impl App {
         // Cheatsheet overlay.
         if self.cheatsheet_visible {
             let cw = self.font.metrics.cell_w;
-            let total_rows = (((dh.saturating_sub(2 * GRID_PAD)) as f64 / ch) as usize).max(1);
+            let chrome_top = self.chrome_top_px();
+            let chrome_bot = self.chrome_bottom_px();
+            let safe_h = (dh as f64 - chrome_top - chrome_bot).max(0.0);
+            let total_rows = ((safe_h / ch) as usize).max(1);
             let total_cols = (((dw.saturating_sub(2 * GRID_PAD)) as f64 / cw) as usize).max(1);
             draw_cheatsheet(
                 &mut self.raster,
                 painter,
                 metrics,
-                &self.theme,
                 total_cols,
                 total_rows,
+                chrome_top,
+                chrome_bot,
             );
         }
 
@@ -1730,6 +1734,7 @@ impl App {
             Action::CheatsheetShow => {
                 self.cheatsheet_visible = true;
                 self.dirty = true;
+                self.force_full_redraw = true;
             }
         }
         self.dismiss_palette(webview);
@@ -1871,6 +1876,7 @@ impl App {
         test!(kb.cheatsheet, {
             self.cheatsheet_visible = !self.cheatsheet_visible;
             self.dirty = true;
+            self.force_full_redraw = true;
             return true;
         });
         test!(kb.fold_block, {
@@ -2231,6 +2237,7 @@ impl AppHandler for AppShell {
         if self.app.cheatsheet_visible {
             self.app.cheatsheet_visible = false;
             self.app.dirty = true;
+            self.app.force_full_redraw = true;
             return;
         }
 
