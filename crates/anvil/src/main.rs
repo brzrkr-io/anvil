@@ -1799,6 +1799,7 @@ impl App {
             self.close_search();
             self.tabs.next();
             self.snap_anim();
+            self.force_full_redraw = true;
             self.dirty = true;
             return true;
         });
@@ -1806,6 +1807,7 @@ impl App {
             self.close_search();
             self.tabs.prev();
             self.snap_anim();
+            self.force_full_redraw = true;
             self.dirty = true;
             return true;
         });
@@ -1815,6 +1817,7 @@ impl App {
                     self.close_search();
                     self.tabs.switch_to(i);
                     self.snap_anim();
+                    self.force_full_redraw = true;
                     self.dirty = true;
                     return true;
                 }
@@ -2322,6 +2325,7 @@ impl AppHandler for AppShell {
                 self.app.tabs.next();
             }
             self.app.snap_anim();
+            self.app.force_full_redraw = true;
             self.app.dirty = true;
             return true;
         }
@@ -2428,13 +2432,16 @@ impl AppHandler for AppShell {
                     TabBarHitKind::Tab(idx) => {
                         app.tabs.switch_to(idx);
                         app.snap_anim();
+                        app.force_full_redraw = true;
                         app.dirty = true;
                     }
                     TabBarHitKind::CloseTab(idx) => {
                         app.tabs.switch_to(idx);
+                        app.force_full_redraw = true;
                         app.close_active_tab();
                     }
                     TabBarHitKind::AddTab => {
+                        app.force_full_redraw = true;
                         app.add_tab();
                     }
                 }

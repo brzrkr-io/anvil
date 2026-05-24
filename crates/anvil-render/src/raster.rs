@@ -486,9 +486,7 @@ mod tests {
         }
     }
 
-    // ── Ported from raster.zig ────────────────────────────────────────────
-
-    /// Port of "clear fills the bitmap"
+    /// clear fills the bitmap
     #[test]
     fn clear_fills_bitmap() {
         let mut r = Raster::new(64, 48);
@@ -497,7 +495,7 @@ mod tests {
         assert_eq!(pixel_at(&r, 60, 40), [10, 20, 30]);
     }
 
-    /// Port of "cellBg and glyph draw onto the bitmap" — bg portion only;
+    /// cellBg and glyph draw onto the bitmap — bg portion only;
     /// glyph pixels are tested via stub call recording.
     #[test]
     fn cell_bg_paints_cell_region() {
@@ -511,7 +509,7 @@ mod tests {
         assert_eq!(pixel_at(&r, cx, cy), [80, 0, 0]);
     }
 
-    /// Port of glyph draw side of "cellBg and glyph draw onto the bitmap" —
+    /// Glyph draw side of "cellBg and glyph draw onto the bitmap" —
     /// uses stub painter, asserts call is recorded.
     #[test]
     fn cell_glyph_routes_to_painter() {
@@ -525,7 +523,7 @@ mod tests {
         assert_eq!(painter.calls[0], (42, [255, 255, 255]));
     }
 
-    /// Port of "glyph_id 0 is a no-op"
+    /// glyph_id 0 is a no-op
     #[test]
     fn cell_glyph_zero_id_is_noop() {
         let m = default_metrics();
@@ -535,7 +533,7 @@ mod tests {
         assert!(painter.calls.is_empty());
     }
 
-    /// Port of "resize keeps a usable context"
+    /// resize keeps a usable context
     #[test]
     fn resize_keeps_usable_buffer() {
         let mut r = Raster::new(32, 32);
@@ -545,7 +543,7 @@ mod tests {
         assert_eq!(pixel_at(&r, 100, 50), [7, 7, 7]);
     }
 
-    /// Port of "cellInset fills a sub-rectangle of a cell" (left bar)
+    /// cellInset fills a sub-rectangle of a cell (left bar)
     #[test]
     fn cell_inset_left_bar() {
         let m = default_metrics(); // 10×20 cells
@@ -563,9 +561,9 @@ mod tests {
         assert_eq!(pixel_at(&r, rx, ly), [0, 0, 0]);
     }
 
-    /// Port of "cellInset underline fills the cell bottom"
+    /// cellInset underline fills the cell bottom.
     ///
-    /// The Zig version used CG y-up (fy=0 at cell bottom).  In top-down space
+    /// The Zig original used CG y-up (fy=0 at cell bottom).  In top-down space
     /// the bottom strip has fy = (1 - fh), which draw.rs handles.  Here we
     /// test the raw `cell_inset` with top-down `fy`.
     #[test]
@@ -586,7 +584,7 @@ mod tests {
         assert_eq!(pixel_at(&r, ux, mid_y), [0, 0, 0]);
     }
 
-    /// Port of "rowRule draws a strip at the top of a cell row"
+    /// rowRule draws a strip at the top of a cell row
     #[test]
     fn row_rule_draws_at_top_of_row() {
         let m = default_metrics(); // 10×20 cells
@@ -606,7 +604,7 @@ mod tests {
 
     // ── Stale-separator tests (Bug E regression) ─────────────────────────
 
-    /// Port of "clear then draw nothing leaves a pure background bitmap"
+    /// clear then draw nothing leaves a pure background bitmap
     #[test]
     fn clear_then_no_draw_gives_pure_background() {
         let mut r = Raster::new(64, 48);
@@ -617,7 +615,7 @@ mod tests {
         assert_eq!(pixel_at(&r, 63, 47), bg);
     }
 
-    /// Port of "rowRule draws only on its row and clear erases it next frame"
+    /// rowRule draws only on its row and clear erases it next frame
     #[test]
     fn row_rule_only_on_row_and_clear_erases_it() {
         let m = default_metrics(); // 10×20 cells
@@ -641,7 +639,7 @@ mod tests {
         assert_eq!(pixel_at(&r, w / 2, strip_y), bg);
     }
 
-    /// Port of "y_shift_px shifts cellBg upward in the bitmap"
+    /// y_shift_px shifts cellBg upward in the bitmap
     #[test]
     fn y_shift_moves_cell_bg() {
         let m = default_metrics(); // 10×20 cells
