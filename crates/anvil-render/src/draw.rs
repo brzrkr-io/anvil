@@ -27,10 +27,10 @@ const VERIFIED: [u8; 3] = [0x3f, 0x8a, 0x5b];
 const FAILURE: [u8; 3] = [0xb1, 0x3a, 0x30];
 /// alloy — muted text for fold summaries (#86919a)
 const ALLOY: [u8; 3] = [0x86, 0x91, 0x9a];
-/// panel-raised — block body background tint (#181a1e)
-// Block body tint. SUBTLE lift above theme.background (#181a21) — enough to
-// read as a card without shouting. Earlier (#26 2c 36) was too aggressive.
-const PANEL_RAISED: [u8; 3] = [0x1d, 0x21, 0x29];
+/// panel-raised — block body background tint. Matches D's `.block { background:
+/// var(--charcoal) }` against the terminal background. Lifted enough to read
+/// as a card at retina; quiet enough not to compete with text.
+const PANEL_RAISED: [u8; 3] = [0x22, 0x27, 0x30];
 
 // ── Folded blocks ─────────────────────────────────────────────────────────────
 
@@ -497,13 +497,13 @@ pub fn draw_viewport(
                 }
             }
 
-            // Block body tint: PANEL_RAISED background on OUTPUT rows only.
-            // The command row stays on the canvas — the shell prompt already
-            // reads as the block's header (anvil-prompt shows command +
-            // duration + exit on that line). Output sits on the raised card.
+            // Block body tint: PANEL_RAISED background across the FULL block
+            // span (command row + output rows). Matches D's `.block { background
+            // var(--charcoal) }` which wraps the command line + its output as
+            // a single card.
             if let Some(ref block) = block_opt {
-                let is_output_row = abs > block.command_line && abs < block.end_line;
-                if is_output_row {
+                let is_block_row = abs >= block.command_line && abs < block.end_line;
+                if is_block_row {
                     let ry = y + top_bar_rows;
                     for cx in 0..cols {
                         raster.cell_bg(metrics, cx, ry, PANEL_RAISED);
@@ -534,12 +534,12 @@ pub fn draw_viewport(
                 }
             } // row borrow ends here
 
-            // Block accent bar: colored stripe on the left for OUTPUT rows
-            // only (matches the body tint range). Command row stays on the
-            // canvas with no bar — the shell prompt sits cleanly.
+            // Block accent bar: colored stripe along the LEFT edge across
+            // the full block span. Matches D's `.block { border-left: 2px
+            // solid var(--verified) }`.
             if let Some(ref block) = block_opt {
-                let is_output_row = abs > block.command_line && abs < block.end_line;
-                if is_output_row {
+                let is_block_row = abs >= block.command_line && abs < block.end_line;
+                if is_block_row {
                     let ry = y + top_bar_rows;
                     let accent_rgb = block_accent_color(block);
                     raster.block_accent_bar(metrics, ry, accent_rgb);
@@ -605,10 +605,10 @@ pub fn draw_viewport(
                 }
             }
 
-            // Block body tint (smooth-scroll path).
+            // Block body tint (smooth-scroll path): wraps command + output.
             if let Some(ref block) = block_opt {
-                let is_output_row = abs >= block.output_line && abs < block.end_line;
-                if is_output_row {
+                let is_block_row = abs >= block.command_line && abs < block.end_line;
+                if is_block_row {
                     let ry = y + top_bar_rows;
                     for cx in 0..cols {
                         raster.cell_bg(metrics, cx, ry, PANEL_RAISED);
@@ -635,11 +635,14 @@ pub fn draw_viewport(
                 }
             } // row borrow ends here
 
-            // Block accent bar (smooth-scroll path).
+            // Block accent bar (smooth-scroll path): full block span.
             if let Some(ref block) = block_opt {
-                let ry = y + top_bar_rows;
-                let accent_rgb = block_accent_color(block);
-                raster.block_accent_bar(metrics, ry, accent_rgb);
+                let is_block_row = abs >= block.command_line && abs < block.end_line;
+                if is_block_row {
+                    let ry = y + top_bar_rows;
+                    let accent_rgb = block_accent_color(block);
+                    raster.block_accent_bar(metrics, ry, accent_rgb);
+                }
             }
 
             // Fold summary (smooth-scroll path).
@@ -859,10 +862,10 @@ pub fn draw_viewport_gpu(
                 }
             }
 
-            // Block body tint: push PANEL_RAISED bg cells for output rows.
+            // Block body tint: full block span (command + output).
             if let Some(ref block) = block_opt {
-                let is_output_row = abs >= block.output_line && abs < block.end_line;
-                if is_output_row {
+                let is_block_row = abs >= block.command_line && abs < block.end_line;
+                if is_block_row {
                     for cx in 0..cols {
                         let xy = cell_xy(cx as f64, y as f64);
                         push_bg(batch, xy, [cw, ch], PANEL_RAISED);
@@ -968,10 +971,10 @@ pub fn draw_viewport_gpu(
                 }
             }
 
-            // Block body tint (smooth-scroll path).
+            // Block body tint (smooth-scroll path): full block span.
             if let Some(ref block) = block_opt {
-                let is_output_row = abs >= block.output_line && abs < block.end_line;
-                if is_output_row {
+                let is_block_row = abs >= block.command_line && abs < block.end_line;
+                if is_block_row {
                     for cx in 0..cols {
                         let base_xy = cell_xy(cx as f64, y as f64);
                         let xy = [base_xy[0], base_xy[1] - shift];
@@ -1330,7 +1333,7 @@ mod tests {
 
         let row = t.viewport_row(0);
         let cell = row[0];
-        drop(row);
+        let _ = row;
 
         draw_cell(&mut r, &mut painter, m, &theme, 0, 0, 0, cell, 0, sel, None);
         // No panic is the primary assertion; also verifies selection path was taken.
@@ -1353,7 +1356,7 @@ mod tests {
 
         let row = t.viewport_row(0);
         let cell = row[0];
-        drop(row);
+        let _ = row;
 
         draw_cell(
             &mut r,

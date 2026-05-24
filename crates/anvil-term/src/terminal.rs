@@ -629,7 +629,8 @@ impl Terminal {
             }
         }
 
-        let cursor_abs = self.evicted_lines + self.line_count().saturating_sub(self.rows())
+        let cursor_abs = self.evicted_lines
+            + self.line_count().saturating_sub(self.rows())
             + self.active_const().cur_y;
         let mut b = Block {
             command_line,

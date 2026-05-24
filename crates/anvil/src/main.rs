@@ -1294,31 +1294,12 @@ impl App {
         if is_full_redraw {
             self.raster.clear(self.theme.background);
         } else {
-            // On a partial frame, clear only the chrome rows so that chrome
-            // draws (tab bar, status bar, panels) always paint on a clean
-            // background regardless of what the terminal wrote there before.
-            let ch = self.font.metrics.cell_h;
-            let pad = GRID_PAD;
-            let top_bar_h = (self.top_bar_rows() as f64 * ch) as usize;
-            let bot_bar_h = (self.bottom_bar_rows() as f64 * ch) as usize;
-            let (_, dh) = self.device_size();
-            // Clear top chrome (tab bar).
-            if top_bar_h > 0 {
-                self.raster
-                    .clear_pixel_rows(0, pad + top_bar_h, self.theme.background);
-            }
-            // Clear bottom chrome (search bar + status bar).
-            if bot_bar_h > 0 {
-                let bot_start = dh.saturating_sub(pad + bot_bar_h);
-                self.raster
-                    .clear_pixel_rows(bot_start, dh, self.theme.background);
-            }
             // Right HUD strip — clear and let the HUD draw repaint it. Safe
             // now that the initial PTY size matches `inner_rect`: no cells
             // ever extend into this column.
             if self.hud_visible {
                 let cw = self.font.metrics.cell_w;
-                let (dw, _) = self.device_size();
+                let (dw, dh) = self.device_size();
                 let strip_w_px = self.hud_cols as f64 * cw + GRID_PAD as f64;
                 let x_start = (dw as f64 - strip_w_px).max(0.0);
                 self.raster.fill_pixel_rect(
@@ -1503,7 +1484,6 @@ impl App {
                 &mut self.raster,
                 painter,
                 metrics,
-                &self.theme,
                 &self.tabs,
                 &branch,
                 &clock,
@@ -1534,7 +1514,6 @@ impl App {
                 &mut self.raster,
                 painter,
                 metrics,
-                &self.theme,
                 &self.local_ctx,
                 &self.agent_snap,
                 &clock,

@@ -370,8 +370,14 @@ mod tests {
             crate::segments::State::Warn,
         )];
         let out = full(&segs, base_opts(Shell::Plain));
-        assert!(!out.contains("*3"), "dirty count must not appear in the prompt");
-        assert!(!out.contains("main"), "branch must not appear in the prompt");
+        assert!(
+            !out.contains("*3"),
+            "dirty count must not appear in the prompt"
+        );
+        assert!(
+            !out.contains("main"),
+            "branch must not appear in the prompt"
+        );
         assert!(out.contains('\u{276f}'));
     }
 

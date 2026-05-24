@@ -24,4 +24,3 @@ pub use draw::{
     draw_viewport, draw_viewport_gpu, resolve_color, rule_row,
 };
 pub use raster::{FontMetrics, GlyphPainter, PixelRect, Raster};
-pub use statusbar::STATUS_BAR_ROWS;

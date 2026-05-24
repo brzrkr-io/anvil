@@ -1,8 +1,6 @@
-//! The low-profile terminal tab bar — one text-row tall, drawn into the raster.
-//!
-//! Ported from `src/render/tabbar.zig`.
+//! The low-profile terminal tab bar — a fixed-height pixel strip, drawn into
+//! the raster.
 
-use anvil_theme::Theme;
 use anvil_workspace::tab::TabManager;
 
 use crate::raster::{FontMetrics, GlyphPainter, PixelRect, Raster};
@@ -85,7 +83,6 @@ pub fn draw_tab_bar(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
     metrics: FontMetrics,
-    _theme: &Theme,
     tabs: &TabManager,
     branch: &str,
     clock: &str,
@@ -371,14 +368,12 @@ mod tests {
         r.clear([1, 2, 3]);
 
         let mgr = TabManager::default(); // 0 tabs
-        let theme = anvil_theme::MINERAL_DARK;
         let mut hits = make_hits();
 
         draw_tab_bar(
             &mut r,
             &mut painter,
             m,
-            &theme,
             &mgr,
             "",
             "12:00",
@@ -410,14 +405,12 @@ mod tests {
 
         let mut mgr = TabManager::default();
         mgr.push(Tab::new_single_pane(20, 4, 0));
-        let theme = anvil_theme::MINERAL_DARK;
         let mut hits = make_hits();
 
         draw_tab_bar(
             &mut r,
             &mut painter,
             m,
-            &theme,
             &mgr,
             "",
             "12:00",
@@ -449,14 +442,12 @@ mod tests {
 
         let mut mgr = TabManager::default();
         mgr.push(Tab::new_single_pane(20, 4, 0));
-        let theme = anvil_theme::MINERAL_DARK;
         let mut hits = make_hits();
 
         draw_tab_bar(
             &mut r,
             &mut painter,
             m,
-            &theme,
             &mgr,
             "main",
             "14:22",
@@ -465,7 +456,6 @@ mod tests {
             &mut hits,
         );
 
-        let _ = theme; // chrome uses a fixed palette now
         const ACCENT_BRIGHT: [u8; 3] = [0x54, 0xb7, 0xc0];
         let basin: Vec<_> = painter
             .calls
@@ -493,14 +483,12 @@ mod tests {
         mgr.push(Tab::new_single_pane(20, 4, 0));
         mgr.push(Tab::new_single_pane(20, 4, 0));
         mgr.active = 0;
-        let theme = anvil_theme::MINERAL_DARK;
         let mut hits = make_hits();
 
         draw_tab_bar(
             &mut r,
             &mut painter,
             m,
-            &theme,
             &mgr,
             "",
             "14:22",
@@ -513,12 +501,8 @@ mod tests {
         // `--charcoal` panel color). pad_x=0, RESERVE=80pt × scale 1.0=80px,
         // cell_w=10 → tl_cols=8. basin col 8, tabs_start_col 10. Active tab 0
         // width=10, at cols 10..20. col 15 → x = 150, y = 10 (mid of cell_h=20).
-        let _ = theme; // theme is unused now that chrome uses a fixed palette
         let px = pixel_at(&r, 150, 10);
-        assert_eq!(
-            px, CHARCOAL,
-            "expected CHARCOAL for active tab, got {px:?}"
-        );
+        assert_eq!(px, CHARCOAL, "expected CHARCOAL for active tab, got {px:?}");
     }
 
     /// When a non-active tab has `has_unread`, the painter receives a `·` glyph
@@ -536,14 +520,12 @@ mod tests {
         mgr.push(Tab::new_single_pane(20, 4, 0)); // tab 1 — background with unread
         mgr.active = 0;
         mgr.tabs[1].has_unread = true;
-        let theme = anvil_theme::MINERAL_DARK;
         let mut hits = make_hits();
 
         draw_tab_bar(
             &mut r,
             &mut painter,
             m,
-            &theme,
             &mgr,
             "",
             "14:22",
@@ -580,14 +562,12 @@ mod tests {
         mgr.push(Tab::new_single_pane(20, 4, 0));
         mgr.active = 0;
         mgr.tabs[0].has_unread = true; // active tab — dot must be suppressed
-        let theme = anvil_theme::MINERAL_DARK;
         let mut hits = make_hits();
 
         draw_tab_bar(
             &mut r,
             &mut painter,
             m,
-            &theme,
             &mgr,
             "",
             "14:22",

@@ -1,15 +1,10 @@
-//! The always-visible status bar — one text row at the bottom of the window.
-//!
-//! Draws into the BGRA raster like the tab bar and search bar.
+//! The always-visible status bar — a fixed-height pixel strip at the bottom of
+//! the window. Draws into the BGRA raster like the tab bar and search bar.
 
 use anvil_agent::{Connection, Snapshot};
-use anvil_theme::Theme;
 
 use crate::agent_panel::{LocalContext, RunState, format_cwd};
 use crate::raster::{FontMetrics, GlyphPainter, Raster};
-
-/// The status bar is always one cell row tall.
-pub const STATUS_BAR_ROWS: usize = 1;
 
 // --- Chrome palette (matches docs/design/layout-mockups.html Option D) ------
 
@@ -47,7 +42,6 @@ pub fn draw_status_bar(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
     metrics: FontMetrics,
-    _theme: &Theme,
     local_ctx: &LocalContext,
     agent_snap: &Snapshot,
     clock: &str,
@@ -123,9 +117,8 @@ pub fn draw_status_bar(
     } else {
         ""
     };
-    let right_text_w = (agent_text.chars().count() + sep.chars().count() + clock.chars().count())
-        as f64
-        * cell_w;
+    let right_text_w =
+        (agent_text.chars().count() + sep.chars().count() + clock.chars().count()) as f64 * cell_w;
     let right_start = (total_w - pad_x - right_text_w).max(x);
     let mut rx = right_start;
     for (i, ch) in agent_text.chars().enumerate() {
@@ -196,11 +189,6 @@ mod tests {
         }
     }
 
-    fn bottom_row(raster: &Raster, metrics: FontMetrics) -> usize {
-        let total_rows = (raster.height as f64 / metrics.cell_h) as usize;
-        total_rows.saturating_sub(1)
-    }
-
     // --- draw_status_bar_smoke -----------------------------------------------
 
     /// Smoke test: no panic, and the bar leaves the background untouched
@@ -216,23 +204,22 @@ mod tests {
         let agent_snap = Snapshot::default();
         let theme = anvil_theme::MINERAL_DARK;
 
-        let row = bottom_row(&r, m);
+        let chrome_bottom_px = m.cell_h * 2.0;
         draw_status_bar(
             &mut r,
             &mut painter,
             m,
-            &theme,
             &local_ctx,
             &agent_snap,
             "",
-            m.cell_h * 2.0,
+            chrome_bottom_px,
             1.0,
         );
 
-        // Status bar paints its row to a mix of bg+surface (quieter than
-        // pure surface). Just verify it differs from theme.background.
-        let cell_h = m.cell_h as usize;
-        let px_y = row * cell_h + cell_h / 2;
+        // The strip runs from (total_h - chrome_bottom_px) to total_h.
+        // Probe a pixel near the vertical center of the strip.
+        let strip_top = r.height as f64 - chrome_bottom_px;
+        let px_y = (strip_top + chrome_bottom_px * 0.5) as usize;
         let px = pixel_at(&r, 4, px_y);
         assert_ne!(
             px, theme.background,
@@ -255,14 +242,11 @@ mod tests {
             ..LocalContext::default()
         };
         let agent_snap = Snapshot::default();
-        let theme = anvil_theme::MINERAL_DARK;
 
-        let row = bottom_row(&r, m);
         draw_status_bar(
             &mut r,
             &mut painter,
             m,
-            &theme,
             &local_ctx,
             &agent_snap,
             "",
@@ -297,13 +281,11 @@ mod tests {
             ..LocalContext::default()
         };
         let agent_snap = Snapshot::default();
-        let theme = anvil_theme::MINERAL_DARK;
-        let row = bottom_row(&r, m);
+
         draw_status_bar(
             &mut r,
             &mut painter,
             m,
-            &theme,
             &local_ctx,
             &agent_snap,
             "",
@@ -337,13 +319,11 @@ mod tests {
             ..LocalContext::default()
         };
         let agent_snap = Snapshot::default();
-        let theme = anvil_theme::MINERAL_DARK;
-        let row = bottom_row(&r, m);
+
         draw_status_bar(
             &mut r,
             &mut painter,
             m,
-            &theme,
             &local_ctx,
             &agent_snap,
             "",
@@ -375,14 +355,11 @@ mod tests {
 
         let local_ctx = LocalContext::default(); // NoRepo, no dirty
         let agent_snap = Snapshot::default(); // NotInstalled
-        let theme = anvil_theme::MINERAL_DARK;
 
-        let row = bottom_row(&r, m);
         draw_status_bar(
             &mut r,
             &mut painter,
             m,
-            &theme,
             &local_ctx,
             &agent_snap,
             "",
@@ -415,14 +392,10 @@ mod tests {
             running_count: 2,
             ..Snapshot::default()
         };
-        let theme = anvil_theme::MINERAL_DARK;
-
-        let row = bottom_row(&r, m);
         draw_status_bar(
             &mut r,
             &mut painter,
             m,
-            &theme,
             &local_ctx,
             &agent_snap,
             "",
