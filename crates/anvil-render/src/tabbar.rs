@@ -7,10 +7,11 @@ use anvil_workspace::tab::TabManager;
 
 use crate::raster::{FontMetrics, GlyphPainter, PixelRect, Raster};
 
-// Traffic lights (red/yellow/green) sit at the top-left of the window over
-// our raster (FullSizeContentView). Reserve this many device-pixels from
-// the left edge — do not draw anything there. macOS standard: ~78pt.
-const TRAFFIC_LIGHT_RESERVE_PX: f64 = 78.0;
+// Traffic lights (red/yellow/green) span ~78 *points* horizontally on macOS,
+// starting ~10pt from the window's left edge. We reserve a generous 80pt
+// (clear of even the rightmost green button) and convert to device pixels
+// at the actual window scale — 1× / 2× retina / 3× super-retina all work.
+const TRAFFIC_LIGHT_RESERVE_PT: f64 = 80.0;
 
 /// Hit region for a single element in the chrome row.
 #[derive(Clone, Debug)]
@@ -65,6 +66,10 @@ pub fn draw_tab_bar(
     tabs: &TabManager,
     branch: &str,
     clock: &str,
+    // Device-pixels-per-point for the current window (1.0 standard, 2.0
+    // retina, 3.0 super-retina). Used to convert the traffic-light reserve
+    // from points to device pixels.
+    window_scale: f64,
     hits_out: &mut TabBarHits,
 ) {
     hits_out.clear();
@@ -79,7 +84,8 @@ pub fn draw_tab_bar(
 
     // How many raster columns to skip for the traffic-light zone.
     // pad_x is already the left offset of col 0 from the window edge.
-    let tl_cols = (((TRAFFIC_LIGHT_RESERVE_PX - raster.pad_x).max(0.0)) / cell_w).ceil() as usize;
+    let tl_reserve_px = TRAFFIC_LIGHT_RESERVE_PT * window_scale;
+    let tl_cols = (((tl_reserve_px - raster.pad_x).max(0.0)) / cell_w).ceil() as usize;
 
     // ── Basin mark ◒ ──────────────────────────────────────────────────────────
     let basin_col = tl_cols;
@@ -400,6 +406,7 @@ mod tests {
             &mgr,
             "",
             "12:00",
+            1.0,
             &mut hits,
         );
         // Basin mark must have been drawn (painter received '◒').
@@ -437,6 +444,7 @@ mod tests {
             &mgr,
             "",
             "12:00",
+            1.0,
             &mut hits,
         );
         // Chrome is rendered: basin mark present.
@@ -474,6 +482,7 @@ mod tests {
             &mgr,
             "main",
             "14:22",
+            1.0,
             &mut hits,
         );
 
@@ -514,14 +523,15 @@ mod tests {
             &mgr,
             "",
             "14:22",
+            1.0,
             &mut hits,
         );
 
         // Active tab segment should be painted with theme.surface.
-        // pad_x=0, TRAFFIC_LIGHT_RESERVE_PX=78, cell_w=10 → tl_cols=8.
-        // basin col 8, tabs_start_col 10. Active tab 0 starts at col 10.
-        // col 12 → x = 120, y = 10 (mid of cell_h=20, pad_y=0).
-        let px = pixel_at(&r, 120, 10);
+        // pad_x=0, RESERVE=80pt × scale 1.0=80px, cell_w=10 → tl_cols=8.
+        // basin col 8, tabs_start_col 10. Active tab 0 width=10, at cols
+        // 10..20. col 15 → x = 150, y = 10 (mid of cell_h=20).
+        let px = pixel_at(&r, 150, 10);
         assert_eq!(
             px, theme.surface,
             "expected surface for active tab, got {px:?}"
@@ -554,6 +564,7 @@ mod tests {
             &mgr,
             "",
             "14:22",
+            1.0,
             &mut hits,
         );
 
@@ -596,6 +607,7 @@ mod tests {
             &mgr,
             "",
             "14:22",
+            1.0,
             &mut hits,
         );
 

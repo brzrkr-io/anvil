@@ -1476,6 +1476,7 @@ impl App {
                 &self.tabs,
                 &branch,
                 &clock,
+                self.window_scale,
                 &mut self.tab_bar_hits,
             );
         }
