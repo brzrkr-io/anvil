@@ -1501,6 +1501,7 @@ impl App {
                 bottom_row,
             );
         } else {
+            let clock = local_hhmm();
             anvil_render::statusbar::draw_status_bar(
                 &mut self.raster,
                 painter,
@@ -1508,6 +1509,7 @@ impl App {
                 &self.theme,
                 &self.local_ctx,
                 &self.agent_snap,
+                &clock,
                 bottom_row,
             );
         }

@@ -35,6 +35,7 @@ const AGENT_VIOLET: [u8; 3] = [0x6a, 0x5f, 0xa3];
 /// Right section (2-col inner right pad):
 ///   - `◆ N running` when agent connection is Live and running_count > 0.
 ///   - Nothing otherwise (honesty rule).
+#[allow(clippy::too_many_arguments)]
 pub fn draw_status_bar(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
@@ -42,6 +43,7 @@ pub fn draw_status_bar(
     theme: &Theme,
     local_ctx: &LocalContext,
     agent_snap: &Snapshot,
+    clock: &str,
     bottom_row: usize,
 ) {
     let cell_w = metrics.cell_w;
@@ -51,13 +53,13 @@ pub fn draw_status_bar(
         return;
     }
 
-    // Explicitly clear every cell on this row to theme.background so older
-    // chars (e.g. a longer cwd) don't bleed through under shorter content.
+    // Clear the row so older chars (e.g. a longer cwd after `cd ..`)
+    // don't bleed through under shorter content.
     for col in 0..total_cols {
         raster.cell_bg(metrics, col, bottom_row, theme.background);
     }
 
-    // Left section: condensed cwd + last-exit symbol.
+    // ── Left: cwd  ✓/✗ last 0.1s ────────────────────────────────────────────
     let mut col = 2usize;
     if !local_ctx.cwd.is_empty() {
         let cwd = format_cwd(&local_ctx.cwd);
@@ -68,34 +70,75 @@ pub fn draw_status_bar(
             raster.cell_glyph(painter, metrics, col, bottom_row, ch as u32, ALLOY);
             col += 1;
         }
-        // Space, then exit symbol.
-        col += 1;
+        col += 2; // gap
+
+        // Exit symbol + " last <dur>" when we have a last-run result.
         let (sym, color) = match local_ctx.run {
-            RunState::Ok => ("\u{2713}", VERIFIED),    // ✓
+            RunState::Ok => ("\u{2713}", VERIFIED), // ✓
             RunState::Failed => ("\u{2717}", FAILURE), // ✗
             _ => ("", ALLOY),
         };
-        for ch in sym.chars() {
-            if col + 2 >= total_cols {
-                break;
+        if !sym.is_empty() {
+            for ch in sym.chars() {
+                if col + 2 >= total_cols {
+                    break;
+                }
+                raster.cell_glyph(painter, metrics, col, bottom_row, ch as u32, color);
+                col += 1;
             }
-            raster.cell_glyph(painter, metrics, col, bottom_row, ch as u32, color);
-            col += 1;
+            if local_ctx.run_duration_ms > 0 {
+                let dur = format!(" last {}", format_duration_ms(local_ctx.run_duration_ms));
+                for ch in dur.chars() {
+                    if col + 2 >= total_cols {
+                        break;
+                    }
+                    raster.cell_glyph(painter, metrics, col, bottom_row, ch as u32, ALLOY);
+                    col += 1;
+                }
+            }
         }
     }
 
-    // Right section: agent presence dot when an agent is live.
-    if agent_snap.connection == Connection::Live && agent_snap.running_count > 0 {
-        let label = format!("\u{25cf} {} running", agent_snap.running_count); // ●
-        let right_text_len = label.chars().count();
-        if right_text_len + 2 < total_cols && col + right_text_len + 2 < total_cols {
-            let start = total_cols - 2 - right_text_len;
-            for (i, (c, ch)) in (start..).zip(label.chars()).enumerate() {
-                let fg = if i == 0 { AGENT_VIOLET } else { ALLOY };
-                raster.cell_glyph(painter, metrics, c, bottom_row, ch as u32, fg);
-            }
+    // ── Right (anchored from the right edge): agent · clock ──────────────────
+    // Build the right segment then position it.
+    let agent_text = if agent_snap.connection == Connection::Live {
+        if agent_snap.running_count > 0 {
+            format!("\u{25cf} {} running", agent_snap.running_count)
+        } else {
+            "\u{25cf} idle".to_string()
+        }
+    } else {
+        String::new()
+    };
+    let sep = if !agent_text.is_empty() && !clock.is_empty() {
+        "   "
+    } else {
+        ""
+    };
+    let right_len = agent_text.chars().count() + sep.len() + clock.chars().count();
+    if right_len + 2 < total_cols && col + right_len + 2 < total_cols {
+        let mut c = total_cols - 2 - right_len;
+        for (i, ch) in agent_text.chars().enumerate() {
+            let fg = if i == 0 { AGENT_VIOLET } else { ALLOY };
+            raster.cell_glyph(painter, metrics, c, bottom_row, ch as u32, fg);
+            c += 1;
+        }
+        for ch in sep.chars() {
+            raster.cell_glyph(painter, metrics, c, bottom_row, ch as u32, ALLOY);
+            c += 1;
+        }
+        for ch in clock.chars() {
+            raster.cell_glyph(painter, metrics, c, bottom_row, ch as u32, ALLOY);
+            c += 1;
         }
     }
+}
+
+/// Format a non-zero ms duration as "0.1s" / "12.3s" — drops to ".Xs" for
+/// sub-second so the bar stays narrow.
+fn format_duration_ms(ms: i64) -> String {
+    let secs = ms as f64 / 1000.0;
+    format!("{:.1}s", secs)
 }
 
 // --- Tests ------------------------------------------------------------------
@@ -163,6 +206,7 @@ mod tests {
             &theme,
             &local_ctx,
             &agent_snap,
+            "",
             row,
         );
 
@@ -202,6 +246,7 @@ mod tests {
             &theme,
             &local_ctx,
             &agent_snap,
+            "",
             row,
         );
 
@@ -241,6 +286,7 @@ mod tests {
             &theme,
             &local_ctx,
             &agent_snap,
+            "",
             row,
         );
 
@@ -279,6 +325,7 @@ mod tests {
             &theme,
             &local_ctx,
             &agent_snap,
+            "",
             row,
         );
 
@@ -316,6 +363,7 @@ mod tests {
             &theme,
             &local_ctx,
             &agent_snap,
+            "",
             row,
         );
 
@@ -354,6 +402,7 @@ mod tests {
             &theme,
             &local_ctx,
             &agent_snap,
+            "",
             row,
         );
 
