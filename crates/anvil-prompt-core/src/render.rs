@@ -20,8 +20,7 @@ const RESET: &str = "\x1b[0m";
 
 // Indexed ANSI colors — resolved through the active theme each frame so a
 // theme switch recolors all prompts in scrollback automatically.
-const ACCENT_BRIGHT: &str = "\x1b[38;5;14m"; // ANSI 14 = bright cyan — Basin mark pops
-const ACCENT: &str = "\x1b[38;5;6m"; // ANSI 6 = mineral/cyan — chevron base tone
+const ACCENT_BRIGHT: &str = "\x1b[38;5;14m"; // ANSI 14 = bright cyan — input arrow
 const ACCENT_ERR: &str = "\x1b[38;5;1m"; // ANSI 1 = red — error state
 const DIM: &str = "\x1b[38;5;8m"; // ANSI 8 = dim grey — accent dot, transient prompt
 const VERIFIED: &str = "\x1b[38;5;2m"; // ANSI 2 = green — success check
