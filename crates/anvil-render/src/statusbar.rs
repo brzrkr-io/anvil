@@ -21,6 +21,8 @@ const VERIFIED: [u8; 3] = [0x3f, 0x8a, 0x5b];
 const FAILURE: [u8; 3] = [0xb1, 0x3a, 0x30];
 /// status.agent: agent / automation / model activity — violet (#6a5fa3)
 const AGENT_VIOLET: [u8; 3] = [0x6a, 0x5f, 0xa3];
+/// text-subtle: placeholder / disconnected tone (#6c6f74)
+const TEXT_SUBTLE: [u8; 3] = [0x6c, 0x6f, 0x74];
 
 /// Draw the status bar at a FIXED pixel strip — `chrome_bottom_px` tall —
 /// anchored to the window's bottom edge. Glyphs are pixel-positioned and
@@ -64,7 +66,7 @@ pub fn draw_status_bar(
     raster.fill_pixel_rect(0.0, strip_top, total_w, 1.0, CHROME_BORDER);
 
     // Glyphs vertically centred in the strip.
-    let glyph_y = strip_top + ((chrome_bottom_px - cell_h) * 0.5).max(0.0);
+    let glyph_y = strip_top + ((chrome_bottom_px - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
     let pad_x = 14.0 * window_scale; // D: .bottom-bar { padding: 0 14px }
 
     // ── Left: cwd  ✓/✗ last 0.1s ─────────────────────────────────────────
@@ -103,29 +105,23 @@ pub fn draw_status_bar(
     }
 
     // ── Right: agent · clock ─────────────────────────────────────────────
-    let agent_text = if agent_snap.connection == Connection::Live {
-        if agent_snap.running_count > 0 {
-            format!("\u{25cf} {} running", agent_snap.running_count)
-        } else {
-            "\u{25cf} idle".to_string()
-        }
+    let agent_active = agent_snap.connection == Connection::Live;
+    let agent_text = if agent_active && agent_snap.running_count > 0 {
+        format!("\u{25cf} {} running", agent_snap.running_count)
     } else {
-        String::new()
+        "\u{25cf} idle".to_string()
     };
-    let sep = if !agent_text.is_empty() && !clock.is_empty() {
-        "   "
-    } else {
-        ""
-    };
+    let sep = if !clock.is_empty() { "   " } else { "" };
     let right_text_w =
         (agent_text.chars().count() + sep.chars().count() + clock.chars().count()) as f64 * cell_w;
     let right_start = (total_w - pad_x - right_text_w).max(x);
     let mut rx = right_start;
+    let dot_color = if agent_active { AGENT_VIOLET } else { TEXT_SUBTLE };
     for (i, ch) in agent_text.chars().enumerate() {
         if rx + cell_w > total_w {
             break;
         }
-        let fg = if i == 0 { AGENT_VIOLET } else { TEXT_MUTED };
+        let fg = if i == 0 { dot_color } else { TEXT_MUTED };
         raster.glyph_at(painter, metrics, rx, glyph_y, ch as u32, fg);
         rx += cell_w;
     }
@@ -343,17 +339,19 @@ mod tests {
         );
     }
 
-    // --- right_side_blank_when_no_runs ---------------------------------------
+    // --- dot_always_present_when_disconnected --------------------------------
 
-    /// No glyph calls in the right half when agent_snap is default (NotInstalled).
+    /// The agent dot is ALWAYS drawn, even when agent_snap is default
+    /// (NotInstalled). The dot must use TEXT_SUBTLE (not AGENT_VIOLET) and
+    /// the remaining "idle" chars must use TEXT_MUTED.
     #[test]
-    fn right_side_blank_when_no_runs() {
+    fn dot_always_present_when_disconnected() {
         let m = metrics();
         let mut r = Raster::new(400, 200);
         let mut painter = StubPainter::default();
         r.clear([0, 0, 0]);
 
-        let local_ctx = LocalContext::default(); // NoRepo, no dirty
+        let local_ctx = LocalContext::default(); // no cwd
         let agent_snap = Snapshot::default(); // NotInstalled
 
         draw_status_bar(
@@ -367,12 +365,31 @@ mod tests {
             1.0,
         );
 
-        // With NoRepo and no agent runs, expect zero glyph calls.
+        // The dot (●, U+25CF) must appear in TEXT_SUBTLE.
+        let dot_subtle = painter
+            .calls
+            .iter()
+            .any(|(cp, fg)| *cp == 0x25CF && *fg == TEXT_SUBTLE);
+        assert!(dot_subtle, "expected ● in TEXT_SUBTLE when disconnected, got {:?}", painter.calls);
+
+        // The "idle" text chars must appear in TEXT_MUTED (not AGENT_VIOLET).
+        let idle_muted: Vec<char> = painter
+            .calls
+            .iter()
+            .filter(|(_, fg)| *fg == TEXT_MUTED)
+            .filter_map(|(cp, _)| char::from_u32(*cp))
+            .collect();
         assert!(
-            painter.calls.is_empty(),
-            "expected no glyph calls for default state, got {:?}",
-            painter.calls
+            idle_muted.contains(&'i'),
+            "expected 'i' from 'idle' in TEXT_MUTED when disconnected, got {idle_muted:?}"
         );
+
+        // The dot must NOT appear in AGENT_VIOLET when disconnected.
+        let dot_violet = painter
+            .calls
+            .iter()
+            .any(|(cp, fg)| *cp == 0x25CF && *fg == AGENT_VIOLET);
+        assert!(!dot_violet, "dot must not be AGENT_VIOLET when disconnected");
     }
 
     // --- running_count_shown_when_live ---------------------------------------

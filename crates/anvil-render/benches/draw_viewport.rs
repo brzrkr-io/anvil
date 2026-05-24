@@ -99,7 +99,6 @@ fn bench_draw_viewport(c: &mut Criterion) {
                 0.0, // scroll_pos
                 selection,
                 None, // search
-                1,    // top_bar_rows (tab bar)
                 Some(CursorParams {
                     ax: 0.0,
                     ay: 0.0,
@@ -135,10 +134,8 @@ fn bench_draw_viewport(c: &mut Criterion) {
                 metrics,
                 &theme,
                 0.0,
-                0.0,
                 selection,
                 None,
-                1,
                 Some(CursorParams {
                     ax: 0.0,
                     ay: 12.0,

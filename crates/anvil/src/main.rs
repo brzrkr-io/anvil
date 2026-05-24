@@ -565,17 +565,6 @@ impl App {
         24.0 * self.window_scale
     }
 
-    /// Number of cell rows the chrome occupies, in cell-grid units. With
-    /// fixed-pixel chrome strips, the chrome no longer consumes whole cell
-    /// rows — terminal cells start immediately below the strip.
-    fn top_bar_rows(&self) -> usize {
-        0
-    }
-
-    fn bottom_bar_rows(&self) -> usize {
-        0
-    }
-
     /// Snap cursor + scroll animation state to current terminal values.
     fn snap_anim(&mut self) {
         let Some(tab) = self.tabs.current_mut() else {
@@ -798,13 +787,9 @@ impl App {
             self.dirty = true;
         } else {
             // Last pane — close the tab.
-            let bar_before = self.top_bar_rows();
             if !self.tabs.close_active() {
                 terminate_app();
             } else {
-                if self.top_bar_rows() != bar_before {
-                    self.resize_all_tabs();
-                }
                 self.snap_anim();
                 self.dirty = true;
             }
@@ -849,20 +834,15 @@ impl App {
     }
 
     fn close_active_tab(&mut self) {
-        let bar_before = self.top_bar_rows();
         if !self.tabs.close_active() {
             terminate_app();
         } else {
-            if self.top_bar_rows() != bar_before {
-                self.resize_all_tabs();
-            }
             self.dirty = true;
         }
     }
 
     /// Close panes whose PTY has gone away (EOF), then close tabs with no panes.
     fn close_dead_panes(&mut self) {
-        let bar_before = self.top_bar_rows();
         let mut any_closed = false;
 
         let mut tab_i = 0;
@@ -904,9 +884,6 @@ impl App {
         }
 
         if any_closed {
-            if self.top_bar_rows() != bar_before {
-                self.resize_all_tabs();
-            }
             self.snap_anim();
             self.dirty = true;
         }
@@ -1266,6 +1243,11 @@ impl App {
     // Sitting still inside scrollback should be as cheap as sitting at
     // live — partial dirty-row paints are safe when nothing's animating.
     fn render_frame(&mut self, painter: &mut dyn anvil_render::GlyphPainter) {
+        // ANVIL_PERF=1 emits per-frame timing to stderr so we can diagnose
+        // scroll lag without guessing.
+        let perf_log = std::env::var_os("ANVIL_PERF").is_some();
+        let perf_t0 = if perf_log { Some(Instant::now()) } else { None };
+
         let (cur_scroll, cur_vp) = self
             .tabs
             .current()
@@ -1310,12 +1292,9 @@ impl App {
 
         let inner = Rect {
             x: self.raster.pad_x,
-            y: self.raster.pad_y + self.top_bar_rows() as f64 * ch,
+            y: self.raster.pad_y,
             w: dw as f64 - 2.0 * pad,
-            h: dh as f64
-                - 2.0 * pad
-                - self.top_bar_rows() as f64 * ch
-                - self.bottom_bar_rows() as f64 * ch,
+            h: dh as f64 - 2.0 * pad,
         };
 
         let search_ref: Option<&anvil_term::Search> = if self.search_open {
@@ -1517,9 +1496,7 @@ impl App {
         // and the small floating agent card.
         if eff_hud {
             let cw = self.font.metrics.cell_w;
-            let total_rows = (((dh.saturating_sub(2 * GRID_PAD)) as f64 / ch) as usize).max(1);
-            let top_offset = self.top_bar_rows();
-            let rows = total_rows.saturating_sub(top_offset);
+            let rows = (((dh.saturating_sub(2 * GRID_PAD)) as f64 / ch) as usize).max(1);
 
             // Surface: rightmost slab of the window, edge-to-edge.
             let hud_cols = self.hud_cols;
@@ -1549,7 +1526,7 @@ impl App {
                 surface_rect,
                 start_col,
                 hud_cols,
-                top_offset,
+                0, // top_bar_rows removed; chrome is fixed-pixel, not cell-row
                 rows,
                 &mut self.hud_hits,
                 &self.hud_section_order,
@@ -1623,7 +1600,6 @@ impl App {
                         pane.scroll_pos,
                         pane.selection,
                         search_ref,
-                        0, // top_bar_rows: encoded in origin_y
                         cursor_params,
                         folded,
                     );
@@ -1645,6 +1621,12 @@ impl App {
                 atlas_px,
                 sync,
             );
+        }
+
+        if let Some(t0) = perf_t0 {
+            let us = t0.elapsed().as_micros();
+            let kind = if is_full_redraw { "FULL" } else { "part" };
+            eprintln!("anvil-perf: frame={kind} {us}µs scroll={cur_scroll:.2}");
         }
     }
 
@@ -2776,6 +2758,11 @@ impl AppHandler for AppShell {
         } else {
             (dy as f32) * 3.0
         };
+        if std::env::var_os("ANVIL_PERF").is_some() {
+            eprintln!(
+                "anvil-perf: scroll dy={dy:.2} pp={pixel_precise} d={d:.3}"
+            );
+        }
 
         if let Some(tab) = app.tabs.current_mut() {
             let id = tab.focused_id();

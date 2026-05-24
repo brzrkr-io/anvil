@@ -108,7 +108,6 @@ pub fn draw_workspace(
             pane.scroll_pos,
             pane.selection,
             search,
-            0, // top_bar_rows: already encoded in origin_y
             cursor_params,
             rule_x_start,
             rule_x_end,

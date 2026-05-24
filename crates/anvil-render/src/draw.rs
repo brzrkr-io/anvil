@@ -154,7 +154,6 @@ pub fn draw_cell(
     y: usize,
     content_row: usize,
     cell: Cell,
-    top_bar_rows: usize,
     selection: Selection,
     search: Option<&Search>,
 ) {
@@ -180,7 +179,7 @@ pub fn draw_cell(
         }
     }
 
-    let ry = y + top_bar_rows;
+    let ry = y;
     if bg != theme.background {
         raster.cell_bg(metrics, x, ry, bg);
     }
@@ -203,7 +202,6 @@ pub fn draw_cursor(
     terminal: &Terminal,
     metrics: FontMetrics,
     theme: &Theme,
-    top_bar_rows: usize,
     params: CursorParams,
 ) {
     let blink = terminal.app_cursor_blink.unwrap_or(params.cfg.blink);
@@ -213,7 +211,7 @@ pub fn draw_cursor(
         1.0
     };
     let ax = params.ax as f64;
-    let ay = params.ay as f64 + top_bar_rows as f64;
+    let ay = params.ay as f64;
     let cursor_rgb = mix(theme.background, theme.accent, opacity);
 
     let style = match terminal.app_cursor_shape {
@@ -316,7 +314,7 @@ fn read_command_text(terminal: &Terminal, crow: usize, start_col: usize) -> Stri
 ///   - exit indicator: "✓" (exit 0), "✗ N" (exit N), "…" (running)
 ///   - fold indicator "▾" at far right
 ///
-/// `ry` is the raster row (already includes top_bar_rows).
+/// `ry` is the raster row (viewport row relative to pane origin).
 /// `cols` is the terminal width in cells.
 #[allow(clippy::too_many_arguments)]
 fn draw_block_header_cpu(
@@ -493,7 +491,6 @@ fn block_accent_color(block: &Block) -> [u8; 3] {
 /// This is the per-frame draw body, ported from `draw.zig`'s `drawViewport`.
 ///
 /// `scroll_pos` and `overscroll` drive smooth scrolling (0/0 = pinned).
-/// `top_bar_rows` offsets every cell row by the tab-bar height.
 /// `folded` carries the set of folded `command_line` values for this pane;
 /// pass `FoldedBlocks::empty()` to draw all rows normally.
 /// Pass `cursor_params = None` to suppress cursor drawing (e.g. in tests).
@@ -518,7 +515,6 @@ pub fn draw_viewport(
     scroll_pos: f32,
     selection: Selection,
     search: Option<&Search>,
-    top_bar_rows: usize,
     cursor_params: Option<CursorParams>,
     rule_x_start: f64,
     rule_x_end: f64,
@@ -548,7 +544,7 @@ pub fn draw_viewport(
             // Clear this row's background before redrawing so stale pixels
             // from the previous frame are overwritten.
             {
-                let ry = y + top_bar_rows;
+                let ry = y;
                 let y_top = (raster.origin_y + ry as f64 * metrics.cell_h) as usize;
                 let y_bot = (raster.origin_y + (ry + 1) as f64 * metrics.cell_h) as usize;
                 raster.clear_pixel_rows(y_top, y_bot, theme.background);
@@ -585,7 +581,7 @@ pub fn draw_viewport(
             if let Some(ref block) = block_opt {
                 let is_block_row = abs >= block.command_line && abs < block.end_line;
                 if is_block_row {
-                    let ry = y + top_bar_rows;
+                    let ry = y;
                     // One row-wide fill (much cheaper than `cols` per-cell fills).
                     let row_x = raster.origin_x;
                     let row_y = raster.origin_y + ry as f64 * metrics.cell_h
@@ -611,7 +607,6 @@ pub fn draw_viewport(
                         y,
                         crow,
                         cell,
-                        top_bar_rows,
                         selection,
                         search,
                     );
@@ -624,7 +619,7 @@ pub fn draw_viewport(
             if let Some(ref block) = block_opt {
                 let is_block_row = abs >= block.command_line && abs < block.end_line;
                 if is_block_row {
-                    let ry = y + top_bar_rows;
+                    let ry = y;
                     let accent_rgb = block_accent_color(block);
                     raster.block_accent_bar(metrics, ry, accent_rgb);
                 }
@@ -636,7 +631,7 @@ pub fn draw_viewport(
                 if folded.contains(block.command_line) && abs == block.command_line {
                     let hidden = block.output_row_count();
                     let summary = format!(" \u{2304} {hidden} hidden");
-                    let ry = y + top_bar_rows;
+                    let ry = y;
                     draw_text_row(raster, painter, metrics, 0, ry, &summary, ALLOY, cols);
                 }
             }
@@ -647,7 +642,7 @@ pub fn draw_viewport(
                 if abs == block.command_line && !folded.contains(block.command_line) {
                     let cmd_text =
                         read_command_text(terminal, crow, block.command_start_col as usize);
-                    let ry = y + top_bar_rows;
+                    let ry = y;
                     draw_block_header_cpu(
                         raster, painter, metrics, theme, block, &cmd_text, ry, cols,
                     );
@@ -655,7 +650,7 @@ pub fn draw_viewport(
             }
 
             if terminal.is_prompt_start(abs) {
-                let ry = (y + top_bar_rows) as f64;
+                let ry = y as f64;
                 raster.row_rule(metrics, ry, rule_rgb, rule_x_start, rule_x_end);
             }
         }
@@ -700,7 +695,7 @@ pub fn draw_viewport(
             if let Some(ref block) = block_opt {
                 let is_block_row = abs >= block.command_line && abs < block.end_line;
                 if is_block_row {
-                    let ry = y + top_bar_rows;
+                    let ry = y;
                     let row_x = raster.origin_x;
                     let row_y = raster.origin_y + ry as f64 * metrics.cell_h
                         - raster.y_shift_px;
@@ -721,7 +716,6 @@ pub fn draw_viewport(
                         y,
                         crow,
                         cell,
-                        top_bar_rows,
                         selection,
                         search,
                     );
@@ -732,7 +726,7 @@ pub fn draw_viewport(
             if let Some(ref block) = block_opt {
                 let is_block_row = abs >= block.command_line && abs < block.end_line;
                 if is_block_row {
-                    let ry = y + top_bar_rows;
+                    let ry = y;
                     let accent_rgb = block_accent_color(block);
                     raster.block_accent_bar(metrics, ry, accent_rgb);
                 }
@@ -743,7 +737,7 @@ pub fn draw_viewport(
                 if folded.contains(block.command_line) && abs == block.command_line {
                     let hidden = block.output_row_count();
                     let summary = format!(" \u{2304} {hidden} hidden");
-                    let ry = y + top_bar_rows;
+                    let ry = y;
                     draw_text_row(raster, painter, metrics, 0, ry, &summary, ALLOY, cols);
                 }
             }
@@ -753,7 +747,7 @@ pub fn draw_viewport(
                 if abs == block.command_line && !folded.contains(block.command_line) {
                     let cmd_text =
                         read_command_text(terminal, crow, block.command_start_col as usize);
-                    let ry = y + top_bar_rows;
+                    let ry = y;
                     draw_block_header_cpu(
                         raster, painter, metrics, theme, block, &cmd_text, ry, cols,
                     );
@@ -761,7 +755,7 @@ pub fn draw_viewport(
             }
 
             if terminal.is_prompt_start(abs) {
-                let ry = (y + top_bar_rows) as f64;
+                let ry = y as f64;
                 raster.row_rule(metrics, ry, rule_rgb, rule_x_start, rule_x_end);
             }
         }
@@ -794,7 +788,7 @@ pub fn draw_viewport(
             };
             let cursor_rgb = mix(theme.background, theme.accent, opacity);
             let ax = cp.ax as f64;
-            let ay = cp.ay as f64 + top_bar_rows as f64;
+            let ay = cp.ay as f64;
 
             match style {
                 CursorStyle::Block => {
@@ -816,7 +810,7 @@ pub fn draw_viewport(
                                     painter,
                                     metrics,
                                     ic,
-                                    ir + top_bar_rows,
+                                    ir,
                                     cell.cp as u32,
                                     glyph_fg,
                                 );
@@ -904,7 +898,6 @@ pub fn draw_viewport_gpu(
     scroll_pos: f32,
     selection: Selection,
     search: Option<&Search>,
-    _top_bar_rows: usize,
     cursor: Option<CursorParams>,
     folded: FoldedBlocks<'_>,
 ) {
@@ -919,9 +912,8 @@ pub fn draw_viewport_gpu(
     };
 
     // Helper: compute top-left pixel of cell (col, row_in_pane) using raster.cell_rect.
-    // `row_in_pane` does NOT include top_bar_rows (origin_y already encodes the
-    // pane's pixel top; top_bar_rows is irrelevant for GPU — batch positions are
-    // absolute drawable pixels).
+    // `row_in_pane` is a viewport-relative row (origin_y encodes the pane's
+    // pixel top; batch positions are absolute drawable pixels).
     let cell_xy = |batch_col: f64, batch_row: f64| -> [f32; 2] {
         let rect = raster.cell_rect(metrics, batch_col, batch_row);
         [rect.x as f32, rect.y as f32]
@@ -1344,7 +1336,6 @@ mod tests {
             0.0,
             sel,
             None,
-            0,
             None,
             0.0,
             200.0,
@@ -1378,7 +1369,6 @@ mod tests {
             2.0,
             sel,
             None,
-            0,
             None,
             0.0,
             200.0,
@@ -1437,7 +1427,7 @@ mod tests {
         let cell = row[0];
         let _ = row;
 
-        draw_cell(&mut r, &mut painter, m, &theme, 0, 0, 0, cell, 0, sel, None);
+        draw_cell(&mut r, &mut painter, m, &theme, 0, 0, 0, cell, sel, None);
         // No panic is the primary assertion; also verifies selection path was taken.
     }
 
@@ -1469,7 +1459,6 @@ mod tests {
             0,
             0,
             cell,
-            0,
             Selection::default(),
             Some(&search),
         );
@@ -1501,7 +1490,6 @@ mod tests {
             1,
             0,
             cell,
-            0,
             Selection::default(),
             None,
         );
@@ -1528,7 +1516,7 @@ mod tests {
                 blink: false,
             },
         };
-        draw_cursor(&mut r, &mut painter, &t, m, &theme, 0, params);
+        draw_cursor(&mut r, &mut painter, &t, m, &theme, params);
     }
 
     #[test]
@@ -1549,7 +1537,7 @@ mod tests {
                 blink: false,
             },
         };
-        draw_cursor(&mut r, &mut painter, &t, m, &theme, 0, params);
+        draw_cursor(&mut r, &mut painter, &t, m, &theme, params);
     }
 
     #[test]
@@ -1570,7 +1558,7 @@ mod tests {
                 blink: false,
             },
         };
-        draw_cursor(&mut r, &mut painter, &t, m, &theme, 0, params);
+        draw_cursor(&mut r, &mut painter, &t, m, &theme, params);
     }
 
     // ── draw_viewport with cursor_params (block, bar, underline) ─────────────
@@ -1603,7 +1591,6 @@ mod tests {
             0.0,
             Selection::default(),
             None,
-            0,
             Some(params),
             0.0,
             200.0,
@@ -1640,7 +1627,6 @@ mod tests {
             0.0,
             Selection::default(),
             None,
-            0,
             Some(params),
             0.0,
             200.0,
@@ -1677,7 +1663,6 @@ mod tests {
             0.0,
             Selection::default(),
             None,
-            0,
             Some(params),
             0.0,
             200.0,
@@ -1710,7 +1695,6 @@ mod tests {
             0.0,
             Selection::default(),
             Some(&search),
-            0,
             None,
             0.0,
             200.0,
@@ -1750,7 +1734,6 @@ mod tests {
             0.0,
             Selection::default(),
             None,
-            0,
             Some(params),
             0.0,
             200.0,
@@ -1811,7 +1794,6 @@ mod tests {
                 0.0,
                 sel,
                 None,
-                0,
                 None,
                 0.0,
                 400.0,
@@ -1841,7 +1823,6 @@ mod tests {
                 0.0,
                 sel,
                 None,
-                0,
                 None,
                 0.0,
                 400.0,
@@ -1992,7 +1973,6 @@ mod tests {
             0.0,
             sel,
             None,
-            0,
             None,
             FoldedBlocks::empty(),
         );
@@ -2042,7 +2022,6 @@ mod tests {
             0.0,
             sel,
             None,
-            0,
             None,
             0.0,
             300.0,
@@ -2078,7 +2057,6 @@ mod tests {
             0.0,
             Selection::default(),
             None,
-            0,
             None,
             0.0,
             300.0,
@@ -2119,7 +2097,6 @@ mod tests {
             2.0,
             sel,
             None,
-            0,
             None,
             FoldedBlocks::empty(),
         );
@@ -2164,7 +2141,6 @@ mod tests {
             0.0,
             Selection::default(),
             None,
-            0,
             None,
             0.0,
             200.0,
@@ -2214,7 +2190,6 @@ mod tests {
             0.0,
             Selection::default(),
             None,
-            0,
             None,
             0.0,
             200.0,
@@ -2264,7 +2239,6 @@ mod tests {
             0.0,
             Selection::default(),
             None,
-            0,
             None,
             0.0,
             200.0,
@@ -2313,7 +2287,6 @@ mod tests {
             0.0,
             Selection::default(),
             None,
-            0,
             None,
             20.0,
             200.0,

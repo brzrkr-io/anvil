@@ -109,7 +109,7 @@ pub fn draw_tab_bar(
 
     // Vertical baseline for chrome glyphs: cell rect's top is centred in
     // the strip so the glyph sits visually in the middle of the chrome row.
-    let glyph_y = ((chrome_top_px - cell_h) * 0.5).max(0.0);
+    let glyph_y = ((chrome_top_px - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
 
     // Reserve the traffic-light zone (left side of the chrome row).
     let tl_reserve_px = TRAFFIC_LIGHT_RESERVE_PT * window_scale;
