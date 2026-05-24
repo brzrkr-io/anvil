@@ -79,8 +79,8 @@ const PALETTE_HTML: &str = include_str!("../../../ui/palette/index.html");
 /// breathing room without burning content columns.
 const GRID_PAD: usize = 24;
 
-/// HUD refresh: once every N ticks (~60 fps → ~1 s).
-const HUD_REFRESH_TICKS: u32 = 60;
+/// HUD refresh: once every N ticks. Tick rate is 120 Hz → 120 = 1 s.
+const HUD_REFRESH_TICKS: u32 = 120;
 
 /// Maximum panes per tab.
 const MAX_PANES_PER_TAB: usize = 8;
@@ -2133,8 +2133,8 @@ impl AppHandler for AppShell {
         };
         let blink_on = effective_blink.unwrap_or(app_blink_cfg);
         if blink_on && app.focused {
-            // 1/64 per tick at 60Hz = ~1.07s full blink cycle — calm, deliberate.
-            app.blink_phase += 1.0 / 64.0;
+            // 1/128 per tick at 120 Hz = ~1.07 s full blink cycle.
+            app.blink_phase += 1.0 / 128.0;
             if app.blink_phase >= 1.0 {
                 app.blink_phase -= 1.0;
             }

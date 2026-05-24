@@ -388,6 +388,88 @@ fn draw_block_header_cpu(
     }
 }
 
+/// Draw the synthesized block header row (GPU path).
+///
+/// Mirrors `draw_block_header_cpu` but pushes `CellInstance`s into `batch`
+/// instead of writing pixels.  `cell_xy_fn` maps (col, viewport_row) to
+/// top-left pixel coords; `y_shift` is subtracted for smooth-scroll.
+#[allow(clippy::too_many_arguments)]
+fn draw_block_header_gpu(
+    batch: &mut CellBatch,
+    rasterizer: &mut dyn GlyphRasterizer,
+    metrics: FontMetrics,
+    block: &Block,
+    viewport_y: usize,
+    cols: usize,
+    cw: f32,
+    ch: f32,
+    cell_xy_fn: impl Fn(usize, usize) -> [f32; 2],
+    y_shift: f32,
+) {
+    let muted = ALLOY;
+    let accent_color = block_accent_color(block);
+
+    let dur_str = if block.duration_ms > 0 {
+        format_duration(block.duration_ms)
+    } else {
+        String::new()
+    };
+
+    let (exit_str, exit_color) = match block.state {
+        BlockState::Running => ("\u{2026}".to_string(), accent_color),
+        BlockState::Exited => {
+            if block.exit_code == 0 {
+                ("\u{2713}".to_string(), VERIFIED)
+            } else {
+                (format!("\u{2717} {}", block.exit_code), FAILURE)
+            }
+        }
+    };
+
+    let fold_str = " \u{25be}"; // " ▾"
+    let sep = if dur_str.is_empty() { "" } else { "  " };
+
+    let right_len = dur_str.chars().count()
+        + sep.chars().count()
+        + exit_str.chars().count()
+        + fold_str.chars().count();
+
+    if right_len >= cols {
+        return;
+    }
+
+    // Build a vec of (char, color) pairs for the right segment.
+    let mut chars: Vec<(char, [u8; 3])> = Vec::with_capacity(right_len);
+    for c in dur_str.chars() {
+        chars.push((c, muted));
+    }
+    for c in sep.chars() {
+        chars.push((c, muted));
+    }
+    for c in exit_str.chars() {
+        chars.push((c, exit_color));
+    }
+    for c in fold_str.chars() {
+        chars.push((c, muted));
+    }
+
+    let start_col = cols - right_len;
+    for (i, (cp, color)) in chars.into_iter().enumerate() {
+        let col = start_col + i;
+        let base_xy = cell_xy_fn(col, viewport_y);
+        let xy = [base_xy[0], base_xy[1] - y_shift];
+        let wh = [cw, ch];
+        // Background: PANEL_RAISED so the overlay sits on the card background.
+        let bg = PANEL_RAISED;
+        if cp == ' ' {
+            batch.push_cell(xy, wh, None, color, bg);
+        } else {
+            let slot = rasterizer.glyph_slot(cp as u32, metrics);
+            batch.push_cell(xy, wh, slot, color, bg);
+        }
+    }
+}
+
 // ── Gutter mark color ─────────────────────────────────────────────────────────
 
 fn block_accent_color(block: &Block) -> [u8; 3] {
@@ -559,11 +641,18 @@ pub fn draw_viewport(
                 }
             }
 
-            // No synth header: the shell prompt line (with anvil-prompt's
-            // chevron + right-segment duration + exit) IS the block's header
-            // row. Synthesizing on top would overlap with what the shell
-            // already wrote, producing messy glyph collisions.
-            let _ = block_opt.as_ref().map(|_| ());
+            // Block header synthesis (live-bottom CPU path): right-aligned
+            // duration + exit indicator + fold caret overlaid on the command row.
+            if let Some(ref block) = block_opt {
+                if abs == block.command_line && !folded.contains(block.command_line) {
+                    let cmd_text =
+                        read_command_text(terminal, crow, block.command_start_col as usize);
+                    let ry = y + top_bar_rows;
+                    draw_block_header_cpu(
+                        raster, painter, metrics, theme, block, &cmd_text, ry, cols,
+                    );
+                }
+            }
 
             if terminal.is_prompt_start(abs) {
                 let ry = (y + top_bar_rows) as f64;
@@ -924,11 +1013,17 @@ pub fn draw_viewport_gpu(
                 }
             }
 
-            // Block header synthesis (GPU path): TODO — full header text synthesis
-            // (command + duration + exit + ▾) requires per-char glyph lookup on the
-            // GPU path.  The CPU path (draw_viewport) renders the full header. The
-            // GPU path currently shows terminal cells as-is on the header row, with
-            // the accent bar providing the visual block affordance.
+            // Block header synthesis (GPU live-bottom path): right-aligned
+            // duration + exit indicator + fold caret on the command row.
+            if let Some(ref block) = block_opt {
+                if abs == block.command_line && !folded.contains(block.command_line) {
+                    draw_block_header_gpu(
+                        batch, rasterizer, metrics, block, y, cols, cw, ch,
+                        |col, row| cell_xy(col as f64, row as f64),
+                        0.0,
+                    );
+                }
+            }
         }
     } else {
         // Smooth-scroll path.
@@ -1028,6 +1123,17 @@ pub fn draw_viewport_gpu(
                         let slot = rasterizer.glyph_slot(cp as u32, metrics);
                         batch.push_cell(xy, wh, slot, ALLOY, theme.background);
                     }
+                }
+            }
+
+            // Block header synthesis (GPU smooth-scroll path).
+            if let Some(ref block) = block_opt {
+                if abs == block.command_line && !folded.contains(block.command_line) {
+                    draw_block_header_gpu(
+                        batch, rasterizer, metrics, block, y, cols, cw, ch,
+                        |col, row| cell_xy(col as f64, row as f64),
+                        shift,
+                    );
                 }
             }
         }
