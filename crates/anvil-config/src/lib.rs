@@ -208,7 +208,7 @@ impl Default for Config {
             font: FontCfg::default(),
             cursor: CursorCfg::new_default(),
             window: WindowCfg::default(),
-            theme: "system".into(),
+            theme: "mineral-dark".into(),
             theme_overrides: ThemeOverrides::default(),
             keybindings: Keybindings::default(),
             shell_integration: true,
@@ -441,7 +441,7 @@ accent = "#3aa0a8"
         assert_eq!(cfg.scrollback, 200);
         assert_eq!(cfg.font.family, "IBM Plex Mono");
         assert_eq!(cfg.cursor.style, CursorStyle::Block);
-        assert_eq!(cfg.theme, "system");
+        assert_eq!(cfg.theme, "mineral-dark");
     }
 
     #[test]
@@ -483,7 +483,7 @@ height = 1.0
         assert_eq!(cfg.scrollback, 100_000);
         assert_eq!(cfg.font.family, "IBM Plex Mono");
         assert!(cfg.cursor.blink);
-        assert_eq!(cfg.theme, "system");
+        assert_eq!(cfg.theme, "mineral-dark");
         assert!(cfg.shell_integration);
         assert!(cfg.prompt.enabled);
         assert!(cfg.prompt.transient);

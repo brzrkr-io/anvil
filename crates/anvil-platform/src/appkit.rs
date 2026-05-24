@@ -34,8 +34,9 @@ use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSBackingStoreType,
-    NSEvent, NSEventModifierFlags, NSImage, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
+    NSAppearance, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
+    NSBackingStoreType, NSEvent, NSEventModifierFlags, NSImage, NSView, NSWindow, NSWindowDelegate,
+    NSWindowStyleMask, NSWindowTitleVisibility,
 };
 use objc2_foundation::{
     MainThreadMarker, NSData, NSNotification, NSPoint, NSRect, NSSize, NSString, NSTimer,
@@ -500,15 +501,16 @@ impl AppKitApp {
         set_application_icon(&nsapp, mtm);
 
         // ── NSWindow ─────────────────────────────────────────────────────────
-        // Standard titled window. Our chrome row sits below the native title bar.
-        // (We previously tried FullSizeContentView + transparent title bar to
-        // overlay traffic lights onto our chrome, but macOS draws title-bar
-        // material on top of our raster in light mode and the result was a
-        // light strip over dark content — unusable.)
+        // FullSizeContentView + transparent title bar: our raster spans the
+        // whole window, traffic lights overlay the top-left of our chrome
+        // row. Window appearance is forced to dark (below) so the title-bar
+        // material renders dark regardless of the user's system mode —
+        // matching Warp / Zed's approach.
         let style = NSWindowStyleMask::Titled
             | NSWindowStyleMask::Closable
             | NSWindowStyleMask::Miniaturizable
-            | NSWindowStyleMask::Resizable;
+            | NSWindowStyleMask::Resizable
+            | NSWindowStyleMask::FullSizeContentView;
 
         let content_rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, height));
 
@@ -527,6 +529,16 @@ impl AppKitApp {
         // SAFETY: setReleasedWhenClosed is safe to call on a retained window.
         unsafe { window.setReleasedWhenClosed(false) };
         window.setTitle(&NSString::from_str(title));
+        window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
+        window.setTitlebarAppearsTransparent(true);
+        // Force dark appearance: title-bar material renders dark even if the
+        // user's macOS appearance is Light. Matches Warp / Zed.
+        let dark = NSAppearance::appearanceNamed(&NSString::from_str("NSAppearanceNameDarkAqua"));
+        if let Some(dark) = dark {
+            // setAppearance: lives on NSAppearanceCustomization, not NSWindow
+            // directly in objc2's bindings — go through msg_send.
+            let _: () = unsafe { msg_send![&*window, setAppearance: &*dark] };
+        }
 
         // ── Handler Rc → raw pointer for ivars ───────────────────────────────
         // We box each clone of the Rc and take a raw pointer.  The boxes are

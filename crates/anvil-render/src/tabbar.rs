@@ -7,9 +7,10 @@ use anvil_workspace::tab::TabManager;
 
 use crate::raster::{FontMetrics, GlyphPainter, PixelRect, Raster};
 
-// No traffic-light reserve: macOS draws the native title bar above our raster
-// so traffic lights live there. The chrome row starts at the left edge.
-const TRAFFIC_LIGHT_RESERVE_PX: f64 = 0.0;
+// Traffic lights (red/yellow/green) sit at the top-left of the window over
+// our raster (FullSizeContentView). Reserve this many device-pixels from
+// the left edge — do not draw anything there. macOS standard: ~78pt.
+const TRAFFIC_LIGHT_RESERVE_PX: f64 = 78.0;
 
 /// Hit region for a single element in the chrome row.
 #[derive(Clone, Debug)]
@@ -516,10 +517,10 @@ mod tests {
         );
 
         // Active tab segment should be painted with theme.surface.
-        // With pad_x=0 and TRAFFIC_LIGHT_RESERVE_PX=0: tl_cols = 0, basin at
-        // col 0, tabs_start_col = 2. Active tab (tab 0) starts at col 2.
-        // col 4 → x = 4*10 = 40, y = 10 (mid of cell_h=20, pad_y=0).
-        let px = pixel_at(&r, 40, 10);
+        // pad_x=0, TRAFFIC_LIGHT_RESERVE_PX=78, cell_w=10 → tl_cols=8.
+        // basin col 8, tabs_start_col 10. Active tab 0 starts at col 10.
+        // col 12 → x = 120, y = 10 (mid of cell_h=20, pad_y=0).
+        let px = pixel_at(&r, 120, 10);
         assert_eq!(
             px, theme.surface,
             "expected surface for active tab, got {px:?}"
