@@ -937,6 +937,7 @@ pub fn draw_right_hud(
                     raster.cell_glyph(painter, metrics, c, r, ' ' as u32, meta_color);
                     c += 1;
                 }
+                let label_start = c;
                 for ch in s.chars() {
                     if c >= max_col {
                         break;
@@ -944,6 +945,18 @@ pub fn draw_right_hud(
                     raster.cell_glyph(painter, metrics, c, r, ch as u32, INFO_TEAL);
                     c += 1;
                 }
+                // Per-port click region: plain → copy URL, Cmd → open URL.
+                let url = format!("http://localhost:{port}");
+                push_row_hit(
+                    hits,
+                    raster,
+                    metrics,
+                    label_start,
+                    r,
+                    c - label_start,
+                    &url,
+                    &url,
+                );
             }
             r += 1;
         }
