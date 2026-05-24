@@ -66,7 +66,7 @@ pub fn draw_status_bar(
         // Space, then exit symbol.
         col += 1;
         let (sym, color) = match local_ctx.run {
-            RunState::Ok => ("\u{2713}", VERIFIED), // ✓
+            RunState::Ok => ("\u{2713}", VERIFIED),    // ✓
             RunState::Failed => ("\u{2717}", FAILURE), // ✗
             _ => ("", ALLOY),
         };
@@ -186,7 +186,15 @@ mod tests {
         let theme = anvil_theme::MINERAL_DARK;
 
         let row = bottom_row(&r, m);
-        draw_status_bar(&mut r, &mut painter, m, &theme, &local_ctx, &agent_snap, row);
+        draw_status_bar(
+            &mut r,
+            &mut painter,
+            m,
+            &theme,
+            &local_ctx,
+            &agent_snap,
+            row,
+        );
 
         // ALLOY chars should include cwd content ('a' from "anvil" or similar).
         let alloy_chars: Vec<char> = painter
@@ -217,7 +225,15 @@ mod tests {
         let agent_snap = Snapshot::default();
         let theme = anvil_theme::MINERAL_DARK;
         let row = bottom_row(&r, m);
-        draw_status_bar(&mut r, &mut painter, m, &theme, &local_ctx, &agent_snap, row);
+        draw_status_bar(
+            &mut r,
+            &mut painter,
+            m,
+            &theme,
+            &local_ctx,
+            &agent_snap,
+            row,
+        );
 
         let verified_chars: Vec<char> = painter
             .calls
@@ -247,7 +263,15 @@ mod tests {
         let agent_snap = Snapshot::default();
         let theme = anvil_theme::MINERAL_DARK;
         let row = bottom_row(&r, m);
-        draw_status_bar(&mut r, &mut painter, m, &theme, &local_ctx, &agent_snap, row);
+        draw_status_bar(
+            &mut r,
+            &mut painter,
+            m,
+            &theme,
+            &local_ctx,
+            &agent_snap,
+            row,
+        );
 
         let failure_chars: Vec<char> = painter
             .calls

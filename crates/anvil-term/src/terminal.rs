@@ -155,8 +155,14 @@ pub struct PromptMark {
     /// Absolute line index — monotonic for the session, survives scrollback
     /// eviction.
     pub line: usize,
+    /// Cursor column at the time this mark fired.  For `CommandStart` (133;B)
+    /// this is the column where user input begins (i.e. after the prompt).
+    pub col: u16,
     /// Exit code, valid only when `kind == CommandDone`. 0 otherwise.
     pub exit_code: i32,
+    /// Wall-clock duration in milliseconds from 133;C to 133;D.
+    /// Valid only when `kind == CommandDone`. 0 otherwise.
+    pub duration_ms: u64,
 }
 
 /// State of a command block.
@@ -171,8 +177,12 @@ pub enum BlockState {
 /// All line numbers are ABSOLUTE (comparable to `PromptMark::line`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Block {
-    /// Absolute line of the `command_start` mark.
+    /// Absolute line of the `command_start` mark (133;B).
     pub command_line: usize,
+    /// Cursor column at the 133;B mark — where user input begins (after the
+    /// prompt).  Used at render time to extract the typed command text from
+    /// the cells at `command_line`.
+    pub command_start_col: u16,
     /// Absolute line of `output_start` (133;C), or `command_line` if none.
     pub output_line: usize,
     /// Absolute line one past the last output row (exclusive end).
@@ -180,6 +190,9 @@ pub struct Block {
     pub state: BlockState,
     /// Valid only when `state == Exited`.
     pub exit_code: i32,
+    /// Wall-clock duration in milliseconds from 133;C to 133;D.
+    /// 0 when the block is still running or the shell didn't emit 133;D.
+    pub duration_ms: u64,
 }
 
 impl Block {
@@ -262,7 +275,9 @@ impl Terminal {
         let marks = [PromptMark {
             kind: PromptMarkKind::PromptStart,
             line: 0,
+            col: 0,
             exit_code: 0,
+            duration_ms: 0,
         }; MAX_MARKS];
 
         Terminal {
@@ -591,10 +606,12 @@ impl Terminal {
         let abs_line_count = self.evicted_lines + self.line_count();
         let mut b = Block {
             command_line: marks[i].line,
+            command_start_col: marks[i].col,
             output_line: marks[i].line,
             end_line: abs_line_count,
             state: BlockState::Running,
             exit_code: 0,
+            duration_ms: 0,
         };
         let mut j = i + 1;
         while j < marks.len() {
@@ -612,6 +629,7 @@ impl Terminal {
                 PromptMarkKind::CommandDone => {
                     b.state = BlockState::Exited;
                     b.exit_code = m.exit_code;
+                    b.duration_ms = m.duration_ms;
                 }
             }
             j += 1;
@@ -750,10 +768,20 @@ impl Terminal {
         } else {
             0
         };
+        let duration_ms = if kind == PromptMarkKind::CommandDone {
+            self.shell_last_duration_ms.max(0) as u64
+        } else {
+            0
+        };
+        // Record cursor column at the time of the mark.  For CommandStart (B)
+        // this captures where typed input begins, used later for header display.
+        let col = self.active_const().cur_x.min(u16::MAX as usize) as u16;
         self.marks[self.mark_count] = PromptMark {
             kind,
             line: line_num,
+            col,
             exit_code,
+            duration_ms,
         };
         self.mark_count += 1;
     }
@@ -2399,6 +2427,62 @@ mod tests {
         term.feed(b"\x1B]133;A\x07");
         term.feed(b"\x1B]133;B\x07");
         assert!(term.block_before(0).is_none());
+    }
+
+    // ── Block: duration_ms and command_start_col ──────────────────────────────
+
+    #[test]
+    fn block_duration_ms_is_zero_when_running() {
+        let mut term = make_terminal(20, 10);
+        term.feed(b"\x1B]133;A\x07");
+        term.feed(b"\x1B]133;B\x07");
+        term.feed(b"\r\n");
+        term.feed(b"\x1B]133;C\x07");
+        term.feed(b"output\r\n");
+        // No 133;D — still running.
+        let b = term.block_at(0).unwrap();
+        assert_eq!(BlockState::Running, b.state);
+        assert_eq!(0, b.duration_ms);
+    }
+
+    #[test]
+    fn block_duration_ms_present_after_command_done() {
+        let mut term = make_terminal(20, 10);
+        term.feed(b"\x1B]133;A\x07");
+        term.feed(b"\x1B]133;B\x07");
+        term.feed(b"\r\n");
+        term.feed(b"\x1B]133;C\x07");
+        term.feed(b"output\r\n");
+        term.feed(b"\x1B]133;D;exit_code=0\x07");
+        term.feed(b"\x1B]133;A\x07");
+        let b = term.block_at(0).unwrap();
+        assert_eq!(BlockState::Exited, b.state);
+        // duration_ms may be very small (test runs fast) but must be present
+        // (zero is valid for extremely fast commands, but the field is populated).
+        // We verify the field exists and is a u64 (no type error).
+        let _: u64 = b.duration_ms;
+    }
+
+    #[test]
+    fn block_command_start_col_recorded_from_133b_mark() {
+        let mut term = make_terminal(20, 10);
+        // Write a 4-char prompt then fire 133;B so col is 4.
+        term.feed(b"\x1B]133;A\x07");
+        term.feed(b">>> "); // 4 chars — cursor now at col 4
+        term.feed(b"\x1B]133;B\x07");
+        term.feed(b"git status");
+        term.feed(b"\r\n");
+        term.feed(b"\x1B]133;C\x07");
+        term.feed(b"ok\r\n");
+        term.feed(b"\x1B]133;D;exit_code=0\x07");
+        term.feed(b"\x1B]133;A\x07");
+
+        let b = term.block_at(0).unwrap();
+        // command_start_col should be 4 (after the 4-char ">>> ").
+        assert_eq!(
+            4, b.command_start_col,
+            "command_start_col should record cursor column at 133;B"
+        );
     }
 
     // ── DEC line-drawing character set ────────────────────────────────────────

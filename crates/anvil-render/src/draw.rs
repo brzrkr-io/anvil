@@ -19,14 +19,16 @@ use crate::raster::{FontMetrics, GlyphPainter, Raster};
 
 // ── Semantic status colors (Mineral palette, brand contract) ─────────────────
 
-/// status.info / trace teal — "command active" (#2f7f86)
-const INFO_TEAL: [u8; 3] = [0x2f, 0x7f, 0x86];
+/// accent.bright / mineral bright teal — running block (#54b7c0)
+const ACCENT_BRIGHT: [u8; 3] = [0x54, 0xb7, 0xc0];
 /// status.verified — exit 0 (#3f8a5b)
 const VERIFIED: [u8; 3] = [0x3f, 0x8a, 0x5b];
 /// status.failure — non-zero exit (#b13a30)
 const FAILURE: [u8; 3] = [0xb1, 0x3a, 0x30];
 /// alloy — muted text for fold summaries (#86919a)
 const ALLOY: [u8; 3] = [0x86, 0x91, 0x9a];
+/// panel-raised — block body background tint (#181a1e)
+const PANEL_RAISED: [u8; 3] = [0x18, 0x1a, 0x1e];
 
 // ── Folded blocks ─────────────────────────────────────────────────────────────
 
@@ -276,11 +278,119 @@ fn draw_text_row(
     }
 }
 
+// ── Block header helpers ──────────────────────────────────────────────────────
+
+/// Format a duration in milliseconds into a human-readable string.
+/// e.g. "0.1s", "3.2s", "1m04s"
+fn format_duration(ms: u64) -> String {
+    if ms < 60_000 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else {
+        let s = ms / 1000;
+        format!("{}m{:02}s", s / 60, s % 60)
+    }
+}
+
+/// Read command text from terminal cells at content row `crow`, starting at
+/// `start_col`, into a `String`.  Trims trailing whitespace/nulls.
+fn read_command_text(terminal: &Terminal, crow: usize, start_col: usize) -> String {
+    let cells = terminal.line(crow);
+    let mut s = String::new();
+    for cell in cells.iter().skip(start_col) {
+        if cell.cp != '\0' {
+            s.push(cell.cp);
+        }
+    }
+    // Trim trailing spaces/nulls.
+    let trimmed = s.trim_end();
+    trimmed.to_string()
+}
+
+/// Draw the synthesized block header row (CPU path).
+///
+/// Draws over the raw terminal cells at the command row:
+///   - command text in foreground color (col 1 onward; col 0 is accent bar)
+///   - duration in muted color, right-aligned before exit indicator
+///   - exit indicator: "✓" (exit 0), "✗ N" (exit N), "…" (running)
+///   - fold indicator "▾" at far right
+///
+/// `ry` is the raster row (already includes top_bar_rows).
+/// `cols` is the terminal width in cells.
+#[allow(clippy::too_many_arguments)]
+fn draw_block_header_cpu(
+    raster: &mut Raster,
+    painter: &mut dyn GlyphPainter,
+    metrics: FontMetrics,
+    theme: &Theme,
+    block: &Block,
+    cmd_text: &str,
+    ry: usize,
+    cols: usize,
+) {
+    let accent_color = block_accent_color(block);
+    let fg = theme.foreground;
+    let muted = ALLOY;
+
+    // Command text: col 1..cols-18 (leave room for right metadata).
+    draw_text_row(
+        raster,
+        painter,
+        metrics,
+        1,
+        ry,
+        cmd_text,
+        fg,
+        cols.saturating_sub(18),
+    );
+
+    // Build the right-side segments individually so we can color them.
+    // Segment 1: duration (muted).
+    let dur_str = if block.duration_ms > 0 {
+        format_duration(block.duration_ms)
+    } else {
+        String::new()
+    };
+
+    // Segment 2: exit indicator (accent/status color).
+    let (exit_str, exit_color) = match block.state {
+        BlockState::Running => ("\u{2026}".to_string(), accent_color), // …
+        BlockState::Exited => {
+            if block.exit_code == 0 {
+                ("\u{2713}".to_string(), VERIFIED) // ✓
+            } else {
+                (format!("\u{2717} {}", block.exit_code), FAILURE) // ✗ N
+            }
+        }
+    };
+
+    // Fold indicator (muted), always present.
+    let fold_str = " \u{25be}"; // " ▾"
+
+    // Compute total right width and starting column.
+    let sep = if dur_str.is_empty() { "" } else { "  " };
+    let right_len = dur_str.chars().count()
+        + sep.chars().count()
+        + exit_str.chars().count()
+        + fold_str.chars().count();
+    if right_len < cols {
+        let mut col = cols - right_len;
+        draw_text_row(raster, painter, metrics, col, ry, &dur_str, muted, cols);
+        col += dur_str.chars().count();
+        draw_text_row(raster, painter, metrics, col, ry, sep, muted, cols);
+        col += sep.chars().count();
+        draw_text_row(
+            raster, painter, metrics, col, ry, &exit_str, exit_color, cols,
+        );
+        col += exit_str.chars().count();
+        draw_text_row(raster, painter, metrics, col, ry, fold_str, muted, cols);
+    }
+}
+
 // ── Gutter mark color ─────────────────────────────────────────────────────────
 
-fn gutter_mark_color(block: &Block) -> [u8; 3] {
+fn block_accent_color(block: &Block) -> [u8; 3] {
     match block.state {
-        BlockState::Running => INFO_TEAL,
+        BlockState::Running => ACCENT_BRIGHT,
         BlockState::Exited => {
             if block.exit_code == 0 {
                 VERIFIED
@@ -360,12 +470,8 @@ pub fn draw_viewport(
             let crow = terminal.content_row_of_viewport(y);
             let abs = terminal.absolute_line_of_content(crow);
 
-            // Fold check: look up the block at this content row.
-            let block_opt = if !folded.cmd_lines.is_empty() {
-                terminal.block_at(abs)
-            } else {
-                None
-            };
+            // Block lookup: always needed for accent bar, tint, and header rendering.
+            let block_opt = terminal.block_at(abs);
 
             // If this row is inside a folded block's OUTPUT region, skip it.
             if let Some(ref block) = block_opt {
@@ -374,6 +480,18 @@ pub fn draw_viewport(
                     && abs < block.end_line
                 {
                     continue;
+                }
+            }
+
+            // Block body tint: apply PANEL_RAISED background to output rows before
+            // drawing cells so the tint shows behind terminal content.
+            if let Some(ref block) = block_opt {
+                let is_output_row = abs >= block.output_line && abs < block.end_line;
+                if is_output_row {
+                    let ry = y + top_bar_rows;
+                    for cx in 0..cols {
+                        raster.cell_bg(metrics, cx, ry, PANEL_RAISED);
+                    }
                 }
             }
 
@@ -400,6 +518,14 @@ pub fn draw_viewport(
                 }
             } // row borrow ends here
 
+            // Block accent bar: full-height colored stripe on the left for all
+            // rows belonging to a block.
+            if let Some(ref block) = block_opt {
+                let ry = y + top_bar_rows;
+                let accent_rgb = block_accent_color(block);
+                raster.block_accent_bar(metrics, ry, accent_rgb);
+            }
+
             // Fold summary: if this is the command row of a folded block,
             // append " ⌄ N hidden" after any command text.
             if let Some(ref block) = block_opt {
@@ -411,12 +537,16 @@ pub fn draw_viewport(
                 }
             }
 
-            // Gutter mark: draw on the command row of every block.
+            // Block header row: synthesize command text + duration + exit indicator.
+            // Drawn AFTER terminal cells so the overlay is on top.
             if let Some(ref block) = block_opt {
-                if abs == block.command_line {
+                if abs == block.command_line && !folded.contains(block.command_line) {
+                    let cmd_text =
+                        read_command_text(terminal, crow, block.command_start_col as usize);
                     let ry = y + top_bar_rows;
-                    let mark_rgb = gutter_mark_color(block);
-                    raster.gutter_mark(metrics, ry, mark_rgb);
+                    draw_block_header_cpu(
+                        raster, painter, metrics, theme, block, &cmd_text, ry, cols,
+                    );
                 }
             }
 
@@ -442,12 +572,8 @@ pub fn draw_viewport(
             };
             let abs = terminal.absolute_line_of_content(crow);
 
-            // Fold check (smooth-scroll path).
-            let block_opt = if !folded.cmd_lines.is_empty() {
-                terminal.block_at(abs)
-            } else {
-                None
-            };
+            // Block lookup (smooth-scroll path).
+            let block_opt = terminal.block_at(abs);
 
             if let Some(ref block) = block_opt {
                 if folded.contains(block.command_line)
@@ -455,6 +581,17 @@ pub fn draw_viewport(
                     && abs < block.end_line
                 {
                     continue;
+                }
+            }
+
+            // Block body tint (smooth-scroll path).
+            if let Some(ref block) = block_opt {
+                let is_output_row = abs >= block.output_line && abs < block.end_line;
+                if is_output_row {
+                    let ry = y + top_bar_rows;
+                    for cx in 0..cols {
+                        raster.cell_bg(metrics, cx, ry, PANEL_RAISED);
+                    }
                 }
             }
 
@@ -477,6 +614,13 @@ pub fn draw_viewport(
                 }
             } // row borrow ends here
 
+            // Block accent bar (smooth-scroll path).
+            if let Some(ref block) = block_opt {
+                let ry = y + top_bar_rows;
+                let accent_rgb = block_accent_color(block);
+                raster.block_accent_bar(metrics, ry, accent_rgb);
+            }
+
             // Fold summary (smooth-scroll path).
             if let Some(ref block) = block_opt {
                 if folded.contains(block.command_line) && abs == block.command_line {
@@ -487,12 +631,15 @@ pub fn draw_viewport(
                 }
             }
 
-            // Gutter mark (smooth-scroll path).
+            // Block header (smooth-scroll path).
             if let Some(ref block) = block_opt {
-                if abs == block.command_line {
+                if abs == block.command_line && !folded.contains(block.command_line) {
+                    let cmd_text =
+                        read_command_text(terminal, crow, block.command_start_col as usize);
                     let ry = y + top_bar_rows;
-                    let mark_rgb = gutter_mark_color(block);
-                    raster.gutter_mark(metrics, ry, mark_rgb);
+                    draw_block_header_cpu(
+                        raster, painter, metrics, theme, block, &cmd_text, ry, cols,
+                    );
                 }
             }
 
@@ -670,11 +817,8 @@ pub fn draw_viewport_gpu(
             let crow = terminal.content_row_of_viewport(y);
             let abs = terminal.absolute_line_of_content(crow);
 
-            let block_opt = if !folded.cmd_lines.is_empty() {
-                terminal.block_at(abs)
-            } else {
-                None
-            };
+            // Block lookup: always needed for accent bar, tint, and header.
+            let block_opt = terminal.block_at(abs);
 
             // Skip folded output rows.
             if let Some(ref block) = block_opt {
@@ -683,6 +827,17 @@ pub fn draw_viewport_gpu(
                     && abs < block.end_line
                 {
                     continue;
+                }
+            }
+
+            // Block body tint: push PANEL_RAISED bg cells for output rows.
+            if let Some(ref block) = block_opt {
+                let is_output_row = abs >= block.output_line && abs < block.end_line;
+                if is_output_row {
+                    for cx in 0..cols {
+                        let xy = cell_xy(cx as f64, y as f64);
+                        push_bg(batch, xy, [cw, ch], PANEL_RAISED);
+                    }
                 }
             }
 
@@ -706,6 +861,18 @@ pub fn draw_viewport_gpu(
                 }
             }
 
+            // Block accent bar: full-height colored stripe at the left edge.
+            // Drawn after cells so it overlays any cell content at col 0.
+            if let Some(ref block) = block_opt {
+                let accent_rgb = block_accent_color(block);
+                let xy = cell_xy(0.0, y as f64);
+                // 2px wide, full cell height, at the left padding edge.
+                // GPU path uses cell_xy which maps to cell col 0; the accent bar
+                // overlaps the first column slightly. This mirrors the CPU path.
+                let wh = [2.0f32.min(cw), ch];
+                push_bg(batch, xy, wh, accent_rgb);
+            }
+
             // Fold summary text.
             if let Some(ref block) = block_opt {
                 if folded.contains(block.command_line) && abs == block.command_line {
@@ -723,16 +890,11 @@ pub fn draw_viewport_gpu(
                 }
             }
 
-            // Gutter mark (bg-only strip at left edge of command row).
-            if let Some(ref block) = block_opt {
-                if abs == block.command_line {
-                    let mark_rgb = gutter_mark_color(block);
-                    let xy = cell_xy(0.0, y as f64);
-                    // Gutter mark: 3px wide strip on the left edge, full cell height.
-                    let wh = [3.0f32.min(cw), ch];
-                    push_bg(batch, xy, wh, mark_rgb);
-                }
-            }
+            // Block header synthesis (GPU path): TODO — full header text synthesis
+            // (command + duration + exit + ▾) requires per-char glyph lookup on the
+            // GPU path.  The CPU path (draw_viewport) renders the full header. The
+            // GPU path currently shows terminal cells as-is on the header row, with
+            // the accent bar providing the visual block affordance.
         }
     } else {
         // Smooth-scroll path.
@@ -757,11 +919,8 @@ pub fn draw_viewport_gpu(
             };
             let abs = terminal.absolute_line_of_content(crow);
 
-            let block_opt = if !folded.cmd_lines.is_empty() {
-                terminal.block_at(abs)
-            } else {
-                None
-            };
+            // Block lookup (smooth-scroll path).
+            let block_opt = terminal.block_at(abs);
 
             if let Some(ref block) = block_opt {
                 if folded.contains(block.command_line)
@@ -769,6 +928,18 @@ pub fn draw_viewport_gpu(
                     && abs < block.end_line
                 {
                     continue;
+                }
+            }
+
+            // Block body tint (smooth-scroll path).
+            if let Some(ref block) = block_opt {
+                let is_output_row = abs >= block.output_line && abs < block.end_line;
+                if is_output_row {
+                    for cx in 0..cols {
+                        let base_xy = cell_xy(cx as f64, y as f64);
+                        let xy = [base_xy[0], base_xy[1] - shift];
+                        push_bg(batch, xy, [cw, ch], PANEL_RAISED);
+                    }
                 }
             }
 
@@ -793,6 +964,15 @@ pub fn draw_viewport_gpu(
                 }
             }
 
+            // Block accent bar (smooth-scroll path).
+            if let Some(ref block) = block_opt {
+                let accent_rgb = block_accent_color(block);
+                let base_xy = cell_xy(0.0, y as f64);
+                let xy = [base_xy[0], base_xy[1] - shift];
+                let wh = [2.0f32.min(cw), ch];
+                push_bg(batch, xy, wh, accent_rgb);
+            }
+
             // Fold summary (smooth-scroll path).
             if let Some(ref block) = block_opt {
                 if folded.contains(block.command_line) && abs == block.command_line {
@@ -808,17 +988,6 @@ pub fn draw_viewport_gpu(
                         let slot = rasterizer.glyph_slot(cp as u32, metrics);
                         batch.push_cell(xy, wh, slot, ALLOY, theme.background);
                     }
-                }
-            }
-
-            // Gutter mark (smooth-scroll path).
-            if let Some(ref block) = block_opt {
-                if abs == block.command_line {
-                    let mark_rgb = gutter_mark_color(block);
-                    let base_xy = cell_xy(0.0, y as f64);
-                    let xy = [base_xy[0], base_xy[1] - shift];
-                    let wh = [3.0f32.min(cw), ch];
-                    push_bg(batch, xy, wh, mark_rgb);
                 }
             }
         }
@@ -1555,43 +1724,83 @@ mod tests {
 
     // ── gutter_mark_color helper ──────────────────────────────────────────────
 
-    #[test]
-    fn gutter_mark_color_running_is_info_teal() {
-        use anvil_term::{Block, BlockState};
-        let block = Block {
+    // ── block_accent_color (previously gutter_mark_color) tests ──────────────
+
+    fn make_block(state: anvil_term::BlockState, exit_code: i32) -> anvil_term::Block {
+        anvil_term::Block {
             command_line: 0,
+            command_start_col: 0,
             output_line: 0,
             end_line: 5,
-            state: BlockState::Running,
-            exit_code: 0,
-        };
-        assert_eq!(gutter_mark_color(&block), INFO_TEAL);
+            state,
+            exit_code,
+            duration_ms: 0,
+        }
+    }
+
+    #[test]
+    fn gutter_mark_color_running_is_info_teal() {
+        use anvil_term::BlockState;
+        // Running blocks use ACCENT_BRIGHT (mineral bright teal) per brand contract.
+        let block = make_block(BlockState::Running, 0);
+        assert_eq!(block_accent_color(&block), ACCENT_BRIGHT);
+    }
+
+    #[test]
+    fn block_accent_color_running_is_accent_bright() {
+        use anvil_term::BlockState;
+        let block = make_block(BlockState::Running, 0);
+        assert_eq!(block_accent_color(&block), ACCENT_BRIGHT);
     }
 
     #[test]
     fn gutter_mark_color_exit_zero_is_verified() {
-        use anvil_term::{Block, BlockState};
-        let block = Block {
-            command_line: 0,
-            output_line: 0,
-            end_line: 5,
-            state: BlockState::Exited,
-            exit_code: 0,
-        };
-        assert_eq!(gutter_mark_color(&block), VERIFIED);
+        use anvil_term::BlockState;
+        let block = make_block(BlockState::Exited, 0);
+        assert_eq!(block_accent_color(&block), VERIFIED);
     }
 
     #[test]
     fn gutter_mark_color_exit_nonzero_is_failure() {
-        use anvil_term::{Block, BlockState};
-        let block = Block {
-            command_line: 0,
-            output_line: 0,
-            end_line: 5,
-            state: BlockState::Exited,
-            exit_code: 1,
-        };
-        assert_eq!(gutter_mark_color(&block), FAILURE);
+        use anvil_term::BlockState;
+        let block = make_block(BlockState::Exited, 1);
+        assert_eq!(block_accent_color(&block), FAILURE);
+    }
+
+    /// Running block: accent bar color is ACCENT_BRIGHT (mineral bright teal).
+    #[test]
+    fn block_accent_color_running_pinned_to_accent_bright() {
+        use anvil_term::BlockState;
+        let block = make_block(BlockState::Running, 0);
+        assert_eq!(
+            block_accent_color(&block),
+            ACCENT_BRIGHT,
+            "running block must use ACCENT_BRIGHT per brand contract"
+        );
+    }
+
+    /// Successful block: accent bar color is VERIFIED (green).
+    #[test]
+    fn block_accent_color_ok_is_verified() {
+        use anvil_term::BlockState;
+        let block = make_block(BlockState::Exited, 0);
+        assert_eq!(
+            block_accent_color(&block),
+            VERIFIED,
+            "exit-0 block must use VERIFIED per brand contract"
+        );
+    }
+
+    /// Failed block: accent bar color is FAILURE (red).
+    #[test]
+    fn block_accent_color_failed_is_failure() {
+        use anvil_term::BlockState;
+        let block = make_block(BlockState::Exited, 1);
+        assert_eq!(
+            block_accent_color(&block),
+            FAILURE,
+            "non-zero exit block must use FAILURE per brand contract"
+        );
     }
 
     // ── draw_viewport_gpu smoke test ─────────────────────────────────────────
@@ -1786,5 +1995,210 @@ mod tests {
         // No panic; scroll path exercised. Instance count may be 0 (cells
         // happen to be spaces) but must not exceed rows+1 * cols.
         assert!(batch.instance_count() <= (t.rows() + 1) * t.cols());
+    }
+
+    // ── Block rendering: accent bar and body tint ─────────────────────────────
+
+    /// A running block's accent bar uses ACCENT_BRIGHT (mineral bright teal).
+    /// Verify: draw a running block and check that the pixel at the accent bar
+    /// position contains the ACCENT_BRIGHT color.
+    #[test]
+    fn draw_viewport_running_block_has_teal_accent_bar() {
+        let m = metrics();
+        let mut r = Raster::new(200, 120);
+        let mut painter = StubPainter::default();
+        let mut t = make_terminal(10, 4);
+        let theme = MINERAL_DARK;
+
+        // Feed a running block (no 133;D yet).
+        t.feed(b"\x1b]133;A\x07");
+        t.feed(b"\x1b]133;B\x07");
+        t.feed(b"ls\r\n");
+        t.feed(b"\x1b]133;C\x07");
+        t.feed(b"file.txt\r\n");
+        // Still running — no 133;D.
+
+        // Set pad_x so the accent bar lands in the bitmap.
+        r.pad_x = 6.0;
+        r.origin_x = 6.0;
+
+        r.clear(theme.background);
+        draw_viewport(
+            &mut r,
+            &mut painter,
+            &mut t,
+            m,
+            &theme,
+            0.0,
+            0.0,
+            Selection::default(),
+            None,
+            0,
+            None,
+            0.0,
+            200.0,
+            FoldedBlocks::empty(),
+            None,
+        );
+
+        // The accent bar is drawn at x = origin_x - pad_x = 0, 2px wide,
+        // for rows that belong to the block. Check pixels at (x=0, row=0)
+        // and (x=0, row=1) — these are the command and output rows.
+        use crate::raster::pixel_at;
+        let row0_px = pixel_at(&r, 0, (m.cell_h * 0.5) as usize); // mid of row 0
+        let row1_px = pixel_at(&r, 0, (m.cell_h * 1.5) as usize); // mid of row 1
+
+        assert_eq!(
+            row0_px, ACCENT_BRIGHT,
+            "running block header row accent bar should be ACCENT_BRIGHT"
+        );
+        assert_eq!(
+            row1_px, ACCENT_BRIGHT,
+            "running block output row accent bar should be ACCENT_BRIGHT"
+        );
+    }
+
+    /// A completed successful block's accent bar uses VERIFIED (green).
+    #[test]
+    fn draw_viewport_ok_block_has_green_accent_bar() {
+        let m = metrics();
+        let mut r = Raster::new(200, 120);
+        let mut painter = StubPainter::default();
+        let mut t = make_terminal(10, 6);
+        let theme = MINERAL_DARK;
+
+        t.feed(b"\x1b]133;A\x07");
+        t.feed(b"\x1b]133;B\x07");
+        t.feed(b"ls\r\n");
+        t.feed(b"\x1b]133;C\x07");
+        t.feed(b"file.txt\r\n");
+        t.feed(b"\x1b]133;D;exit_code=0\x07");
+        t.feed(b"\x1b]133;A\x07");
+
+        r.pad_x = 6.0;
+        r.origin_x = 6.0;
+        r.clear(theme.background);
+        draw_viewport(
+            &mut r,
+            &mut painter,
+            &mut t,
+            m,
+            &theme,
+            0.0,
+            0.0,
+            Selection::default(),
+            None,
+            0,
+            None,
+            0.0,
+            200.0,
+            FoldedBlocks::empty(),
+            None,
+        );
+
+        use crate::raster::pixel_at;
+        let row0_px = pixel_at(&r, 0, (m.cell_h * 0.5) as usize);
+        assert_eq!(
+            row0_px, VERIFIED,
+            "exit-0 block accent bar should be VERIFIED"
+        );
+    }
+
+    /// A failed block's accent bar uses FAILURE (red).
+    #[test]
+    fn draw_viewport_failed_block_has_red_accent_bar() {
+        let m = metrics();
+        let mut r = Raster::new(200, 120);
+        let mut painter = StubPainter::default();
+        let mut t = make_terminal(10, 6);
+        let theme = MINERAL_DARK;
+
+        t.feed(b"\x1b]133;A\x07");
+        t.feed(b"\x1b]133;B\x07");
+        t.feed(b"bad\r\n");
+        t.feed(b"\x1b]133;C\x07");
+        t.feed(b"error\r\n");
+        t.feed(b"\x1b]133;D;exit_code=1\x07");
+        t.feed(b"\x1b]133;A\x07");
+
+        r.pad_x = 6.0;
+        r.origin_x = 6.0;
+        r.clear(theme.background);
+        draw_viewport(
+            &mut r,
+            &mut painter,
+            &mut t,
+            m,
+            &theme,
+            0.0,
+            0.0,
+            Selection::default(),
+            None,
+            0,
+            None,
+            0.0,
+            200.0,
+            FoldedBlocks::empty(),
+            None,
+        );
+
+        use crate::raster::pixel_at;
+        let row0_px = pixel_at(&r, 0, (m.cell_h * 0.5) as usize);
+        assert_eq!(
+            row0_px, FAILURE,
+            "exit-nonzero block accent bar should be FAILURE"
+        );
+    }
+
+    /// Body rows of a block get PANEL_RAISED background tint.
+    #[test]
+    fn draw_viewport_block_output_rows_have_panel_raised_tint() {
+        let m = metrics();
+        let mut r = Raster::new(200, 160);
+        let mut painter = StubPainter::default();
+        let mut t = make_terminal(10, 6);
+        let theme = MINERAL_DARK;
+
+        t.feed(b"\x1b]133;A\x07");
+        t.feed(b"\x1b]133;B\x07");
+        t.feed(b"ls\r\n");
+        t.feed(b"\x1b]133;C\x07");
+        t.feed(b"   \r\n"); // all spaces — tint should be visible as bg
+        t.feed(b"\x1b]133;D;exit_code=0\x07");
+        t.feed(b"\x1b]133;A\x07");
+
+        // Set origin to avoid accent bar overlap when sampling.
+        r.origin_x = 20.0; // cells start at x=20
+        r.pad_x = 6.0;
+
+        r.clear(theme.background);
+        draw_viewport(
+            &mut r,
+            &mut painter,
+            &mut t,
+            m,
+            &theme,
+            0.0,
+            0.0,
+            Selection::default(),
+            None,
+            0,
+            None,
+            20.0,
+            200.0,
+            FoldedBlocks::empty(),
+            None,
+        );
+
+        // Row 1 is the output row (after 133;C). Sample a pixel in the middle
+        // of the row at a cell column that should have PANEL_RAISED background.
+        use crate::raster::pixel_at;
+        let sample_x = 30_usize; // well into the cell area
+        let sample_y = (m.cell_h * 1.5) as usize; // mid of row 1
+        let px = pixel_at(&r, sample_x, sample_y);
+        assert_eq!(
+            px, PANEL_RAISED,
+            "block output row background should be PANEL_RAISED; got {px:?}"
+        );
     }
 }

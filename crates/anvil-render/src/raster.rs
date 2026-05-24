@@ -240,6 +240,28 @@ impl Raster {
         );
     }
 
+    /// Draw a 2 px wide full-row-height accent bar in the left padding band.
+    ///
+    /// Used for block-based command output: a colored vertical stripe runs the
+    /// full height of the row along the far-left edge of `pad_x`, indicating
+    /// block membership and status.
+    pub fn block_accent_bar(&mut self, metrics: FontMetrics, row: usize, rgb: [u8; 3]) {
+        const BAR_W: f64 = 2.0;
+        let ch = metrics.cell_h;
+        // Place the bar flush with the left edge of pad_x.
+        let x = self.origin_x - self.pad_x;
+        let row_top = self.origin_y + row as f64 * ch - self.y_shift_px;
+        self.fill_pixel_rect_internal(
+            PixelRect {
+                x,
+                y: row_top,
+                w: BAR_W,
+                h: ch,
+            },
+            rgb,
+        );
+    }
+
     /// Draw a thin full-height vertical hairline at the LEFT edge of cell-column
     /// `col`.  The strip is 2 device pixels wide.
     pub fn col_rule(&mut self, metrics: FontMetrics, col: usize, rgb: [u8; 3]) {
