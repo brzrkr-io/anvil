@@ -1034,10 +1034,12 @@ pub fn draw_right_hud(
         r += 1;
     }
 
-    // Up to 3 priority rows.
+    // All priority rows (capped only by remaining HUD vertical space —
+    // the AGENTS section is the de-facto agent dock when there are many
+    // approvals / runs / failures to show).
     let mut emitted = 0_usize;
     for ap in &snap.approvals {
-        if emitted >= 3 || r >= bottom {
+        if r >= bottom {
             break;
         }
         draw_hud_row(
@@ -1056,7 +1058,7 @@ pub fn draw_right_hud(
         emitted += 1;
     }
     for run in &snap.runs {
-        if emitted >= 3 || r >= bottom {
+        if r >= bottom {
             break;
         }
         if run.status != RunStatus::Running {
@@ -1078,7 +1080,7 @@ pub fn draw_right_hud(
         emitted += 1;
     }
     for f in &snap.findings {
-        if emitted >= 3 || r >= bottom {
+        if r >= bottom {
             break;
         }
         if f.severity != FindingSeverity::Failure {
