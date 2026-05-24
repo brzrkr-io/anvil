@@ -3235,7 +3235,15 @@ fn main() -> Result<()> {
         cheatsheet_visible: false,
         focused: true,
         agent_snap: AgentSnapshot::default(),
-        local_ctx: LocalContext::default(),
+        // Pre-populate cwd from the process's working directory so the bottom
+        // status bar has data on the very first frame, before the shell emits
+        // its first OSC 7 cwd report.
+        local_ctx: LocalContext {
+            cwd: std::env::current_dir()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            ..LocalContext::default()
+        },
         // The caldera poller is started lazily once we know the repo root
         // (set when the first focused pane's cwd is known); see tick().
         caldera_poller: None,

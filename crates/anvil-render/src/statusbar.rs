@@ -50,7 +50,12 @@ pub fn draw_status_bar(
     if total_cols == 0 {
         return;
     }
-    let _ = theme;
+
+    // Explicitly clear every cell on this row to theme.background so older
+    // chars (e.g. a longer cwd) don't bleed through under shorter content.
+    for col in 0..total_cols {
+        raster.cell_bg(metrics, col, bottom_row, theme.background);
+    }
 
     // Left section: condensed cwd + last-exit symbol.
     let mut col = 2usize;
@@ -161,11 +166,15 @@ mod tests {
             row,
         );
 
-        // With no git + no agent runs, the bar emits zero pixels.
+        // Status bar always paints its row to theme.background so stale
+        // chars from a previous longer cwd don't bleed through.
         let cell_h = m.cell_h as usize;
         let px_y = row * cell_h + cell_h / 2;
         let px = pixel_at(&r, 4, px_y);
-        assert_eq!(px, [0, 0, 0], "expected background untouched, got {px:?}");
+        assert_eq!(
+            px, theme.background,
+            "expected status bar row painted to theme.background, got {px:?}"
+        );
     }
 
     // --- branch_shown_when_git_ok --------------------------------------------
