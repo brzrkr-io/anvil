@@ -654,7 +654,7 @@ pub fn draw_right_hud(
             r += 1;
         }
     }
-    r = blank(r, bottom);
+    r = section_break(raster, metrics, start_col, hud_cols, r, bottom, tones.edge);
 
     // --- GIT ---------------------------------------------------------------
     if r >= bottom {
@@ -792,7 +792,7 @@ pub fn draw_right_hud(
             }
         }
     }
-    r = blank(r, bottom);
+    r = section_break(raster, metrics, start_col, hud_cols, r, bottom, tones.edge);
 
     // --- LAST RUN ----------------------------------------------------------
     if r >= bottom {
@@ -844,7 +844,7 @@ pub fn draw_right_hud(
         );
         r += 1;
     }
-    r = blank(r, bottom);
+    r = section_break(raster, metrics, start_col, hud_cols, r, bottom, tones.edge);
 
     // --- BUILD -------------------------------------------------------------
     // Task #9: show detected project kind + last-run outcome.
@@ -906,7 +906,7 @@ pub fn draw_right_hud(
             }
             r += 1;
         }
-        r = blank(r, bottom);
+        r = section_break(raster, metrics, start_col, hud_cols, r, bottom, tones.edge);
     }
 
     // --- PORTS -------------------------------------------------------------
@@ -960,7 +960,7 @@ pub fn draw_right_hud(
             }
             r += 1;
         }
-        r = blank(r, bottom);
+        r = section_break(raster, metrics, start_col, hud_cols, r, bottom, tones.edge);
     }
 
     // --- RECENT ------------------------------------------------------------
@@ -1007,7 +1007,7 @@ pub fn draw_right_hud(
             let _ = fi; // fi available for future use
             r += 1;
         }
-        r = blank(r, bottom);
+        r = section_break(raster, metrics, start_col, hud_cols, r, bottom, tones.edge);
     }
 
     // --- AGENTS ------------------------------------------------------------
@@ -1110,7 +1110,7 @@ pub fn draw_right_hud(
         );
         r += 1;
     }
-    r = blank(r, bottom);
+    r = section_break(raster, metrics, start_col, hud_cols, r, bottom, tones.edge);
 
     // --- SYSTEM ------------------------------------------------------------
     if r >= bottom {
@@ -1213,8 +1213,22 @@ pub fn draw_right_hud(
     }
 }
 
-/// A blank vertical spacer; returns the new row, capped at `bottom`.
-fn blank(r: usize, bottom: usize) -> usize {
+/// Section break: draws a faint hairline at `r` (the gap row) and advances
+/// to the next row. Use between adjacent sections to give them stronger
+/// visual separation than a blank row alone.
+#[allow(clippy::too_many_arguments)]
+fn section_break(
+    raster: &mut Raster,
+    metrics: FontMetrics,
+    start_col: usize,
+    hud_cols: usize,
+    r: usize,
+    bottom: usize,
+    rule_color: [u8; 3],
+) -> usize {
+    if r < bottom {
+        draw_section_rule(raster, metrics, start_col, r, hud_cols, rule_color);
+    }
     (r + 1).min(bottom)
 }
 
@@ -1251,7 +1265,10 @@ fn push_row_hit(
 }
 
 /// "REPO", "GIT" etc. drawn in the supplied label color (theme-dependent,
-/// quieter than body text so headers recede on the glass surface).
+/// quieter than body text so headers recede on the glass surface). The
+/// label is rendered LETTERSPACED — one blank cell inserted between each
+/// glyph — to give the headers a "small-caps display" cadence against the
+/// dense body text below them.
 #[allow(clippy::too_many_arguments)]
 fn draw_section_header(
     raster: &mut Raster,
@@ -1263,7 +1280,41 @@ fn draw_section_header(
     color: [u8; 3],
     max_col: usize,
 ) {
-    draw_text(raster, painter, metrics, col, row, label, color, max_col);
+    let mut c = col;
+    for (i, ch) in label.chars().enumerate() {
+        if i > 0 {
+            // Letterspace: one blank cell between glyphs.
+            if c >= max_col {
+                return;
+            }
+            c += 1;
+        }
+        if c >= max_col {
+            return;
+        }
+        raster.cell_glyph(painter, metrics, c, row, ch as u32, color);
+        c += 1;
+    }
+}
+
+/// A faint horizontal hairline used as a section separator inside the HUD.
+/// Drawn between sections in lieu of (or in addition to) a blank row.
+fn draw_section_rule(
+    raster: &mut Raster,
+    metrics: FontMetrics,
+    start_col: usize,
+    row: usize,
+    cols: usize,
+    color: [u8; 3],
+) {
+    let cw = metrics.cell_w;
+    let ch = metrics.cell_h;
+    // The rule sits on the row's vertical midline so it reads as inset, not
+    // as part of either the row above or below.
+    let y = raster.pad_y + (row as f64 + 0.5) * ch;
+    let x = raster.pad_x + (start_col + 1) as f64 * cw;
+    let w = (cols as f64 - 2.0) * cw;
+    raster.fill_pixel_rect(x, y, w, 1.0, color);
 }
 
 #[allow(clippy::too_many_arguments)]
