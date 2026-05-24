@@ -84,21 +84,19 @@ fn esc(buf: &mut String, shell: Shell, seq: &str) {
 /// `segments` is accepted for forward-compatibility with future themes that
 /// want an inline status indicator (e.g. a dirty-dot before the glyph) but
 /// is currently unused.
-pub fn full(_segments: &[Segment], opts: Options) -> String {
+pub fn full(segments: &[Segment], opts: Options) -> String {
     let mut buf = String::new();
     let sh = opts.shell;
 
-    // Three notes, breathing apart, leading into typed input. No containers,
-    // no separators, no bars — just glyphs floating in their own air.
+    // Warp-style soft segments: cwd-basename and branch each get a subtle
+    // pill background so the prompt reads as discrete chunks of info.
+    //   ` cwd `  on ANSI-8 dim-grey bg, ANSI-7 fg
+    //   ` branch [*N] `  on ANSI-8 dim-grey bg, with the *N in attention amber
+    //   ` ❯  `  bright cyan, no bg — the typing handle
     //
-    //   `◒`  Basin mark, bright accent (brand identity, leading note)
-    //   `*N` dirty count, amber (optional, between mark and dot)
-    //   `·`  middle dot, dim (a quiet beat between mark and prompt)
-    //   `❯`  chevron, mineral accent (the input pointer itself)
-    //
-    // Each glyph gets its own colour layer so the eye reads a gradient of
-    // attention rather than a flat string. On failure every glyph flips to
-    // the error red so the whole prompt screams together.
+    // On a failed previous command the right-aligned segment (✗ N) carries
+    // the red signal; the input arrow stays cool so the user types calmly.
+
     let arrow_color = if opts.failed {
         ACCENT_ERR
     } else {
@@ -106,19 +104,53 @@ pub fn full(_segments: &[Segment], opts: Options) -> String {
     };
 
     let mut left_visible: u16 = 0;
+    let pill_bg = "\x1b[48;5;236m"; // gray 236 — quiet, distinct from background
+    let pill_fg = "\x1b[38;5;7m"; //   ANSI 7 — high-contrast text on the pill
 
-    // Optional dirty count in attention amber.
-    if opts.git_dirty > 0 {
-        let dirty_text = format!("*{}", opts.git_dirty);
-        esc(&mut buf, sh, ATTENTION);
-        buf.push_str(&dirty_text);
+    // Find cwd / branch segments by icon kind.
+    let cwd_seg = segments.iter().find(|s| s.icon == crate::icons::Icon::Repo);
+    let branch_seg = segments
+        .iter()
+        .find(|s| s.icon == crate::icons::Icon::Branch);
+
+    // cwd pill.
+    if let Some(seg) = cwd_seg {
+        esc(&mut buf, sh, pill_bg);
+        esc(&mut buf, sh, pill_fg);
+        buf.push(' ');
+        buf.push_str(&seg.text);
+        buf.push(' ');
         esc(&mut buf, sh, RESET);
         buf.push(' ');
-        left_visible += dirty_text.chars().count() as u16 + 1;
+        left_visible += seg.text.chars().count() as u16 + 3;
     }
 
-    // Chevron + two-space gap. ❯ in bright cyan; wide breathing room before
-    // typed input. ❯ (U+276F) is in BlexMonoNerdFontMono — confirmed.
+    // branch pill (only when in a repo).
+    if let Some(seg) = branch_seg {
+        esc(&mut buf, sh, pill_bg);
+        esc(&mut buf, sh, pill_fg);
+        buf.push(' ');
+        // Branch glyph + name. If text already contains a dirty count
+        // (assembled as "branch N" by build_segments), colour the count
+        // attention-amber so it pops without leaving the pill.
+        if let Some((branch, dirty)) = seg.text.rsplit_once(' ') {
+            buf.push_str(branch);
+            buf.push(' ');
+            esc(&mut buf, sh, ATTENTION);
+            buf.push('*');
+            buf.push_str(dirty);
+            esc(&mut buf, sh, pill_bg);
+            esc(&mut buf, sh, pill_fg);
+        } else {
+            buf.push_str(&seg.text);
+        }
+        buf.push(' ');
+        esc(&mut buf, sh, RESET);
+        buf.push(' ');
+        left_visible += seg.text.chars().count() as u16 + 4; // approx; *N adds 1
+    }
+
+    // Arrow.
     esc(&mut buf, sh, arrow_color);
     buf.push('\u{276f}'); // ❯
     esc(&mut buf, sh, RESET);
@@ -379,15 +411,17 @@ mod tests {
     // ── New tests for Task #11 and Task #12 ───────────────────────────────────
 
     #[test]
-    fn full_with_dirty_shows_star_count_before_chevron() {
-        let out = full(
-            &[],
-            Options {
-                git_dirty: 3,
-                ..base_opts(Shell::Plain)
-            },
-        );
-        assert!(out.contains("*3"));
+    fn full_with_dirty_branch_segment_shows_star_count_before_chevron() {
+        // Dirty count now lives inside the branch pill, sourced from the
+        // branch segment's text (build_segments emits "branch N" when
+        // dirty > 0).
+        let segs = vec![Segment::with_state(
+            crate::icons::Icon::Branch,
+            "main 3",
+            crate::segments::State::Warn,
+        )];
+        let out = full(&segs, base_opts(Shell::Plain));
+        assert!(out.contains("*3"), "expected *3 in output, got {out:?}");
         assert!(out.contains(ATTENTION));
         assert!(out.contains('\u{276f}'));
         let star_pos = out.find("*3").unwrap();
