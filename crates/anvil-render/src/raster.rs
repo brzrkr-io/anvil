@@ -274,13 +274,13 @@ impl Raster {
     /// full height of the row along the far-left edge of `pad_x`, indicating
     /// block membership and status.
     pub fn block_accent_bar(&mut self, metrics: FontMetrics, row: usize, rgb: [u8; 3]) {
-        // Vertical stripe at the LEFT edge of the cell grid — matches D's
-        // `.block { border-left: 2px solid var(--verified) }`. Sits AT
-        // origin_x so the leftmost few pixels of the first cell carry the
-        // semantic color. Wide enough to read clearly at retina.
+        // Vertical stripe sits in the pad_x gutter immediately LEFT of the
+        // cell grid — matches D's `.block { border-left: 2px solid var(--verified) }`.
+        // Offset 2 device pixels from origin_x so it reads as a real border-left,
+        // not decoration on top of the first cell.
         let ch = metrics.cell_h;
         let bar_w = 3.0_f64.max(metrics.cell_w * 0.22);
-        let x = self.origin_x;
+        let x = (self.origin_x - bar_w - 2.0).max(0.0);
         let row_top = self.origin_y + row as f64 * ch - self.y_shift_px;
         self.fill_pixel_rect_internal(
             PixelRect {

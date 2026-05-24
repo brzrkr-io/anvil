@@ -2149,9 +2149,10 @@ mod tests {
         t.feed(b"file.txt\r\n");
         // Still running — no 133;D.
 
-        // Set pad_x so the accent bar lands in the bitmap.
+        // Set pad_x and origin_x so there is a gutter and the accent bar
+        // lands in the bitmap to the left of origin_x.
         r.pad_x = 6.0;
-        r.origin_x = 6.0;
+        r.origin_x = 10.0;
 
         r.clear(theme.background);
         draw_viewport(
@@ -2174,8 +2175,9 @@ mod tests {
         // OSC 133;C marks the command-start; the block's command row is the
         // row where 133;C fired. With A, B, "ls\\r\\n", C, the command row is
         // row 1 and output starts at row 2.
+        // bar_w = max(3.0, cell_w*0.22) = 3.0; x = max(0, 10-3-2) = 5; sample at 6.
         use crate::raster::pixel_at;
-        let bar_x = r.origin_x as usize + 1;
+        let bar_x = 6_usize;
         let row2_px = pixel_at(&r, bar_x, (m.cell_h * 2.5) as usize);
         assert_eq!(
             row2_px, ACCENT_BRIGHT,
@@ -2201,7 +2203,7 @@ mod tests {
         t.feed(b"\x1b]133;A\x07");
 
         r.pad_x = 6.0;
-        r.origin_x = 6.0;
+        r.origin_x = 10.0;
         r.clear(theme.background);
         draw_viewport(
             &mut r,
@@ -2220,8 +2222,9 @@ mod tests {
             None,
         );
 
+        // bar_w = max(3.0, cell_w*0.22) = 3.0; x = max(0, 10-3-2) = 5; sample at 6.
         use crate::raster::pixel_at;
-        let bar_x = r.origin_x as usize + 1;
+        let bar_x = 6_usize;
         // command_line = 0 (B-mark row), output rows are between command_line
         // and end_line. After `ls\\r\\n; C; ok\\r\\n; D; A` the next-A
         // closes end_line at the D's row (1), so output row is row 1.
@@ -2250,7 +2253,7 @@ mod tests {
         t.feed(b"\x1b]133;A\x07");
 
         r.pad_x = 6.0;
-        r.origin_x = 6.0;
+        r.origin_x = 10.0;
         r.clear(theme.background);
         draw_viewport(
             &mut r,
@@ -2269,8 +2272,9 @@ mod tests {
             None,
         );
 
+        // bar_w = max(3.0, cell_w*0.22) = 3.0; x = max(0, 10-3-2) = 5; sample at 6.
         use crate::raster::pixel_at;
-        let bar_x = r.origin_x as usize + 1;
+        let bar_x = 6_usize;
         let row1_px = pixel_at(&r, bar_x, (m.cell_h * 1.5) as usize);
         assert_eq!(
             row1_px, FAILURE,

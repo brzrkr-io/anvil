@@ -79,8 +79,8 @@ const PALETTE_HTML: &str = include_str!("../../../ui/palette/index.html");
 /// breathing room without burning content columns.
 const GRID_PAD: usize = 24;
 
-/// HUD refresh: once every N ticks. Tick rate is 120 Hz → 120 = 1 s.
-const HUD_REFRESH_TICKS: u32 = 120;
+/// HUD refresh: once every N ticks (~60 fps → ~1 s).
+const HUD_REFRESH_TICKS: u32 = 60;
 
 /// Maximum panes per tab.
 const MAX_PANES_PER_TAB: usize = 8;
@@ -408,6 +408,12 @@ pub struct App {
     /// grows, content auto-scrolled — every visible row's pixels shifted, so
     /// damage tracking by row index alone is wrong and we force a full redraw.
     scrollback_len_prev: HashMap<PaneId, usize>,
+    /// Last frame's focused-pane scroll_pos. We only force a full redraw when
+    /// it MOVED — sitting inside scrollback statically should be as cheap as
+    /// sitting at live.
+    last_scroll_pos: f32,
+    /// Last frame's focused-pane viewport_offset. Same rationale.
+    last_viewport_offset: usize,
     /// For debug instrumentation: frame counter and last-report time.
     #[cfg(debug_assertions)]
     debug_render_frame: u64,
@@ -1255,25 +1261,23 @@ impl App {
         self.dirty = true;
     }
 
+    // Scroll-position change detector: only force a full redraw when
+    // scroll_pos / viewport_offset actually MOVED since the last frame.
+    // Sitting still inside scrollback should be as cheap as sitting at
+    // live — partial dirty-row paints are safe when nothing's animating.
     fn render_frame(&mut self, painter: &mut dyn anvil_render::GlyphPainter) {
-        // Scroll animation safeguard: when the focused pane is mid-animation
-        // (smooth scroll, overscroll bounce, or the terminal's viewport is
-        // offset), force a full raster redraw. Partial-frame dirty-row
-        // drawing assumes cell pixels stay at the same y position between
-        // frames — that breaks for smooth scroll where the y offset shifts
-        // sub-pixel each frame and old cell pixels linger as vertical streaks.
-        let animating = self
+        let (cur_scroll, cur_vp) = self
             .tabs
             .current()
             .and_then(|t| t.registry.get(t.focused_id()))
-            .map(|p| {
-                p.scroll_pos != 0.0
-                    || p.terminal.viewport_offset() != 0
-            })
-            .unwrap_or(false);
-        if animating {
+            .map(|p| (p.scroll_pos, p.terminal.viewport_offset()))
+            .unwrap_or((0.0, 0));
+        let moved = cur_scroll != self.last_scroll_pos || cur_vp != self.last_viewport_offset;
+        if moved {
             self.force_full_redraw = true;
         }
+        self.last_scroll_pos = cur_scroll;
+        self.last_viewport_offset = cur_vp;
 
         let is_full_redraw = self.force_full_redraw;
         self.force_full_redraw = false;
@@ -2079,45 +2083,67 @@ impl AppHandler for AppShell {
             }
         }
 
-        // Drain every pane's PTY output.
+        // Drain every pane's PTY output. Loop the read inside each pane until
+        // EAGAIN so commands that emit >64 KB between ticks don't back up
+        // behind the tick rate — the previous one-read-per-tick cap made
+        // chatty commands feel laggy on top of being slow.
         let mut any_dead = false;
         let mut feed_buf = vec![0u8; 64 * 1024];
+        // Per-tick cap so one extremely chatty pane can't starve the rest
+        // of the work in this tick. 4 MiB per pane per tick is plenty for
+        // any realistic workload (`cat` of a binary, etc).
+        const PER_TICK_BUDGET: usize = 4 * 1024 * 1024;
         let tab_count = app.tabs.tabs.len();
 
         for ti in 0..tab_count {
             // Collect pane ids for this tab by walking the layout tree.
             let pane_ids = all_pane_ids_in_tree(&app.tabs.tabs[ti]);
             for pid in pane_ids {
-                let result = app.ptys.get(&pid).map(|pty| pty.read(&mut feed_buf));
-                match result {
-                    Some(Ok(n)) if n > 0 => {
-                        let bytes = feed_buf[..n].to_vec();
-                        if let Some(pane) = app.tabs.tabs[ti].registry.get_mut(pid) {
-                            pane.terminal.feed(&bytes);
+                let mut drained = 0_usize;
+                let mut pane_got_data = false;
+                let mut pane_dead = false;
+                loop {
+                    let result = app.ptys.get(&pid).map(|pty| pty.read(&mut feed_buf));
+                    match result {
+                        Some(Ok(n)) if n > 0 => {
+                            if let Some(pane) = app.tabs.tabs[ti].registry.get_mut(pid) {
+                                pane.terminal.feed(&feed_buf[..n]);
+                            }
+                            drained += n;
+                            pane_got_data = true;
+                            if drained >= PER_TICK_BUDGET {
+                                break;
+                            }
                         }
-                        let active = app.tabs.active;
-                        if ti == active {
-                            let focused = app.tabs.tabs[ti].focused_id();
-                            if pid == focused {
-                                app.dirty = true;
-                                if app.search_open {
-                                    if let Some(pane) = app.tabs.tabs[ti].registry.get_mut(pid) {
-                                        app.search.rescan(&pane.terminal);
-                                    }
+                        Some(Ok(_)) => break, // 0 bytes = EAGAIN drained
+                        Some(Err(_)) | None => {
+                            pane_dead = true;
+                            break;
+                        }
+                    }
+                }
+                if pane_got_data {
+                    let active = app.tabs.active;
+                    if ti == active {
+                        let focused = app.tabs.tabs[ti].focused_id();
+                        if pid == focused {
+                            app.dirty = true;
+                            if app.search_open {
+                                if let Some(pane) = app.tabs.tabs[ti].registry.get_mut(pid) {
+                                    app.search.rescan(&pane.terminal);
                                 }
                             }
-                        } else {
-                            // Background tab received output — mark unread and
-                            // request a repaint so the dot appears promptly.
-                            app.tabs.tabs[ti].has_unread = true;
-                            app.dirty = true;
                         }
+                    } else {
+                        // Background tab received output — mark unread and
+                        // request a repaint so the dot appears promptly.
+                        app.tabs.tabs[ti].has_unread = true;
+                        app.dirty = true;
                     }
-                    Some(Ok(_)) => {}
-                    Some(Err(_)) | None => {
-                        app.ptys.remove(&pid);
-                        any_dead = true;
-                    }
+                }
+                if pane_dead {
+                    app.ptys.remove(&pid);
+                    any_dead = true;
                 }
             }
         }
@@ -2133,8 +2159,8 @@ impl AppHandler for AppShell {
         };
         let blink_on = effective_blink.unwrap_or(app_blink_cfg);
         if blink_on && app.focused {
-            // 1/128 per tick at 120 Hz = ~1.07 s full blink cycle.
-            app.blink_phase += 1.0 / 128.0;
+            // 1/64 per tick at 60Hz = ~1.07s full blink cycle — calm, deliberate.
+            app.blink_phase += 1.0 / 64.0;
             if app.blink_phase >= 1.0 {
                 app.blink_phase -= 1.0;
             }
@@ -3183,6 +3209,8 @@ fn main() -> Result<()> {
         force_full_redraw: true,
         cursor_row_prev: HashMap::new(),
         scrollback_len_prev: HashMap::new(),
+        last_scroll_pos: 0.0,
+        last_viewport_offset: 0,
         #[cfg(debug_assertions)]
         debug_render_frame: 0,
         #[cfg(debug_assertions)]

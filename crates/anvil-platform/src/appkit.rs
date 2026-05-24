@@ -622,23 +622,19 @@ impl AppKitApp {
             ))
         };
 
-        // ── NSTimer at ~120 fps ───────────────────────────────────────────────
-        // ProMotion displays refresh at 120 Hz; rendering at 60 Hz means every
-        // other display frame shows the same content, which reads as jagged
-        // motion during scroll. Tick at 120 Hz so motion is butter-smooth on
-        // modern Macs; on a 60 Hz display the extra ticks coalesce into one
-        // displayed frame at minimal cost (render path no-ops when dirty=false).
+        // ── NSTimer at ~60 fps ────────────────────────────────────────────────
+        // `scheduledTimerWithTimeInterval:repeats:block:` fires on the main
+        // run loop; we capture a clone of the handler Rc in an RcBlock.
         let timer_box: Box<Rc<RefCell<dyn AppHandler>>> = Box::new(Rc::clone(&handler));
         let timer_ptr = Box::into_raw(timer_box);
 
         let tick_block = RcBlock::new(move |_timer: std::ptr::NonNull<NSTimer>| {
-            // SAFETY: timer_ptr lives for the app's lifetime; we are on the MT.
             let rc: &Rc<RefCell<dyn AppHandler>> = unsafe { &*timer_ptr };
             rc.borrow_mut().tick();
         });
 
         unsafe {
-            NSTimer::scheduledTimerWithTimeInterval_repeats_block(1.0 / 120.0, true, &tick_block)
+            NSTimer::scheduledTimerWithTimeInterval_repeats_block(1.0 / 60.0, true, &tick_block)
         };
 
         // ── Activate ─────────────────────────────────────────────────────────
