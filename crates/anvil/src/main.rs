@@ -798,11 +798,14 @@ impl App {
         let cw = self.font.metrics.cell_w as usize;
         let ch = self.font.metrics.cell_h as usize;
         let cols = ((dw.saturating_sub(2 * GRID_PAD)) / cw).max(1);
-        // Chrome row is always present: subtract one row for the tab bar.
         let rows = (((dh.saturating_sub(2 * GRID_PAD)) / ch).saturating_sub(1)).max(1);
         let scrollback = self.config.scrollback;
 
-        let tab = Tab::new_single_pane(cols, rows, scrollback);
+        // PaneIds must be unique across ALL tabs because self.ptys is a
+        // single map keyed by PaneId. Start the new tab's counter above any
+        // existing PaneId.
+        let next_id = self.ptys.keys().copied().max().unwrap_or(0) + 1;
+        let tab = Tab::new_single_pane_starting_at(next_id, cols, rows, scrollback);
         let first_id = tab.focused_id();
         match Pty::spawn_shell(cols as u16, rows as u16) {
             Ok(pty) => {

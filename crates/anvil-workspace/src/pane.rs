@@ -117,6 +117,16 @@ impl Default for PaneRegistry {
 }
 
 impl PaneRegistry {
+    /// Bump the internal id counter so the next `create_and_register` call
+    /// returns at least `id`. Used by the App to keep pane IDs globally
+    /// unique across tabs — `self.ptys` is keyed by `PaneId`, so collisions
+    /// across tabs would overwrite live PTYs.
+    pub fn set_next_id_at_least(&mut self, id: PaneId) {
+        if self.next_id < id {
+            self.next_id = id;
+        }
+    }
+
     /// Allocate a fresh `PaneId`, create the `Pane`, register it, and return
     /// the id.  The caller must separately create the PTY and reader thread
     /// keyed by the returned id.

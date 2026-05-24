@@ -97,7 +97,21 @@ impl Tab {
     /// Create a tab with a single pane backed by a fresh `cols × rows`
     /// terminal.  No PTY is created — that is a platform concern.
     pub fn new_single_pane(cols: usize, rows: usize, scrollback: usize) -> Self {
+        Self::new_single_pane_starting_at(1, cols, rows, scrollback)
+    }
+
+    /// Like [`new_single_pane`] but the pane gets `start_id` (or higher).
+    /// The caller is responsible for choosing an id that doesn't collide
+    /// with PaneIds in OTHER tabs — `self.ptys` in the App is keyed by
+    /// PaneId across all tabs.
+    pub fn new_single_pane_starting_at(
+        start_id: PaneId,
+        cols: usize,
+        rows: usize,
+        scrollback: usize,
+    ) -> Self {
         let mut registry = PaneRegistry::default();
+        registry.set_next_id_at_least(start_id);
         let first_id = registry.create_and_register(cols, rows, scrollback);
         let tree = PaneTree::init_single(first_id);
         Self {

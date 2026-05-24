@@ -670,6 +670,10 @@ impl Terminal {
 
     /// Return the `Block` containing absolute line `abs_line`, or `None`.
     pub fn block_at(&self, abs_line: usize) -> Option<Block> {
+        // Marks are appended in line order, so blocks are also in line order
+        // by command_line. Once we pass abs_line, no later block can contain
+        // it — early-exit to keep this from being O(marks²) per row in
+        // long-running sessions.
         let marks = &self.marks[..self.mark_count];
         for (i, m) in marks.iter().enumerate() {
             if m.kind != PromptMarkKind::CommandStart {
@@ -678,6 +682,10 @@ impl Terminal {
             let b = self.block_from_mark(i);
             if abs_line >= b.command_line && abs_line < b.end_line {
                 return Some(b);
+            }
+            if b.command_line > abs_line {
+                // We're now past abs_line; nothing later can contain it.
+                return None;
             }
         }
         None
