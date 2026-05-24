@@ -2747,16 +2747,16 @@ impl AppHandler for AppShell {
             return;
         }
 
-        // Pixel-precise sources (trackpad, Magic Mouse) deliver dy in
-        // logical points; AppKit auto-scales for retina. Convert to cells
-        // using cell_h / window_scale. Line-mode sources (mouse wheel)
-        // deliver dy in "lines" — boost by 3 to match typical terminal
-        // scroll-by-3-lines feel.
+        // Pixel-precise sources (trackpad, Magic Mouse): treat ~1.5 cell
+        // heights of finger travel as one row — natural "one row per
+        // visual cell of motion" feel without runaway sensitivity.
+        // Line-mode sources (mouse wheel): one detent = ~1.5 rows, less
+        // aggressive than the typical 3-line jump that felt jumpy here.
         let cell_h_pt = (app.font.metrics.cell_h / app.window_scale) as f32;
         let d = if pixel_precise {
-            (dy as f32) / cell_h_pt
+            (dy as f32) / (cell_h_pt * 1.5)
         } else {
-            (dy as f32) * 3.0
+            (dy as f32) * 1.5
         };
         if std::env::var_os("ANVIL_PERF").is_some() {
             eprintln!(
