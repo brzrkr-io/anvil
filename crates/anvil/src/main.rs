@@ -382,6 +382,12 @@ pub struct App {
     /// Clickable regions inside the HUD. Refilled by `draw_right_hud` each
     /// render; consumed by `mouse_down` to dispatch copy / open actions.
     hud_hits: Vec<HudHit>,
+    /// Current font point size (logical points, not device pixels). Adjusted
+    /// at runtime by Cmd+/Cmd- and re-baked into a fresh `Font` + painter.
+    font_size_pt: f64,
+    /// Font family preference, kept around so `bump_font_size` can rebuild
+    /// the `Font` with the same fallback chain used at startup.
+    font_family: String,
     cheatsheet_visible: bool,
     focused: bool, // window is key window
 
@@ -911,6 +917,40 @@ impl App {
     /// Multi-row selections separate rows with `\n`. Rect mode picks the
     /// same column window on every row. Returns `None` when no selection is
     /// active or when it's zero-width.
+    /// All visible rows of the focused pane, as a single string (rows joined
+    /// by `\n`, trailing spaces stripped). Used as a fallback when the user
+    /// invokes a "capture" action with no active selection.
+    fn focused_viewport_text(&self) -> Option<String> {
+        let tab = self.tabs.current()?;
+        let pane = tab.registry.get(tab.focused_id())?;
+        let rows = pane.terminal.rows();
+        if rows == 0 {
+            return None;
+        }
+        let mut out = String::new();
+        for vy in 0..rows {
+            let content_row = pane.terminal.content_row_of_viewport(vy);
+            if content_row >= pane.terminal.line_count() {
+                break;
+            }
+            let line = pane.terminal.line(content_row);
+            for cell in line {
+                out.push(cell.cp);
+            }
+            if vy + 1 != rows {
+                out.push('\n');
+            }
+        }
+        let cleaned: Vec<&str> = out.lines().map(|l| l.trim_end()).collect();
+        let joined = cleaned.join("\n");
+        // If the viewport is entirely whitespace (fresh terminal), return None
+        // so callers can detect "nothing meaningful to capture".
+        if joined.chars().all(char::is_whitespace) {
+            return None;
+        }
+        Some(joined)
+    }
+
     fn focused_selection_text(&self) -> Option<String> {
         use anvil_workspace::selection::SelectionMode;
         let tab = self.tabs.current()?;
@@ -1788,15 +1828,24 @@ impl App {
         }
 
         // ⌘⇧A — send current selection to the active agent as context.
-        // Until a real agent IPC ships, we (a) copy the selection to the
+        // Until a real agent IPC ships, we (a) copy the captured text to the
         // clipboard and (b) write it to /tmp/anvil-agent-context.md as a
-        // pickup file any local agent can `cat`. Both fail silently when
-        // there's no selection.
+        // pickup file any local agent can `cat`. Falls back to the focused
+        // pane's visible viewport when no selection is active so the gesture
+        // *always* produces something the user can paste to verify it fired.
         if ascii_lower(ch) == 'a' && mods.shift && !mods.control && !mods.option {
-            if let Some(text) = self.focused_selection_text() {
+            let text = self
+                .focused_selection_text()
+                .or_else(|| self.focused_viewport_text());
+            if let Some(text) = text {
                 anvil_platform::system::set_clipboard(&text);
-                let _ = std::fs::write("/tmp/anvil-agent-context.md", text);
+                let _ = std::fs::write("/tmp/anvil-agent-context.md", &text);
+                eprintln!(
+                    "anvil: Cmd+Shift+A captured {} bytes → clipboard + /tmp/anvil-agent-context.md",
+                    text.len()
+                );
             }
+            self.dirty = true;
             return true;
         }
 
@@ -1821,6 +1870,66 @@ pub struct AppShell {
 }
 
 impl AppShell {
+    /// Cmd+/Cmd-/Cmd0 chord: zoom in, out, or reset the font size.
+    fn handle_zoom_chord(&mut self, ch: char) {
+        match ch {
+            '=' | '+' => self.bump_font_size(1.0),
+            '-' => self.bump_font_size(-1.0),
+            '0' => {
+                // Reset to default 15 pt (matches startup config default).
+                let delta = 15.0 - self.app.font_size_pt;
+                self.bump_font_size(delta);
+            }
+            _ => {}
+        }
+    }
+
+    /// Rebuild the font at a new point size and recreate the dependent
+    /// painter + raster geometry. Drives Cmd+/Cmd- zoom.
+    ///
+    /// Clamps to [8.0, 48.0] pt — below 8 pt cell metrics collapse, above
+    /// 48 pt the glyph atlas balloons and one cell barely fits a word.
+    fn bump_font_size(&mut self, delta_pt: f64) {
+        let new_pt = (self.app.font_size_pt + delta_pt).clamp(8.0, 48.0);
+        if (new_pt - self.app.font_size_pt).abs() < 0.01 {
+            return;
+        }
+        let pixel_size = new_pt * self.app.window_scale;
+        let names: Vec<&str> = vec![
+            "BlexMono Nerd Font Mono",
+            self.app.font_family.as_str(),
+            "SFMono-Regular",
+            "Menlo",
+        ];
+        let Ok(new_font) = Font::init_first_available(&names, pixel_size)
+            .or_else(|_| Font::init("Menlo", pixel_size))
+        else {
+            eprintln!("anvil: font reinit failed at {new_pt} pt; keeping current");
+            return;
+        };
+        // Replace the heap-stable font allocation. `std::mem::replace`
+        // returns the old Box — KEEP IT ALIVE until *after* we've
+        // rebuilt the painter, because the current painter borrows the
+        // old heap allocation. Dropping the painter (when we overwrite
+        // it below) re-reads from that pointer.
+        let old_font = std::mem::replace(&mut self.app.font, Box::new(new_font));
+        self.app.font_size_pt = new_pt;
+        // SAFETY: same lifetime-extension pattern as `AppShell::new` —
+        // `app.font` is a Box and its heap allocation outlives the painter.
+        self.painter = unsafe {
+            let font_ref: &'static Font = &*(self.app.font.as_ref() as *const Font);
+            anvil_platform::font::CoreTextPainter::new(font_ref)
+        };
+        // Now the old painter has been dropped (it was overwritten just
+        // above, with its destructor running against the still-live
+        // `old_font` allocation). Release the old heap.
+        drop(old_font);
+        // Reflow panes + force a full redraw so the new metrics propagate.
+        self.app.resize_all_tabs();
+        self.app.force_full_redraw = true;
+        self.app.dirty = true;
+    }
+
     fn new(app: App, webview: Webview) -> Self {
         // SAFETY: `app.font` is a `Box<Font>` — the heap allocation is stable.
         // `painter` borrows the Font inside the box; the box (and its allocation)
@@ -2003,6 +2112,13 @@ impl AppHandler for AppShell {
                     self.app.jump_to_next_prompt();
                     return;
                 }
+                KeyInput::Char(ch)
+                    if matches!(ch, '=' | '+' | '-' | '0') && !mods.control && !mods.option =>
+                {
+                    // Cmd+ / Cmd= zoom in, Cmd- zoom out, Cmd0 reset.
+                    self.handle_zoom_chord(ch);
+                    return;
+                }
                 KeyInput::Char(ch) if self.app.handle_cmd_chord(mods, ch, &self.webview) => {
                     return;
                 }
@@ -2127,6 +2243,14 @@ impl AppHandler for AppShell {
                     if !event.mods.shift && !event.mods.control && !event.mods.option =>
                 {
                     self.app.jump_to_next_prompt();
+                    return true;
+                }
+                KeyInput::Char(ch)
+                    if matches!(ch, '=' | '+' | '-' | '0')
+                        && !event.mods.control
+                        && !event.mods.option =>
+                {
+                    self.handle_zoom_chord(ch);
                     return true;
                 }
                 KeyInput::Char(ch) => {
@@ -2770,6 +2894,7 @@ fn main() -> Result<()> {
         "SFMono-Regular",
         "Menlo",
     ];
+    let font_size_pt_init = config.font.size;
     let pixel_size = config.font.size * window_scale;
     let font: Box<Font> = Box::new(
         Font::init_first_available(&font_names, pixel_size)
@@ -2929,6 +3054,8 @@ fn main() -> Result<()> {
         hud_cols: HUD_COLS_DEFAULT,
         hud_drag_active: false,
         hud_hits: Vec::new(),
+        font_size_pt: font_size_pt_init,
+        font_family: font_family.clone(),
         cheatsheet_visible: false,
         focused: true,
         agent_snap: AgentSnapshot::default(),

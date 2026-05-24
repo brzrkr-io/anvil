@@ -66,6 +66,14 @@ pub const ROWS: &[Row] = &[
         chord: "Cmd /",
         desc: "this cheatsheet",
     },
+    Row::Shortcut {
+        chord: "Cmd + / Cmd -",
+        desc: "zoom in / out",
+    },
+    Row::Shortcut {
+        chord: "Cmd 0",
+        desc: "reset font size",
+    },
     Row::Header("Search"),
     Row::Shortcut {
         chord: "Cmd F",

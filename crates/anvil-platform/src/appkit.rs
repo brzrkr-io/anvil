@@ -362,6 +362,22 @@ define_class!(
             let mut h = unsafe { self.ivars().handler.borrow_mut() };
             h.live_resize_ended();
         }
+
+        // AppKit dispatches Esc through `-cancelOperation:` first (it's
+        // the "cancel" responder action). Without an explicit override
+        // the key sometimes never reaches `-keyDown:`, so dismissals like
+        // "Esc closes the cheatsheet/HUD" feel broken. Synthesize a key
+        // event and route it through the handler's normal key path.
+        #[unsafe(method(cancelOperation:))]
+        fn cancel_operation(&self, _sender: *mut objc2::runtime::AnyObject) {
+            let ev = KeyEvent {
+                key: KeyInput::Escape,
+                mods: Modifiers::default(),
+            };
+            // SAFETY: handler pointer is valid for the app lifetime.
+            let mut h = unsafe { self.ivars().handler.borrow_mut() };
+            h.key_down(ev);
+        }
     }
 );
 
