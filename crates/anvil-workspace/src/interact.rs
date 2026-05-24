@@ -54,14 +54,61 @@ pub fn strip_line_suffix(tok: &str) -> &str {
 }
 
 /// Classification of a terminal token for ⌘-click handling.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Kind {
     Url,
     Path,
+    /// A path with a trailing `:line` or `:line:col` suffix — the click
+    /// handler should open the file at that location instead of the top.
+    PathWithLine {
+        path: String,
+        line: u32,
+        col: Option<u32>,
+    },
     None,
 }
 
-/// Classify `tok` (already suffix-stripped) as a URL, a file path, or neither.
+/// Parse a `foo.rs:42` or `foo.rs:42:7` token into its parts.
+///
+/// Rules:
+///   - The suffix must be all-digit segments separated by colons.
+///   - Line is required and must be > 0 (editors are 1-based).
+///   - Col is optional. A trailing `:0` for col is allowed and surfaced.
+///   - Returns `None` if no recognizable line suffix.
+pub fn parse_path_with_line(tok: &str) -> Option<(String, u32, Option<u32>)> {
+    // Right-to-left: peel up to two `:N` segments. A non-numeric tail or
+    // missing colon stops the scan (preserves whatever's already been
+    // collected); we don't bail because the path itself may legitimately
+    // contain colons earlier (e.g. `/some/path:weird`).
+    let mut s = tok;
+    let mut nums: Vec<u32> = Vec::new();
+    for _ in 0..2 {
+        let Some(colon) = s.rfind(':') else {
+            break;
+        };
+        if colon == 0 {
+            break;
+        }
+        let after = &s[colon + 1..];
+        if after.is_empty() || !after.bytes().all(|b| b.is_ascii_digit()) {
+            break;
+        }
+        let Ok(n) = after.parse() else {
+            break;
+        };
+        nums.push(n);
+        s = &s[..colon];
+    }
+    let path = s.to_string();
+    match nums.as_slice() {
+        [line] if *line > 0 => Some((path, *line, None)),
+        [col, line] if *line > 0 => Some((path, *line, Some(*col))),
+        _ => None,
+    }
+}
+
+/// Classify `tok` (raw, may contain `:line[:col]` suffix) as a URL, a path
+/// with optional line, a plain path, or neither.
 ///
 /// `cwd` is used to probe for file existence when other heuristics are
 /// inconclusive.  Pass `""` to skip the existence check.
@@ -74,6 +121,20 @@ pub fn classify(tok: &str, cwd: &str) -> Kind {
         return Kind::Url;
     }
 
+    // Path with `:line[:col]` suffix → upgrade Path → PathWithLine when the
+    // base classifies as a path.
+    if let Some((path, line, col)) = parse_path_with_line(tok) {
+        if classify_plain(&path, cwd) == Kind::Path {
+            return Kind::PathWithLine { path, line, col };
+        }
+    }
+
+    classify_plain(tok, cwd)
+}
+
+/// Classify without considering the `:line[:col]` suffix. Kept separate so
+/// `classify` can re-use it for both the suffixed and bare-path paths.
+fn classify_plain(tok: &str, cwd: &str) -> Kind {
     if tok.starts_with('/') {
         return Kind::Path;
     }
@@ -212,5 +273,52 @@ mod tests {
     fn classify_bare_word_file_not_found_returns_none() {
         // A bare word that doesn't exist on disk with a valid cwd → Kind::None.
         assert_eq!(classify("nonexistent_bare_word_xyz", "/tmp"), Kind::None);
+    }
+
+    #[test]
+    fn parse_path_with_line_recognizes_line_only() {
+        let (p, l, c) = parse_path_with_line("foo.rs:42").unwrap();
+        assert_eq!(p, "foo.rs");
+        assert_eq!(l, 42);
+        assert_eq!(c, None);
+    }
+
+    #[test]
+    fn parse_path_with_line_recognizes_line_and_col() {
+        let (p, l, c) = parse_path_with_line("foo.rs:42:7").unwrap();
+        assert_eq!(p, "foo.rs");
+        assert_eq!(l, 42);
+        assert_eq!(c, Some(7));
+    }
+
+    #[test]
+    fn parse_path_with_line_handles_absolute_path() {
+        let (p, l, c) = parse_path_with_line("/abs/path.rs:10").unwrap();
+        assert_eq!(p, "/abs/path.rs");
+        assert_eq!(l, 10);
+        assert_eq!(c, None);
+    }
+
+    #[test]
+    fn parse_path_with_line_no_suffix_returns_none() {
+        assert!(parse_path_with_line("foo.rs").is_none());
+    }
+
+    #[test]
+    fn parse_path_with_line_zero_line_rejected() {
+        // Editors are 1-based — 0 is meaningless.
+        assert!(parse_path_with_line("foo.rs:0").is_none());
+    }
+
+    #[test]
+    fn classify_path_with_line_returns_pathwithline() {
+        match classify("src/main.rs:42:7", "") {
+            Kind::PathWithLine { path, line, col } => {
+                assert_eq!(path, "src/main.rs");
+                assert_eq!(line, 42);
+                assert_eq!(col, Some(7));
+            }
+            other => panic!("expected PathWithLine, got {other:?}"),
+        }
     }
 }

@@ -770,6 +770,23 @@ impl App {
         self.write_to_focused_pty(b"'\n");
     }
 
+    /// Open `path` at `line` (and optional `col`) in $EDITOR.
+    ///
+    /// Emits `${EDITOR:-vi} +LINE 'PATH'` which works as-is for
+    /// vi/vim/nvim/emacs/nano. `code` users see the file open at the top
+    /// (the `+N` argument is ignored, file still opens) — that's the
+    /// lowest-common-denominator trade-off; we'd need a `case` statement
+    /// to special-case `code --goto`.
+    fn pty_write_open_file_at(&self, path: &str, line: u32, _col: Option<u32>) {
+        let mut prefix = format!("\x15${{EDITOR:-vi}} +{line} '");
+        // Prepend Ctrl-U (already in `prefix`) so any half-typed input is
+        // cleared before our synthesised command runs.
+        self.write_to_focused_pty(prefix.as_bytes());
+        prefix.clear();
+        shell_quote_arg(path, |chunk| self.write_to_focused_pty(chunk));
+        self.write_to_focused_pty(b"'\n");
+    }
+
     fn pty_write_open_url(&self, url: &str) {
         self.write_to_focused_pty(b"\x15open '");
         shell_quote_arg(url, |chunk| self.write_to_focused_pty(chunk));
@@ -1939,6 +1956,9 @@ impl AppHandler for AppShell {
                 match interact::classify(tok, &cwd) {
                     interact::Kind::Url => app.pty_write_open_url(tok),
                     interact::Kind::Path => app.pty_write_open_file(tok),
+                    interact::Kind::PathWithLine { path, line, col } => {
+                        app.pty_write_open_file_at(&path, line, col)
+                    }
                     interact::Kind::None => {}
                 }
             }
