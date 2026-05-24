@@ -764,6 +764,48 @@ impl App {
         }
     }
 
+    /// Concatenate the focused pane's current selection into a single string.
+    /// Multi-row selections separate rows with `\n`. Returns `None` when no
+    /// selection is active or when it's zero-width.
+    fn focused_selection_text(&self) -> Option<String> {
+        let tab = self.tabs.current()?;
+        let pane = tab.registry.get(tab.focused_id())?;
+        if !pane.selection.active {
+            return None;
+        }
+        let (start, end) = pane.selection.ordered();
+        if start == end {
+            return None;
+        }
+        let mut out = String::new();
+        for row in start.row..=end.row {
+            if row >= pane.terminal.line_count() {
+                break;
+            }
+            let line = pane.terminal.line(row);
+            let (lo, hi) = if start.row == end.row {
+                (start.col, end.col.min(line.len()))
+            } else if row == start.row {
+                (start.col, line.len())
+            } else if row == end.row {
+                (0, end.col.min(line.len()))
+            } else {
+                (0, line.len())
+            };
+            for cell in &line[lo..hi] {
+                out.push(cell.cp);
+            }
+            if row != end.row {
+                out.push('\n');
+            }
+        }
+        // Trim trailing spaces from each line — terminal cells often have
+        // trailing-space padding that's invisible on screen but ugly when
+        // pasted.
+        let cleaned: Vec<&str> = out.lines().map(|l| l.trim_end()).collect();
+        Some(cleaned.join("\n"))
+    }
+
     fn pty_write_open_file(&self, path: &str) {
         self.write_to_focused_pty(b"\x15${EDITOR:-open} '");
         shell_quote_arg(path, |chunk| self.write_to_focused_pty(chunk));
@@ -1526,10 +1568,25 @@ impl App {
             return true;
         }
 
-        // ⌘C — copy selection (TODO: clipboard write via NSPasteboard).
+        // ⌘C — copy current selection to the system clipboard.
         if ascii_lower(ch) == 'c' && !mods.shift && !mods.control && !mods.option {
-            // stub — selection data is tracked; pasteboard write is P11.
-            return false;
+            if let Some(text) = self.focused_selection_text() {
+                anvil_platform::system::set_clipboard(&text);
+            }
+            return true;
+        }
+
+        // ⌘⇧A — send current selection to the active agent as context.
+        // Until a real agent IPC ships, we (a) copy the selection to the
+        // clipboard and (b) write it to /tmp/anvil-agent-context.md as a
+        // pickup file any local agent can `cat`. Both fail silently when
+        // there's no selection.
+        if ascii_lower(ch) == 'a' && mods.shift && !mods.control && !mods.option {
+            if let Some(text) = self.focused_selection_text() {
+                anvil_platform::system::set_clipboard(&text);
+                let _ = std::fs::write("/tmp/anvil-agent-context.md", text);
+            }
+            return true;
         }
 
         false
