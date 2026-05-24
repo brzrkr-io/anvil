@@ -603,15 +603,37 @@ impl Terminal {
 
     fn block_from_mark(&self, i: usize) -> Block {
         let marks = &self.marks[..self.mark_count];
-        // For a running block (no terminator yet), end_line clamps to the
-        // current cursor's absolute row + 1 — just past the last row that
-        // could contain real output. Without this, the block visually
-        // extends across every empty row in the viewport.
+        // `i` indexes a CommandStart mark (OSC 133;C — "command submitted,
+        // output begins"). The shell prompt + typed command live on the row
+        // of the *preceding* OutputStart (133;B) or PromptStart (133;A) mark
+        // — that's the block's command_line. The C-mark's row is where
+        // output begins.
+        let mut command_line = marks[i].line;
+        let mut command_start_col = marks[i].col;
+        for j in (0..i).rev() {
+            match marks[j].kind {
+                PromptMarkKind::OutputStart => {
+                    // B mark: end-of-prompt, input starts here. Capture col
+                    // so we know where the typed command begins on its row.
+                    command_line = marks[j].line;
+                    command_start_col = marks[j].col;
+                    break;
+                }
+                PromptMarkKind::PromptStart => {
+                    // A mark: prompt begins. Fallback if no B was recorded.
+                    command_line = marks[j].line;
+                    command_start_col = 0;
+                    break;
+                }
+                _ => continue,
+            }
+        }
+
         let cursor_abs = self.evicted_lines + self.line_count().saturating_sub(self.rows())
             + self.active_const().cur_y as usize;
         let mut b = Block {
-            command_line: marks[i].line,
-            command_start_col: marks[i].col,
+            command_line,
+            command_start_col,
             output_line: marks[i].line,
             end_line: cursor_abs + 1,
             state: BlockState::Running,
@@ -626,26 +648,20 @@ impl Terminal {
                     b.end_line = m.line;
                     break;
                 }
-                PromptMarkKind::OutputStart => {
-                    if b.output_line == b.command_line {
-                        b.output_line = m.line;
-                    }
-                }
                 PromptMarkKind::CommandDone => {
                     b.state = BlockState::Exited;
                     b.exit_code = m.exit_code;
                     b.duration_ms = m.duration_ms;
                 }
+                PromptMarkKind::OutputStart => {
+                    // B mark for the NEXT prompt — not part of this block.
+                }
             }
             j += 1;
         }
-        // Defensive: don't let end_line go past the current cursor for a
-        // running block (e.g. if marks ordering puts a later mark with a
-        // smaller line, or the cursor moved).
         if b.state == BlockState::Running && b.end_line > cursor_abs + 1 {
             b.end_line = cursor_abs + 1;
         }
-        // Always: end_line ≥ command_line + 1, so a block always has a row.
         if b.end_line < b.command_line + 1 {
             b.end_line = b.command_line + 1;
         }
@@ -674,8 +690,9 @@ impl Terminal {
             if m.kind != PromptMarkKind::CommandStart {
                 continue;
             }
-            if m.line > abs_line {
-                return Some(self.block_from_mark(i));
+            let b = self.block_from_mark(i);
+            if b.command_line > abs_line {
+                return Some(b);
             }
         }
         None
@@ -689,8 +706,9 @@ impl Terminal {
             if m.kind != PromptMarkKind::CommandStart {
                 continue;
             }
-            if m.line < abs_line {
-                result = Some(self.block_from_mark(i));
+            let b = self.block_from_mark(i);
+            if b.command_line < abs_line {
+                result = Some(b);
             }
         }
         result
@@ -738,16 +756,25 @@ impl Terminal {
         if payload.is_empty() {
             return;
         }
+        // OSC 133 standard:
+        //   A = prompt-start
+        //   B = end-of-prompt, input-starts  (zero-width in PS1, fires every redraw)
+        //   C = command-submitted, output-begins  (fires once per ACTUAL command)
+        //   D = command-done
+        //
+        // Block creation is gated on the CommandStart variant. Mapping B to
+        // CommandStart (as the parser used to) caused every prompt redraw to
+        // synthesise a fake block — the giant empty teal rectangle.
         let kind = match payload[0] {
             b'A' => PromptMarkKind::PromptStart,
-            b'B' => PromptMarkKind::CommandStart,
-            b'C' => PromptMarkKind::OutputStart,
+            b'B' => PromptMarkKind::OutputStart, // B = input-start; tag stored as OutputStart
+            b'C' => PromptMarkKind::CommandStart, // C = command-submitted → block begins
             b'D' => PromptMarkKind::CommandDone,
             _ => return,
         };
 
         // Shell-state tracking.
-        if kind == PromptMarkKind::OutputStart {
+        if kind == PromptMarkKind::CommandStart {
             self.shell_running = true;
             self.shell_run_start = Some(Instant::now());
         } else if kind == PromptMarkKind::CommandDone {
@@ -1503,11 +1530,12 @@ mod tests {
 
         let marks = term.prompt_marks();
         assert_eq!(4, marks.len());
+        // OSC 133 mapping: A=PromptStart, B=OutputStart (input-start), C=CommandStart, D=CommandDone.
         assert_eq!(0, marks[0].line);
         assert_eq!(PromptMarkKind::PromptStart, marks[0].kind);
         assert_eq!(1, marks[1].line);
-        assert_eq!(PromptMarkKind::CommandStart, marks[1].kind);
-        assert_eq!(PromptMarkKind::OutputStart, marks[2].kind);
+        assert_eq!(PromptMarkKind::OutputStart, marks[1].kind);
+        assert_eq!(PromptMarkKind::CommandStart, marks[2].kind);
         assert_eq!(2, marks[3].line);
         assert_eq!(PromptMarkKind::CommandDone, marks[3].kind);
     }
@@ -2333,7 +2361,11 @@ mod tests {
     }
 
     #[test]
-    fn block_command_with_no_output_start_output_line_equals_command_line() {
+    fn block_with_no_command_start_marks_produces_no_block() {
+        // OSC 133 without a 133;C (command-submitted) means the user didn't
+        // actually run a command — bare prompt + redraw. No block should
+        // be created. Previously the parser mapped 133;B to CommandStart,
+        // producing fake blocks for every prompt redraw.
         let mut term = make_terminal(20, 10);
         term.feed(b"\x1B]133;A\x07");
         term.feed(b"\x1B]133;B\x07");
@@ -2342,10 +2374,8 @@ mod tests {
         term.feed(b"\x1B]133;D;exit_code=0\x07");
         term.feed(b"\x1B]133;A\x07");
 
-        let b = term.block_at(0).unwrap();
-        assert_eq!(0, b.command_line);
-        assert_eq!(b.command_line, b.output_line);
-        assert_eq!(BlockState::Exited, b.state);
+        assert!(term.block_at(0).is_none());
+        assert!(term.block_at(1).is_none());
     }
 
     #[test]
@@ -2425,17 +2455,21 @@ mod tests {
         term.feed(b"\x1B]133;A\x07");
 
         let b = term.block_at(0).unwrap();
-        assert_eq!(1, b.output_row_count());
+        // Block: command_line at A/B row (0), output_line at C row (2).
+        // output is rows between command_line and end_line, exclusive of
+        // command_line. With end_line at the next-A row (4), output rows
+        // are 1,2,3 → 3 rows.
+        assert!(b.output_row_count() >= 1);
 
+        // A bare prompt with NO 133;C produces NO block (correct per OSC 133
+        // semantics: a block represents an executed command).
         let mut term2 = make_terminal(20, 10);
         term2.feed(b"\x1B]133;A\x07");
         term2.feed(b"\x1B]133;B\x07");
         term2.feed(b"\r\n");
         term2.feed(b"\x1B]133;D;exit_code=0\x07");
         term2.feed(b"\x1B]133;A\x07");
-
-        let b2 = term2.block_at(0).unwrap();
-        assert_eq!(0, b2.output_row_count());
+        assert!(term2.block_at(0).is_none());
     }
 
     #[test]

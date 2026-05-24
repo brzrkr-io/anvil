@@ -2042,13 +2042,14 @@ mod tests {
             None,
         );
 
-        // Accent bar lives on OUTPUT rows only (command row stays on canvas).
-        // Row 0 is the command row → no bar. Row 1 is the first output row.
+        // OSC 133;C marks the command-start; the block's command row is the
+        // row where 133;C fired. With A, B, "ls\\r\\n", C, the command row is
+        // row 1 and output starts at row 2.
         use crate::raster::pixel_at;
         let bar_x = r.origin_x as usize + 1;
-        let row1_px = pixel_at(&r, bar_x, (m.cell_h * 1.5) as usize);
+        let row2_px = pixel_at(&r, bar_x, (m.cell_h * 2.5) as usize);
         assert_eq!(
-            row1_px, ACCENT_BRIGHT,
+            row2_px, ACCENT_BRIGHT,
             "running block output row accent bar should be ACCENT_BRIGHT"
         );
     }
@@ -2093,7 +2094,9 @@ mod tests {
 
         use crate::raster::pixel_at;
         let bar_x = r.origin_x as usize + 1;
-        // Output row (row 1, command row is row 0).
+        // command_line = 0 (B-mark row), output rows are between command_line
+        // and end_line. After `ls\\r\\n; C; ok\\r\\n; D; A` the next-A
+        // closes end_line at the D's row (1), so output row is row 1.
         let row1_px = pixel_at(&r, bar_x, (m.cell_h * 1.5) as usize);
         assert_eq!(
             row1_px, VERIFIED,
