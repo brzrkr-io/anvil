@@ -47,16 +47,24 @@ pub fn draw_status_bar(
     bottom_row: usize,
 ) {
     let cell_w = metrics.cell_w;
+    let cell_h = metrics.cell_h;
     let usable_w = raster.width as f64 - 2.0 * raster.pad_x;
     let total_cols = ((usable_w.max(0.0)) / cell_w) as usize;
     if total_cols == 0 {
         return;
     }
 
-    // Clear the row so older chars (e.g. a longer cwd after `cd ..`)
-    // don't bleed through under shorter content.
+    // Fill the entire bottom strip — from the top of the status row down to
+    // the very bottom edge of the window — with theme.surface (a subtle lift
+    // from theme.background). This anchors the bar to the window edge and
+    // hides the GRID_PAD gap that previously sat below the cells.
+    let strip_top = raster.pad_y + bottom_row as f64 * cell_h;
+    let strip_h = raster.height as f64 - strip_top;
+    raster.fill_pixel_rect(0.0, strip_top, raster.width as f64, strip_h, theme.surface);
+    // Per-cell bg so the glyphs draw on the same lifted surface (cell_glyph
+    // overlays fg on whatever bg cell_bg / fill set).
     for col in 0..total_cols {
-        raster.cell_bg(metrics, col, bottom_row, theme.background);
+        raster.cell_bg(metrics, col, bottom_row, theme.surface);
     }
 
     // ── Left: cwd  ✓/✗ last 0.1s ────────────────────────────────────────────
@@ -210,14 +218,14 @@ mod tests {
             row,
         );
 
-        // Status bar always paints its row to theme.background so stale
-        // chars from a previous longer cwd don't bleed through.
+        // Status bar paints its row + the bottom GRID_PAD with theme.surface
+        // so the bar is anchored to the window edge.
         let cell_h = m.cell_h as usize;
         let px_y = row * cell_h + cell_h / 2;
         let px = pixel_at(&r, 4, px_y);
         assert_eq!(
-            px, theme.background,
-            "expected status bar row painted to theme.background, got {px:?}"
+            px, theme.surface,
+            "expected status bar row painted to theme.surface, got {px:?}"
         );
     }
 
