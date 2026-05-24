@@ -420,6 +420,17 @@ define_class!(
             let mut h = unsafe { self.ivars().handler.borrow_mut() };
             h.focus_lost();
         }
+
+        // When the user clicks the red traffic-light button to close the
+        // window we want the process to actually exit. The default AppKit
+        // path (applicationShouldTerminateAfterLastWindowClosed → true)
+        // doesn't always finalize cleanly when long-lived background
+        // threads (PTY readers, git/recent-files workers, caldera poller)
+        // hold non-detached handles. Force the issue.
+        #[unsafe(method(windowWillClose:))]
+        fn window_will_close(&self, _notification: &NSNotification) {
+            std::process::exit(0);
+        }
     }
 );
 

@@ -79,6 +79,10 @@ pub const ROWS: &[Row] = &[
         chord: "Cmd Shift G",
         desc: "previous match",
     },
+    Row::Shortcut {
+        chord: "Cmd Opt R",
+        desc: "regex mode",
+    },
     Row::Header("Navigation"),
     Row::Shortcut {
         chord: "Cmd Up",
@@ -94,12 +98,39 @@ pub const ROWS: &[Row] = &[
         desc: "select text",
     },
     Row::Shortcut {
+        chord: "Opt drag",
+        desc: "rectangular select",
+    },
+    Row::Shortcut {
         chord: "Cmd C",
         desc: "copy",
     },
+    Row::Header("HUD"),
+    Row::Shortcut {
+        chord: "click row",
+        desc: "copy value",
+    },
+    Row::Shortcut {
+        chord: "Cmd-click row",
+        desc: "open in Finder",
+    },
+    Row::Shortcut {
+        chord: "drag left edge",
+        desc: "resize HUD",
+    },
+    Row::Header("Agent"),
+    Row::Shortcut {
+        chord: "Cmd Shift A",
+        desc: "send selection to agent",
+    },
+    Row::Header("Open"),
     Row::Shortcut {
         chord: "Cmd-click",
-        desc: "open path or URL",
+        desc: "open path / URL",
+    },
+    Row::Shortcut {
+        chord: "Cmd-click f.rs:42",
+        desc: "open at line in $EDITOR",
     },
 ];
 
@@ -363,11 +394,16 @@ mod tests {
     #[test]
     fn draw_no_panic() {
         let m = metrics();
-        let mut r = Raster::new(800, 600);
+        // Raster sized for CARD_COLS+2 by CARD_ROWS+2 at 10×20 cell metrics.
+        let cols = CARD_COLS + 4;
+        let rows = CARD_ROWS + 4;
+        let mut r = Raster::new(
+            (cols as f64 * m.cell_w) as usize,
+            (rows as f64 * m.cell_h) as usize,
+        );
         let mut painter = StubPainter::default();
         let theme = anvil_theme::MINERAL_DARK;
-        // 800/10 = 80 cols, 600/20 = 30 rows — large enough for CARD_COLS+2 / CARD_ROWS+2.
-        draw(&mut r, &mut painter, m, &theme, 80, 30);
+        draw(&mut r, &mut painter, m, &theme, cols, rows);
         // Title "Keyboard Shortcuts" should produce glyph calls.
         assert!(!painter.calls.is_empty());
     }
