@@ -215,17 +215,10 @@ pub fn draw_tab_bar(
             raster.glyph_at(painter, metrics, dot_x, glyph_y, '·' as u32, ATTENTION);
         }
 
-        // Hit rect spans the full strip vertically (clickable anywhere in
-        // the tab's chrome region, not just on the glyph row).
-        hits_out.hits.push(TabBarHit {
-            rect: PixelRect {
-                x,
-                y: 0.0,
-                w: tw,
-                h: chrome_top_px,
-            },
-            kind: TabBarHitKind::Tab(t),
-        });
+        // Push the close-× hit FIRST so it wins over the surrounding Tab
+        // hit when the click lands in the right ~2 cells. mouse_down uses
+        // `find()` (first match), which would otherwise always pick Tab
+        // and the × button could never fire.
         if close_x + 2.0 * cell_w <= total_w {
             hits_out.hits.push(TabBarHit {
                 rect: PixelRect {
@@ -237,6 +230,17 @@ pub fn draw_tab_bar(
                 kind: TabBarHitKind::CloseTab(t),
             });
         }
+        // Hit rect spans the full strip vertically (clickable anywhere in
+        // the tab's chrome region).
+        hits_out.hits.push(TabBarHit {
+            rect: PixelRect {
+                x,
+                y: 0.0,
+                w: tw,
+                h: chrome_top_px,
+            },
+            kind: TabBarHitKind::Tab(t),
+        });
 
         x += tw;
     }

@@ -414,26 +414,26 @@ fn draw_block_header_cpu(
 /// Draw the synthesized block header row (GPU path).
 ///
 /// Mirrors `draw_block_header_cpu` but pushes `CellInstance`s into `batch`
-/// instead of writing pixels.  `cell_xy_fn` maps (col, viewport_row) to
-/// top-left pixel coords; `y_shift` is subtracted for smooth-scroll.
+/// instead of writing pixels.  Uses `raster.cell_rect` for pixel positions;
+/// `y_shift` is subtracted for smooth-scroll.
 #[allow(clippy::too_many_arguments)]
 fn draw_block_header_gpu(
     batch: &mut CellBatch,
     rasterizer: &mut dyn GlyphRasterizer,
+    raster: &Raster,
     metrics: FontMetrics,
     block: &Block,
     viewport_y: usize,
     cols: usize,
     cw: f32,
     ch: f32,
-    cell_xy_fn: impl Fn(usize, usize) -> [f32; 2],
     y_shift: f32,
 ) {
     if let Some((start_col, chars)) = compute_block_header_chars(block, cols) {
         for (i, (cp, color)) in chars.into_iter().enumerate() {
             let col = start_col + i;
-            let base_xy = cell_xy_fn(col, viewport_y);
-            let xy = [base_xy[0], base_xy[1] - y_shift];
+            let rect = raster.cell_rect(metrics, col as f64, viewport_y as f64);
+            let xy = [rect.x as f32, rect.y as f32 - y_shift];
             let wh = [cw, ch];
             let bg = PANEL_RAISED;
             if cp == ' ' {
@@ -461,24 +461,530 @@ fn block_accent_color(block: &Block) -> [u8; 3] {
     }
 }
 
+// ── ViewportSink trait ────────────────────────────────────────────────────────
+
+/// Backend abstraction for `draw_viewport_into`.
+///
+/// `CpuSink` wraps a `Raster + dyn GlyphPainter` (CPU raster path).
+/// `GpuSink` wraps a `CellBatch + dyn GlyphRasterizer` (GPU instance path).
+///
+/// Row indices passed to each method are pre-shift viewport rows; each sink
+/// applies its smooth-scroll offset internally (`raster.y_shift_px` for CPU,
+/// explicit `shift` field for GPU).
+trait ViewportSink {
+    /// Clear one row's background to `bg` before redrawing (CPU only; GPU no-op).
+    fn clear_row_bg(&mut self, ry: usize, m: FontMetrics, bg: [u8; 3]);
+    /// Draw one terminal cell.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_cell(
+        &mut self,
+        x: usize,
+        y: usize,
+        content_row: usize,
+        cell: Cell,
+        m: FontMetrics,
+        theme: &Theme,
+        sel: Selection,
+        search: Option<&Search>,
+    );
+    /// Draw the fold summary text at `ry` (e.g. " ⌄ 3 hidden").
+    fn draw_fold_summary(
+        &mut self,
+        ry: usize,
+        cols: usize,
+        hidden: usize,
+        m: FontMetrics,
+        theme: &Theme,
+    );
+    /// Draw the block header overlay (command text + right-aligned metadata).
+    fn draw_block_header(
+        &mut self,
+        ry: usize,
+        cols: usize,
+        block: &Block,
+        cmd_text: &str,
+        m: FontMetrics,
+        theme: &Theme,
+    );
+    /// Draw the prompt-rule hairline above row `ry`.
+    fn draw_prompt_rule(
+        &mut self,
+        ry: f64,
+        m: FontMetrics,
+        rgb: [u8; 3],
+        x_start: f64,
+        x_end: f64,
+    );
+    /// Draw the text cursor when pinned to live bottom.
+    fn draw_cursor(
+        &mut self,
+        t: &mut Terminal,
+        cp: CursorParams,
+        m: FontMetrics,
+        theme: &Theme,
+        rows: usize,
+        cols: usize,
+    );
+}
+
+// ── CpuSink ───────────────────────────────────────────────────────────────────
+
+struct CpuSink<'a> {
+    raster: &'a mut Raster,
+    painter: &'a mut dyn GlyphPainter,
+}
+
+impl<'a> CpuSink<'a> {
+    fn new(raster: &'a mut Raster, painter: &'a mut dyn GlyphPainter) -> Self {
+        Self { raster, painter }
+    }
+}
+
+impl ViewportSink for CpuSink<'_> {
+    fn clear_row_bg(&mut self, ry: usize, m: FontMetrics, bg: [u8; 3]) {
+        let y_top = (self.raster.origin_y + ry as f64 * m.cell_h) as usize;
+        let y_bot = (self.raster.origin_y + (ry + 1) as f64 * m.cell_h) as usize;
+        self.raster.clear_pixel_rows(y_top, y_bot, bg);
+    }
+
+    fn draw_cell(
+        &mut self,
+        x: usize,
+        y: usize,
+        content_row: usize,
+        cell: Cell,
+        m: FontMetrics,
+        theme: &Theme,
+        sel: Selection,
+        search: Option<&Search>,
+    ) {
+        draw_cell(
+            self.raster,
+            self.painter,
+            m,
+            theme,
+            x,
+            y,
+            content_row,
+            cell,
+            sel,
+            search,
+        );
+    }
+
+    fn draw_fold_summary(
+        &mut self,
+        ry: usize,
+        cols: usize,
+        hidden: usize,
+        m: FontMetrics,
+        _theme: &Theme,
+    ) {
+        let summary = format!(" \u{2304} {hidden} hidden");
+        draw_text_row(self.raster, self.painter, m, 0, ry, &summary, ALLOY, cols);
+    }
+
+    fn draw_block_header(
+        &mut self,
+        ry: usize,
+        cols: usize,
+        block: &Block,
+        cmd_text: &str,
+        m: FontMetrics,
+        theme: &Theme,
+    ) {
+        draw_block_header_cpu(self.raster, self.painter, m, theme, block, cmd_text, ry, cols);
+    }
+
+    fn draw_prompt_rule(
+        &mut self,
+        ry: f64,
+        m: FontMetrics,
+        rgb: [u8; 3],
+        x_start: f64,
+        x_end: f64,
+    ) {
+        self.raster.row_rule(m, ry, rgb, x_start, x_end);
+    }
+
+    fn draw_cursor(
+        &mut self,
+        t: &mut Terminal,
+        cp: CursorParams,
+        m: FontMetrics,
+        theme: &Theme,
+        rows: usize,
+        cols: usize,
+    ) {
+        let opacity = if t.app_cursor_blink.unwrap_or(cp.cfg.blink) {
+            cursor_opacity(cp.blink_phase)
+        } else {
+            1.0
+        };
+        let cursor_rgb = mix(theme.background, theme.accent, opacity);
+        let ax = cp.ax as f64;
+        let ay = cp.ay as f64;
+        let style = match t.app_cursor_shape {
+            Some(CursorShape::Block) => CursorStyle::Block,
+            Some(CursorShape::Underline) => CursorStyle::Underline,
+            Some(CursorShape::Bar) => CursorStyle::Bar,
+            None => cp.cfg.style,
+        };
+        match style {
+            CursorStyle::Block => {
+                self.raster
+                    .cell_inset(m, ax, ay, cursor_rgb, 0.0, 0.0, 1.0, 1.0);
+                let ic = cp.ax.round() as usize;
+                let ir = cp.ay.round() as usize;
+                if ir < rows && ic < cols {
+                    let cell_under = {
+                        let row = t.viewport_row(ir);
+                        if ic < row.len() { Some(row[ic]) } else { None }
+                    };
+                    if let Some(cell) = cell_under {
+                        if cell.cp != ' ' && cell.cp != '\0' {
+                            let base_fg = resolve_color(cell.fg, theme.foreground, theme);
+                            let glyph_fg = mix(base_fg, theme.background, opacity);
+                            self.raster
+                                .cell_glyph(self.painter, m, ic, ir, cell.cp as u32, glyph_fg);
+                        }
+                    }
+                }
+            }
+            CursorStyle::Bar => {
+                self.raster
+                    .cell_inset(m, ax, ay, cursor_rgb, 0.0, 0.0, 0.15, 1.0);
+            }
+            CursorStyle::Underline => {
+                let fh = 0.12_f64;
+                self.raster
+                    .cell_inset(m, ax, ay, cursor_rgb, 0.0, 1.0 - fh, 1.0, fh);
+            }
+        }
+    }
+}
+
+// ── GpuSink ───────────────────────────────────────────────────────────────────
+
+struct GpuSink<'a> {
+    batch: &'a mut CellBatch,
+    rasterizer: &'a mut dyn GlyphRasterizer,
+    raster: &'a Raster,
+    cw: f32,
+    ch: f32,
+    /// Smooth-scroll y shift in pixels (0.0 for live-bottom path).
+    shift: f32,
+}
+
+impl<'a> GpuSink<'a> {
+    fn new(
+        batch: &'a mut CellBatch,
+        rasterizer: &'a mut dyn GlyphRasterizer,
+        raster: &'a Raster,
+        metrics: FontMetrics,
+        shift: f32,
+    ) -> Self {
+        Self {
+            batch,
+            rasterizer,
+            raster,
+            cw: metrics.cell_w as f32,
+            ch: metrics.cell_h as f32,
+            shift,
+        }
+    }
+
+    /// Top-left pixel coords of cell (col, row) — does NOT apply shift.
+    fn cell_xy(&self, metrics: FontMetrics, col: f64, row: f64) -> [f32; 2] {
+        let rect = self.raster.cell_rect(metrics, col, row);
+        [rect.x as f32, rect.y as f32]
+    }
+}
+
+impl ViewportSink for GpuSink<'_> {
+    fn clear_row_bg(&mut self, _ry: usize, _m: FontMetrics, _bg: [u8; 3]) {
+        // GPU path has no per-pixel buffer to clear.
+    }
+
+    fn draw_cell(
+        &mut self,
+        x: usize,
+        y: usize,
+        content_row: usize,
+        cell: Cell,
+        m: FontMetrics,
+        theme: &Theme,
+        sel: Selection,
+        search: Option<&Search>,
+    ) {
+        let (fg, bg) = resolve_cell_colors(cell, content_row, x, sel, search, theme);
+        let base_xy = self.cell_xy(m, x as f64, y as f64);
+        let xy = [base_xy[0], base_xy[1] - self.shift];
+        let wh = [self.cw, self.ch];
+        if cell.cp == ' ' || cell.cp == '\0' {
+            if bg != theme.background {
+                self.batch.push_cell(xy, wh, None, fg, bg);
+            }
+        } else {
+            let slot = self.rasterizer.glyph_slot(cell.cp as u32, m);
+            self.batch.push_cell(xy, wh, slot, fg, bg);
+        }
+    }
+
+    fn draw_fold_summary(
+        &mut self,
+        ry: usize,
+        cols: usize,
+        hidden: usize,
+        m: FontMetrics,
+        theme: &Theme,
+    ) {
+        let summary = format!(" \u{2304} {hidden} hidden");
+        for (i, cp) in summary.chars().enumerate() {
+            if i >= cols {
+                break;
+            }
+            let base_xy = self.cell_xy(m, i as f64, ry as f64);
+            let xy = [base_xy[0], base_xy[1] - self.shift];
+            let wh = [self.cw, self.ch];
+            let slot = self.rasterizer.glyph_slot(cp as u32, m);
+            self.batch.push_cell(xy, wh, slot, ALLOY, theme.background);
+        }
+    }
+
+    fn draw_block_header(
+        &mut self,
+        ry: usize,
+        cols: usize,
+        block: &Block,
+        _cmd_text: &str,
+        m: FontMetrics,
+        _theme: &Theme,
+    ) {
+        draw_block_header_gpu(
+            self.batch,
+            self.rasterizer,
+            self.raster,
+            m,
+            block,
+            ry,
+            cols,
+            self.cw,
+            self.ch,
+            self.shift,
+        );
+    }
+
+    fn draw_prompt_rule(
+        &mut self,
+        _ry: f64,
+        _m: FontMetrics,
+        _rgb: [u8; 3],
+        _x_start: f64,
+        _x_end: f64,
+    ) {
+        // GPU path does not draw prompt rules (CPU-only raster operation).
+    }
+
+    fn draw_cursor(
+        &mut self,
+        t: &mut Terminal,
+        cp: CursorParams,
+        m: FontMetrics,
+        theme: &Theme,
+        rows: usize,
+        cols: usize,
+    ) {
+        let opacity = if t.app_cursor_blink.unwrap_or(cp.cfg.blink) {
+            cursor_opacity(cp.blink_phase)
+        } else {
+            1.0
+        };
+        let cursor_rgb = mix(theme.background, theme.accent, opacity);
+        let ax = cp.ax as f64;
+        let ay = cp.ay as f64;
+        let xy = self.cell_xy(m, ax, ay);
+        let style = match t.app_cursor_shape {
+            Some(CursorShape::Block) => CursorStyle::Block,
+            Some(CursorShape::Underline) => CursorStyle::Underline,
+            Some(CursorShape::Bar) => CursorStyle::Bar,
+            None => cp.cfg.style,
+        };
+        match style {
+            CursorStyle::Block => {
+                let bxy = xy;
+                self.batch
+                    .push_cell(bxy, [self.cw, self.ch], None, cursor_rgb, cursor_rgb);
+                let ic = cp.ax.round() as usize;
+                let ir = cp.ay.round() as usize;
+                if ir < rows && ic < cols {
+                    let cell_under = {
+                        let row = t.viewport_row(ir);
+                        if ic < row.len() { Some(row[ic]) } else { None }
+                    };
+                    if let Some(cell) = cell_under {
+                        if cell.cp != ' ' && cell.cp != '\0' {
+                            let base_fg = resolve_color(cell.fg, theme.foreground, theme);
+                            let glyph_fg = mix(base_fg, theme.background, opacity);
+                            let slot = self.rasterizer.glyph_slot(cell.cp as u32, m);
+                            self.batch
+                                .push_cell(bxy, [self.cw, self.ch], slot, glyph_fg, cursor_rgb);
+                        }
+                    }
+                }
+            }
+            CursorStyle::Bar => {
+                let bwh = [self.cw * 0.15, self.ch];
+                self.batch.push_cell(xy, bwh, None, cursor_rgb, cursor_rgb);
+            }
+            CursorStyle::Underline => {
+                let fh = self.ch * 0.12;
+                let bxy = [xy[0], xy[1] + self.ch - fh];
+                let bwh = [self.cw, fh];
+                self.batch.push_cell(bxy, bwh, None, cursor_rgb, cursor_rgb);
+            }
+        }
+    }
+}
+
+// ── Unified draw loop ─────────────────────────────────────────────────────────
+
+/// Unified viewport draw body shared by CPU and GPU paths.
+///
+/// `off_opt` is `None` for the live-bottom path and `Some(off)` for smooth
+/// scroll (`off = base + 1`).  `row_end` is `rows` for live and `rows + 1`
+/// for smooth.
+#[allow(clippy::too_many_arguments)]
+fn draw_viewport_into(
+    sink: &mut dyn ViewportSink,
+    terminal: &mut Terminal,
+    metrics: FontMetrics,
+    theme: &Theme,
+    rows: usize,
+    cols: usize,
+    off_opt: Option<usize>,
+    row_end: usize,
+    selection: Selection,
+    search: Option<&Search>,
+    cursor_params: Option<CursorParams>,
+    rule_x_start: f64,
+    rule_x_end: f64,
+    folded: &FoldedBlocks<'_>,
+    dirty: Option<&DirtySet>,
+) {
+    let rule_rgb = theme.border;
+    let hist = terminal.scrollback_len();
+    let is_live = off_opt.is_none();
+    let mut cached_block: Option<Block> = None;
+
+    for y in 0..row_end {
+        // Dirty-row gate and row-bg clear: live path only.
+        if is_live {
+            if !dirty.is_none_or(|d| d.contains(y)) {
+                continue;
+            }
+            sink.clear_row_bg(y, metrics, theme.background);
+        }
+
+        // Content-row index.
+        let crow: usize = match off_opt {
+            None => terminal.content_row_of_viewport(y),
+            Some(off) => {
+                if off > y {
+                    (hist + y).saturating_sub(off)
+                } else {
+                    hist + y - off
+                }
+            }
+        };
+        let abs = terminal.absolute_line_of_content(crow);
+
+        // Block lookup with per-row-locality cache.
+        let block_opt = match cached_block {
+            Some(ref b) if abs >= b.command_line && abs < b.end_line => Some(*b),
+            _ => {
+                let fresh = terminal.block_at(abs);
+                cached_block = fresh;
+                fresh
+            }
+        };
+
+        // Skip folded output rows.
+        if let Some(ref block) = block_opt {
+            if folded.contains(block.command_line)
+                && abs >= block.output_line
+                && abs < block.end_line
+            {
+                continue;
+            }
+        }
+
+        // Draw all cells in this row.
+        {
+            let row: Vec<Cell> = match off_opt {
+                None => terminal.viewport_row(y).iter().take(cols).copied().collect(),
+                Some(off) => terminal
+                    .viewport_row_at(off, y)
+                    .iter()
+                    .take(cols)
+                    .copied()
+                    .collect(),
+            };
+            for (x, cell) in row.into_iter().enumerate() {
+                sink.draw_cell(x, y, crow, cell, metrics, theme, selection, search);
+            }
+        }
+
+        // Fold summary.
+        if let Some(ref block) = block_opt {
+            if folded.contains(block.command_line) && abs == block.command_line {
+                let hidden = block.output_row_count();
+                sink.draw_fold_summary(y, cols, hidden, metrics, theme);
+            }
+        }
+
+        // Block header overlay.
+        if let Some(ref block) = block_opt {
+            if abs == block.command_line && !folded.contains(block.command_line) {
+                let cmd_text =
+                    read_command_text(terminal, crow, block.command_start_col as usize);
+                sink.draw_block_header(y, cols, block, &cmd_text, metrics, theme);
+            }
+        }
+
+        // Prompt-rule hairline.
+        if terminal.is_prompt_start(abs) {
+            sink.draw_prompt_rule(y as f64, metrics, rule_rgb, rule_x_start, rule_x_end);
+        }
+    }
+
+    // Cursor: only when pinned to live bottom.
+    if let Some(cp) = cursor_params {
+        let cur = terminal.cursor();
+        if cur.visible
+            && terminal.viewport_offset() == 0
+            && is_live
+            && cur.x < cols
+            && cur.y < rows
+        {
+            sink.draw_cursor(terminal, cp, metrics, theme, rows, cols);
+        }
+    }
+}
+
 // ── Viewport draw loop ────────────────────────────────────────────────────────
 
-/// Draw the viewport: visible cell grid, prompt-rule hairlines, gutter markers,
-/// fold summaries, and cursor.
+/// Draw the viewport: visible cell grid, prompt-rule hairlines, fold summaries,
+/// and cursor.
 ///
 /// This is the per-frame draw body, ported from `draw.zig`'s `drawViewport`.
 ///
-/// `scroll_pos` and `overscroll` drive smooth scrolling (0/0 = pinned).
-/// `folded` carries the set of folded `command_line` values for this pane;
-/// pass `FoldedBlocks::empty()` to draw all rows normally.
+/// `scroll_pos` drives smooth scrolling (0 = pinned to live bottom).
+/// `folded` carries the set of folded `command_line` values for this pane.
 /// Pass `cursor_params = None` to suppress cursor drawing (e.g. in tests).
 ///
-/// `dirty` restricts drawing to only the rows that have changed. `None` or
-/// `Some(full)` redraws all rows. For each dirty row the row's background band
-/// is first cleared to `theme.background` so stale pixels from the previous
-/// frame are overwritten.  Non-dirty rows are left untouched in the raster.
-///
-/// In the smooth-scroll path all rows are always redrawn (content shifts).
+/// `dirty` restricts drawing to only the rows that have changed.  In the
+/// smooth-scroll path all rows are always redrawn (content shifts).
 ///
 /// # Zero-allocation guarantee
 /// The draw loop writes into the pre-allocated `Raster` pixel buffer.  No
@@ -501,283 +1007,55 @@ pub fn draw_viewport(
 ) {
     let rows = terminal.rows();
     let cols = terminal.cols();
-    // Prompt-rule hairline drawn above each command — use the chrome border
-    // tone so the rule reads as a quiet structural divider, not a fence.
-    let rule_rgb = theme.border;
+    let mut sink = CpuSink::new(raster, painter);
 
     if scroll_pos == 0.0 {
-        // Per-frame block-lookup cache: adjacent rows almost always belong
-        // to the same block, so caching the last result drops a long-session
-        // hot path from O(blocks) per row to O(1) for the common case.
-        let mut cached_block: Option<Block> = None;
-        // Live bottom: no fractional offset.
-        for y in 0..rows {
-            // Dirty-row gate: skip rows that haven't changed.
-            // None = always draw (full redraw).
-            let is_dirty = dirty.is_none_or(|d| d.contains(y));
-            if !is_dirty {
-                continue;
-            }
-
-            // Clear this row's background before redrawing so stale pixels
-            // from the previous frame are overwritten.
-            {
-                let ry = y;
-                let y_top = (raster.origin_y + ry as f64 * metrics.cell_h) as usize;
-                let y_bot = (raster.origin_y + (ry + 1) as f64 * metrics.cell_h) as usize;
-                raster.clear_pixel_rows(y_top, y_bot, theme.background);
-            }
-
-            let crow = terminal.content_row_of_viewport(y);
-            let abs = terminal.absolute_line_of_content(crow);
-
-            // Block lookup: reuse cached block when this row is still inside
-            // its range; otherwise ask the terminal.
-            let block_opt = match cached_block {
-                Some(ref b) if abs >= b.command_line && abs < b.end_line => Some(*b),
-                _ => {
-                    let fresh = terminal.block_at(abs);
-                    cached_block = fresh;
-                    fresh
-                }
-            };
-
-            // If this row is inside a folded block's OUTPUT region, skip it.
-            if let Some(ref block) = block_opt {
-                if folded.contains(block.command_line)
-                    && abs >= block.output_line
-                    && abs < block.end_line
-                {
-                    continue;
-                }
-            }
-
-            // Block body tint removed per user request — output rows stay
-            // on the canvas. Block status communicated via the header
-            // overlay (` <dur>  ✓|✗ N` right-aligned on the command row).
-            let _ = cols;
-
-            // Draw all cells while the row-slice borrow is live, then let it
-            // drop so the &self prompt-rule calls below can proceed.  Cell is
-            // Copy so each loop iteration clones the value out of the slice.
-            // No heap allocation occurs: the borrow ends at the closing '}'.
-            {
-                let row = terminal.viewport_row(y);
-                for (x, &cell) in row.iter().enumerate().take(cols.min(row.len())) {
-                    draw_cell(
-                        raster,
-                        painter,
-                        metrics,
-                        theme,
-                        x,
-                        y,
-                        crow,
-                        cell,
-                        selection,
-                        search,
-                    );
-                }
-            } // row borrow ends here
-
-            // Left-stripe accent removed per user request. Block status
-            // is now carried solely by the inline header overlay (✓ / ✗ N
-            // + duration on the command row). The visible-edge stripe will
-            // be redesigned in a follow-up pass.
-
-            // Fold summary: if this is the command row of a folded block,
-            // append " ⌄ N hidden" after any command text.
-            if let Some(ref block) = block_opt {
-                if folded.contains(block.command_line) && abs == block.command_line {
-                    let hidden = block.output_row_count();
-                    let summary = format!(" \u{2304} {hidden} hidden");
-                    let ry = y;
-                    draw_text_row(raster, painter, metrics, 0, ry, &summary, ALLOY, cols);
-                }
-            }
-
-            // Block header synthesis (live-bottom CPU path): right-aligned
-            // duration + exit indicator + fold caret overlaid on the command row.
-            if let Some(ref block) = block_opt {
-                if abs == block.command_line && !folded.contains(block.command_line) {
-                    let cmd_text =
-                        read_command_text(terminal, crow, block.command_start_col as usize);
-                    let ry = y;
-                    draw_block_header_cpu(
-                        raster, painter, metrics, theme, block, &cmd_text, ry, cols,
-                    );
-                }
-            }
-
-            if terminal.is_prompt_start(abs) {
-                let ry = y as f64;
-                raster.row_rule(metrics, ry, rule_rgb, rule_x_start, rule_x_end);
-            }
-        }
+        draw_viewport_into(
+            &mut sink,
+            terminal,
+            metrics,
+            theme,
+            rows,
+            cols,
+            None,
+            rows,
+            selection,
+            search,
+            cursor_params,
+            rule_x_start,
+            rule_x_end,
+            &folded,
+            dirty,
+        );
     } else {
-        // Smooth-scroll path: render integer offset (base+1) and slide the
-        // grid by the fractional part plus overscroll.
         let base = scroll_pos.floor() as usize;
         let frac = scroll_pos as f64 - scroll_pos.floor() as f64;
-        let scroll_shift = (1.0 - frac) * metrics.cell_h;
-        raster.y_shift_px = scroll_shift;
-        let hist = terminal.scrollback_len();
+        sink.raster.y_shift_px = (1.0 - frac) * metrics.cell_h;
         let off = base + 1;
-        let mut cached_block: Option<Block> = None;
-        for y in 0..=rows {
-            let crow: usize = if off > y {
-                (hist + y).saturating_sub(off)
-            } else {
-                hist + y - off
-            };
-            let abs = terminal.absolute_line_of_content(crow);
-
-            // Block lookup with per-row-locality cache.
-            let block_opt = match cached_block {
-                Some(ref b) if abs >= b.command_line && abs < b.end_line => Some(*b),
-                _ => {
-                    let fresh = terminal.block_at(abs);
-                    cached_block = fresh;
-                    fresh
-                }
-            };
-
-            if let Some(ref block) = block_opt {
-                if folded.contains(block.command_line)
-                    && abs >= block.output_line
-                    && abs < block.end_line
-                {
-                    continue;
-                }
-            }
-
-            // Block body tint removed.
-
-            {
-                let row = terminal.viewport_row_at(off, y);
-                for (x, &cell) in row.iter().enumerate().take(cols.min(row.len())) {
-                    draw_cell(
-                        raster,
-                        painter,
-                        metrics,
-                        theme,
-                        x,
-                        y,
-                        crow,
-                        cell,
-                        selection,
-                        search,
-                    );
-                }
-            } // row borrow ends here
-
-            // Left-stripe accent removed (smooth-scroll path).
-
-            // Fold summary (smooth-scroll path).
-            if let Some(ref block) = block_opt {
-                if folded.contains(block.command_line) && abs == block.command_line {
-                    let hidden = block.output_row_count();
-                    let summary = format!(" \u{2304} {hidden} hidden");
-                    let ry = y;
-                    draw_text_row(raster, painter, metrics, 0, ry, &summary, ALLOY, cols);
-                }
-            }
-
-            // Block header (smooth-scroll path).
-            if let Some(ref block) = block_opt {
-                if abs == block.command_line && !folded.contains(block.command_line) {
-                    let cmd_text =
-                        read_command_text(terminal, crow, block.command_start_col as usize);
-                    let ry = y;
-                    draw_block_header_cpu(
-                        raster, painter, metrics, theme, block, &cmd_text, ry, cols,
-                    );
-                }
-            }
-
-            if terminal.is_prompt_start(abs) {
-                let ry = y as f64;
-                raster.row_rule(metrics, ry, rule_rgb, rule_x_start, rule_x_end);
-            }
-        }
-        raster.y_shift_px = 0.0;
-    }
-
-    // Cursor: only when the viewport is pinned to live bottom.
-    if let Some(cp) = cursor_params {
-        let cur = terminal.cursor();
-        if cur.visible
-            && terminal.viewport_offset() == 0
-            && scroll_pos == 0.0
-            && cur.x < cols
-            && cur.y < rows
-        {
-            raster.y_shift_px = 0.0;
-
-            // For block cursor: draw the block then re-draw the glyph tinted.
-            let style = match terminal.app_cursor_shape {
-                Some(CursorShape::Block) => CursorStyle::Block,
-                Some(CursorShape::Underline) => CursorStyle::Underline,
-                Some(CursorShape::Bar) => CursorStyle::Bar,
-                None => cp.cfg.style,
-            };
-
-            let opacity = if terminal.app_cursor_blink.unwrap_or(cp.cfg.blink) {
-                cursor_opacity(cp.blink_phase)
-            } else {
-                1.0
-            };
-            let cursor_rgb = mix(theme.background, theme.accent, opacity);
-            let ax = cp.ax as f64;
-            let ay = cp.ay as f64;
-
-            match style {
-                CursorStyle::Block => {
-                    raster.cell_inset(metrics, ax, ay, cursor_rgb, 0.0, 0.0, 1.0, 1.0);
-                    let ic = cp.ax.round() as usize;
-                    let ir = cp.ay.round() as usize;
-                    if ir < rows && ic < cols {
-                        // Extract the cell fields (all Copy) while the row borrow
-                        // is live, then let the borrow drop before the raster call.
-                        let cell_under = {
-                            let row = terminal.viewport_row(ir);
-                            if ic < row.len() { Some(row[ic]) } else { None }
-                        }; // row borrow ends here
-                        if let Some(cell) = cell_under {
-                            if cell.cp != ' ' && cell.cp != '\0' {
-                                let base_fg = resolve_color(cell.fg, theme.foreground, theme);
-                                let glyph_fg = mix(base_fg, theme.background, opacity);
-                                raster.cell_glyph(
-                                    painter,
-                                    metrics,
-                                    ic,
-                                    ir,
-                                    cell.cp as u32,
-                                    glyph_fg,
-                                );
-                            }
-                        }
-                    }
-                }
-                CursorStyle::Bar => {
-                    raster.cell_inset(metrics, ax, ay, cursor_rgb, 0.0, 0.0, 0.15, 1.0);
-                }
-                CursorStyle::Underline => {
-                    let fh = 0.12_f64;
-                    raster.cell_inset(metrics, ax, ay, cursor_rgb, 0.0, 1.0 - fh, 1.0, fh);
-                }
-            }
-
-            raster.y_shift_px = 0.0;
-        }
+        draw_viewport_into(
+            &mut sink,
+            terminal,
+            metrics,
+            theme,
+            rows,
+            cols,
+            Some(off),
+            rows + 1,
+            selection,
+            search,
+            cursor_params,
+            rule_x_start,
+            rule_x_end,
+            &folded,
+            dirty,
+        );
+        sink.raster.y_shift_px = 0.0;
     }
 }
 
 // ── GPU viewport draw loop ────────────────────────────────────────────────────
 
 /// Resolve fg/bg for a cell, applying selection, search, and INVERSE.
-///
-/// Shared by `draw_cell` and `draw_viewport_gpu` so color resolution is
-/// identical on both paths.
 fn resolve_cell_colors(
     cell: Cell,
     content_row: usize,
@@ -809,24 +1087,10 @@ fn resolve_cell_colors(
     (fg, bg)
 }
 
-/// GPU-path viewport draw: pushes one `CellInstance` per visible cell into
-/// `batch` instead of writing pixels into a `Raster`.
+/// GPU-path viewport draw: pushes `CellInstance` records into `batch`.
 ///
-/// `raster` is read-only and used only for `cell_rect` pixel-position math
-/// (requires `raster.origin_x/y` set to the pane's top-left before calling).
-///
-/// Mirrors `draw_viewport` loops: same scroll, fold, selection, cursor, and
-/// gutter/fold-summary logic.  Chrome (tab bar, status bar, etc.) is NOT
-/// drawn here — this is terminal viewport cells only.
-///
-/// # Cursor
-/// Block cursor: one bg-only instance covering the cell with `bg = cursor_rgb`.
-/// Bar/underline cursor: a small bg-only instance covering the strip subrect.
-///
-/// # Gutter marks and fold summaries
-/// Gutter mark: a tiny bg-only instance at the left edge of the command row.
-/// Fold summary text (" ⌄ N hidden"): one instance per character via
-/// `glyph_slot`.
+/// `raster` is read-only; only `cell_rect` pixel-position math uses it.
+/// Chrome (tab bar, status bar) is NOT drawn here — terminal viewport only.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_viewport_gpu(
     batch: &mut CellBatch,
@@ -843,259 +1107,49 @@ pub fn draw_viewport_gpu(
 ) {
     let rows = terminal.rows();
     let cols = terminal.cols();
-    let cw = metrics.cell_w as f32;
-    let ch = metrics.cell_h as f32;
-
-    // Helper: compute top-left pixel of cell (col, row_in_pane) using raster.cell_rect.
-    // `row_in_pane` is a viewport-relative row (origin_y encodes the pane's
-    // pixel top; batch positions are absolute drawable pixels).
-    let cell_xy = |batch_col: f64, batch_row: f64| -> [f32; 2] {
-        let rect = raster.cell_rect(metrics, batch_col, batch_row);
-        [rect.x as f32, rect.y as f32]
-    };
 
     if scroll_pos == 0.0 {
-        // Live-bottom path.
-        let mut cached_block: Option<Block> = None;
-        for y in 0..rows {
-            let crow = terminal.content_row_of_viewport(y);
-            let abs = terminal.absolute_line_of_content(crow);
-
-            // Block lookup with per-row-locality cache.
-            let block_opt = match cached_block {
-                Some(ref b) if abs >= b.command_line && abs < b.end_line => Some(*b),
-                _ => {
-                    let fresh = terminal.block_at(abs);
-                    cached_block = fresh;
-                    fresh
-                }
-            };
-
-            // Skip folded output rows.
-            if let Some(ref block) = block_opt {
-                if folded.contains(block.command_line)
-                    && abs >= block.output_line
-                    && abs < block.end_line
-                {
-                    continue;
-                }
-            }
-
-            // Block body tint removed.
-
-            // Draw all cells in this row.
-            {
-                let row = terminal.viewport_row(y);
-                let row_cells: Vec<Cell> = row.iter().take(cols.min(row.len())).copied().collect();
-                let _ = row; // borrow ends: row is &[Cell], already snapshotted above
-                for (x, cell) in row_cells.into_iter().enumerate() {
-                    let (fg, bg) = resolve_cell_colors(cell, crow, x, selection, search, theme);
-                    let xy = cell_xy(x as f64, y as f64);
-                    let wh = [cw, ch];
-                    if cell.cp == ' ' || cell.cp == '\0' {
-                        if bg != theme.background {
-                            batch.push_cell(xy, wh, None, fg, bg);
-                        }
-                    } else {
-                        let slot = rasterizer.glyph_slot(cell.cp as u32, metrics);
-                        batch.push_cell(xy, wh, slot, fg, bg);
-                    }
-                }
-            }
-
-            // Left-stripe accent removed (GPU live path).
-
-            // Fold summary text.
-            if let Some(ref block) = block_opt {
-                if folded.contains(block.command_line) && abs == block.command_line {
-                    let hidden = block.output_row_count();
-                    let summary = format!(" \u{2304} {hidden} hidden");
-                    for (i, cp) in summary.chars().enumerate() {
-                        if i >= cols {
-                            break;
-                        }
-                        let xy = cell_xy(i as f64, y as f64);
-                        let wh = [cw, ch];
-                        let slot = rasterizer.glyph_slot(cp as u32, metrics);
-                        batch.push_cell(xy, wh, slot, ALLOY, theme.background);
-                    }
-                }
-            }
-
-            // Block header synthesis (GPU live-bottom path): right-aligned
-            // duration + exit indicator + fold caret on the command row.
-            if let Some(ref block) = block_opt {
-                if abs == block.command_line && !folded.contains(block.command_line) {
-                    draw_block_header_gpu(
-                        batch, rasterizer, metrics, block, y, cols, cw, ch,
-                        |col, row| cell_xy(col as f64, row as f64),
-                        0.0,
-                    );
-                }
-            }
-        }
+        let mut sink = GpuSink::new(batch, rasterizer, raster, metrics, 0.0);
+        draw_viewport_into(
+            &mut sink,
+            terminal,
+            metrics,
+            theme,
+            rows,
+            cols,
+            None,
+            rows,
+            selection,
+            search,
+            cursor,
+            0.0,
+            0.0,
+            &folded,
+            None,
+        );
     } else {
-        // Smooth-scroll path.
         let base = scroll_pos.floor() as usize;
         let frac = scroll_pos as f64 - scroll_pos.floor() as f64;
-        let scroll_shift = (1.0 - frac) * metrics.cell_h;
-        // Note: y_shift_px is state on the raster; for GPU path we compute
-        // pixel positions ourselves using raster.cell_rect (which reads
-        // raster.y_shift_px).  We temporarily set it here and restore after.
-        // We use a shared reference to raster so we can't mutate it; instead
-        // we use the pane origin directly.
-        // For smooth-scroll GPU path, compute y pixel offsets manually.
-        let shift = scroll_shift as f32;
-        let hist = terminal.scrollback_len();
+        let shift = ((1.0 - frac) * metrics.cell_h) as f32;
         let off = base + 1;
-
-        let mut cached_block: Option<Block> = None;
-        for y in 0..=rows {
-            let crow: usize = if off > y {
-                (hist + y).saturating_sub(off)
-            } else {
-                hist + y - off
-            };
-            let abs = terminal.absolute_line_of_content(crow);
-
-            // Block lookup with per-row-locality cache.
-            let block_opt = match cached_block {
-                Some(ref b) if abs >= b.command_line && abs < b.end_line => Some(*b),
-                _ => {
-                    let fresh = terminal.block_at(abs);
-                    cached_block = fresh;
-                    fresh
-                }
-            };
-
-            if let Some(ref block) = block_opt {
-                if folded.contains(block.command_line)
-                    && abs >= block.output_line
-                    && abs < block.end_line
-                {
-                    continue;
-                }
-            }
-
-            // Block body tint removed (GPU smooth-scroll path).
-
-            {
-                let row = terminal.viewport_row_at(off, y);
-                let row_cells: Vec<Cell> = row.iter().take(cols.min(row.len())).copied().collect();
-                let _ = row; // borrow ends: row is &[Cell], already snapshotted above
-                for (x, cell) in row_cells.into_iter().enumerate() {
-                    let (fg, bg) = resolve_cell_colors(cell, crow, x, selection, search, theme);
-                    // Smooth-scroll: apply shift to y position.
-                    let base_xy = cell_xy(x as f64, y as f64);
-                    let xy = [base_xy[0], base_xy[1] - shift];
-                    let wh = [cw, ch];
-                    if cell.cp == ' ' || cell.cp == '\0' {
-                        if bg != theme.background {
-                            batch.push_cell(xy, wh, None, fg, bg);
-                        }
-                    } else {
-                        let slot = rasterizer.glyph_slot(cell.cp as u32, metrics);
-                        batch.push_cell(xy, wh, slot, fg, bg);
-                    }
-                }
-            }
-
-            // Left-stripe accent removed (GPU smooth-scroll path).
-
-            // Fold summary (smooth-scroll path).
-            if let Some(ref block) = block_opt {
-                if folded.contains(block.command_line) && abs == block.command_line {
-                    let hidden = block.output_row_count();
-                    let summary = format!(" \u{2304} {hidden} hidden");
-                    for (i, cp) in summary.chars().enumerate() {
-                        if i >= cols {
-                            break;
-                        }
-                        let base_xy = cell_xy(i as f64, y as f64);
-                        let xy = [base_xy[0], base_xy[1] - shift];
-                        let wh = [cw, ch];
-                        let slot = rasterizer.glyph_slot(cp as u32, metrics);
-                        batch.push_cell(xy, wh, slot, ALLOY, theme.background);
-                    }
-                }
-            }
-
-            // Block header synthesis (GPU smooth-scroll path).
-            if let Some(ref block) = block_opt {
-                if abs == block.command_line && !folded.contains(block.command_line) {
-                    draw_block_header_gpu(
-                        batch, rasterizer, metrics, block, y, cols, cw, ch,
-                        |col, row| cell_xy(col as f64, row as f64),
-                        shift,
-                    );
-                }
-            }
-        }
-    }
-
-    // Cursor: only when pinned to live bottom.
-    if let Some(cp) = cursor {
-        let cur = terminal.cursor();
-        if cur.visible
-            && terminal.viewport_offset() == 0
-            && scroll_pos == 0.0
-            && cur.x < cols
-            && cur.y < rows
-        {
-            let opacity = if terminal.app_cursor_blink.unwrap_or(cp.cfg.blink) {
-                cursor_opacity(cp.blink_phase)
-            } else {
-                1.0
-            };
-            let cursor_rgb = mix(theme.background, theme.accent, opacity);
-            let ax = cp.ax as f64;
-            let ay = cp.ay as f64;
-            let xy = cell_xy(ax, ay);
-
-            let style = match terminal.app_cursor_shape {
-                Some(CursorShape::Block) => CursorStyle::Block,
-                Some(CursorShape::Underline) => CursorStyle::Underline,
-                Some(CursorShape::Bar) => CursorStyle::Bar,
-                None => cp.cfg.style,
-            };
-
-            match style {
-                CursorStyle::Block => {
-                    // Full-cell bg instance.
-                    let bxy = xy;
-                    batch.push_cell(bxy, [cw, ch], None, cursor_rgb, cursor_rgb);
-                    // Re-draw the cell's glyph tinted for the block cursor.
-                    let ic = cp.ax.round() as usize;
-                    let ir = cp.ay.round() as usize;
-                    if ir < rows && ic < cols {
-                        let cell_under = {
-                            let row = terminal.viewport_row(ir);
-                            if ic < row.len() { Some(row[ic]) } else { None }
-                        };
-                        if let Some(cell) = cell_under {
-                            if cell.cp != ' ' && cell.cp != '\0' {
-                                let base_fg = resolve_color(cell.fg, theme.foreground, theme);
-                                let glyph_fg = mix(base_fg, theme.background, opacity);
-                                let slot = rasterizer.glyph_slot(cell.cp as u32, metrics);
-                                batch.push_cell(bxy, [cw, ch], slot, glyph_fg, cursor_rgb);
-                            }
-                        }
-                    }
-                }
-                CursorStyle::Bar => {
-                    // Left 15% strip, full height.
-                    let bwh = [cw * 0.15, ch];
-                    batch.push_cell(xy, bwh, None, cursor_rgb, cursor_rgb);
-                }
-                CursorStyle::Underline => {
-                    // Bottom 12% strip.
-                    let fh = ch * 0.12;
-                    let bxy = [xy[0], xy[1] + ch - fh];
-                    let bwh = [cw, fh];
-                    batch.push_cell(bxy, bwh, None, cursor_rgb, cursor_rgb);
-                }
-            }
-        }
+        let mut sink = GpuSink::new(batch, rasterizer, raster, metrics, shift);
+        draw_viewport_into(
+            &mut sink,
+            terminal,
+            metrics,
+            theme,
+            rows,
+            cols,
+            Some(off),
+            rows + 1,
+            selection,
+            search,
+            cursor,
+            0.0,
+            0.0,
+            &folded,
+            None,
+        );
     }
 }
 
