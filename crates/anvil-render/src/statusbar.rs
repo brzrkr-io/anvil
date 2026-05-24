@@ -47,20 +47,23 @@ pub fn draw_status_bar(
     bottom_row: usize,
 ) {
     let cell_w = metrics.cell_w;
+    let cell_h = metrics.cell_h;
     let usable_w = raster.width as f64 - 2.0 * raster.pad_x;
     let total_cols = ((usable_w.max(0.0)) / cell_w) as usize;
     if total_cols == 0 {
         return;
     }
-    let _ = theme;
 
-    // Status bar is text-only on the canvas — no chrome strip. Just clear
-    // the row's cells to theme.background so older chars don't bleed
-    // through under shorter content. No bottom-strip fill; the bar reads
-    // as a quiet caption, not a heavy ledge.
+    // D-mockup bottom bar: ONE-ROW band, theme.surface bg, 1px top hairline
+    // in theme.border. The bar is distinct chrome — not a heavy ledge that
+    // extends into the bottom GRID_PAD. The pad below stays canvas color so
+    // the bar reads as a slim defined band.
     for col in 0..total_cols {
-        raster.cell_bg(metrics, col, bottom_row, theme.background);
+        raster.cell_bg(metrics, col, bottom_row, theme.surface);
     }
+    // Top hairline above the bar — separates it from terminal content.
+    let bar_top_y = raster.pad_y + bottom_row as f64 * cell_h;
+    raster.fill_pixel_rect(0.0, bar_top_y, raster.width as f64, 1.0, theme.border);
 
     // ── Left: cwd  ✓/✗ last 0.1s ────────────────────────────────────────────
     let mut col = 2usize;
@@ -213,13 +216,13 @@ mod tests {
             row,
         );
 
-        // Status bar paints its row to theme.background — text-only caption.
+        // Status bar paints its row to theme.surface (a one-row band).
         let cell_h = m.cell_h as usize;
         let px_y = row * cell_h + cell_h / 2;
         let px = pixel_at(&r, 4, px_y);
         assert_eq!(
-            px, theme.background,
-            "expected status bar row painted to theme.background, got {px:?}"
+            px, theme.surface,
+            "expected status bar row painted to theme.surface, got {px:?}"
         );
     }
 
