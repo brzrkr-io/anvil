@@ -434,7 +434,6 @@ pub fn draw_viewport(
     metrics: FontMetrics,
     theme: &Theme,
     scroll_pos: f32,
-    overscroll: f32,
     selection: Selection,
     search: Option<&Search>,
     top_bar_rows: usize,
@@ -450,7 +449,7 @@ pub fn draw_viewport(
     // tone so the rule reads as a quiet structural divider, not a fence.
     let rule_rgb = theme.border;
 
-    if scroll_pos == 0.0 && overscroll == 0.0 {
+    if scroll_pos == 0.0 {
         // Per-frame block-lookup cache: adjacent rows almost always belong
         // to the same block, so caching the last result drops a long-session
         // hot path from O(blocks) per row to O(1) for the common case.
@@ -577,7 +576,7 @@ pub fn draw_viewport(
         let base = scroll_pos.floor() as usize;
         let frac = scroll_pos as f64 - scroll_pos.floor() as f64;
         let scroll_shift = (1.0 - frac) * metrics.cell_h;
-        raster.y_shift_px = scroll_shift - overscroll as f64;
+        raster.y_shift_px = scroll_shift;
         let hist = terminal.scrollback_len();
         let off = base + 1;
         let mut cached_block: Option<Block> = None;
@@ -689,7 +688,7 @@ pub fn draw_viewport(
             && cur.x < cols
             && cur.y < rows
         {
-            raster.y_shift_px = -(overscroll as f64);
+            raster.y_shift_px = 0.0;
 
             // For block cursor: draw the block then re-draw the glyph tinted.
             let style = match terminal.app_cursor_shape {
@@ -814,7 +813,6 @@ pub fn draw_viewport_gpu(
     metrics: FontMetrics,
     theme: &Theme,
     scroll_pos: f32,
-    overscroll: f32,
     selection: Selection,
     search: Option<&Search>,
     _top_bar_rows: usize,
@@ -840,7 +838,7 @@ pub fn draw_viewport_gpu(
         [rect.x as f32, rect.y as f32]
     };
 
-    if scroll_pos == 0.0 && overscroll == 0.0 {
+    if scroll_pos == 0.0 {
         // Live-bottom path.
         let mut cached_block: Option<Block> = None;
         for y in 0..rows {
@@ -943,7 +941,7 @@ pub fn draw_viewport_gpu(
         // We use a shared reference to raster so we can't mutate it; instead
         // we use the pane origin directly.
         // For smooth-scroll GPU path, compute y pixel offsets manually.
-        let shift = (scroll_shift - overscroll as f64) as f32;
+        let shift = scroll_shift as f32;
         let hist = terminal.scrollback_len();
         let off = base + 1;
 
@@ -1053,7 +1051,6 @@ pub fn draw_viewport_gpu(
             let ax = cp.ax as f64;
             let ay = cp.ay as f64;
             let xy = cell_xy(ax, ay);
-            let overscroll_shift = -overscroll;
 
             let style = match terminal.app_cursor_shape {
                 Some(CursorShape::Block) => CursorStyle::Block,
@@ -1065,7 +1062,7 @@ pub fn draw_viewport_gpu(
             match style {
                 CursorStyle::Block => {
                     // Full-cell bg instance.
-                    let bxy = [xy[0], xy[1] + overscroll_shift];
+                    let bxy = xy;
                     batch.push_cell(bxy, [cw, ch], None, cursor_rgb, cursor_rgb);
                     // Re-draw the cell's glyph tinted for the block cursor.
                     let ic = cp.ax.round() as usize;
@@ -1087,14 +1084,13 @@ pub fn draw_viewport_gpu(
                 }
                 CursorStyle::Bar => {
                     // Left 15% strip, full height.
-                    let bxy = [xy[0], xy[1] + overscroll_shift];
                     let bwh = [cw * 0.15, ch];
-                    batch.push_cell(bxy, bwh, None, cursor_rgb, cursor_rgb);
+                    batch.push_cell(xy, bwh, None, cursor_rgb, cursor_rgb);
                 }
                 CursorStyle::Underline => {
                     // Bottom 12% strip.
                     let fh = ch * 0.12;
-                    let bxy = [xy[0], xy[1] + ch - fh + overscroll_shift];
+                    let bxy = [xy[0], xy[1] + ch - fh];
                     let bwh = [cw, fh];
                     batch.push_cell(bxy, bwh, None, cursor_rgb, cursor_rgb);
                 }
@@ -1240,7 +1236,6 @@ mod tests {
             m,
             &theme,
             0.0,
-            0.0,
             sel,
             None,
             0,
@@ -1275,7 +1270,6 @@ mod tests {
             m,
             &theme,
             2.0,
-            0.0,
             sel,
             None,
             0,
@@ -1501,7 +1495,6 @@ mod tests {
             m,
             &theme,
             0.0,
-            0.0,
             Selection::default(),
             None,
             0,
@@ -1538,7 +1531,6 @@ mod tests {
             &mut t,
             m,
             &theme,
-            0.0,
             0.0,
             Selection::default(),
             None,
@@ -1577,7 +1569,6 @@ mod tests {
             m,
             &theme,
             0.0,
-            0.0,
             Selection::default(),
             None,
             0,
@@ -1610,7 +1601,6 @@ mod tests {
             &mut t,
             m,
             &theme,
-            0.0,
             0.0,
             Selection::default(),
             Some(&search),
@@ -1651,7 +1641,6 @@ mod tests {
             &mut t,
             m,
             &theme,
-            0.0,
             0.0,
             Selection::default(),
             None,
@@ -1714,7 +1703,6 @@ mod tests {
                 m,
                 &theme,
                 0.0,
-                0.0,
                 sel,
                 None,
                 0,
@@ -1744,7 +1732,6 @@ mod tests {
                 &mut t,
                 m,
                 &theme,
-                0.0,
                 0.0,
                 sel,
                 None,
@@ -1897,7 +1884,6 @@ mod tests {
             m,
             &theme,
             0.0,
-            0.0,
             sel,
             None,
             0,
@@ -1948,7 +1934,6 @@ mod tests {
             m,
             &theme,
             0.0,
-            0.0,
             sel,
             None,
             0,
@@ -1984,7 +1969,6 @@ mod tests {
             &mut t2,
             m,
             &theme,
-            0.0,
             0.0,
             Selection::default(),
             None,
@@ -2027,7 +2011,6 @@ mod tests {
             m,
             &theme,
             2.0,
-            0.0,
             sel,
             None,
             0,
@@ -2071,7 +2054,6 @@ mod tests {
             &mut t,
             m,
             &theme,
-            0.0,
             0.0,
             Selection::default(),
             None,
@@ -2122,7 +2104,6 @@ mod tests {
             m,
             &theme,
             0.0,
-            0.0,
             Selection::default(),
             None,
             0,
@@ -2172,7 +2153,6 @@ mod tests {
             m,
             &theme,
             0.0,
-            0.0,
             Selection::default(),
             None,
             0,
@@ -2220,7 +2200,6 @@ mod tests {
             &mut t,
             m,
             &theme,
-            0.0,
             0.0,
             Selection::default(),
             None,

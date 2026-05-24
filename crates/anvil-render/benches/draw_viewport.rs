@@ -97,7 +97,6 @@ fn bench_draw_viewport(c: &mut Criterion) {
                 metrics,
                 &theme,
                 0.0, // scroll_pos
-                0.0, // overscroll
                 selection,
                 None, // search
                 1,    // top_bar_rows (tab bar)

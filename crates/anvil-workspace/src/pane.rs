@@ -39,8 +39,6 @@ pub struct Pane {
 
     // Per-pane view state animated by the main thread.
     pub scroll_pos: f32,
-    pub overscroll: f32,
-    pub overscroll_target: f32,
     pub cursor_ax: f32,
     pub cursor_ay: f32,
     pub selection: Selection,
@@ -60,8 +58,6 @@ impl Pane {
             id,
             terminal,
             scroll_pos: 0.0,
-            overscroll: 0.0,
-            overscroll_target: 0.0,
             cursor_ax: 0.0,
             cursor_ay: 0.0,
             selection: Selection::default(),
@@ -172,8 +168,6 @@ mod tests {
         let p = Pane::new(7, 80, 24, 0);
         assert_eq!(p.id, 7);
         assert_eq!(p.scroll_pos, 0.0);
-        assert_eq!(p.overscroll, 0.0);
-        assert_eq!(p.overscroll_target, 0.0);
         assert_eq!(p.cursor_ax, 0.0);
         assert_eq!(p.cursor_ay, 0.0);
         assert!(!p.selection.active);

@@ -106,7 +106,6 @@ pub fn draw_workspace(
             metrics,
             theme,
             pane.scroll_pos,
-            pane.overscroll,
             pane.selection,
             search,
             0, // top_bar_rows: already encoded in origin_y

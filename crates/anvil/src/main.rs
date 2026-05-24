@@ -583,8 +583,6 @@ impl App {
         pane.cursor_ax = cur.x as f32;
         pane.cursor_ay = cur.y as f32;
         pane.scroll_pos = pane.terminal.viewport_offset() as f32;
-        pane.overscroll = 0.0;
-        pane.overscroll_target = 0.0;
     }
 
     /// Resize every pane in every tab to reflect the current window size.
@@ -686,10 +684,6 @@ impl App {
                 }
             }
         }
-    }
-
-    fn bounce_impulse(&self) -> f32 {
-        (self.font.metrics.cell_h * 0.5) as f32
     }
 
     fn focus_neighbor(&mut self, dir: NavDir) {
@@ -939,7 +933,6 @@ impl App {
     }
 
     fn jump_to_prev_prompt(&mut self) {
-        let bounce = self.bounce_impulse();
         let Some(tab) = self.tabs.current_mut() else {
             return;
         };
@@ -968,13 +961,11 @@ impl App {
         if let Some(cr) = best {
             t.scroll_to_line(cr);
             pane.scroll_pos = pane.terminal.viewport_offset() as f32;
-            pane.overscroll_target = bounce;
             self.dirty = true;
         }
     }
 
     fn jump_to_next_prompt(&mut self) {
-        let bounce = self.bounce_impulse();
         let Some(tab) = self.tabs.current_mut() else {
             return;
         };
@@ -1003,11 +994,9 @@ impl App {
         if let Some(cr) = best {
             t.scroll_to_line(cr);
             pane.scroll_pos = pane.terminal.viewport_offset() as f32;
-            pane.overscroll_target = -bounce;
         } else {
             t.scroll_to_bottom();
             pane.scroll_pos = 0.0;
-            pane.overscroll_target = -bounce;
         }
         self.dirty = true;
     }
@@ -1279,8 +1268,6 @@ impl App {
             .and_then(|t| t.registry.get(t.focused_id()))
             .map(|p| {
                 p.scroll_pos != 0.0
-                    || p.overscroll != 0.0
-                    || p.overscroll_target != 0.0
                     || p.terminal.viewport_offset() != 0
             })
             .unwrap_or(false);
@@ -1363,7 +1350,6 @@ impl App {
                             }
                             // Viewport scroll change → force full for this pane.
                             let scroll_changed = pane.scroll_pos != 0.0
-                                || pane.overscroll != 0.0
                                 || pane.terminal.viewport_offset() != 0;
                             if scroll_changed {
                                 ds.force_full();
@@ -1631,7 +1617,6 @@ impl App {
                         metrics,
                         &self.theme,
                         pane.scroll_pos,
-                        pane.overscroll,
                         pane.selection,
                         search_ref,
                         0, // top_bar_rows: encoded in origin_y
@@ -1725,26 +1710,22 @@ impl App {
                 self.dirty = true;
             }
             Action::ScrollTop => {
-                let bounce = self.bounce_impulse();
                 if let Some(tab) = self.tabs.current_mut() {
                     let id = tab.focused_id();
                     if let Some(pane) = tab.registry.get_mut(id) {
                         let len = pane.terminal.scrollback_len() as isize;
                         pane.terminal.scroll_viewport(len);
                         pane.scroll_pos = pane.terminal.viewport_offset() as f32;
-                        pane.overscroll_target = bounce;
                     }
                 }
                 self.dirty = true;
             }
             Action::ScrollBottom => {
-                let bounce = self.bounce_impulse();
                 if let Some(tab) = self.tabs.current_mut() {
                     let id = tab.focused_id();
                     if let Some(pane) = tab.registry.get_mut(id) {
                         pane.terminal.scroll_to_bottom();
                         pane.scroll_pos = 0.0;
-                        pane.overscroll_target = -bounce;
                     }
                 }
                 self.dirty = true;
@@ -2174,7 +2155,6 @@ impl AppHandler for AppShell {
         // that glide the cursor was drawn at fractional rows that the dirty
         // tracker didn't know about, leaving stale cursor pixels at every
         // intermediate row — the "cursor trail" bug.
-        let approach = |cur: f32, target: f32, rate: f32| -> f32 { cur + (target - cur) * rate };
         if let Some(tab) = app.tabs.current_mut() {
             let id = tab.focused_id();
             if let Some(pane) = tab.registry.get_mut(id) {
@@ -2184,17 +2164,6 @@ impl AppHandler for AppShell {
                 if (tx - pane.cursor_ax).abs() > 0.0 || (ty - pane.cursor_ay).abs() > 0.0 {
                     pane.cursor_ax = tx;
                     pane.cursor_ay = ty;
-                    app.dirty = true;
-                }
-                if pane.overscroll != 0.0 || pane.overscroll_target != 0.0 {
-                    pane.overscroll_target = approach(pane.overscroll_target, 0.0, 0.32);
-                    pane.overscroll = approach(pane.overscroll, pane.overscroll_target, 0.55);
-                    if pane.overscroll_target.abs() < 0.5 {
-                        pane.overscroll_target = 0.0;
-                    }
-                    if pane.overscroll.abs() < 0.5 && pane.overscroll_target == 0.0 {
-                        pane.overscroll = 0.0;
-                    }
                     app.dirty = true;
                 }
             }
@@ -2770,28 +2739,19 @@ impl AppHandler for AppShell {
             return;
         }
 
-        let d = (dy / 8.0) as f32;
-        let ch = app.font.metrics.cell_h as f32;
-        let limit = ch * 1.5;
+        // macOS delivers `scrollingDeltaY` in DEVICE PIXELS for pixel-precise
+        // sources (trackpads, Magic Mouse) and in "lines" (≈1.0 per detent)
+        // for traditional mice. Convert both to cell-row units. cell_h is
+        // device-pixels per cell, so dividing by it gives cells; the `* 3.0`
+        // line-mode factor matches typical terminal scroll-by-3 feel.
+        let cell_h = app.font.metrics.cell_h as f32;
+        let d = (dy as f32) / cell_h;
 
         if let Some(tab) = app.tabs.current_mut() {
             let id = tab.focused_id();
             if let Some(pane) = tab.registry.get_mut(id) {
                 let max_pos = pane.terminal.scrollback_len() as f32;
-                let mut np = pane.scroll_pos + d;
-                if np > max_pos {
-                    let excess = np - max_pos;
-                    let resist = 1.0 - (pane.overscroll_target.abs() / limit).min(1.0);
-                    pane.overscroll_target =
-                        (pane.overscroll_target + excess * ch * 0.30 * resist).clamp(-limit, limit);
-                    np = max_pos;
-                } else if np < 0.0 {
-                    let excess = np;
-                    let resist = 1.0 - (pane.overscroll_target.abs() / limit).min(1.0);
-                    pane.overscroll_target =
-                        (pane.overscroll_target + excess * ch * 0.30 * resist).clamp(-limit, limit);
-                    np = 0.0;
-                }
+                let np = (pane.scroll_pos + d).clamp(0.0, max_pos);
                 pane.scroll_pos = np;
                 pane.terminal.set_viewport_offset(np.round() as usize);
             }
