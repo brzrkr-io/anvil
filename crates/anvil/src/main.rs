@@ -798,7 +798,11 @@ impl App {
         let cw = self.font.metrics.cell_w as usize;
         let ch = self.font.metrics.cell_h as usize;
         let cols = ((dw.saturating_sub(2 * GRID_PAD)) / cw).max(1);
-        let rows = (((dh.saturating_sub(2 * GRID_PAD)) / ch).saturating_sub(1)).max(1);
+        // Subtract 2 rows: the chrome row at top AND the status row at
+        // bottom. Subtracting only 1 made the PTY think it had a free row
+        // that the renderer was actually using for the status bar — output
+        // and status bar drew on the same pixel band → jumbled glyphs.
+        let rows = (((dh.saturating_sub(2 * GRID_PAD)) / ch).saturating_sub(2)).max(1);
         let scrollback = self.config.scrollback;
 
         // PaneIds must be unique across ALL tabs because self.ptys is a
@@ -3076,10 +3080,11 @@ fn main() -> Result<()> {
     // first frames render at the wrong column count and scrollback comes back
     // mis-shaped. Mirror the reservation: drop the right `GRID_PAD` (the HUD
     // absorbs it) and reserve `HUD_COLS_DEFAULT + 1` cells for the docked panel.
-    let hud_reserve_px = HUD_COLS_DEFAULT * cw + cw;
-    let inner_w_init = dw.saturating_sub(GRID_PAD).saturating_sub(hud_reserve_px);
-    let cols = (inner_w_init / cw).max(1);
-    let rows = ((dh.saturating_sub(2 * GRID_PAD)) / ch).max(1);
+    // HUD is now default-off — reserve only the padding + chrome + status rows.
+    // (resize_all_tabs corrects to exact pane size once the window is up,
+    // but the initial PTY needs sane dimensions for the first prompt frame.)
+    let cols = (dw.saturating_sub(2 * GRID_PAD) / cw).max(1);
+    let rows = (((dh.saturating_sub(2 * GRID_PAD)) / ch).saturating_sub(2)).max(1);
 
     // -- Initial tab + PTY ----------------------------------------------------
     let tab = Tab::new_single_pane(cols, rows, config.scrollback);
