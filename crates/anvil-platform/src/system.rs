@@ -43,6 +43,42 @@ pub fn set_clipboard(text: &str) {
     });
 }
 
+/// Read the system clipboard's current text contents.
+///
+/// Returns `None` when the pasteboard has no string for the public UTF-8
+/// type, or any AppKit call fails. Best-effort like `set_clipboard`.
+pub fn get_clipboard() -> Option<String> {
+    objc2::rc::autoreleasepool(|_| {
+        // SAFETY: NSPasteboard.generalPasteboard.stringForType: chain on the
+        // main thread.
+        unsafe {
+            let pb_class = AnyClass::get(c"NSPasteboard")?;
+            let pb: *mut objc2::runtime::AnyObject = msg_send![pb_class, generalPasteboard];
+            if pb.is_null() {
+                return None;
+            }
+            let nsstring_class = AnyClass::get(c"NSString")?;
+            let type_str: *mut objc2::runtime::AnyObject = msg_send![
+                nsstring_class,
+                stringWithUTF8String: c"public.utf8-plain-text".as_ptr()
+            ];
+            let s: *mut objc2::runtime::AnyObject = msg_send![pb, stringForType: type_str];
+            if s.is_null() {
+                return None;
+            }
+            let cstr: *const std::ffi::c_char = msg_send![s, UTF8String];
+            if cstr.is_null() {
+                return None;
+            }
+            Some(
+                std::ffi::CStr::from_ptr(cstr)
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+        }
+    })
+}
+
 /// Open `path_or_url` in the user's default app (Finder for directories,
 /// $EDITOR-equivalent for files, browser for `https://…`). Best-effort.
 pub fn open_with_default_app(path_or_url: &str) {

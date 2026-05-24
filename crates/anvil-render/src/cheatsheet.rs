@@ -105,6 +105,10 @@ pub const ROWS: &[Row] = &[
         chord: "Cmd C",
         desc: "copy",
     },
+    Row::Shortcut {
+        chord: "Cmd V",
+        desc: "paste",
+    },
     Row::Header("HUD"),
     Row::Shortcut {
         chord: "click row",

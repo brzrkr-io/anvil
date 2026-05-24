@@ -1764,6 +1764,29 @@ impl App {
             return true;
         }
 
+        // ⌘V — paste clipboard contents to the focused pane's PTY.
+        // Bracketed paste is honored when the app has it enabled (mode
+        // 2004): wrap the payload in \x1b[200~ ... \x1b[201~ so the shell
+        // can distinguish pasted bytes from typed ones.
+        if ascii_lower(ch) == 'v' && !mods.shift && !mods.control && !mods.option {
+            if let Some(text) = anvil_platform::system::get_clipboard() {
+                let bracketed = self
+                    .tabs
+                    .current()
+                    .and_then(|t| t.registry.get(t.focused_id()))
+                    .map(|p| p.terminal.modes.bracketed_paste)
+                    .unwrap_or(false);
+                if bracketed {
+                    self.write_to_focused_pty(b"\x1b[200~");
+                }
+                self.write_to_focused_pty(text.as_bytes());
+                if bracketed {
+                    self.write_to_focused_pty(b"\x1b[201~");
+                }
+            }
+            return true;
+        }
+
         // ⌘⇧A — send current selection to the active agent as context.
         // Until a real agent IPC ships, we (a) copy the selection to the
         // clipboard and (b) write it to /tmp/anvil-agent-context.md as a
