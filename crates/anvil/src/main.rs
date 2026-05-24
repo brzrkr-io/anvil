@@ -2369,10 +2369,8 @@ impl AppHandler for AppShell {
                     self.handle_zoom_chord(ch);
                     return true;
                 }
-                KeyInput::Char(ch) => {
-                    if self.app.handle_cmd_chord(event.mods, ch, &self.webview) {
-                        return true;
-                    }
+                KeyInput::Char(ch) if self.app.handle_cmd_chord(event.mods, ch, &self.webview) => {
+                    return true;
                 }
                 _ => {}
             }
@@ -2636,8 +2634,8 @@ impl AppHandler for AppShell {
                         order.iter().position(|&s| s == target),
                     ) {
                         let item = order.remove(from);
-                        let insert_at = if to > from { to } else { to };
-                        let insert_at = insert_at.min(order.len());
+                        // Insert at the target index, clamped to the now-shorter Vec.
+                        let insert_at = to.min(order.len());
                         order.insert(insert_at, item);
                         save_hud_section_order(order);
                     }

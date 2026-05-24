@@ -451,6 +451,10 @@ pub fn draw_viewport(
     let rule_rgb = theme.border;
 
     if scroll_pos == 0.0 && overscroll == 0.0 {
+        // Per-frame block-lookup cache: adjacent rows almost always belong
+        // to the same block, so caching the last result drops a long-session
+        // hot path from O(blocks) per row to O(1) for the common case.
+        let mut cached_block: Option<Block> = None;
         // Live bottom: no fractional offset.
         for y in 0..rows {
             // Dirty-row gate: skip rows that haven't changed.
@@ -472,8 +476,16 @@ pub fn draw_viewport(
             let crow = terminal.content_row_of_viewport(y);
             let abs = terminal.absolute_line_of_content(crow);
 
-            // Block lookup: always needed for accent bar, tint, and header rendering.
-            let block_opt = terminal.block_at(abs);
+            // Block lookup: reuse cached block when this row is still inside
+            // its range; otherwise ask the terminal.
+            let block_opt = match cached_block {
+                Some(ref b) if abs >= b.command_line && abs < b.end_line => Some(*b),
+                _ => {
+                    let fresh = terminal.block_at(abs);
+                    cached_block = fresh;
+                    fresh
+                }
+            };
 
             // If this row is inside a folded block's OUTPUT region, skip it.
             if let Some(ref block) = block_opt {
@@ -565,6 +577,7 @@ pub fn draw_viewport(
         raster.y_shift_px = scroll_shift - overscroll as f64;
         let hist = terminal.scrollback_len();
         let off = base + 1;
+        let mut cached_block: Option<Block> = None;
         for y in 0..=rows {
             let crow: usize = if off > y {
                 (hist + y).saturating_sub(off)
@@ -573,8 +586,15 @@ pub fn draw_viewport(
             };
             let abs = terminal.absolute_line_of_content(crow);
 
-            // Block lookup (smooth-scroll path).
-            let block_opt = terminal.block_at(abs);
+            // Block lookup with per-row-locality cache.
+            let block_opt = match cached_block {
+                Some(ref b) if abs >= b.command_line && abs < b.end_line => Some(*b),
+                _ => {
+                    let fresh = terminal.block_at(abs);
+                    cached_block = fresh;
+                    fresh
+                }
+            };
 
             if let Some(ref block) = block_opt {
                 if folded.contains(block.command_line)
@@ -814,12 +834,20 @@ pub fn draw_viewport_gpu(
 
     if scroll_pos == 0.0 && overscroll == 0.0 {
         // Live-bottom path.
+        let mut cached_block: Option<Block> = None;
         for y in 0..rows {
             let crow = terminal.content_row_of_viewport(y);
             let abs = terminal.absolute_line_of_content(crow);
 
-            // Block lookup: always needed for accent bar, tint, and header.
-            let block_opt = terminal.block_at(abs);
+            // Block lookup with per-row-locality cache.
+            let block_opt = match cached_block {
+                Some(ref b) if abs >= b.command_line && abs < b.end_line => Some(*b),
+                _ => {
+                    let fresh = terminal.block_at(abs);
+                    cached_block = fresh;
+                    fresh
+                }
+            };
 
             // Skip folded output rows.
             if let Some(ref block) = block_opt {
@@ -912,6 +940,7 @@ pub fn draw_viewport_gpu(
         let hist = terminal.scrollback_len();
         let off = base + 1;
 
+        let mut cached_block: Option<Block> = None;
         for y in 0..=rows {
             let crow: usize = if off > y {
                 (hist + y).saturating_sub(off)
@@ -920,8 +949,15 @@ pub fn draw_viewport_gpu(
             };
             let abs = terminal.absolute_line_of_content(crow);
 
-            // Block lookup (smooth-scroll path).
-            let block_opt = terminal.block_at(abs);
+            // Block lookup with per-row-locality cache.
+            let block_opt = match cached_block {
+                Some(ref b) if abs >= b.command_line && abs < b.end_line => Some(*b),
+                _ => {
+                    let fresh = terminal.block_at(abs);
+                    cached_block = fresh;
+                    fresh
+                }
+            };
 
             if let Some(ref block) = block_opt {
                 if folded.contains(block.command_line)
