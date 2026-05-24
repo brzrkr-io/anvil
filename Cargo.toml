@@ -42,6 +42,7 @@ regex = "1"
 
 # PTY / POSIX
 nix = { version = "0.31", features = ["fs", "ioctl", "process", "signal", "term"] }
+libc = "0.2"
 
 # Apple / Objective-C bindings
 objc2 = "0.6"

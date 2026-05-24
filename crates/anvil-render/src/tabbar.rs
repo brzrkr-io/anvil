@@ -5,55 +5,176 @@
 use anvil_theme::Theme;
 use anvil_workspace::tab::TabManager;
 
-use crate::raster::{FontMetrics, GlyphPainter, Raster};
+use crate::raster::{FontMetrics, GlyphPainter, PixelRect, Raster};
 
-/// Draw the tab bar across raster row 0. Each tab gets an equal-width segment;
-/// the active segment is filled with theme.surface (clearly raised); inactive
-/// segments use theme.background (flat canvas). A thin theme.border line runs
-/// along the bottom of the whole bar. Labels have 2-col inner left padding.
+// Traffic lights (red/yellow/green) sit at the top-left of the window.
+// Reserve this many device-pixels from the left window edge — do not draw
+// anything there. (spec: "~78 device-points")
+const TRAFFIC_LIGHT_RESERVE_PX: f64 = 78.0;
+
+/// Hit region for a single element in the chrome row.
+#[derive(Clone, Debug)]
+pub struct TabBarHit {
+    /// Hit rect in device pixels (raster space).
+    pub rect: PixelRect,
+    pub kind: TabBarHitKind,
+}
+
+/// What a tab-bar click means.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TabBarHitKind {
+    /// Switch to tab at this index.
+    Tab(usize),
+    /// Close tab at this index.
+    CloseTab(usize),
+    /// Open a new tab (+  button).
+    AddTab,
+}
+
+/// Hit regions populated by [`draw_tab_bar`] and consumed by mouse-down.
+#[derive(Default, Debug)]
+pub struct TabBarHits {
+    pub hits: Vec<TabBarHit>,
+}
+
+impl TabBarHits {
+    pub fn clear(&mut self) {
+        self.hits.clear();
+    }
+}
+
+/// Draw the chrome+tab row at raster row 0. Always drawn (chrome is always
+/// present, even with 0 or 1 tabs).
 ///
-/// No-op when the manager has fewer than 2 tabs (low-profile rule).
+/// Layout left-to-right:
+///   1. Traffic-light reserved zone (~78 device-px) — nothing drawn here.
+///   2. Basin mark `◒` in theme.accent, immediately after the reserved zone.
+///   3. Content-width tabs (label + padding + close ×), then `+` button.
+///   4. Right-side indicators (branch `⎇` + name · clock) right-aligned.
+///
+/// Active tab: theme.surface background + 2px bottom accent rule.
+/// Inactive tab: transparent (theme.background), theme.ansi[8] dim text.
+/// Unread dot: amber `·` on inactive tabs with PTY output since last focus.
+/// Close ×: shown on the active tab only (hover requires mouse tracking).
+#[allow(clippy::too_many_arguments)]
 pub fn draw_tab_bar(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
     metrics: FontMetrics,
     theme: &Theme,
     tabs: &TabManager,
+    branch: &str,
+    clock: &str,
+    hits_out: &mut TabBarHits,
 ) {
-    let n = tabs.count();
-    if n < 2 {
-        return;
-    }
+    hits_out.clear();
 
     let cell_w = metrics.cell_w;
     let cell_h = metrics.cell_h;
-    // Match the padded grid width.
     let usable_w = raster.width as f64 - 2.0 * raster.pad_x;
     let total_cols = ((usable_w.max(0.0)) / cell_w) as usize;
     if total_cols == 0 {
         return;
     }
-    let seg_cols = (total_cols / n).max(1);
 
-    for t in 0..n {
-        let start_col = t * seg_cols;
-        let is_active = t == tabs.active;
-        let end_col = if t == n - 1 {
-            total_cols
+    // How many raster columns to skip for the traffic-light zone.
+    // pad_x is already the left offset of col 0 from the window edge.
+    let tl_cols = (((TRAFFIC_LIGHT_RESERVE_PX - raster.pad_x).max(0.0)) / cell_w).ceil() as usize;
+
+    // ── Basin mark ◒ ──────────────────────────────────────────────────────────
+    let basin_col = tl_cols;
+    if basin_col < total_cols {
+        raster.cell_glyph(painter, metrics, basin_col, 0, '◒' as u32, theme.accent);
+    }
+
+    // ── Right-side indicators ─────────────────────────────────────────────────
+    // Build the right-side string and place it from the right edge.
+    let right_str = build_right_str(branch, clock);
+    let right_cols = right_str.chars().count();
+    // Leave one col gap from the right edge.
+    let right_start = if total_cols > right_cols + 1 {
+        total_cols - right_cols - 1
+    } else {
+        0
+    };
+    draw_right_indicators(
+        raster,
+        painter,
+        metrics,
+        theme,
+        &right_str,
+        branch,
+        right_start,
+    );
+
+    // ── Tabs ──────────────────────────────────────────────────────────────────
+    let n = tabs.count();
+    // Tabs start 2 cols after the basin mark.
+    let tabs_start_col = basin_col + 2;
+    // Reserve space for right indicators (right_cols + 1 gap + 1 padding) and
+    // the `+` button (2 cols).
+    let add_btn_cols = 2_usize;
+    let right_reserved = right_cols + 2 + add_btn_cols;
+    let tabs_end_col = if total_cols > right_reserved + tabs_start_col {
+        total_cols - right_reserved
+    } else {
+        tabs_start_col
+    };
+    let avail_tab_cols = tabs_end_col.saturating_sub(tabs_start_col);
+
+    // Compute per-tab widths (content-width: label + 2 left pad + 1 right pad +
+    // 1 close × + 1 gap). Min 8, max 24.
+    let tab_widths: Vec<usize> = (0..n)
+        .map(|t| {
+            let label = tab_label(tabs, t);
+            let label_len = label.chars().count();
+            // label + 2 left pad + 1 × + 1 right pad
+            let w = label_len + 4;
+            w.clamp(8, 24)
+        })
+        .collect();
+    let total_tab_cols: usize = tab_widths.iter().sum();
+
+    // If there's not enough room, shrink all tabs proportionally to min 8.
+    let tab_widths: Vec<usize> = if total_tab_cols > avail_tab_cols && n > 0 {
+        let min_total = n * 8;
+        if min_total > avail_tab_cols {
+            // Not enough room even at minimum — clamp everything to 8.
+            vec![8; n]
         } else {
-            start_col + seg_cols
+            // Distribute available space fairly, floor to 8.
+            tab_widths
+                .iter()
+                .map(|&w| {
+                    let scaled =
+                        (w as f64 * avail_tab_cols as f64 / total_tab_cols as f64) as usize;
+                    scaled.max(8)
+                })
+                .collect()
+        }
+    } else {
+        tab_widths
+    };
+
+    let mut col = tabs_start_col;
+    for t in 0..n {
+        let tw = if t < tab_widths.len() {
+            tab_widths[t]
+        } else {
+            8
         };
-        // Active tab: raised surface fill. Inactive: transparent — sits flush
-        // with the canvas so the bar reads as a row of labels, not a panel.
+        let is_active = t == tabs.active;
+
+        // Active tab: filled surface background.
         if is_active {
-            for col in start_col..end_col {
-                raster.cell_bg(metrics, col, 0, theme.surface);
+            for c in col..col + tw {
+                if c < total_cols {
+                    raster.cell_bg(metrics, c, 0, theme.surface);
+                }
             }
-            // 2px accent bar along the BOTTOM edge of the active segment.
-            // Reads as the tab "connecting" to the content below; also clear
-            // of label descenders so the active tab doesn't appear underlined.
-            let start_px = raster.pad_x + start_col as f64 * cell_w;
-            let seg_w_px = (end_col - start_col) as f64 * cell_w;
+            // 2px accent rule along the bottom of the active segment.
+            let start_px = raster.pad_x + col as f64 * cell_w;
+            let seg_w_px = tw as f64 * cell_w;
             raster.fill_pixel_rect(
                 start_px,
                 raster.pad_y + cell_h - 2.0,
@@ -62,34 +183,135 @@ pub fn draw_tab_bar(
                 theme.accent,
             );
         }
-        // Draw the tab label, truncated to the segment width minus a 2-col pad.
+
         let fg = if is_active {
             theme.foreground
         } else {
             theme.ansi[8] // dim
         };
-        let seg_w = end_col - start_col;
+
+        // Label: starts at col + 2 (2-col left pad).
         let label = tab_label(tabs, t);
+        let label_end_col = col + tw - 2; // leave 2 cols on right for × / dot
         for (i, cp) in label.chars().enumerate() {
-            if i + 3 >= seg_w {
+            let lc = col + 2 + i;
+            if lc >= label_end_col {
                 break;
             }
-            raster.cell_glyph(painter, metrics, start_col + 2 + i, 0, cp as u32, fg);
+            raster.cell_glyph(painter, metrics, lc, 0, cp as u32, fg);
         }
 
-        // Activity dot: dim amber · at the right edge for background tabs with
-        // new PTY output since last focus. Active tab never shows a dot.
-        const ATTENTION: [u8; 3] = [0xb0, 0x7a, 0x14]; // status.attention #b07a14
-        let tab_has_unread = tabs.tabs.get(t).is_some_and(|tab| tab.has_unread);
-        if !is_active && tab_has_unread && end_col >= 2 {
-            raster.cell_glyph(painter, metrics, end_col - 2, 0, '·' as u32, ATTENTION);
+        // Close × on active tab (at col + tw - 2).
+        let close_col = col + tw - 2;
+        if is_active && close_col < total_cols {
+            raster.cell_glyph(painter, metrics, close_col, 0, '×' as u32, theme.ansi[8]);
         }
+
+        // Unread dot: amber · on background tabs with new output.
+        const ATTENTION: [u8; 3] = [0xb0, 0x7a, 0x14]; // status.attention
+        let tab_has_unread = tabs.tabs.get(t).is_some_and(|tab| tab.has_unread);
+        let dot_col = col + tw - 1;
+        if !is_active && tab_has_unread && dot_col < total_cols {
+            raster.cell_glyph(painter, metrics, dot_col, 0, '·' as u32, ATTENTION);
+        }
+
+        // Hit rects in device pixels.
+        let hit_x = raster.pad_x + col as f64 * cell_w;
+        let hit_y = raster.pad_y;
+        let hit_w = tw as f64 * cell_w;
+        let hit_h = cell_h;
+
+        hits_out.hits.push(TabBarHit {
+            rect: PixelRect {
+                x: hit_x,
+                y: hit_y,
+                w: hit_w,
+                h: hit_h,
+            },
+            kind: TabBarHitKind::Tab(t),
+        });
+        // Close × hit: right ~2 cols of the tab.
+        if close_col < total_cols {
+            let cx = raster.pad_x + close_col as f64 * cell_w;
+            hits_out.hits.push(TabBarHit {
+                rect: PixelRect {
+                    x: cx,
+                    y: hit_y,
+                    w: 2.0 * cell_w,
+                    h: hit_h,
+                },
+                kind: TabBarHitKind::CloseTab(t),
+            });
+        }
+
+        col += tw;
     }
 
-    // No bottom hairline: the active tab's bottom accent rule is the
-    // separator. The previous 1px hairline at `pad_y + cell_h - 1.0`
-    // overlapped label descenders at typical font sizes and read as a
-    // strikethrough on inactive tab labels.
+    // `+` button: 2 cols after the last tab.
+    let add_col = col;
+    if add_col + 2 <= total_cols {
+        raster.cell_glyph(painter, metrics, add_col, 0, '+' as u32, theme.ansi[8]);
+        let ax = raster.pad_x + add_col as f64 * cell_w;
+        hits_out.hits.push(TabBarHit {
+            rect: PixelRect {
+                x: ax,
+                y: raster.pad_y,
+                w: 2.0 * cell_w,
+                h: cell_h,
+            },
+            kind: TabBarHitKind::AddTab,
+        });
+    }
+}
+
+/// Build the right-side indicator string: `⎇ branch · HH:MM` or just `HH:MM`.
+fn build_right_str(branch: &str, clock: &str) -> String {
+    if branch.is_empty() {
+        clock.to_string()
+    } else {
+        format!("⎇ {} · {}", branch, clock)
+    }
+}
+
+/// Draw the right-side indicators. Branch glyph `⎇` in theme.accent;
+/// branch name and separator in theme.ansi[8] (dim); clock in theme.ansi[8].
+fn draw_right_indicators(
+    raster: &mut Raster,
+    painter: &mut dyn GlyphPainter,
+    metrics: FontMetrics,
+    theme: &Theme,
+    right_str: &str,
+    branch: &str,
+    start_col: usize,
+) {
+    // ⎇ gets accent color; everything else is dim.
+    let branch_glyph = '⎇';
+    // branch text without the glyph
+    let branch_len = branch.chars().count();
+    // In the full string "⎇ branch · HH:MM", index of each part:
+    //   0: '⎇'
+    //   1: ' '
+    //   2..2+branch_len: branch name
+    //   2+branch_len: ' '
+    //   2+branch_len+1: '·'
+    //   rest: ' HH:MM'
+    // If branch is empty, the whole string is the clock.
+    for (i, cp) in right_str.chars().enumerate() {
+        let col = start_col + i;
+        let color = if !branch.is_empty() && cp == branch_glyph && i == 0 {
+            theme.accent
+        } else if !branch.is_empty() && i > 0 && i <= 1 + branch_len {
+            // branch name chars: still accent for the name, dim for space+separator
+            if i >= 2 && i < 2 + branch_len {
+                theme.accent
+            } else {
+                theme.ansi[8]
+            }
+        } else {
+            theme.ansi[8]
+        };
+        raster.cell_glyph(painter, metrics, col, 0, cp as u32, color);
+    }
 }
 
 /// Derive a display label for tab `t`:
@@ -152,7 +374,12 @@ mod tests {
         }
     }
 
-    /// Port of "drawTabBar is a no-op below 2 tabs" (0-tab case).
+    fn make_hits() -> TabBarHits {
+        TabBarHits::default()
+    }
+
+    /// Chrome row always renders — even with 0 tabs the basin mark is drawn.
+    /// (Previously this was a no-op below 2 tabs; now chrome is always present.)
     #[test]
     fn draw_tab_bar_noop_below_2_tabs() {
         let m = metrics();
@@ -162,19 +389,32 @@ mod tests {
 
         let mgr = TabManager::default(); // 0 tabs
         let theme = anvil_theme::MINERAL_DARK;
+        let mut hits = make_hits();
 
-        draw_tab_bar(&mut r, &mut painter, m, &theme, &mgr);
-        // No changes: pixel (5,5) still the sentinel.
-        // The raster uses BGRA, so checking via pixel_at (which returns RGB).
-        let px = pixel_at(&r, 5, 5);
-        assert_eq!(px, [1, 2, 3], "expected sentinel [1,2,3], got {px:?}");
+        draw_tab_bar(
+            &mut r,
+            &mut painter,
+            m,
+            &theme,
+            &mgr,
+            "",
+            "12:00",
+            &mut hits,
+        );
+        // Basin mark must have been drawn (painter received '◒').
+        let basin_calls: Vec<_> = painter
+            .calls
+            .iter()
+            .filter(|&&(glyph, _)| glyph == '◒' as u32)
+            .collect();
         assert!(
-            painter.calls.is_empty(),
-            "expected no glyph calls for 0 tabs"
+            !basin_calls.is_empty(),
+            "expected basin mark drawn for 0 tabs, painter calls: {:?}",
+            painter.calls
         );
     }
 
-    /// draw_tab_bar is a no-op for 1 tab.
+    /// draw_tab_bar renders chrome even with 1 tab.
     #[test]
     fn draw_tab_bar_noop_for_one_tab() {
         use anvil_workspace::tab::{Tab, TabManager};
@@ -186,11 +426,67 @@ mod tests {
         let mut mgr = TabManager::default();
         mgr.push(Tab::new_single_pane(20, 4, 0));
         let theme = anvil_theme::MINERAL_DARK;
+        let mut hits = make_hits();
 
-        draw_tab_bar(&mut r, &mut painter, m, &theme, &mgr);
-        let px = pixel_at(&r, 5, 5);
-        assert_eq!(px, [1, 2, 3]);
-        assert!(painter.calls.is_empty());
+        draw_tab_bar(
+            &mut r,
+            &mut painter,
+            m,
+            &theme,
+            &mgr,
+            "",
+            "12:00",
+            &mut hits,
+        );
+        // Chrome is rendered: basin mark present.
+        let basin_calls: Vec<_> = painter
+            .calls
+            .iter()
+            .filter(|&&(glyph, _)| glyph == '◒' as u32)
+            .collect();
+        assert!(
+            !basin_calls.is_empty(),
+            "expected basin mark for 1 tab, painter calls: {:?}",
+            painter.calls
+        );
+    }
+
+    /// Basin mark U+25D2 (◒) is in the painter's call log.
+    #[test]
+    fn draw_tab_bar_basin_mark_in_painter_calls() {
+        use anvil_workspace::tab::{Tab, TabManager};
+        let m = metrics();
+        let mut r = Raster::new(400, 80);
+        let mut painter = StubPainter::default();
+        r.clear([0, 0, 0]);
+
+        let mut mgr = TabManager::default();
+        mgr.push(Tab::new_single_pane(20, 4, 0));
+        let theme = anvil_theme::MINERAL_DARK;
+        let mut hits = make_hits();
+
+        draw_tab_bar(
+            &mut r,
+            &mut painter,
+            m,
+            &theme,
+            &mgr,
+            "main",
+            "14:22",
+            &mut hits,
+        );
+
+        let basin: Vec<_> = painter
+            .calls
+            .iter()
+            .filter(|&&(glyph, color)| glyph == '◒' as u32 && color == theme.accent)
+            .collect();
+        assert_eq!(
+            basin.len(),
+            1,
+            "expected exactly one ◒ (U+25D2) in accent colour; painter calls: {:?}",
+            painter.calls
+        );
     }
 
     /// draw_tab_bar paints the bar with 2 tabs.
@@ -207,13 +503,25 @@ mod tests {
         mgr.push(Tab::new_single_pane(20, 4, 0));
         mgr.active = 0;
         let theme = anvil_theme::MINERAL_DARK;
+        let mut hits = make_hits();
 
-        draw_tab_bar(&mut r, &mut painter, m, &theme, &mgr);
+        draw_tab_bar(
+            &mut r,
+            &mut painter,
+            m,
+            &theme,
+            &mgr,
+            "",
+            "14:22",
+            &mut hits,
+        );
 
-        // Active tab (left half, row 0) should be painted with theme.surface.
-        // cell_h=20, so row 0 bitmap is y=[pad_y, pad_y+20). With pad_y=0:
-        // Check a pixel at (5, 10) — inside the left tab segment, row 0 center.
-        let px = pixel_at(&r, 5, 10);
+        // Active tab segment should be painted with theme.surface.
+        // With pad_x=0, tl_cols = ceil((78-0)/10) = 8, basin at col 8,
+        // tabs_start_col = 10. Active tab (tab 0) starts at col 10.
+        // Check a pixel inside the first tab segment at row 0 center.
+        // col 12 → x = 12*10 = 120, y = 10 (mid of cell_h=20, pad_y=0).
+        let px = pixel_at(&r, 120, 10);
         assert_eq!(
             px, theme.surface,
             "expected surface for active tab, got {px:?}"
@@ -236,10 +544,19 @@ mod tests {
         mgr.active = 0;
         mgr.tabs[1].has_unread = true;
         let theme = anvil_theme::MINERAL_DARK;
+        let mut hits = make_hits();
 
-        draw_tab_bar(&mut r, &mut painter, m, &theme, &mgr);
+        draw_tab_bar(
+            &mut r,
+            &mut painter,
+            m,
+            &theme,
+            &mgr,
+            "",
+            "14:22",
+            &mut hits,
+        );
 
-        // There must be exactly one call with the · glyph in ATTENTION colour.
         const ATTENTION: [u8; 3] = [0xb0, 0x7a, 0x14];
         let dot_calls: Vec<_> = painter
             .calls
@@ -269,8 +586,18 @@ mod tests {
         mgr.active = 0;
         mgr.tabs[0].has_unread = true; // active tab — dot must be suppressed
         let theme = anvil_theme::MINERAL_DARK;
+        let mut hits = make_hits();
 
-        draw_tab_bar(&mut r, &mut painter, m, &theme, &mgr);
+        draw_tab_bar(
+            &mut r,
+            &mut painter,
+            m,
+            &theme,
+            &mgr,
+            "",
+            "14:22",
+            &mut hits,
+        );
 
         const ATTENTION: [u8; 3] = [0xb0, 0x7a, 0x14];
         let dot_calls: Vec<_> = painter

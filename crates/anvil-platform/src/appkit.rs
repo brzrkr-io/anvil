@@ -36,6 +36,7 @@ use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSBackingStoreType,
     NSEvent, NSEventModifierFlags, NSImage, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
+    NSWindowTitleVisibility,
 };
 use objc2_foundation::{
     MainThreadMarker, NSData, NSNotification, NSPoint, NSRect, NSSize, NSString, NSTimer,
@@ -500,10 +501,13 @@ impl AppKitApp {
         set_application_icon(&nsapp, mtm);
 
         // ── NSWindow ─────────────────────────────────────────────────────────
+        // FullSizeContentView lets our raster span the full window including
+        // the title-bar zone; traffic lights overlay the top-left of our raster.
         let style = NSWindowStyleMask::Titled
             | NSWindowStyleMask::Closable
             | NSWindowStyleMask::Miniaturizable
-            | NSWindowStyleMask::Resizable;
+            | NSWindowStyleMask::Resizable
+            | NSWindowStyleMask::FullSizeContentView;
 
         let content_rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, height));
 
@@ -522,6 +526,10 @@ impl AppKitApp {
         // SAFETY: setReleasedWhenClosed is safe to call on a retained window.
         unsafe { window.setReleasedWhenClosed(false) };
         window.setTitle(&NSString::from_str(title));
+        // Hide the title text and make the titlebar transparent so our raster
+        // is visible behind the traffic lights (spec: Option D chrome).
+        window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
+        window.setTitlebarAppearsTransparent(true);
 
         // ── Handler Rc → raw pointer for ivars ───────────────────────────────
         // We box each clone of the Rc and take a raw pointer.  The boxes are

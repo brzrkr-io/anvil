@@ -1,0 +1,1164 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Anvil — Layout Mockups</title>
+    <style>
+      :root {
+        --graphite: #0b0d0e;
+        --charcoal: #161a1c;
+        --panel-raised: #181a1e;
+        --ash: #374046;
+        --alloy: #86919a;
+        --mist: #d2d8db;
+        --bone: #eef1f2;
+        --accent: #2f7f86;
+        --accent-bright: #54b7c0;
+        --accent-ember: #c5462a;
+        --verified: #3f8a5b;
+        --attention: #b07a14;
+        --failure: #b13a30;
+        --agent: #6a5fa3;
+        --border: #23262b;
+        --border-strong: #2c3036;
+        --text: #e7e5df;
+        --text-muted: #a1a4a9;
+        --text-subtle: #6c6f74;
+        --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+        --font-sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      html,
+      body {
+        background: #060708;
+        color: var(--mist);
+        font-family: var(--font-sans);
+        min-height: 100vh;
+        padding: 48px 32px 96px;
+      }
+      h1 {
+        font-size: 24px;
+        font-weight: 500;
+        letter-spacing: -0.01em;
+        margin: 0 0 8px;
+      }
+      h1 .basin {
+        color: var(--accent);
+        font-family: var(--font-mono);
+        margin-right: 8px;
+      }
+      .intro {
+        max-width: 720px;
+        color: var(--text-muted);
+        font-size: 14px;
+        line-height: 1.6;
+        margin-bottom: 48px;
+      }
+      .intro code {
+        background: var(--charcoal);
+        padding: 1px 6px;
+        border-radius: 3px;
+        font-family: var(--font-mono);
+        font-size: 12px;
+      }
+      .option {
+        margin-bottom: 72px;
+      }
+      .option-header {
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+      .option-letter {
+        font-family: var(--font-mono);
+        font-size: 18px;
+        color: var(--accent);
+        font-weight: 600;
+      }
+      .option-title {
+        font-size: 16px;
+        font-weight: 500;
+        color: var(--mist);
+      }
+      .option-sub {
+        font-size: 13px;
+        color: var(--text-subtle);
+      }
+      .option-notes {
+        max-width: 720px;
+        color: var(--text-muted);
+        font-size: 13px;
+        line-height: 1.6;
+        margin-bottom: 16px;
+      }
+
+      /* ── Window frame (simulated macOS) ─────────────────────────────── */
+      .window {
+        width: 100%;
+        max-width: 1200px;
+        height: 600px;
+        border-radius: 10px;
+        overflow: hidden;
+        box-shadow:
+          0 0 0 1px rgba(255, 255, 255, 0.04),
+          0 20px 60px rgba(0, 0, 0, 0.6),
+          0 8px 24px rgba(0, 0, 0, 0.4);
+        background: var(--graphite);
+        display: flex;
+        flex-direction: column;
+        font-family: var(--font-mono);
+        font-size: 13px;
+        line-height: 1.4;
+      }
+
+      /* Traffic lights */
+      .traffic-lights {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .traffic-lights .dot {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: #4d5359;
+      }
+      .traffic-lights .dot.red {
+        background: #ff5f57;
+      }
+      .traffic-lights .dot.yellow {
+        background: #febc2e;
+      }
+      .traffic-lights .dot.green {
+        background: #28c840;
+      }
+
+      /* ── Shared content (blocks etc) ───────────────────────────────── */
+      .main {
+        flex: 1;
+        overflow: hidden;
+        display: flex;
+        background: var(--graphite);
+        min-height: 0;
+      }
+      .terminal {
+        flex: 1;
+        padding: 12px 20px;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .block {
+        background: var(--charcoal);
+        border-left: 2px solid var(--verified);
+        padding: 6px 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .block.failed {
+        border-left-color: var(--failure);
+      }
+      .block.running {
+        border-left-color: var(--accent-bright);
+      }
+      .block-header {
+        display: flex;
+        align-items: baseline;
+        gap: 14px;
+        color: var(--mist);
+        padding-bottom: 4px;
+      }
+      .block-header .cmd {
+        color: var(--mist);
+        font-weight: 500;
+      }
+      .block-header .dur {
+        color: var(--text-subtle);
+        margin-left: auto;
+        font-size: 12px;
+      }
+      .block-header .exit {
+        font-size: 12px;
+      }
+      .block-header .exit.ok {
+        color: var(--verified);
+      }
+      .block-header .exit.bad {
+        color: var(--failure);
+      }
+      .block-header .fold {
+        color: var(--text-subtle);
+        font-size: 12px;
+      }
+      .block-out {
+        color: var(--text-muted);
+        white-space: pre;
+        font-size: 12.5px;
+        line-height: 1.5;
+      }
+      .block-out .err {
+        color: var(--failure);
+      }
+      .block-out .acc {
+        color: var(--accent-bright);
+      }
+      .prompt-line {
+        padding: 6px 12px;
+        color: var(--accent-bright);
+        font-size: 13px;
+      }
+      .prompt-line .cursor {
+        display: inline-block;
+        width: 8px;
+        height: 14px;
+        background: var(--accent-bright);
+        vertical-align: middle;
+        margin-left: 2px;
+      }
+
+      /* ── HUD panel ─────────────────────────────────────────────────── */
+      .hud {
+        width: 240px;
+        background: var(--charcoal);
+        border-left: 1px solid var(--border);
+        padding: 12px 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        font-size: 12px;
+        color: var(--mist);
+      }
+      .hud .section {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .hud .section-header {
+        color: var(--text-subtle);
+        font-size: 11px;
+        letter-spacing: 0.04em;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        white-space: nowrap;
+      }
+      .hud .section-header::before {
+        content: "─";
+        color: var(--ash);
+      }
+      .hud .section-header::after {
+        content: "";
+        flex: 1;
+        border-bottom: 1px solid var(--ash);
+        margin-left: 6px;
+      }
+      .hud .row {
+        color: var(--mist);
+        font-size: 12px;
+      }
+      .hud .row.muted {
+        color: var(--text-muted);
+      }
+      .hud .row .badge {
+        display: inline-block;
+        padding: 0 4px;
+        border-radius: 3px;
+        font-size: 11px;
+        background: var(--ash);
+        color: var(--mist);
+        margin-left: 6px;
+      }
+      .hud .row .dot {
+        display: inline-block;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--agent);
+        margin-right: 4px;
+        vertical-align: middle;
+      }
+
+      /* ── OPTION A: minimal merged chrome+tab row ─────────────────── */
+      .chrome-tab-row {
+        display: flex;
+        align-items: center;
+        height: 36px;
+        background: var(--graphite);
+        border-bottom: 1px solid var(--border);
+        padding: 0 12px;
+        gap: 14px;
+      }
+      .basin-mark {
+        font-family: var(--font-mono);
+        color: var(--accent);
+        font-size: 15px;
+        line-height: 1;
+        padding: 0 4px;
+      }
+      .tabs {
+        display: flex;
+        gap: 2px;
+        flex: 1;
+      }
+      .tab {
+        padding: 6px 14px;
+        font-size: 12px;
+        color: var(--text-muted);
+        font-family: var(--font-mono);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        position: relative;
+        border-radius: 4px;
+      }
+      .tab.active {
+        background: var(--charcoal);
+        color: var(--mist);
+      }
+      .tab.active::after {
+        content: "";
+        position: absolute;
+        left: 4px;
+        right: 4px;
+        bottom: 0;
+        height: 2px;
+        background: var(--accent);
+        border-radius: 1px;
+      }
+      .tab .status-dot {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: var(--agent);
+      }
+      .tab .close {
+        color: var(--text-subtle);
+        font-size: 14px;
+        line-height: 1;
+        opacity: 0;
+        transition: opacity 0.1s;
+      }
+      .tab.active .close,
+      .tab:hover .close {
+        opacity: 1;
+      }
+      .add-tab {
+        color: var(--text-subtle);
+        font-size: 16px;
+        padding: 0 10px;
+        cursor: pointer;
+      }
+      .right-indicators {
+        margin-left: auto;
+        display: flex;
+        gap: 14px;
+        font-size: 12px;
+        color: var(--text-muted);
+        font-family: var(--font-mono);
+        align-items: center;
+      }
+      .right-indicators .sep {
+        color: var(--ash);
+      }
+      .right-indicators .branch-glyph {
+        color: var(--accent);
+        margin-right: 4px;
+      }
+
+      /* ── OPTION B: separate slim chrome row + tab row ───────────── */
+      .chrome-row {
+        display: flex;
+        align-items: center;
+        height: 28px;
+        background: #07090a;
+        border-bottom: 1px solid var(--border);
+        padding: 0 12px;
+        gap: 14px;
+      }
+      .chrome-row .basin-mark {
+        font-size: 13px;
+      }
+      .chrome-row .workspace-label {
+        font-size: 12px;
+        color: var(--text-muted);
+        font-family: var(--font-mono);
+      }
+      .chrome-row .right-indicators {
+        font-size: 12px;
+      }
+      .tab-row-only {
+        display: flex;
+        align-items: center;
+        height: 32px;
+        background: var(--graphite);
+        border-bottom: 1px solid var(--border);
+        padding: 0 12px;
+        gap: 2px;
+      }
+      .tab-row-only .tabs {
+        flex: 1;
+      }
+      .tab-row-only .tab {
+        padding: 5px 14px;
+      }
+
+      /* ── OPTION C: warp-ish floating ───────────────────────────────── */
+      .floating-bar {
+        display: flex;
+        align-items: center;
+        height: 40px;
+        background: var(--graphite);
+        padding: 0 14px;
+        gap: 14px;
+      }
+      .floating-bar .tab {
+        background: var(--charcoal);
+        border-radius: 6px;
+        padding: 6px 14px;
+      }
+      .floating-bar .tab.active {
+        background: var(--panel-raised);
+        box-shadow:
+          0 1px 0 rgba(255, 255, 255, 0.05) inset,
+          0 1px 4px rgba(0, 0, 0, 0.4);
+      }
+      .floating-bar .tab.active::after {
+        display: none;
+      }
+
+      /* ── Bottom bar ───────────────────────────────────────────────── */
+      .bottom-bar {
+        display: flex;
+        align-items: center;
+        height: 24px;
+        background: var(--charcoal);
+        border-top: 1px solid var(--border);
+        padding: 0 14px;
+        gap: 16px;
+        font-size: 11px;
+        color: var(--text-muted);
+        font-family: var(--font-mono);
+      }
+      .bottom-bar .right {
+        margin-left: auto;
+        display: flex;
+        gap: 14px;
+      }
+      .bottom-bar .ok {
+        color: var(--verified);
+      }
+
+      /* ── shared dim-rule on right of window ─────────────────────── */
+      .window::-webkit-scrollbar {
+        display: none;
+      }
+
+      .compare-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 32px;
+      }
+      @media (max-width: 1100px) {
+        .compare-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+      .compare-grid .window {
+        height: 460px;
+        max-width: none;
+      }
+      .summary {
+        max-width: 720px;
+        color: var(--text-muted);
+        font-size: 13px;
+        line-height: 1.7;
+        margin-top: 32px;
+        padding: 20px 24px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.01);
+      }
+      .summary strong {
+        color: var(--mist);
+        font-weight: 500;
+      }
+      .summary ul {
+        list-style: none;
+        padding: 0;
+        margin: 8px 0 0;
+      }
+      .summary li {
+        padding: 4px 0;
+      }
+      .summary li::before {
+        content: "→ ";
+        color: var(--accent);
+        margin-right: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1><span class="basin">◒</span>Anvil — Layout Mockups</h1>
+    <p class="intro">
+      Four chrome treatments to compare. All four use the same block-based main area
+      so you can judge chrome density directly. The blocks themselves
+      (the visual treatment of command output) are the same across A–D.
+      Hover a tab to see the close × affordance. <code>⌘\</code> would toggle the right HUD.
+    </p>
+
+    <!-- ──────────────────────────────────────────────────────────────── -->
+    <!-- OPTION A — Minimal merged row                                    -->
+    <!-- ──────────────────────────────────────────────────────────────── -->
+    <section class="option">
+      <div class="option-header">
+        <span class="option-letter">A</span>
+        <span class="option-title">Minimal merged row</span>
+        <span class="option-sub">— 1 chrome row total, no bottom bar, HUD off</span>
+      </div>
+      <p class="option-notes">
+        Most restrained. Traffic lights + Basin mark + tabs + two right indicators all
+        in ONE row. No second chrome row. No bottom bar. HUD is hidden by default. The
+        terminal blocks are the primary content. This is the "Linear-quiet" version.
+      </p>
+      <div class="window">
+        <div class="chrome-tab-row">
+          <div class="traffic-lights">
+            <div class="dot red"></div>
+            <div class="dot yellow"></div>
+            <div class="dot green"></div>
+          </div>
+          <div class="basin-mark">◒</div>
+          <div class="tabs">
+            <div class="tab active">
+              <span>anvil</span>
+              <span class="status-dot"></span>
+              <span class="close">×</span>
+            </div>
+            <div class="tab">
+              <span>api</span>
+              <span class="close">×</span>
+            </div>
+            <div class="add-tab">+</div>
+          </div>
+          <div class="right-indicators">
+            <span><span class="branch-glyph">⎇</span>main</span>
+            <span class="sep">·</span>
+            <span>14:22</span>
+          </div>
+        </div>
+        <div class="main">
+          <div class="terminal">
+            <div class="block">
+              <div class="block-header">
+                <span class="cmd">git status</span>
+                <span class="dur">0.1s</span>
+                <span class="exit ok">✓</span>
+                <span class="fold">▾</span>
+              </div>
+              <div class="block-out">On branch main
+nothing to commit, working tree clean</div>
+            </div>
+            <div class="block failed">
+              <div class="block-header">
+                <span class="cmd">cargo build</span>
+                <span class="dur">3.2s</span>
+                <span class="exit bad">✗ 1</span>
+                <span class="fold">▾</span>
+              </div>
+              <div class="block-out">   Compiling anvil v0.1.0
+<span class="err">error[E0308]: mismatched types
+  --&gt; src/main.rs:42:5</span></div>
+            </div>
+            <div class="prompt-line">❯<span class="cursor"></span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ──────────────────────────────────────────────────────────────── -->
+    <!-- OPTION B — Two thin rows + slim bottom bar                       -->
+    <!-- ──────────────────────────────────────────────────────────────── -->
+    <section class="option">
+      <div class="option-header">
+        <span class="option-letter">B</span>
+        <span class="option-title">Two thin rows + slim bottom</span>
+        <span class="option-sub">— chrome row + tab row separated, 1-row bottom bar</span>
+      </div>
+      <p class="option-notes">
+        Clearer hierarchy. A skinny chrome row (28px) for identity + status indicators
+        on top, the tab row below it focused only on tabs. A 24px bottom bar with
+        cwd + exit status. HUD shown. Total vertical chrome ~85px vs A's ~36px —
+        feels more like a real app at the cost of vertical content.
+      </p>
+      <div class="window">
+        <div class="chrome-row">
+          <div class="traffic-lights">
+            <div class="dot red"></div>
+            <div class="dot yellow"></div>
+            <div class="dot green"></div>
+          </div>
+          <div class="basin-mark">◒</div>
+          <div class="workspace-label">anvil</div>
+          <div class="right-indicators">
+            <span><span class="branch-glyph">⎇</span>main</span>
+            <span class="sep">·</span>
+            <span>14:22</span>
+          </div>
+        </div>
+        <div class="tab-row-only">
+          <div class="tabs">
+            <div class="tab active">
+              <span>anvil</span>
+              <span class="status-dot"></span>
+              <span class="close">×</span>
+            </div>
+            <div class="tab">
+              <span>api</span>
+              <span class="close">×</span>
+            </div>
+            <div class="add-tab">+</div>
+          </div>
+        </div>
+        <div class="main">
+          <div class="terminal">
+            <div class="block">
+              <div class="block-header">
+                <span class="cmd">git status</span>
+                <span class="dur">0.1s</span>
+                <span class="exit ok">✓</span>
+                <span class="fold">▾</span>
+              </div>
+              <div class="block-out">On branch main
+nothing to commit, working tree clean</div>
+            </div>
+            <div class="block failed">
+              <div class="block-header">
+                <span class="cmd">cargo build</span>
+                <span class="dur">3.2s</span>
+                <span class="exit bad">✗ 1</span>
+                <span class="fold">▾</span>
+              </div>
+              <div class="block-out">   Compiling anvil v0.1.0
+<span class="err">error[E0308]: mismatched types
+  --&gt; src/main.rs:42:5</span></div>
+            </div>
+            <div class="prompt-line">❯<span class="cursor"></span></div>
+          </div>
+          <div class="hud">
+            <div class="section">
+              <div class="section-header">REPO</div>
+              <div class="row">caldera/anvil</div>
+              <div class="row muted">~/work/caldera</div>
+            </div>
+            <div class="section">
+              <div class="section-header">GIT</div>
+              <div class="row"><span style="color: var(--accent)">⎇</span> main <span class="badge">↑2</span></div>
+              <div class="row muted">fd056bd visual: tab strikethrough…</div>
+            </div>
+            <div class="section">
+              <div class="section-header">AGENTS</div>
+              <div class="row"><span class="dot"></span>claude · idle</div>
+            </div>
+            <div class="section">
+              <div class="section-header">SYSTEM</div>
+              <div class="row muted">cpu 8% mem 3.9G</div>
+            </div>
+          </div>
+        </div>
+        <div class="bottom-bar">
+          <span>~/work/caldera/anvil</span>
+          <span class="ok">✓</span>
+          <div class="right">
+            <span>14:22</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ──────────────────────────────────────────────────────────────── -->
+    <!-- OPTION C — Warp-ish floating tabs                                -->
+    <!-- ──────────────────────────────────────────────────────────────── -->
+    <section class="option">
+      <div class="option-header">
+        <span class="option-letter">C</span>
+        <span class="option-title">Warp-ish floating tabs</span>
+        <span class="option-sub">— tabs as floating cards, no bottom bar, HUD off</span>
+      </div>
+      <p class="option-notes">
+        Tabs are floating capsule cards instead of segments — more modern, more Warp.
+        Single chrome row at 40px (a bit taller for the floating tabs to breathe).
+        No bottom bar. The active tab gets a subtle inset highlight, not an underline.
+        Trades pure restraint for a softer, more app-like feel.
+      </p>
+      <div class="window">
+        <div class="floating-bar">
+          <div class="traffic-lights">
+            <div class="dot red"></div>
+            <div class="dot yellow"></div>
+            <div class="dot green"></div>
+          </div>
+          <div class="basin-mark">◒</div>
+          <div class="tabs">
+            <div class="tab active">
+              <span>anvil</span>
+              <span class="status-dot"></span>
+              <span class="close">×</span>
+            </div>
+            <div class="tab">
+              <span>api</span>
+              <span class="close">×</span>
+            </div>
+            <div class="add-tab">+</div>
+          </div>
+          <div class="right-indicators">
+            <span><span class="branch-glyph">⎇</span>main</span>
+            <span class="sep">·</span>
+            <span>14:22</span>
+          </div>
+        </div>
+        <div class="main">
+          <div class="terminal">
+            <div class="block">
+              <div class="block-header">
+                <span class="cmd">git status</span>
+                <span class="dur">0.1s</span>
+                <span class="exit ok">✓</span>
+                <span class="fold">▾</span>
+              </div>
+              <div class="block-out">On branch main
+nothing to commit, working tree clean</div>
+            </div>
+            <div class="block failed">
+              <div class="block-header">
+                <span class="cmd">cargo build</span>
+                <span class="dur">3.2s</span>
+                <span class="exit bad">✗ 1</span>
+                <span class="fold">▾</span>
+              </div>
+              <div class="block-out">   Compiling anvil v0.1.0
+<span class="err">error[E0308]: mismatched types
+  --&gt; src/main.rs:42:5</span></div>
+            </div>
+            <div class="prompt-line">❯<span class="cursor"></span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ──────────────────────────────────────────────────────────────── -->
+    <!-- OPTION D — Minimal merged + bottom bar (Recommended hybrid)       -->
+    <!-- ──────────────────────────────────────────────────────────────── -->
+    <section class="option">
+      <div class="option-header">
+        <span class="option-letter">D</span>
+        <span class="option-title">Recommended hybrid</span>
+        <span class="option-sub">— merged row + a slim bottom bar, HUD off</span>
+      </div>
+      <p class="option-notes">
+        Identical to A but adds the 24px bottom bar. Single chrome row at top (no second
+        identity row), bottom bar carries the "this is a stateful app" signal. HUD off
+        by default. ~60px of total chrome — the minimum that still reads as "app, not
+        terminal." This is my recommendation.
+      </p>
+      <div class="window">
+        <div class="chrome-tab-row">
+          <div class="traffic-lights">
+            <div class="dot red"></div>
+            <div class="dot yellow"></div>
+            <div class="dot green"></div>
+          </div>
+          <div class="basin-mark">◒</div>
+          <div class="tabs">
+            <div class="tab active">
+              <span>anvil</span>
+              <span class="status-dot"></span>
+              <span class="close">×</span>
+            </div>
+            <div class="tab">
+              <span>api</span>
+              <span class="close">×</span>
+            </div>
+            <div class="add-tab">+</div>
+          </div>
+          <div class="right-indicators">
+            <span><span class="branch-glyph">⎇</span>main</span>
+            <span class="sep">·</span>
+            <span>14:22</span>
+          </div>
+        </div>
+        <div class="main">
+          <div class="terminal">
+            <div class="block">
+              <div class="block-header">
+                <span class="cmd">git status</span>
+                <span class="dur">0.1s</span>
+                <span class="exit ok">✓</span>
+                <span class="fold">▾</span>
+              </div>
+              <div class="block-out">On branch main
+nothing to commit, working tree clean</div>
+            </div>
+            <div class="block failed">
+              <div class="block-header">
+                <span class="cmd">cargo build</span>
+                <span class="dur">3.2s</span>
+                <span class="exit bad">✗ 1</span>
+                <span class="fold">▾</span>
+              </div>
+              <div class="block-out">   Compiling anvil v0.1.0
+<span class="err">error[E0308]: mismatched types
+  --&gt; src/main.rs:42:5</span>
+   |
+42 |     let x: u32 = "hello";
+   |                  <span class="err">^^^^^^^ expected u32, found &amp;str</span></div>
+            </div>
+            <div class="block running">
+              <div class="block-header">
+                <span class="cmd">cargo test --workspace</span>
+                <span class="dur" style="color: var(--accent-bright)">running…</span>
+                <span class="fold">▾</span>
+              </div>
+              <div class="block-out"><span class="acc">running 891 tests</span>
+test anvil_term::parser::osc_133::shell_prompt_marks_round_trip … ok</div>
+            </div>
+            <div class="prompt-line">❯<span class="cursor"></span></div>
+          </div>
+        </div>
+        <div class="bottom-bar">
+          <span>~/work/caldera/anvil</span>
+          <span class="ok">✓ last 0.1s</span>
+          <div class="right">
+            <span style="color: var(--agent)">● claude idle</span>
+            <span>14:22</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ──────────────────────────────────────────────────────────────── -->
+    <!-- B vs D side-by-side compare                                       -->
+    <!-- ──────────────────────────────────────────────────────────────── -->
+    <section class="option">
+      <div class="option-header">
+        <span class="option-letter">B vs D</span>
+        <span class="option-title">B vs D — head to head</span>
+        <span class="option-sub">— same content, two chrome densities</span>
+      </div>
+      <p class="option-notes">
+        Same window dimensions, same content, same blocks. <strong>B (left)</strong>:
+        two chrome rows (chrome + tab) + slim bottom bar + HUD visible. ~84px of
+        vertical chrome plus 240px of horizontal HUD. <strong>D (right)</strong>:
+        one merged chrome+tab row + slim bottom bar, no HUD by default. ~60px of
+        chrome, full window width for content.
+      </p>
+      <div class="compare-grid">
+        <!-- B: two thin rows + bottom bar + HUD -->
+        <div class="window">
+          <div class="chrome-row">
+            <div class="traffic-lights">
+              <div class="dot red"></div>
+              <div class="dot yellow"></div>
+              <div class="dot green"></div>
+            </div>
+            <div class="basin-mark">◒</div>
+            <div class="workspace-label">anvil</div>
+            <div class="right-indicators">
+              <span><span class="branch-glyph">⎇</span>main</span>
+              <span class="sep">·</span>
+              <span>14:22</span>
+            </div>
+          </div>
+          <div class="tab-row-only">
+            <div class="tabs">
+              <div class="tab active">
+                <span>anvil</span>
+                <span class="status-dot"></span>
+                <span class="close">×</span>
+              </div>
+              <div class="tab">
+                <span>api</span>
+                <span class="close">×</span>
+              </div>
+              <div class="add-tab">+</div>
+            </div>
+          </div>
+          <div class="main">
+            <div class="terminal">
+              <div class="block">
+                <div class="block-header">
+                  <span class="cmd">git status</span>
+                  <span class="dur">0.1s</span>
+                  <span class="exit ok">✓</span>
+                  <span class="fold">▾</span>
+                </div>
+                <div class="block-out">On branch main
+nothing to commit, working tree clean</div>
+              </div>
+              <div class="block failed">
+                <div class="block-header">
+                  <span class="cmd">cargo build</span>
+                  <span class="dur">3.2s</span>
+                  <span class="exit bad">✗ 1</span>
+                  <span class="fold">▾</span>
+                </div>
+                <div class="block-out">   Compiling anvil v0.1.0
+<span class="err">error[E0308]: mismatched types
+  --&gt; src/main.rs:42:5</span></div>
+              </div>
+              <div class="block running">
+                <div class="block-header">
+                  <span class="cmd">cargo test --workspace</span>
+                  <span class="dur" style="color: var(--accent-bright)">running…</span>
+                  <span class="fold">▾</span>
+                </div>
+                <div class="block-out"><span class="acc">running 891 tests</span></div>
+              </div>
+              <div class="prompt-line">❯<span class="cursor"></span></div>
+            </div>
+            <div class="hud">
+              <div class="section">
+                <div class="section-header">REPO</div>
+                <div class="row">caldera/anvil</div>
+                <div class="row muted">~/work/caldera</div>
+              </div>
+              <div class="section">
+                <div class="section-header">GIT</div>
+                <div class="row"><span style="color: var(--accent)">⎇</span> main <span class="badge">↑2</span></div>
+              </div>
+              <div class="section">
+                <div class="section-header">AGENTS</div>
+                <div class="row"><span class="dot"></span>claude · idle</div>
+              </div>
+            </div>
+          </div>
+          <div class="bottom-bar">
+            <span>~/work/caldera/anvil</span>
+            <span class="ok">✓</span>
+            <div class="right">
+              <span>14:22</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- D: merged row + bottom bar, no HUD -->
+        <div class="window">
+          <div class="chrome-tab-row">
+            <div class="traffic-lights">
+              <div class="dot red"></div>
+              <div class="dot yellow"></div>
+              <div class="dot green"></div>
+            </div>
+            <div class="basin-mark">◒</div>
+            <div class="tabs">
+              <div class="tab active">
+                <span>anvil</span>
+                <span class="status-dot"></span>
+                <span class="close">×</span>
+              </div>
+              <div class="tab">
+                <span>api</span>
+                <span class="close">×</span>
+              </div>
+              <div class="add-tab">+</div>
+            </div>
+            <div class="right-indicators">
+              <span><span class="branch-glyph">⎇</span>main</span>
+              <span class="sep">·</span>
+              <span>14:22</span>
+            </div>
+          </div>
+          <div class="main">
+            <div class="terminal">
+              <div class="block">
+                <div class="block-header">
+                  <span class="cmd">git status</span>
+                  <span class="dur">0.1s</span>
+                  <span class="exit ok">✓</span>
+                  <span class="fold">▾</span>
+                </div>
+                <div class="block-out">On branch main
+nothing to commit, working tree clean</div>
+              </div>
+              <div class="block failed">
+                <div class="block-header">
+                  <span class="cmd">cargo build</span>
+                  <span class="dur">3.2s</span>
+                  <span class="exit bad">✗ 1</span>
+                  <span class="fold">▾</span>
+                </div>
+                <div class="block-out">   Compiling anvil v0.1.0
+<span class="err">error[E0308]: mismatched types
+  --&gt; src/main.rs:42:5</span></div>
+              </div>
+              <div class="block running">
+                <div class="block-header">
+                  <span class="cmd">cargo test --workspace</span>
+                  <span class="dur" style="color: var(--accent-bright)">running…</span>
+                  <span class="fold">▾</span>
+                </div>
+                <div class="block-out"><span class="acc">running 891 tests</span></div>
+              </div>
+              <div class="prompt-line">❯<span class="cursor"></span></div>
+            </div>
+          </div>
+          <div class="bottom-bar">
+            <span>~/work/caldera/anvil</span>
+            <span class="ok">✓ last 0.1s</span>
+            <div class="right">
+              <span style="color: var(--agent)">● claude idle</span>
+              <span>14:22</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="summary" style="margin-top: 28px;">
+        <p><strong>The trade.</strong></p>
+        <ul>
+          <li><strong>B</strong> gives the window obvious app-shape (two stacked rows = clear hierarchy) and keeps the HUD always-on so you never lose track of git/agent state.</li>
+          <li><strong>B</strong> costs 50–60% more vertical chrome and ~20% horizontal real estate. At a small window (e.g. 100 cols) the HUD eats half the readable width.</li>
+          <li><strong>D</strong> keeps the same identity (Basin mark + workspace + indicators) in one row, so the chrome reads as a tighter unit, not stacked.</li>
+          <li><strong>D</strong> hides the HUD by default (⌘\\ toggles). You get full-width content when you don't need context; one keystroke when you do.</li>
+          <li>Both have the slim bottom bar — that's the single biggest "this is a stateful app" signal. Cheap and worth it.</li>
+        </ul>
+        <p style="margin-top: 12px;">
+          <strong>B reads more like Linear/Xcode</strong> — stacked panels, always-on context.<br>
+          <strong>D reads more like a modernized iTerm</strong> — one row of chrome, content takes the room.
+        </p>
+        <p style="margin-top: 12px;">
+          For "premium without bloat," D is the right floor. B is the right ceiling if you want
+          the HUD to be persistent. You could also start at D and offer B as a "show panel" option —
+          ship both, one keybind toggles between them.
+        </p>
+      </div>
+    </section>
+
+    <!-- ──────────────────────────────────────────────────────────────── -->
+    <!-- Side-by-side density compare: A vs D                            -->
+    <!-- ──────────────────────────────────────────────────────────────── -->
+    <section class="option">
+      <div class="option-header">
+        <span class="option-letter">A vs D</span>
+        <span class="option-title">Side-by-side</span>
+        <span class="option-sub">— how much does the bottom bar change the feel?</span>
+      </div>
+      <p class="option-notes">
+        A on the left (no bottom bar). D on the right (with bottom bar). Same content,
+        different chrome. Hover the tabs to compare the close-× affordance.
+      </p>
+      <div class="compare-grid">
+        <div class="window">
+          <div class="chrome-tab-row">
+            <div class="traffic-lights">
+              <div class="dot red"></div>
+              <div class="dot yellow"></div>
+              <div class="dot green"></div>
+            </div>
+            <div class="basin-mark">◒</div>
+            <div class="tabs">
+              <div class="tab active">
+                <span>anvil</span>
+                <span class="status-dot"></span>
+                <span class="close">×</span>
+              </div>
+              <div class="add-tab">+</div>
+            </div>
+            <div class="right-indicators">
+              <span><span class="branch-glyph">⎇</span>main</span>
+              <span class="sep">·</span>
+              <span>14:22</span>
+            </div>
+          </div>
+          <div class="main">
+            <div class="terminal">
+              <div class="block">
+                <div class="block-header">
+                  <span class="cmd">cargo test --workspace</span>
+                  <span class="dur">1.2s</span>
+                  <span class="exit ok">✓ 891</span>
+                </div>
+                <div class="block-out">test result: ok. 891 passed; 0 failed</div>
+              </div>
+              <div class="prompt-line">❯<span class="cursor"></span></div>
+            </div>
+          </div>
+        </div>
+        <div class="window">
+          <div class="chrome-tab-row">
+            <div class="traffic-lights">
+              <div class="dot red"></div>
+              <div class="dot yellow"></div>
+              <div class="dot green"></div>
+            </div>
+            <div class="basin-mark">◒</div>
+            <div class="tabs">
+              <div class="tab active">
+                <span>anvil</span>
+                <span class="status-dot"></span>
+                <span class="close">×</span>
+              </div>
+              <div class="add-tab">+</div>
+            </div>
+            <div class="right-indicators">
+              <span><span class="branch-glyph">⎇</span>main</span>
+              <span class="sep">·</span>
+              <span>14:22</span>
+            </div>
+          </div>
+          <div class="main">
+            <div class="terminal">
+              <div class="block">
+                <div class="block-header">
+                  <span class="cmd">cargo test --workspace</span>
+                  <span class="dur">1.2s</span>
+                  <span class="exit ok">✓ 891</span>
+                </div>
+                <div class="block-out">test result: ok. 891 passed; 0 failed</div>
+              </div>
+              <div class="prompt-line">❯<span class="cursor"></span></div>
+            </div>
+          </div>
+          <div class="bottom-bar">
+            <span>~/work/caldera/anvil</span>
+            <span class="ok">✓ last 0.1s</span>
+            <div class="right">
+              <span style="color: var(--agent)">● claude idle</span>
+              <span>14:22</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ──────────────────────────────────────────────────────────────── -->
+    <!-- Summary / recommendation                                          -->
+    <!-- ──────────────────────────────────────────────────────────────── -->
+    <section class="option">
+      <div class="option-header">
+        <span class="option-letter">→</span>
+        <span class="option-title">My read</span>
+      </div>
+      <div class="summary">
+        <p><strong>The blocks are doing most of the work.</strong> Across A/B/C/D the chrome differs by tens of pixels but the
+          terminal area looks identical and feels very different from a normal terminal because of
+          the block treatment. That's the leverage.</p>
+        <ul>
+          <li><strong>A</strong> is the most premium-restrained. Risk: feels too light, like it's missing something.</li>
+          <li><strong>B</strong> is more app-frame-y but spends ~50 extra vertical pixels on chrome. Probably too much.</li>
+          <li><strong>C</strong> (floating tabs) feels softest / most Warp. Trades brand precision for warmth.</li>
+          <li><strong>D</strong> is A + a bottom bar. Compromise. Best balance of "obviously an app" and "obviously not bloated."</li>
+        </ul>
+        <p style="margin-top: 12px;">If you want premium-restrained: <strong>D</strong>. If you want the absolute most minimal: <strong>A</strong>.
+          Either way, blocks are the build.</p>
+      </div>
+    </section>
+  </body>
+</html>

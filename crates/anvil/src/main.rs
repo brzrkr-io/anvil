@@ -49,7 +49,7 @@ use anvil_render::cheatsheet::draw as draw_cheatsheet;
 use anvil_render::draw::CursorConfig;
 use anvil_render::raster::Raster;
 use anvil_render::searchbar::draw_search_bar;
-use anvil_render::tabbar::draw_tab_bar;
+use anvil_render::tabbar::{TabBarHitKind, TabBarHits, draw_tab_bar};
 use anvil_render::workspace::{DIVIDER_PX, draw_workspace, draw_workspace_chrome};
 use anvil_render::{CellBatch, FoldedBlocks, draw_viewport_gpu};
 use anvil_term::DirtySet;
@@ -277,6 +277,31 @@ fn save_hud_section_order(order: &[SectionId]) {
 }
 
 /// One-shot `git log -1 --format=%h %s` against `cwd`. Returns (sha, subject)
+/// Return the local wall-clock time as `"HH:MM"` using libc `localtime_r`.
+fn local_hhmm() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as libc::time_t)
+        .unwrap_or(0);
+    let mut tm = libc::tm {
+        tm_sec: 0,
+        tm_min: 0,
+        tm_hour: 0,
+        tm_mday: 0,
+        tm_mon: 0,
+        tm_year: 0,
+        tm_wday: 0,
+        tm_yday: 0,
+        tm_isdst: 0,
+        tm_gmtoff: 0,
+        tm_zone: std::ptr::null_mut(),
+    };
+    // SAFETY: secs is a valid time_t; tm is stack-allocated and we own it.
+    unsafe { libc::localtime_r(&secs, &mut tm) };
+    format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
+}
+
 /// or empty strings on failure / non-repo. Bounded: takes <10ms in practice.
 fn git_head_oneline(cwd: &std::path::Path) -> (String, String) {
     let output = std::process::Command::new("git")
@@ -420,6 +445,9 @@ pub struct App {
     /// Mouse is currently dragging the HUD's left edge hairline. While true,
     /// `mouse_dragged` updates `hud_cols` instead of extending a selection.
     hud_drag_active: bool,
+    /// Chrome-row hit regions (tab switches, close ×, + button). Refilled
+    /// by `draw_tab_bar` each render; consumed by `mouse_down`.
+    tab_bar_hits: TabBarHits,
     /// Clickable regions inside the HUD. Refilled by `draw_right_hud` each
     /// render; consumed by `mouse_down` to dispatch copy / open actions.
     hud_hits: Vec<HudHit>,
@@ -518,7 +546,8 @@ impl App {
     }
 
     fn top_bar_rows(&self) -> usize {
-        if self.tabs.bar_visible() { 1 } else { 0 }
+        // Chrome row is always present (basin mark + tabs + indicators).
+        1
     }
 
     fn bottom_bar_rows(&self) -> usize {
@@ -769,7 +798,7 @@ impl App {
         let cw = self.font.metrics.cell_w as usize;
         let ch = self.font.metrics.cell_h as usize;
         let cols = ((dw.saturating_sub(2 * GRID_PAD)) / cw).max(1);
-        // Bar will appear (>=2 tabs): subtract one row.
+        // Chrome row is always present: subtract one row for the tab bar.
         let rows = (((dh.saturating_sub(2 * GRID_PAD)) / ch).saturating_sub(1)).max(1);
         let scrollback = self.config.scrollback;
 
@@ -1435,9 +1464,20 @@ impl App {
         //
         // Always drawn to CPU raster regardless of render path.
 
-        // Tab bar.
-        if self.tabs.bar_visible() {
-            draw_tab_bar(&mut self.raster, painter, metrics, &self.theme, &self.tabs);
+        // Chrome row: always drawn (basin mark + tabs + indicators).
+        {
+            let branch = self.local_ctx.branch.clone();
+            let clock = local_hhmm();
+            draw_tab_bar(
+                &mut self.raster,
+                painter,
+                metrics,
+                &self.theme,
+                &self.tabs,
+                &branch,
+                &clock,
+                &mut self.tab_bar_hits,
+            );
         }
 
         // Search bar (last row above any bottom chrome).
@@ -2324,9 +2364,7 @@ impl AppHandler for AppShell {
         view_bounds: (f64, f64),
     ) {
         let app = &mut self.app;
-        let (view_w, view_h) = view_bounds;
-
-        let ch_pt = app.font.metrics.cell_h / app.window_scale;
+        let _ = view_bounds;
 
         // HUD left-edge resize handle. The 1px hairline sits at the left of
         // the HUD's surface rect; we accept clicks within `HUD_DRAG_HIT_PX`
@@ -2369,17 +2407,36 @@ impl AppHandler for AppShell {
             }
         }
 
-        // Tab bar click (top row of view, y near top = large value in AppKit).
-        if app.tabs.bar_visible() && loc.y >= view_h - ch_pt {
-            let n = app.tabs.count();
-            if n > 0 {
-                let frac = (loc.x / view_w).clamp(0.0, 0.999);
-                let idx = (frac * n as f64) as usize;
-                app.tabs.switch_to(idx);
-                app.snap_anim();
-                app.dirty = true;
+        // Chrome row click — use hit rects populated by draw_tab_bar.
+        {
+            let (rx, ry) = app.view_pt_to_raster_px(loc);
+            // Collect matching hit to avoid borrow conflict.
+            let hit_kind = app
+                .tab_bar_hits
+                .hits
+                .iter()
+                .find(|h| {
+                    let r = &h.rect;
+                    rx >= r.x && rx < r.x + r.w && ry >= r.y && ry < r.y + r.h
+                })
+                .map(|h| h.kind.clone());
+            if let Some(kind) = hit_kind {
+                match kind {
+                    TabBarHitKind::Tab(idx) => {
+                        app.tabs.switch_to(idx);
+                        app.snap_anim();
+                        app.dirty = true;
+                    }
+                    TabBarHitKind::CloseTab(idx) => {
+                        app.tabs.switch_to(idx);
+                        app.close_active_tab();
+                    }
+                    TabBarHitKind::AddTab => {
+                        app.add_tab();
+                    }
+                }
+                return;
             }
-            return;
         }
 
         // Click-to-focus.
@@ -3148,6 +3205,7 @@ fn main() -> Result<()> {
         hud_tick: 0,
         hud_cols: HUD_COLS_DEFAULT,
         hud_drag_active: false,
+        tab_bar_hits: TabBarHits::default(),
         hud_hits: Vec::new(),
         hud_section_order: load_hud_section_order()
             .unwrap_or_else(|| SectionId::DEFAULT_ORDER.to_vec()),
