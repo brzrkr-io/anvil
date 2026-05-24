@@ -13,6 +13,25 @@ use crate::raster::{FontMetrics, GlyphPainter, PixelRect, Raster};
 // at the actual window scale — 1× / 2× retina / 3× super-retina all work.
 const TRAFFIC_LIGHT_RESERVE_PT: f64 = 80.0;
 
+// --- Chrome palette (matches docs/design/layout-mockups.html Option D) ------
+
+/// graphite: chrome row background (#0b0d0e).
+const GRAPHITE: [u8; 3] = [0x0b, 0x0d, 0x0e];
+/// charcoal: active-tab background (#161a1c). Note: at retina with the
+/// macOS title bar's translucent material on top, pure charcoal can blend
+/// into graphite — we pick a slightly raised tone for visible contrast.
+const CHARCOAL: [u8; 3] = [0x1d, 0x21, 0x29];
+/// chrome border: hairline below the chrome row (#23262b).
+const CHROME_BORDER: [u8; 3] = [0x23, 0x26, 0x2b];
+/// text-muted: inactive-tab + right-side label tone (#a1a4a9).
+const TEXT_MUTED: [u8; 3] = [0xa1, 0xa4, 0xa9];
+/// mist: active-tab label tone (#d2d8db) — brighter than text-muted.
+const MIST: [u8; 3] = [0xd2, 0xd8, 0xdb];
+/// ash: separator glyph tone in the right indicators (#374046).
+const ASH: [u8; 3] = [0x37, 0x40, 0x46];
+/// status.attention: amber unread dot on background tabs (#b07a14).
+const ATTENTION: [u8; 3] = [0xb0, 0x7a, 0x14];
+
 /// Hit region for a single element in the chrome row.
 #[derive(Clone, Debug)]
 pub struct TabBarHit {
@@ -82,6 +101,19 @@ pub fn draw_tab_bar(
         return;
     }
 
+    // Chrome row background — Option D's graphite band. Painted from the
+    // very top of the raster to just above the hairline so the chrome reads
+    // as a single defined strip, not a few colored cells on canvas.
+    let chrome_top_y = 0.0;
+    let chrome_bottom_y = raster.pad_y + cell_h - 1.0;
+    raster.fill_pixel_rect(
+        0.0,
+        chrome_top_y,
+        raster.width as f64,
+        chrome_bottom_y - chrome_top_y,
+        GRAPHITE,
+    );
+
     // How many raster columns to skip for the traffic-light zone.
     // pad_x is already the left offset of col 0 from the window edge.
     let tl_reserve_px = TRAFFIC_LIGHT_RESERVE_PT * window_scale;
@@ -90,7 +122,10 @@ pub fn draw_tab_bar(
     // ── Basin mark ◒ ──────────────────────────────────────────────────────────
     let basin_col = tl_cols;
     if basin_col < total_cols {
-        raster.cell_glyph(painter, metrics, basin_col, 0, '◒' as u32, theme.accent);
+        // Use the brighter accent so the basin reads against graphite even
+        // with the macOS title-bar material on top.
+        const ACCENT_BRIGHT: [u8; 3] = [0x54, 0xb7, 0xc0];
+        raster.cell_glyph(painter, metrics, basin_col, 0, '◒' as u32, ACCENT_BRIGHT);
     }
 
     // ── Right-side indicators ─────────────────────────────────────────────────
@@ -172,23 +207,25 @@ pub fn draw_tab_bar(
         };
         let is_active = t == tabs.active;
 
-        // Active tab: filled surface background. (Previously also drew a 2px
-        // teal accent rule beneath it; removed because the rule's pixels
-        // were misaligned visually against the tab's cell edges, and the
-        // surface fill alone is enough to distinguish the active tab.)
+        // Active tab: charcoal panel with a 2px accent rule pinned to the
+        // chrome row's bottom edge (just above the hairline). Matches D's
+        // `.tab.active::after { left:4px; right:4px; bottom:0; height:2px; }`.
         if is_active {
             for c in col..col + tw {
                 if c < total_cols {
-                    raster.cell_bg(metrics, c, 0, theme.surface);
+                    raster.cell_bg(metrics, c, 0, CHARCOAL);
                 }
             }
+            let rule_x = raster.pad_x + col as f64 * cell_w + 4.0;
+            let rule_w = (tw as f64 * cell_w - 8.0).max(0.0);
+            // 3px rule sitting just above the 1px hairline. Brighter accent
+            // (cyan) reads more clearly than the muted teal at retina.
+            const ACCENT_BRIGHT: [u8; 3] = [0x54, 0xb7, 0xc0];
+            let rule_y = raster.pad_y + cell_h - 4.0;
+            raster.fill_pixel_rect(rule_x, rule_y, rule_w, 3.0, ACCENT_BRIGHT);
         }
 
-        let fg = if is_active {
-            theme.foreground
-        } else {
-            theme.ansi[8] // dim
-        };
+        let fg = if is_active { MIST } else { TEXT_MUTED };
 
         // Label: starts at col + 2 (2-col left pad).
         let label = tab_label(tabs, t);
@@ -204,11 +241,10 @@ pub fn draw_tab_bar(
         // Close × on active tab (at col + tw - 2).
         let close_col = col + tw - 2;
         if is_active && close_col < total_cols {
-            raster.cell_glyph(painter, metrics, close_col, 0, '×' as u32, theme.ansi[8]);
+            raster.cell_glyph(painter, metrics, close_col, 0, '×' as u32, TEXT_MUTED);
         }
 
         // Unread dot: amber · on background tabs with new output.
-        const ATTENTION: [u8; 3] = [0xb0, 0x7a, 0x14]; // status.attention
         let tab_has_unread = tabs.tabs.get(t).is_some_and(|tab| tab.has_unread);
         let dot_col = col + tw - 1;
         if !is_active && tab_has_unread && dot_col < total_cols {
@@ -250,7 +286,7 @@ pub fn draw_tab_bar(
     // `+` button: 2 cols after the last tab.
     let add_col = col;
     if add_col + 2 <= total_cols {
-        raster.cell_glyph(painter, metrics, add_col, 0, '+' as u32, theme.ansi[8]);
+        raster.cell_glyph(painter, metrics, add_col, 0, '+' as u32, TEXT_MUTED);
         let ax = raster.pad_x + add_col as f64 * cell_w;
         hits_out.hits.push(TabBarHit {
             rect: PixelRect {
@@ -264,16 +300,13 @@ pub fn draw_tab_bar(
     }
 
     // 1px hairline below the chrome row to separate it from the terminal
-    // viewport — matches D mockup's `.chrome-tab-row { border-bottom: 1px
-    // solid var(--border); }`. The hairline anchors the chrome as defined
-    // chrome rather than floating text.
-    let chrome_bottom_y = raster.pad_y + cell_h - 1.0;
+    // viewport — D's `.chrome-tab-row { border-bottom: 1px solid var(--border); }`.
     raster.fill_pixel_rect(
         0.0,
         chrome_bottom_y,
         raster.width as f64,
         1.0,
-        theme.border,
+        CHROME_BORDER,
     );
 }
 
@@ -288,8 +321,9 @@ fn build_right_str(branch: &str, clock: &str) -> String {
     }
 }
 
-/// Draw the right-side indicators. Branch glyph `⎇` in theme.accent;
-/// branch name and separator in theme.ansi[8] (dim); clock in theme.ansi[8].
+/// Draw the right-side indicators. Branch glyph in theme.accent; branch
+/// name in text-muted; separator `·` in ash; clock in text-muted. Matches
+/// D's `.right-indicators` block.
 fn draw_right_indicators(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
@@ -299,31 +333,16 @@ fn draw_right_indicators(
     branch: &str,
     start_col: usize,
 ) {
-    // ⎇ gets accent color; everything else is dim.
-    let branch_glyph = '⎇';
-    // branch text without the glyph
-    let branch_len = branch.chars().count();
-    // In the full string "⎇ branch · HH:MM", index of each part:
-    //   0: '⎇'
-    //   1: ' '
-    //   2..2+branch_len: branch name
-    //   2+branch_len: ' '
-    //   2+branch_len+1: '·'
-    //   rest: ' HH:MM'
-    // If branch is empty, the whole string is the clock.
+    let branch_glyph = '\u{e0a0}'; // Nerd Font branch glyph (build_right_str)
+    let sep_glyph = '·';
     for (i, cp) in right_str.chars().enumerate() {
         let col = start_col + i;
         let color = if !branch.is_empty() && cp == branch_glyph && i == 0 {
             theme.accent
-        } else if !branch.is_empty() && i > 0 && i <= 1 + branch_len {
-            // branch name chars: still accent for the name, dim for space+separator
-            if i >= 2 && i < 2 + branch_len {
-                theme.accent
-            } else {
-                theme.ansi[8]
-            }
+        } else if cp == sep_glyph {
+            ASH
         } else {
-            theme.ansi[8]
+            TEXT_MUTED
         };
         raster.cell_glyph(painter, metrics, col, 0, cp as u32, color);
     }
@@ -494,15 +513,17 @@ mod tests {
             &mut hits,
         );
 
+        let _ = theme; // chrome uses a fixed palette now
+        const ACCENT_BRIGHT: [u8; 3] = [0x54, 0xb7, 0xc0];
         let basin: Vec<_> = painter
             .calls
             .iter()
-            .filter(|&&(glyph, color)| glyph == '◒' as u32 && color == theme.accent)
+            .filter(|&&(glyph, color)| glyph == '◒' as u32 && color == ACCENT_BRIGHT)
             .collect();
         assert_eq!(
             basin.len(),
             1,
-            "expected exactly one ◒ (U+25D2) in accent colour; painter calls: {:?}",
+            "expected exactly one ◒ (U+25D2) in ACCENT_BRIGHT; painter calls: {:?}",
             painter.calls
         );
     }
@@ -535,14 +556,15 @@ mod tests {
             &mut hits,
         );
 
-        // Active tab segment should be painted with theme.surface.
-        // pad_x=0, RESERVE=80pt × scale 1.0=80px, cell_w=10 → tl_cols=8.
-        // basin col 8, tabs_start_col 10. Active tab 0 width=10, at cols
-        // 10..20. col 15 → x = 150, y = 10 (mid of cell_h=20).
+        // Active tab segment should be painted with CHARCOAL (D's
+        // `--charcoal` panel color). pad_x=0, RESERVE=80pt × scale 1.0=80px,
+        // cell_w=10 → tl_cols=8. basin col 8, tabs_start_col 10. Active tab 0
+        // width=10, at cols 10..20. col 15 → x = 150, y = 10 (mid of cell_h=20).
+        let _ = theme; // theme is unused now that chrome uses a fixed palette
         let px = pixel_at(&r, 150, 10);
         assert_eq!(
-            px, theme.surface,
-            "expected surface for active tab, got {px:?}"
+            px, CHARCOAL,
+            "expected CHARCOAL for active tab, got {px:?}"
         );
     }
 

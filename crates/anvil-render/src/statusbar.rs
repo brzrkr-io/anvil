@@ -11,10 +11,15 @@ use crate::raster::{FontMetrics, GlyphPainter, Raster};
 /// The status bar is always one cell row tall.
 pub const STATUS_BAR_ROWS: usize = 1;
 
-// --- Brand color constants (Mineral palette) --------------------------------
+// --- Chrome palette (matches docs/design/layout-mockups.html Option D) ------
 
-/// alloy: muted labels / metadata (#86919a) — the default tone for the bar
-const ALLOY: [u8; 3] = [0x86, 0x91, 0x9a];
+/// charcoal: the bar's raised-panel background (#161a1c).
+const CHARCOAL: [u8; 3] = [0x16, 0x1a, 0x1c];
+/// chrome border: thin hairline above the bar (#23262b). Quieter than
+/// `theme.border` which is tuned for terminal-grid contrast.
+const CHROME_BORDER: [u8; 3] = [0x23, 0x26, 0x2b];
+/// text-muted: default tone for the bar's labels (#a1a4a9).
+const TEXT_MUTED: [u8; 3] = [0xa1, 0xa4, 0xa9];
 /// status.verified: success / clean state — green (#3f8a5b)
 const VERIFIED: [u8; 3] = [0x3f, 0x8a, 0x5b];
 /// status.failure: failure / error state — red (#b13a30)
@@ -29,8 +34,8 @@ const AGENT_VIOLET: [u8; 3] = [0x6a, 0x5f, 0xa3];
 ///   - Modified count in ATTENTION amber, if dirty > 0.
 ///   - Added count in VERIFIED green, if git_added (here: no separate field, so
 ///     we only show dirty count via the `git_dirty` field).
-///   - "clean" in ALLOY when on a branch with no dirty files.
-///   - `·` separator in ALLOY between sections.
+///   - "clean" in TEXT_MUTED when on a branch with no dirty files.
+///   - `·` separator in TEXT_MUTED between sections.
 ///
 /// Right section (2-col inner right pad):
 ///   - `◆ N running` when agent connection is Live and running_count > 0.
@@ -40,7 +45,7 @@ pub fn draw_status_bar(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
     metrics: FontMetrics,
-    theme: &Theme,
+    _theme: &Theme,
     local_ctx: &LocalContext,
     agent_snap: &Snapshot,
     clock: &str,
@@ -54,35 +59,21 @@ pub fn draw_status_bar(
         return;
     }
 
-    // Bottom bar: a subtle ledge that REACHES the very bottom of the window.
-    // Paint cells first (each cell paints a cell_h band), then fill the
-    // GRID_PAD strip BELOW the last cell row so no canvas color shows
-    // between the bar's cells and the window's bottom edge.
-    let mix = |a: u8, b: u8| ((a as f64 * 0.55) + (b as f64 * 0.45)) as u8;
-    let bar_bg = [
-        mix(theme.background[0], theme.surface[0]),
-        mix(theme.background[1], theme.surface[1]),
-        mix(theme.background[2], theme.surface[2]),
-    ];
+    // Bottom bar background — Option D's charcoal panel that reaches the
+    // very bottom edge. Painted as one continuous rectangle from the bar's
+    // top to the raster's bottom (covers GRID_PAD too) so no canvas color
+    // shows through.
     let bar_top_y = raster.pad_y + bottom_row as f64 * cell_h;
-    let bar_bottom_y = bar_top_y + cell_h;
-    // Bar cells (the row itself).
-    for col in 0..total_cols {
-        raster.cell_bg(metrics, col, bottom_row, bar_bg);
-    }
-    // Strip from end of bar cells to the very bottom of the raster — covers
-    // the GRID_PAD that would otherwise show as canvas.
-    if (raster.height as f64) > bar_bottom_y {
-        raster.fill_pixel_rect(
-            0.0,
-            bar_bottom_y,
-            raster.width as f64,
-            raster.height as f64 - bar_bottom_y,
-            bar_bg,
-        );
-    }
-    // Top hairline above the bar — separates chrome from terminal content.
-    raster.fill_pixel_rect(0.0, bar_top_y, raster.width as f64, 1.0, theme.border);
+    let bar_bottom = (raster.height as f64).max(bar_top_y);
+    raster.fill_pixel_rect(
+        0.0,
+        bar_top_y,
+        raster.width as f64,
+        bar_bottom - bar_top_y,
+        CHARCOAL,
+    );
+    // 1px hairline above the bar — D's `border-top: 1px solid var(--border)`.
+    raster.fill_pixel_rect(0.0, bar_top_y, raster.width as f64, 1.0, CHROME_BORDER);
 
     // ── Left: cwd  ✓/✗ last 0.1s ────────────────────────────────────────────
     let mut col = 2usize;
@@ -92,7 +83,7 @@ pub fn draw_status_bar(
             if col + 2 >= total_cols {
                 break;
             }
-            raster.cell_glyph(painter, metrics, col, bottom_row, ch as u32, ALLOY);
+            raster.cell_glyph(painter, metrics, col, bottom_row, ch as u32, TEXT_MUTED);
             col += 1;
         }
         col += 2; // gap
@@ -101,7 +92,7 @@ pub fn draw_status_bar(
         let (sym, color) = match local_ctx.run {
             RunState::Ok => ("\u{2713}", VERIFIED), // ✓
             RunState::Failed => ("\u{2717}", FAILURE), // ✗
-            _ => ("", ALLOY),
+            _ => ("", TEXT_MUTED),
         };
         if !sym.is_empty() {
             for ch in sym.chars() {
@@ -117,7 +108,7 @@ pub fn draw_status_bar(
                     if col + 2 >= total_cols {
                         break;
                     }
-                    raster.cell_glyph(painter, metrics, col, bottom_row, ch as u32, ALLOY);
+                    raster.cell_glyph(painter, metrics, col, bottom_row, ch as u32, TEXT_MUTED);
                     col += 1;
                 }
             }
@@ -144,16 +135,16 @@ pub fn draw_status_bar(
     if right_len + 2 < total_cols && col + right_len + 2 < total_cols {
         let mut c = total_cols - 2 - right_len;
         for (i, ch) in agent_text.chars().enumerate() {
-            let fg = if i == 0 { AGENT_VIOLET } else { ALLOY };
+            let fg = if i == 0 { AGENT_VIOLET } else { TEXT_MUTED };
             raster.cell_glyph(painter, metrics, c, bottom_row, ch as u32, fg);
             c += 1;
         }
         for ch in sep.chars() {
-            raster.cell_glyph(painter, metrics, c, bottom_row, ch as u32, ALLOY);
+            raster.cell_glyph(painter, metrics, c, bottom_row, ch as u32, TEXT_MUTED);
             c += 1;
         }
         for ch in clock.chars() {
-            raster.cell_glyph(painter, metrics, c, bottom_row, ch as u32, ALLOY);
+            raster.cell_glyph(painter, metrics, c, bottom_row, ch as u32, TEXT_MUTED);
             c += 1;
         }
     }
@@ -248,7 +239,7 @@ mod tests {
 
     // --- branch_shown_when_git_ok --------------------------------------------
 
-    /// Branch name chars are drawn in ALLOY (quiet) when git state is Ok.
+    /// Branch name chars are drawn in TEXT_MUTED (quiet) when git state is Ok.
     #[test]
     fn cwd_shown_when_set() {
         let m = metrics();
@@ -275,16 +266,16 @@ mod tests {
             row,
         );
 
-        // ALLOY chars should include cwd content ('a' from "anvil" or similar).
+        // TEXT_MUTED chars should include cwd content ('a' from "anvil" or similar).
         let alloy_chars: Vec<char> = painter
             .calls
             .iter()
-            .filter(|(_, fg)| *fg == ALLOY)
+            .filter(|(_, fg)| *fg == TEXT_MUTED)
             .filter_map(|(cp, _)| char::from_u32(*cp))
             .collect();
         assert!(
             !alloy_chars.is_empty(),
-            "expected cwd chars in ALLOY, got no calls"
+            "expected cwd chars in TEXT_MUTED, got no calls"
         );
     }
 
@@ -402,7 +393,7 @@ mod tests {
 
     // --- running_count_shown_when_live ---------------------------------------
 
-    /// "running" chars are recorded in ALLOY when connection == Live; the
+    /// "running" chars are recorded in TEXT_MUTED when connection == Live; the
     /// leading diamond is in AGENT_VIOLET.
     #[test]
     fn running_count_shown_when_live() {
@@ -434,12 +425,12 @@ mod tests {
         let alloy_chars: Vec<char> = painter
             .calls
             .iter()
-            .filter(|(_, fg)| *fg == ALLOY)
+            .filter(|(_, fg)| *fg == TEXT_MUTED)
             .filter_map(|(cp, _)| char::from_u32(*cp))
             .collect();
         assert!(
             alloy_chars.contains(&'r'),
-            "expected 'r' from 'running' in ALLOY, got {alloy_chars:?}"
+            "expected 'r' from 'running' in TEXT_MUTED, got {alloy_chars:?}"
         );
         let violet_calls: Vec<_> = painter
             .calls

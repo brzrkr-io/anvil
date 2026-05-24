@@ -24,7 +24,6 @@ const ACCENT_BRIGHT: &str = "\x1b[38;5;14m"; // ANSI 14 = bright cyan — input 
 const ACCENT_ERR: &str = "\x1b[38;5;1m"; // ANSI 1 = red — error state
 const DIM: &str = "\x1b[38;5;8m"; // ANSI 8 = dim grey — accent dot, transient prompt
 const VERIFIED: &str = "\x1b[38;5;2m"; // ANSI 2 = green — success check
-const ATTENTION: &str = "\x1b[38;5;3m"; // ANSI 3 = amber — attention (dirty count)
 
 #[derive(Debug, Clone, Copy)]
 pub struct Options {
@@ -83,18 +82,14 @@ fn esc(buf: &mut String, shell: Shell, seq: &str) {
 /// `segments` is accepted for forward-compatibility with future themes that
 /// want an inline status indicator (e.g. a dirty-dot before the glyph) but
 /// is currently unused.
-pub fn full(segments: &[Segment], opts: Options) -> String {
+pub fn full(_segments: &[Segment], opts: Options) -> String {
     let mut buf = String::new();
     let sh = opts.shell;
 
-    // Warp-style soft segments: cwd-basename and branch each get a subtle
-    // pill background so the prompt reads as discrete chunks of info.
-    //   ` cwd `  on ANSI-8 dim-grey bg, ANSI-7 fg
-    //   ` branch [*N] `  on ANSI-8 dim-grey bg, with the *N in attention amber
-    //   ` ❯  `  bright cyan, no bg — the typing handle
-    //
-    // On a failed previous command the right-aligned segment (✗ N) carries
-    // the red signal; the input arrow stays cool so the user types calmly.
+    // Anvil's chrome row already carries cwd + branch + dirty count. The
+    // prompt line itself is the bare `❯` with a trailing space — matches
+    // Option D's `.prompt-line { color: var(--accent-bright); }`. The
+    // right-aligned exit/duration segment still emits after the arrow.
 
     let arrow_color = if opts.failed {
         ACCENT_ERR
@@ -103,58 +98,13 @@ pub fn full(segments: &[Segment], opts: Options) -> String {
     };
 
     let mut left_visible: u16 = 0;
-    let pill_bg = "\x1b[48;5;236m"; // gray 236 — quiet, distinct from background
-    let pill_fg = "\x1b[38;5;7m"; //   ANSI 7 — high-contrast text on the pill
-
-    // Find cwd / branch segments by icon kind.
-    let cwd_seg = segments.iter().find(|s| s.icon == crate::icons::Icon::Repo);
-    let branch_seg = segments
-        .iter()
-        .find(|s| s.icon == crate::icons::Icon::Branch);
-
-    // cwd pill.
-    if let Some(seg) = cwd_seg {
-        esc(&mut buf, sh, pill_bg);
-        esc(&mut buf, sh, pill_fg);
-        buf.push(' ');
-        buf.push_str(&seg.text);
-        buf.push(' ');
-        esc(&mut buf, sh, RESET);
-        buf.push(' ');
-        left_visible += seg.text.chars().count() as u16 + 3;
-    }
-
-    // branch pill (only when in a repo).
-    if let Some(seg) = branch_seg {
-        esc(&mut buf, sh, pill_bg);
-        esc(&mut buf, sh, pill_fg);
-        buf.push(' ');
-        // Branch glyph + name. If text already contains a dirty count
-        // (assembled as "branch N" by build_segments), colour the count
-        // attention-amber so it pops without leaving the pill.
-        if let Some((branch, dirty)) = seg.text.rsplit_once(' ') {
-            buf.push_str(branch);
-            buf.push(' ');
-            esc(&mut buf, sh, ATTENTION);
-            buf.push('*');
-            buf.push_str(dirty);
-            esc(&mut buf, sh, pill_bg);
-            esc(&mut buf, sh, pill_fg);
-        } else {
-            buf.push_str(&seg.text);
-        }
-        buf.push(' ');
-        esc(&mut buf, sh, RESET);
-        buf.push(' ');
-        left_visible += seg.text.chars().count() as u16 + 4; // approx; *N adds 1
-    }
 
     // Arrow.
     esc(&mut buf, sh, arrow_color);
     buf.push('\u{276f}'); // ❯
     esc(&mut buf, sh, RESET);
-    buf.push_str("  ");
-    left_visible += 3;
+    buf.push(' ');
+    left_visible += 2;
 
     // Right-aligned exit code + duration segment.
     // Build the visible text first, measure it, then pad with spaces.
@@ -410,22 +360,19 @@ mod tests {
     // ── New tests for Task #11 and Task #12 ───────────────────────────────────
 
     #[test]
-    fn full_with_dirty_branch_segment_shows_star_count_before_chevron() {
-        // Dirty count now lives inside the branch pill, sourced from the
-        // branch segment's text (build_segments emits "branch N" when
-        // dirty > 0).
+    fn full_does_not_embed_dirty_count_or_branch_pills() {
+        // The chrome row carries cwd/branch/dirty count now; the shell prompt
+        // is just `❯ ` + optional right-aligned exit/duration. Matches D's
+        // `.prompt-line` which is bare.
         let segs = vec![Segment::with_state(
             crate::icons::Icon::Branch,
             "main 3",
             crate::segments::State::Warn,
         )];
         let out = full(&segs, base_opts(Shell::Plain));
-        assert!(out.contains("*3"), "expected *3 in output, got {out:?}");
-        assert!(out.contains(ATTENTION));
+        assert!(!out.contains("*3"), "dirty count must not appear in the prompt");
+        assert!(!out.contains("main"), "branch must not appear in the prompt");
         assert!(out.contains('\u{276f}'));
-        let star_pos = out.find("*3").unwrap();
-        let chev_pos = out.find('\u{276f}').unwrap();
-        assert!(star_pos < chev_pos, "*3 must appear before the chevron ❯");
     }
 
     #[test]
