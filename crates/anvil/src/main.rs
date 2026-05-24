@@ -2182,13 +2182,12 @@ impl AppHandler for AppShell {
             }
         }
 
-        // HUD refresh throttle — only when the floating agent panel is on.
-        if app.hud_visible {
-            app.hud_tick += 1;
-            if app.hud_tick >= HUD_REFRESH_TICKS {
-                app.hud_tick = 0;
-                app.refresh_hud();
-            }
+        // Refresh throttle — ALWAYS runs so the bottom status bar gets
+        // cwd / git / agent data even when the HUD panel is hidden.
+        app.hud_tick += 1;
+        if app.hud_tick >= HUD_REFRESH_TICKS {
+            app.hud_tick = 0;
+            app.refresh_hud();
         }
 
         if app.dirty {
