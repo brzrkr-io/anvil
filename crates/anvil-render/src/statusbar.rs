@@ -54,30 +54,34 @@ pub fn draw_status_bar(
         return;
     }
 
-    // Bottom bar: a subtle ledge anchored to the very bottom of the window.
-    // - Bar fill: a quiet tint just above theme.background (NOT theme.surface
-    //   which is too bright and felt "huge" before).
-    // - Spans from the top of the status row down to the very bottom edge
-    //   (including the GRID_PAD strip) so it touches the window's edge.
-    // - 1px top hairline in theme.border separates it from terminal content.
-    let bar_top_y = raster.pad_y + bottom_row as f64 * cell_h;
-    // Mix theme.background and theme.surface 55/45 — quieter than pure surface.
+    // Bottom bar: a subtle ledge that REACHES the very bottom of the window.
+    // Paint cells first (each cell paints a cell_h band), then fill the
+    // GRID_PAD strip BELOW the last cell row so no canvas color shows
+    // between the bar's cells and the window's bottom edge.
     let mix = |a: u8, b: u8| ((a as f64 * 0.55) + (b as f64 * 0.45)) as u8;
     let bar_bg = [
         mix(theme.background[0], theme.surface[0]),
         mix(theme.background[1], theme.surface[1]),
         mix(theme.background[2], theme.surface[2]),
     ];
-    raster.fill_pixel_rect(
-        0.0,
-        bar_top_y,
-        raster.width as f64,
-        raster.height as f64 - bar_top_y,
-        bar_bg,
-    );
+    let bar_top_y = raster.pad_y + bottom_row as f64 * cell_h;
+    let bar_bottom_y = bar_top_y + cell_h;
+    // Bar cells (the row itself).
     for col in 0..total_cols {
         raster.cell_bg(metrics, col, bottom_row, bar_bg);
     }
+    // Strip from end of bar cells to the very bottom of the raster — covers
+    // the GRID_PAD that would otherwise show as canvas.
+    if (raster.height as f64) > bar_bottom_y {
+        raster.fill_pixel_rect(
+            0.0,
+            bar_bottom_y,
+            raster.width as f64,
+            raster.height as f64 - bar_bottom_y,
+            bar_bg,
+        );
+    }
+    // Top hairline above the bar — separates chrome from terminal content.
     raster.fill_pixel_rect(0.0, bar_top_y, raster.width as f64, 1.0, theme.border);
 
     // ── Left: cwd  ✓/✗ last 0.1s ────────────────────────────────────────────
