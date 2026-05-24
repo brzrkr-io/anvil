@@ -66,7 +66,7 @@ impl TabBarHits {
 ///
 /// Layout left-to-right:
 ///   1. Traffic-light reserved zone (~78 device-px) — nothing drawn here.
-///   2. Basin mark `◒` in theme.accent, immediately after the reserved zone.
+///   2. Basin mark (U+F1396 md-circle_half_full) in theme.accent, immediately after the reserved zone.
 ///   3. Content-width tabs (label + padding + close ×), then `+` button.
 ///   4. Right-side indicators (branch `⎇` + name · clock) right-aligned.
 ///
@@ -115,14 +115,17 @@ pub fn draw_tab_bar(
     let tl_reserve_px = TRAFFIC_LIGHT_RESERVE_PT * window_scale;
     let basin_x = tl_reserve_px;
 
-    // ── Basin mark ◒ ─────────────────────────────────────────────────────
+    // ── Basin mark ─────────────────────────────────────────────────────────
+    // U+25D2 (◒) is absent from BlexMonoNerdFontMono; use U+F1396
+    // (md-circle_half_full) which IS present and is visually equivalent.
+    const BASIN_MARK: u32 = 0xF1396;
     if basin_x + cell_w < total_w {
         raster.glyph_at(
             painter,
             metrics,
             basin_x,
             glyph_y,
-            '◒' as u32,
+            BASIN_MARK,
             ACCENT_BRIGHT,
         );
     }
@@ -381,11 +384,11 @@ mod tests {
             m.cell_h * 2.0,
             &mut hits,
         );
-        // Basin mark must have been drawn (painter received '◒').
+        // Basin mark must have been drawn (painter received U+F1396).
         let basin_calls: Vec<_> = painter
             .calls
             .iter()
-            .filter(|&&(glyph, _)| glyph == '◒' as u32)
+            .filter(|&&(glyph, _)| glyph == 0xF1396)
             .collect();
         assert!(
             !basin_calls.is_empty(),
@@ -422,7 +425,7 @@ mod tests {
         let basin_calls: Vec<_> = painter
             .calls
             .iter()
-            .filter(|&&(glyph, _)| glyph == '◒' as u32)
+            .filter(|&&(glyph, _)| glyph == 0xF1396)
             .collect();
         assert!(
             !basin_calls.is_empty(),
@@ -431,7 +434,7 @@ mod tests {
         );
     }
 
-    /// Basin mark U+25D2 (◒) is in the painter's call log.
+    /// Basin mark U+F1396 (md-circle_half_full) is in the painter's call log.
     #[test]
     fn draw_tab_bar_basin_mark_in_painter_calls() {
         use anvil_workspace::tab::{Tab, TabManager};
@@ -460,12 +463,12 @@ mod tests {
         let basin: Vec<_> = painter
             .calls
             .iter()
-            .filter(|&&(glyph, color)| glyph == '◒' as u32 && color == ACCENT_BRIGHT)
+            .filter(|&&(glyph, color)| glyph == 0xF1396 && color == ACCENT_BRIGHT)
             .collect();
         assert_eq!(
             basin.len(),
             1,
-            "expected exactly one ◒ (U+25D2) in ACCENT_BRIGHT; painter calls: {:?}",
+            "expected exactly one basin mark (U+F1396) in ACCENT_BRIGHT; painter calls: {:?}",
             painter.calls
         );
     }

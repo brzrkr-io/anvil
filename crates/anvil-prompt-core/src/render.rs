@@ -1,13 +1,11 @@
-//! Renders a segment list to an ANSI prompt string. Every escape sequence is
-//! wrapped in the shell's zero-width markers (`%{ %}` for zsh, `\001 \002` for
-//! bash) — without that the shell miscounts the prompt's visible width and
-//! typed input lands in the wrong column.
+//! Renders a prompt string. Every escape sequence is wrapped in the shell's
+//! zero-width markers (`%{ %}` for zsh, `\001 \002` for bash) — without that
+//! the shell miscounts the prompt's visible width and typed input lands in the
+//! wrong column.
 //!
 //! Colors are emitted as indexed ANSI colors (`\x1b[38;5;Nm`) so the terminal
 //! re-resolves them through the active theme palette on every frame. A theme
 //! switch therefore recolors all prompts in scrollback automatically.
-
-use crate::segments::Segment;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shell {
@@ -79,10 +77,7 @@ fn esc(buf: &mut String, shell: Shell, seq: &str) {
 ///   - failure: ` ✗ <code>  <duration>` (or ` ✗ <code>` when no duration)
 ///   - success: ` ✓ <duration>` (only when duration is present)
 ///
-/// `segments` is accepted for forward-compatibility with future themes that
-/// want an inline status indicator (e.g. a dirty-dot before the glyph) but
-/// is currently unused.
-pub fn full(_segments: &[Segment], opts: Options) -> String {
+pub fn full(opts: Options) -> String {
     let mut buf = String::new();
     let sh = opts.shell;
 
@@ -234,15 +229,6 @@ pub fn transient(opts: Options) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::icons::Icon;
-    use crate::segments::{Segment, State};
-
-    fn sample_segs() -> Vec<Segment> {
-        vec![
-            Segment::new(Icon::Repo, "anvil"),
-            Segment::with_state(Icon::Branch, "main", State::Warn),
-        ]
-    }
 
     /// Baseline options: no right segment, no dirty, no duration.
     fn base_opts(shell: Shell) -> Options {
@@ -260,8 +246,7 @@ mod tests {
     #[test]
     fn full_is_single_line_chevron_only() {
         // Single-line `❯  ` — no basin, no middot, no newline.
-        let segs = sample_segs();
-        let out = full(&segs, base_opts(Shell::Plain));
+        let out = full(base_opts(Shell::Plain));
         assert!(!out.contains('\n'));
         assert!(out.contains('\u{276f}')); // ❯
         assert!(!out.contains('\u{25d2}')); // no basin
@@ -270,7 +255,7 @@ mod tests {
 
     #[test]
     fn full_paints_chevron_in_bright_accent_on_success() {
-        let out = full(&[], base_opts(Shell::Plain));
+        let out = full(base_opts(Shell::Plain));
         assert!(out.contains(ACCENT_BRIGHT));
     }
 
@@ -284,23 +269,18 @@ mod tests {
 
     #[test]
     fn full_uses_indexed_accent_err_colour_on_failure() {
-        let segs = sample_segs();
-        let ok = full(&segs, base_opts(Shell::Plain));
-        let bad = full(
-            &segs,
-            Options {
-                failed: true,
-                ..base_opts(Shell::Plain)
-            },
-        );
+        let ok = full(base_opts(Shell::Plain));
+        let bad = full(Options {
+            failed: true,
+            ..base_opts(Shell::Plain)
+        });
         assert!(bad.contains(ACCENT_ERR));
         assert!(!ok.contains(ACCENT_ERR));
     }
 
     #[test]
     fn full_uses_bright_accent_for_the_chevron() {
-        let segs = sample_segs();
-        let out = full(&segs, base_opts(Shell::Plain));
+        let out = full(base_opts(Shell::Plain));
         assert!(out.contains(ACCENT_BRIGHT));
     }
 
@@ -312,23 +292,20 @@ mod tests {
 
     #[test]
     fn full_emits_the_osc_133b_prompt_end_mark() {
-        let segs = sample_segs();
-        let out = full(&segs, base_opts(Shell::Plain));
+        let out = full(base_opts(Shell::Plain));
         assert!(out.contains("\x1b]133;B"));
     }
 
     #[test]
     fn full_does_not_contain_a_rule_line() {
-        let segs = sample_segs();
-        let out = full(&segs, base_opts(Shell::Plain));
+        let out = full(base_opts(Shell::Plain));
         // The box-drawing horizontal bar character must not appear in the prompt text.
         assert!(!out.contains('\u{2500}'));
     }
 
     #[test]
     fn zsh_mode_wraps_escape_sequences_in_zero_width_markers() {
-        let segs = sample_segs();
-        let out = full(&segs, base_opts(Shell::Zsh));
+        let out = full(base_opts(Shell::Zsh));
         assert!(out.contains("%{"));
         assert!(out.contains("%}"));
     }
@@ -350,8 +327,7 @@ mod tests {
 
     #[test]
     fn bash_mode_wraps_escape_sequences_in_rl_markers() {
-        let segs = sample_segs();
-        let out = full(&segs, base_opts(Shell::Bash));
+        let out = full(base_opts(Shell::Bash));
         // Bash zero-width markers are \x01 ... \x02
         assert!(out.contains('\x01'));
         assert!(out.contains('\x02'));
@@ -364,12 +340,7 @@ mod tests {
         // The chrome row carries cwd/branch/dirty count now; the shell prompt
         // is just `❯ ` + optional right-aligned exit/duration. Matches D's
         // `.prompt-line` which is bare.
-        let segs = vec![Segment::with_state(
-            crate::icons::Icon::Branch,
-            "main 3",
-            crate::segments::State::Warn,
-        )];
-        let out = full(&segs, base_opts(Shell::Plain));
+        let out = full(base_opts(Shell::Plain));
         assert!(
             !out.contains("*3"),
             "dirty count must not appear in the prompt"
@@ -384,15 +355,12 @@ mod tests {
     #[test]
     fn full_with_exit_code_right_aligns_failure_indicator() {
         // ` ✗ 127` appears on the same line as the prompt when exit != 0.
-        let out = full(
-            &[],
-            Options {
-                failed: true,
-                exit_code: 127,
-                width: 80,
-                ..base_opts(Shell::Plain)
-            },
-        );
+        let out = full(Options {
+            failed: true,
+            exit_code: 127,
+            width: 80,
+            ..base_opts(Shell::Plain)
+        });
         // Failure glyph present.
         assert!(out.contains('\u{2717}')); // ✗
         // Exit code present.
@@ -406,14 +374,11 @@ mod tests {
     #[test]
     fn full_with_duration_only_shows_check_in_verified_green() {
         // ` ✓ 0.4s` appears on the right when exit == 0 but duration is set.
-        let out = full(
-            &[],
-            Options {
-                duration_ms: Some(400),
-                width: 80,
-                ..base_opts(Shell::Plain)
-            },
-        );
+        let out = full(Options {
+            duration_ms: Some(400),
+            width: 80,
+            ..base_opts(Shell::Plain)
+        });
         // Success glyph present.
         assert!(out.contains('\u{2713}')); // ✓
         // Duration formatted.
@@ -427,7 +392,7 @@ mod tests {
     #[test]
     fn full_omits_right_segment_when_no_exit_and_no_duration() {
         // No right segment when exit == 0 and no duration.
-        let out = full(&[], base_opts(Shell::Plain));
+        let out = full(base_opts(Shell::Plain));
         // Neither success nor failure glyph.
         assert!(!out.contains('\u{2713}')); // ✓
         assert!(!out.contains('\u{2717}')); // ✗

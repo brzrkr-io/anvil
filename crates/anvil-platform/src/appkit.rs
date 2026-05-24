@@ -123,8 +123,10 @@ pub trait AppHandler {
     /// Mouse dragged (button held).
     fn mouse_dragged(&mut self, loc: MouseLocation);
 
-    /// Scroll-wheel event; `dy` is the delta in AppKit points.
-    fn scroll(&mut self, dy: f64, loc: MouseLocation);
+    /// Scroll-wheel event. `dy` is the AppKit delta along Y. `pixel_precise`
+    /// is true for trackpad / Magic Mouse (delta is in points), false for a
+    /// traditional mouse wheel (delta is in "lines" — ~1.0 per detent).
+    fn scroll(&mut self, dy: f64, pixel_precise: bool, loc: MouseLocation);
 
     /// The window was resized (called on every resize notification; also during
     /// live resize).  `in_live_resize` matches `NSView.inLiveResize`.
@@ -323,10 +325,12 @@ define_class!(
         #[unsafe(method(scrollWheel:))]
         fn scroll_wheel(&self, event: &NSEvent) {
             let dy = event.scrollingDeltaY();
+            let pixel_precise: bool =
+                unsafe { msg_send![event, hasPreciseScrollingDeltas] };
             let loc = location_in_view(self, event);
             // SAFETY: handler pointer is valid for the app lifetime.
             let mut h = unsafe { self.ivars().handler.borrow_mut() };
-            h.scroll(dy, loc);
+            h.scroll(dy, pixel_precise, loc);
         }
 
         #[unsafe(method(mouseDown:))]

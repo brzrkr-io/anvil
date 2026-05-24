@@ -100,7 +100,7 @@ fn main() {
     let git_dirty = git_info.as_ref().map(|g| g.dirty).unwrap_or(0);
 
     let cwd_base = basename(&cwd).to_string();
-    let list = assemble(Inputs {
+    let _list = assemble(Inputs {
         cwd_base: &cwd_base,
         context,
         git_info,
@@ -117,5 +117,5 @@ fn main() {
         exit_code: args.exit_code,
     };
 
-    print!("{}", render::full(list.slice(), opts));
+    print!("{}", render::full(opts));
 }

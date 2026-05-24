@@ -2718,7 +2718,7 @@ impl AppHandler for AppShell {
         app.dirty = true;
     }
 
-    fn scroll(&mut self, dy: f64, loc: MouseLocation) {
+    fn scroll(&mut self, dy: f64, pixel_precise: bool, loc: MouseLocation) {
         let app = &mut self.app;
         if dy == 0.0 {
             return;
@@ -2739,13 +2739,17 @@ impl AppHandler for AppShell {
             return;
         }
 
-        // macOS delivers `scrollingDeltaY` in DEVICE PIXELS for pixel-precise
-        // sources (trackpads, Magic Mouse) and in "lines" (≈1.0 per detent)
-        // for traditional mice. Convert both to cell-row units. cell_h is
-        // device-pixels per cell, so dividing by it gives cells; the `* 3.0`
-        // line-mode factor matches typical terminal scroll-by-3 feel.
-        let cell_h = app.font.metrics.cell_h as f32;
-        let d = (dy as f32) / cell_h;
+        // Pixel-precise sources (trackpad, Magic Mouse) deliver dy in
+        // logical points; AppKit auto-scales for retina. Convert to cells
+        // using cell_h / window_scale. Line-mode sources (mouse wheel)
+        // deliver dy in "lines" — boost by 3 to match typical terminal
+        // scroll-by-3-lines feel.
+        let cell_h_pt = (app.font.metrics.cell_h / app.window_scale) as f32;
+        let d = if pixel_precise {
+            (dy as f32) / cell_h_pt
+        } else {
+            (dy as f32) * 3.0
+        };
 
         if let Some(tab) = app.tabs.current_mut() {
             let id = tab.focused_id();
@@ -3277,9 +3281,9 @@ fn main() -> Result<()> {
                 h.mouse_dragged(l)
             }
         }
-        fn scroll(&mut self, dy: f64, l: MouseLocation) {
+        fn scroll(&mut self, dy: f64, pp: bool, l: MouseLocation) {
             if let Some(h) = &mut *self.0.borrow_mut() {
-                h.scroll(dy, l)
+                h.scroll(dy, pp, l)
             }
         }
         fn resize(&mut self, w: f64, h: f64, live: bool) {
