@@ -13,6 +13,6 @@ pub use parser::{Handler, Parser};
 pub use scrollback::{DEFAULT_CAPACITY, Scrollback};
 pub use search::{MAX_MATCHES as SEARCH_MAX_MATCHES, Match, MatchKind, Search};
 pub use terminal::{
-    Block, BlockState, Cursor, CursorShape, DirtySet, LastRun, PrivateModes, PromptMark,
+    Block, BlockState, Cursor, CursorShape, DiffKind, DirtySet, LastRun, PrivateModes, PromptMark,
     PromptMarkKind, Terminal,
 };

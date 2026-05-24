@@ -147,6 +147,7 @@ pub struct Keybindings {
     pub focus_up: String,
     pub focus_down: String,
     pub fold_block: String,
+    pub toggle_theme: String,
 }
 
 impl Default for Keybindings {
@@ -178,6 +179,7 @@ impl Default for Keybindings {
             focus_up: "cmd+shift+k".into(),
             focus_down: "cmd+shift+j".into(),
             fold_block: "cmd+.".into(),
+            toggle_theme: "cmd+shift+t".into(),
         }
     }
 }
@@ -208,7 +210,7 @@ impl Default for Config {
             font: FontCfg::default(),
             cursor: CursorCfg::new_default(),
             window: WindowCfg::default(),
-            theme: "mineral-dark".into(),
+            theme: "ember-dark".into(),
             theme_overrides: ThemeOverrides::default(),
             keybindings: Keybindings::default(),
             shell_integration: true,
@@ -441,7 +443,7 @@ accent = "#3aa0a8"
         assert_eq!(cfg.scrollback, 200);
         assert_eq!(cfg.font.family, "IBM Plex Mono");
         assert_eq!(cfg.cursor.style, CursorStyle::Block);
-        assert_eq!(cfg.theme, "mineral-dark");
+        assert_eq!(cfg.theme, "ember-dark");
     }
 
     #[test]
@@ -483,7 +485,7 @@ height = 1.0
         assert_eq!(cfg.scrollback, 100_000);
         assert_eq!(cfg.font.family, "IBM Plex Mono");
         assert!(cfg.cursor.blink);
-        assert_eq!(cfg.theme, "mineral-dark");
+        assert_eq!(cfg.theme, "ember-dark");
         assert!(cfg.shell_integration);
         assert!(cfg.prompt.enabled);
         assert!(cfg.prompt.transient);

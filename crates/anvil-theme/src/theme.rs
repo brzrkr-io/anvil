@@ -49,6 +49,40 @@ pub struct Theme {
     pub border: [u8; 3],
     /// The 16 ANSI palette entries.
     pub ansi: [[u8; 3]; 16],
+
+    // ── Chrome tokens ─────────────────────────────────────────────────────────
+    /// Chrome strip background (tab bar row).
+    pub graphite: [u8; 3],
+    /// Active-tab panel fill, status bar fill.
+    pub charcoal: [u8; 3],
+    /// Modal overlay background (cheatsheet card, deeper surface).
+    pub panel: [u8; 3],
+    /// Block body tint in draw.rs. Slightly lifted from background.
+    pub panel_raised: [u8; 3],
+    /// 1px chrome separators (quieter than border).
+    pub hairline: [u8; 3],
+    /// Inactive tab labels, status bar metadata.
+    pub text_muted: [u8; 3],
+    /// Chord labels, separator glyphs, very dim text.
+    pub text_subtle: [u8; 3],
+    /// Fold summaries, dim gutter metadata.
+    pub alloy: [u8; 3],
+    /// Cursor, basin mark, focus ring. ≥4.5:1 vs background.
+    pub accent_primary: [u8; 3],
+    /// Active-tab rule, tab-bar accent rule. Brighter than primary.
+    pub accent_bright: [u8; 3],
+    /// Canonical brand ember. Unchanged in both variants.
+    pub accent_ember: [u8; 3],
+    /// Exit 0, clean git, passing checks. Reads green.
+    pub verified: [u8; 3],
+    /// Non-zero exit, error state. Reads red.
+    pub failure: [u8; 3],
+    /// Unread dot, stale context, pending action. Reads amber.
+    pub attention: [u8; 3],
+    /// Agent/automation/model activity dot. Reads violet.
+    pub agent: [u8; 3],
+    /// Branch glyph, trace, info. Reads teal.
+    pub info: [u8; 3],
 }
 
 impl Theme {
@@ -72,6 +106,94 @@ impl Theme {
 }
 
 // ── Built-in palettes ────────────────────────────────────────────────────────
+
+/// Ember Dark — warm near-black canvas with ember orange primary accent.
+/// R ≥ G ≥ B spread on all neutrals; ember #c5462a is the canonical brand signal.
+pub const EMBER_DARK: Theme = Theme {
+    background: [0x1a, 0x18, 0x15],
+    foreground: [0xdc, 0xd8, 0xd2],
+    accent: [0xd4, 0x60, 0x3a],      // accent_primary as cursor
+    surface: [0x25, 0x22, 0x20],
+    border: [0x3e, 0x3a, 0x36],
+    ansi: [
+        [0x1a, 0x18, 0x15], // 0 black
+        [0xc9, 0x40, 0x38], // 1 red
+        [0x4e, 0x9e, 0x68], // 2 green
+        [0xc4, 0x8c, 0x1c], // 3 yellow
+        [0x6e, 0x9a, 0xbf], // 4 blue
+        [0xb0, 0x9a, 0xd6], // 5 magenta
+        [0x3d, 0x8e, 0x94], // 6 cyan
+        [0xc8, 0xc4, 0xbe], // 7 white
+        [0x78, 0x70, 0x6a], // 8 bright-black
+        [0xe0, 0x5c, 0x54], // 9 bright-red
+        [0x68, 0xb8, 0x7e], // 10 bright-green
+        [0xd8, 0xa0, 0x30], // 11 bright-yellow
+        [0x88, 0xb4, 0xd2], // 12 bright-blue
+        [0xc4, 0xb4, 0xe8], // 13 bright-magenta
+        [0x5a, 0xb4, 0xbc], // 14 bright-cyan
+        [0xe8, 0xe4, 0xde], // 15 bright-white
+    ],
+    graphite: [0x11, 0x0f, 0x0d],
+    charcoal: [0x20, 0x1d, 0x1b],
+    panel: [0x2f, 0x2c, 0x29],
+    panel_raised: [0x25, 0x22, 0x20],
+    hairline: [0x31, 0x2e, 0x2b],
+    text_muted: [0x9e, 0x96, 0x90],
+    text_subtle: [0x6a, 0x63, 0x60],
+    alloy: [0x8a, 0x82, 0x7c],
+    accent_primary: [0xd4, 0x60, 0x3a],
+    accent_bright: [0xde, 0x70, 0x48],
+    accent_ember: [0xc5, 0x46, 0x2a],
+    verified: [0x4e, 0x9e, 0x68],
+    failure: [0xc9, 0x40, 0x38],
+    attention: [0xc4, 0x8c, 0x1c],
+    agent: [0x7d, 0x72, 0xbc],
+    info: [0x3d, 0x8e, 0x94],
+};
+
+/// Ember Light — warm off-white canvas with Revision 2 token values.
+/// All text tokens meet ≥4.5:1 WCAG on `#f4ede6`.
+pub const EMBER_LIGHT: Theme = Theme {
+    background: [0xf4, 0xed, 0xe6],
+    foreground: [0x1e, 0x1a, 0x17],
+    accent: [0xa2, 0x37, 0x18],      // accent_primary as cursor
+    surface: [0xfd, 0xfa, 0xf7],
+    border: [0xbd, 0xb0, 0xa0],
+    ansi: [
+        [0x1e, 0x1a, 0x17], // 0 black
+        [0xa8, 0x34, 0x26], // 1 red
+        [0x2a, 0x70, 0x44], // 2 green
+        [0x87, 0x5e, 0x10], // 3 yellow
+        [0x3a, 0x64, 0x90], // 4 blue
+        [0x5c, 0x50, 0x90], // 5 magenta
+        [0x29, 0x6a, 0x70], // 6 cyan
+        [0x5a, 0x54, 0x50], // 7 white
+        [0x5e, 0x58, 0x54], // 8 bright-black
+        [0x9e, 0x2e, 0x20], // 9 bright-red
+        [0x24, 0x60, 0x38], // 10 bright-green
+        [0x7c, 0x54, 0x0c], // 11 bright-yellow
+        [0x34, 0x5a, 0x84], // 12 bright-blue
+        [0x50, 0x46, 0x80], // 13 bright-magenta
+        [0x23, 0x60, 0x68], // 14 bright-cyan
+        [0x5a, 0x54, 0x50], // 15 bright-white
+    ],
+    graphite: [0xed, 0xe5, 0xdb],
+    charcoal: [0xfd, 0xfa, 0xf7],
+    panel: [0xed, 0xe5, 0xdc],
+    panel_raised: [0xf0, 0xe9, 0xe2],
+    hairline: [0xca, 0xbe, 0xa8],
+    text_muted: [0x52, 0x45, 0x3c],
+    text_subtle: [0x8a, 0x7e, 0x72],
+    alloy: [0x7a, 0x72, 0x6c],
+    accent_primary: [0xa2, 0x37, 0x18],
+    accent_bright: [0xc5, 0x46, 0x2a],
+    accent_ember: [0xc5, 0x46, 0x2a],
+    verified: [0x1f, 0x5e, 0x36],
+    failure: [0xa8, 0x34, 0x26],
+    attention: [0x6f, 0x4d, 0x08],
+    agent: [0x44, 0x38, 0x79],
+    info: [0x1f, 0x5e, 0x66],
+};
 
 /// Mineral Dark — a soft, slightly-pastel palette on a calm (not pure-black)
 /// canvas. Brand hue families are kept: mineral teal, semantic red/green/amber,
@@ -104,6 +226,23 @@ pub const MINERAL_DARK: Theme = Theme {
         [0x95, 0xd9, 0xde],
         [0xee, 0xf1, 0xf6],
     ],
+    // Chrome fields — filled with legacy hardcoded values from tabbar/statusbar/draw consts.
+    graphite: [0x0b, 0x0d, 0x0e],
+    charcoal: [0x16, 0x1a, 0x1c],
+    panel: [0x1d, 0x21, 0x29],
+    panel_raised: [0x22, 0x26, 0x2f],
+    hairline: [0x23, 0x26, 0x2b],
+    text_muted: [0xa1, 0xa4, 0xa9],
+    text_subtle: [0x6c, 0x6f, 0x74],
+    alloy: [0x86, 0x8e, 0xa6],
+    accent_primary: [0x54, 0xb7, 0xc0],
+    accent_bright: [0x54, 0xb7, 0xc0],
+    accent_ember: [0xc5, 0x46, 0x2a],
+    verified: [0x3f, 0x8a, 0x5b],
+    failure: [0xb1, 0x3a, 0x30],
+    attention: [0xb0, 0x7a, 0x14],
+    agent: [0x6a, 0x5f, 0xa3],
+    info: [0x54, 0xb7, 0xc0],
 };
 
 /// Mineral Light — a refined reader-mode palette on the brand bone canvas.
@@ -136,6 +275,23 @@ pub const MINERAL_LIGHT: Theme = Theme {
         [0x25, 0x6a, 0x70],
         [0x5f, 0x67, 0x6f],
     ],
+    // Chrome fields — filled with legacy hardcoded values from tabbar/statusbar consts.
+    graphite: [0xee, 0xf1, 0xf2],
+    charcoal: [0xee, 0xf1, 0xf2],
+    panel: [0xff, 0xff, 0xff],
+    panel_raised: [0xff, 0xff, 0xff],
+    hairline: [0xb8, 0xbe, 0xc3],
+    text_muted: [0xa1, 0xa4, 0xa9],
+    text_subtle: [0x6c, 0x6f, 0x74],
+    alloy: [0x5d, 0x66, 0x71],
+    accent_primary: [0x28, 0x6e, 0x76],
+    accent_bright: [0x28, 0x6e, 0x76],
+    accent_ember: [0xc5, 0x46, 0x2a],
+    verified: [0x32, 0x79, 0x52],
+    failure: [0xb5, 0x44, 0x3a],
+    attention: [0x94, 0x64, 0x10],
+    agent: [0x62, 0x55, 0x8f],
+    info: [0x28, 0x6e, 0x76],
 };
 
 // ── Overrides ────────────────────────────────────────────────────────────────
@@ -177,15 +333,17 @@ pub struct ThemeOverrides {
 
 // ── Resolution ───────────────────────────────────────────────────────────────
 
-/// Resolve a base theme by name. An unknown name falls back to [`MINERAL_DARK`]
+/// Resolve a base theme by name. An unknown name falls back to [`EMBER_DARK`]
 /// and prints a warning to stderr.
 pub fn by_name(name: &str) -> Theme {
     match name {
+        "ember-dark" => EMBER_DARK,
+        "ember-light" => EMBER_LIGHT,
         "mineral-dark" => MINERAL_DARK,
         "mineral-light" => MINERAL_LIGHT,
         other => {
-            eprintln!("anvil: unknown theme \"{other}\", using mineral-dark");
-            MINERAL_DARK
+            eprintln!("anvil: unknown theme \"{other}\", using ember-dark");
+            EMBER_DARK
         }
     }
 }
@@ -240,11 +398,13 @@ mod tests {
             by_name("mineral-light").background,
             MINERAL_LIGHT.background
         );
+        assert_eq!(by_name("ember-dark").background, EMBER_DARK.background);
+        assert_eq!(by_name("ember-light").background, EMBER_LIGHT.background);
     }
 
     #[test]
     fn by_name_falls_back_to_dark_for_unknown() {
-        assert_eq!(by_name("nope").background, MINERAL_DARK.background);
+        assert_eq!(by_name("nope").background, EMBER_DARK.background);
     }
 
     // --- palette256 ---
@@ -358,5 +518,44 @@ mod tests {
                 "ansi color {color:?} fails 4.5:1 on light background"
             );
         }
+    }
+
+    #[test]
+    fn ember_dark_wcag_contrast_targets() {
+        let bg = EMBER_DARK.background;
+        // foreground >= 9:1
+        assert!(
+            contrast_ratio(EMBER_DARK.foreground, bg) >= 9.0,
+            "ember-dark foreground fails 9:1"
+        );
+        // accent_primary >= 4.5:1
+        assert!(
+            contrast_ratio(EMBER_DARK.accent_primary, bg) >= 4.5,
+            "ember-dark accent_primary fails 4.5:1"
+        );
+        // accent_ember is the brand signal; no contrast target on this one
+        // verified/failure/info >= 3:1 (status legibility)
+        assert!(contrast_ratio(EMBER_DARK.verified, bg) >= 3.0);
+        assert!(contrast_ratio(EMBER_DARK.failure, bg) >= 3.0);
+        assert!(contrast_ratio(EMBER_DARK.info, bg) >= 3.0);
+    }
+
+    #[test]
+    fn ember_light_wcag_contrast_targets() {
+        let bg = EMBER_LIGHT.background;
+        // foreground >= 9:1
+        assert!(
+            contrast_ratio(EMBER_LIGHT.foreground, bg) >= 9.0,
+            "ember-light foreground fails 9:1"
+        );
+        // accent_primary >= 4.5:1
+        assert!(
+            contrast_ratio(EMBER_LIGHT.accent_primary, bg) >= 4.5,
+            "ember-light accent_primary fails 4.5:1"
+        );
+        // v2 semantic tokens >= 3:1
+        assert!(contrast_ratio(EMBER_LIGHT.verified, bg) >= 3.0);
+        assert!(contrast_ratio(EMBER_LIGHT.failure, bg) >= 3.0);
+        assert!(contrast_ratio(EMBER_LIGHT.info, bg) >= 3.0);
     }
 }

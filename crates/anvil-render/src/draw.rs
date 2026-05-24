@@ -17,20 +17,8 @@ use crate::atlas::GlyphRasterizer;
 use crate::batch::CellBatch;
 use crate::raster::{FontMetrics, GlyphPainter, Raster};
 
-// ── Semantic status colors (Mineral palette, brand contract) ─────────────────
-
-/// accent.bright / mineral bright teal — running block (#54b7c0)
-const ACCENT_BRIGHT: [u8; 3] = [0x54, 0xb7, 0xc0];
-/// status.verified — exit 0 (#3f8a5b)
-const VERIFIED: [u8; 3] = [0x3f, 0x8a, 0x5b];
-/// status.failure — non-zero exit (#b13a30)
-const FAILURE: [u8; 3] = [0xb1, 0x3a, 0x30];
-/// alloy — muted text for fold summaries (#86919a)
-const ALLOY: [u8; 3] = [0x86, 0x91, 0x9a];
-/// panel-raised — block body background tint. Matches D's `.block { background:
-/// var(--charcoal) }` against the terminal background. Lifted enough to read
-/// as a card at retina; quiet enough not to compete with text.
-const PANEL_RAISED: [u8; 3] = [0x22, 0x27, 0x30];
+// All chrome palette constants migrated to Theme fields.
+// Use theme.accent_bright, theme.verified, theme.failure, theme.alloy, theme.panel_raised.
 
 // ── Folded blocks ─────────────────────────────────────────────────────────────
 
@@ -154,7 +142,7 @@ pub fn draw_cell(
     y: usize,
     content_row: usize,
     cell: Cell,
-    selection: Selection,
+    _selection: Selection,
     search: Option<&Search>,
 ) {
     let mut fg = resolve_color(cell.fg, theme.foreground, theme);
@@ -163,12 +151,6 @@ pub fn draw_cell(
     use anvil_term::Attrs;
     if cell.attrs.contains(Attrs::INVERSE) {
         std::mem::swap(&mut fg, &mut bg);
-    }
-
-    if selection.active && selection.contains(content_row, x) {
-        // 0.25 mix reads as a quiet wash, not a loud highlight; the
-        // foreground glyph stays readable through it.
-        bg = mix(theme.background, theme.accent, 0.25);
     }
 
     if let Some(s) = search {
@@ -317,9 +299,10 @@ fn read_command_text(terminal: &Terminal, crow: usize, start_col: usize) -> Stri
 fn compute_block_header_chars(
     block: &Block,
     cols: usize,
+    theme: &Theme,
 ) -> Option<(usize, Vec<(char, [u8; 3])>)> {
-    let muted = ALLOY;
-    let accent_color = block_accent_color(block);
+    let muted = theme.alloy;
+    let accent_color = block_accent_color(block, theme);
 
     let dur_str = if block.duration_ms > 0 {
         format_duration(block.duration_ms)
@@ -331,9 +314,9 @@ fn compute_block_header_chars(
         BlockState::Running => ("\u{2026}".to_string(), accent_color), // …
         BlockState::Exited => {
             if block.exit_code == 0 {
-                ("\u{2713}".to_string(), VERIFIED) // ✓
+                ("\u{2713}".to_string(), theme.verified) // ✓
             } else {
-                (format!("\u{2717} {}", block.exit_code), FAILURE) // ✗ N
+                (format!("\u{2717} {}", block.exit_code), theme.failure) // ✗ N
             }
         }
     };
@@ -403,7 +386,7 @@ fn draw_block_header_cpu(
         cols.saturating_sub(18),
     );
 
-    if let Some((start_col, chars)) = compute_block_header_chars(block, cols) {
+    if let Some((start_col, chars)) = compute_block_header_chars(block, cols, theme) {
         for (i, (cp, color)) in chars.into_iter().enumerate() {
             let col = start_col + i;
             raster.cell_glyph(painter, metrics, col, ry, cp as u32, color);
@@ -422,6 +405,7 @@ fn draw_block_header_gpu(
     rasterizer: &mut dyn GlyphRasterizer,
     raster: &Raster,
     metrics: FontMetrics,
+    theme: &Theme,
     block: &Block,
     viewport_y: usize,
     cols: usize,
@@ -429,13 +413,13 @@ fn draw_block_header_gpu(
     ch: f32,
     y_shift: f32,
 ) {
-    if let Some((start_col, chars)) = compute_block_header_chars(block, cols) {
+    if let Some((start_col, chars)) = compute_block_header_chars(block, cols, theme) {
         for (i, (cp, color)) in chars.into_iter().enumerate() {
             let col = start_col + i;
             let rect = raster.cell_rect(metrics, col as f64, viewport_y as f64);
             let xy = [rect.x as f32, rect.y as f32 - y_shift];
             let wh = [cw, ch];
-            let bg = PANEL_RAISED;
+            let bg = theme.panel_raised;
             if cp == ' ' {
                 batch.push_cell(xy, wh, None, color, bg);
             } else {
@@ -448,14 +432,14 @@ fn draw_block_header_gpu(
 
 // ── Gutter mark color ─────────────────────────────────────────────────────────
 
-fn block_accent_color(block: &Block) -> [u8; 3] {
+fn block_accent_color(block: &Block, theme: &Theme) -> [u8; 3] {
     match block.state {
-        BlockState::Running => ACCENT_BRIGHT,
+        BlockState::Running => theme.accent_bright,
         BlockState::Exited => {
             if block.exit_code == 0 {
-                VERIFIED
+                theme.verified
             } else {
-                FAILURE
+                theme.failure
             }
         }
     }
@@ -474,6 +458,8 @@ fn block_accent_color(block: &Block) -> [u8; 3] {
 trait ViewportSink {
     /// Clear one row's background to `bg` before redrawing (CPU only; GPU no-op).
     fn clear_row_bg(&mut self, ry: usize, m: FontMetrics, bg: [u8; 3]);
+    /// Paint a selection wash over a full row (CPU only; GPU no-op).
+    fn fill_selection_row(&mut self, ry: usize, cols: usize, m: FontMetrics, rgb: [u8; 3], alpha: f64);
     /// Draw one terminal cell.
     #[allow(clippy::too_many_arguments)]
     fn draw_cell(
@@ -547,6 +533,12 @@ impl ViewportSink for CpuSink<'_> {
         self.raster.clear_pixel_rows(y_top, y_bot, bg);
     }
 
+    fn fill_selection_row(&mut self, ry: usize, cols: usize, m: FontMetrics, rgb: [u8; 3], alpha: f64) {
+        let px = self.raster.origin_x;
+        let py = self.raster.origin_y + ry as f64 * m.cell_h;
+        self.raster.fill_pixel_rect_alpha(px, py, cols as f64 * m.cell_w, m.cell_h, rgb, alpha);
+    }
+
     fn draw_cell(
         &mut self,
         x: usize,
@@ -578,10 +570,10 @@ impl ViewportSink for CpuSink<'_> {
         cols: usize,
         hidden: usize,
         m: FontMetrics,
-        _theme: &Theme,
+        theme: &Theme,
     ) {
         let summary = format!(" \u{2304} {hidden} hidden");
-        draw_text_row(self.raster, self.painter, m, 0, ry, &summary, ALLOY, cols);
+        draw_text_row(self.raster, self.painter, m, 0, ry, &summary, theme.alloy, cols);
     }
 
     fn draw_block_header(
@@ -706,6 +698,10 @@ impl ViewportSink for GpuSink<'_> {
         // GPU path has no per-pixel buffer to clear.
     }
 
+    fn fill_selection_row(&mut self, _ry: usize, _cols: usize, _m: FontMetrics, _rgb: [u8; 3], _alpha: f64) {
+        // GPU path: selection wash is not composited in the CPU pixel buffer.
+    }
+
     fn draw_cell(
         &mut self,
         x: usize,
@@ -748,7 +744,7 @@ impl ViewportSink for GpuSink<'_> {
             let xy = [base_xy[0], base_xy[1] - self.shift];
             let wh = [self.cw, self.ch];
             let slot = self.rasterizer.glyph_slot(cp as u32, m);
-            self.batch.push_cell(xy, wh, slot, ALLOY, theme.background);
+            self.batch.push_cell(xy, wh, slot, theme.alloy, theme.background);
         }
     }
 
@@ -759,13 +755,14 @@ impl ViewportSink for GpuSink<'_> {
         block: &Block,
         _cmd_text: &str,
         m: FontMetrics,
-        _theme: &Theme,
+        theme: &Theme,
     ) {
         draw_block_header_gpu(
             self.batch,
             self.rasterizer,
             self.raster,
             m,
+            theme,
             block,
             ry,
             cols,
@@ -919,6 +916,18 @@ fn draw_viewport_into(
             }
         }
 
+        // Selection row wash (pre-pass, CPU only; GPU no-op).
+        if selection.active {
+            let (s, e) = selection.ordered();
+            if crow >= s.row && crow <= e.row {
+                let lum = theme.background[0] as f64 * 0.2126
+                    + theme.background[1] as f64 * 0.7152
+                    + theme.background[2] as f64 * 0.0722;
+                let alpha = if lum / 255.0 > 0.5 { 0.18 } else { 0.22 };
+                sink.fill_selection_row(y, cols, metrics, theme.accent_ember, alpha);
+            }
+        }
+
         // Draw all cells in this row.
         {
             let row: Vec<Cell> = match off_opt {
@@ -1060,7 +1069,7 @@ fn resolve_cell_colors(
     cell: Cell,
     content_row: usize,
     col: usize,
-    selection: Selection,
+    _selection: Selection,
     search: Option<&Search>,
     theme: &Theme,
 ) -> ([u8; 3], [u8; 3]) {
@@ -1070,10 +1079,6 @@ fn resolve_cell_colors(
     use anvil_term::Attrs;
     if cell.attrs.contains(Attrs::INVERSE) {
         std::mem::swap(&mut fg, &mut bg);
-    }
-
-    if selection.active && selection.contains(content_row, col) {
-        bg = mix(theme.background, theme.accent, 0.35);
     }
 
     if let Some(s) = search {
@@ -1807,71 +1812,82 @@ mod tests {
             state,
             exit_code,
             duration_ms: 0,
+            diff_kind: anvil_term::DiffKind::None,
         }
+    }
+
+    fn th() -> anvil_theme::Theme {
+        anvil_theme::EMBER_DARK
     }
 
     #[test]
     fn gutter_mark_color_running_is_info_teal() {
         use anvil_term::BlockState;
-        // Running blocks use ACCENT_BRIGHT (mineral bright teal) per brand contract.
+        let t = th();
         let block = make_block(BlockState::Running, 0);
-        assert_eq!(block_accent_color(&block), ACCENT_BRIGHT);
+        assert_eq!(block_accent_color(&block, &t), t.accent_bright);
     }
 
     #[test]
     fn block_accent_color_running_is_accent_bright() {
         use anvil_term::BlockState;
+        let t = th();
         let block = make_block(BlockState::Running, 0);
-        assert_eq!(block_accent_color(&block), ACCENT_BRIGHT);
+        assert_eq!(block_accent_color(&block, &t), t.accent_bright);
     }
 
     #[test]
     fn gutter_mark_color_exit_zero_is_verified() {
         use anvil_term::BlockState;
+        let t = th();
         let block = make_block(BlockState::Exited, 0);
-        assert_eq!(block_accent_color(&block), VERIFIED);
+        assert_eq!(block_accent_color(&block, &t), t.verified);
     }
 
     #[test]
     fn gutter_mark_color_exit_nonzero_is_failure() {
         use anvil_term::BlockState;
+        let t = th();
         let block = make_block(BlockState::Exited, 1);
-        assert_eq!(block_accent_color(&block), FAILURE);
+        assert_eq!(block_accent_color(&block, &t), t.failure);
     }
 
-    /// Running block: accent bar color is ACCENT_BRIGHT (mineral bright teal).
+    /// Running block: accent bar color is theme.accent_bright per brand contract.
     #[test]
     fn block_accent_color_running_pinned_to_accent_bright() {
         use anvil_term::BlockState;
+        let t = th();
         let block = make_block(BlockState::Running, 0);
         assert_eq!(
-            block_accent_color(&block),
-            ACCENT_BRIGHT,
-            "running block must use ACCENT_BRIGHT per brand contract"
+            block_accent_color(&block, &t),
+            t.accent_bright,
+            "running block must use accent_bright per brand contract"
         );
     }
 
-    /// Successful block: accent bar color is VERIFIED (green).
+    /// Successful block: accent bar color is theme.verified.
     #[test]
     fn block_accent_color_ok_is_verified() {
         use anvil_term::BlockState;
+        let t = th();
         let block = make_block(BlockState::Exited, 0);
         assert_eq!(
-            block_accent_color(&block),
-            VERIFIED,
-            "exit-0 block must use VERIFIED per brand contract"
+            block_accent_color(&block, &t),
+            t.verified,
+            "exit-0 block must use verified per brand contract"
         );
     }
 
-    /// Failed block: accent bar color is FAILURE (red).
+    /// Failed block: accent bar color is theme.failure.
     #[test]
     fn block_accent_color_failed_is_failure() {
         use anvil_term::BlockState;
+        let t = th();
         let block = make_block(BlockState::Exited, 1);
         assert_eq!(
-            block_accent_color(&block),
-            FAILURE,
-            "non-zero exit block must use FAILURE per brand contract"
+            block_accent_color(&block, &t),
+            t.failure,
+            "non-zero exit block must use failure per brand contract"
         );
     }
 

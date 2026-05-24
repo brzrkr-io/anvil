@@ -1,6 +1,7 @@
 //! The low-profile terminal tab bar — a fixed-height pixel strip, drawn into
 //! the raster.
 
+use anvil_theme::Theme;
 use anvil_workspace::tab::TabManager;
 
 use crate::raster::{FontMetrics, GlyphPainter, PixelRect, Raster};
@@ -10,25 +11,6 @@ use crate::raster::{FontMetrics, GlyphPainter, PixelRect, Raster};
 // (clear of even the rightmost green button) and convert to device pixels
 // at the actual window scale — 1× / 2× retina / 3× super-retina all work.
 const TRAFFIC_LIGHT_RESERVE_PT: f64 = 80.0;
-
-// --- Chrome palette (matches docs/design/layout-mockups.html Option D) ------
-
-/// graphite: chrome row background (#0b0d0e).
-const GRAPHITE: [u8; 3] = [0x0b, 0x0d, 0x0e];
-/// charcoal: active-tab background (#161a1c). Note: at retina with the
-/// macOS title bar's translucent material on top, pure charcoal can blend
-/// into graphite — we pick a slightly raised tone for visible contrast.
-const CHARCOAL: [u8; 3] = [0x1d, 0x21, 0x29];
-/// chrome border: hairline below the chrome row (#23262b).
-const CHROME_BORDER: [u8; 3] = [0x23, 0x26, 0x2b];
-/// text-muted: inactive-tab + right-side label tone (#a1a4a9).
-const TEXT_MUTED: [u8; 3] = [0xa1, 0xa4, 0xa9];
-/// mist: active-tab label tone (#d2d8db) — brighter than text-muted.
-const MIST: [u8; 3] = [0xd2, 0xd8, 0xdb];
-/// ash: separator glyph tone in the right indicators (#374046).
-const ASH: [u8; 3] = [0x37, 0x40, 0x46];
-/// status.attention: amber unread dot on background tabs (#b07a14).
-const ATTENTION: [u8; 3] = [0xb0, 0x7a, 0x14];
 
 /// Hit region for a single element in the chrome row.
 #[derive(Clone, Debug)]
@@ -83,6 +65,7 @@ pub fn draw_tab_bar(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
     metrics: FontMetrics,
+    theme: &Theme,
     tabs: &TabManager,
     branch: &str,
     clock: &str,
@@ -102,10 +85,7 @@ pub fn draw_tab_bar(
     // ── Chrome strip background ──────────────────────────────────────────
     // Full-width graphite from y=0 to the 1px hairline. The hairline lives
     // at chrome_top_px - 1; the strip's painted region is [0, chrome_top_px).
-    raster.fill_pixel_rect(0.0, 0.0, total_w, chrome_top_px - 1.0, GRAPHITE);
-
-    // Bright accent for basin + active-tab rule.
-    const ACCENT_BRIGHT: [u8; 3] = [0x54, 0xb7, 0xc0];
+    raster.fill_pixel_rect(0.0, 0.0, total_w, chrome_top_px - 1.0, theme.graphite);
 
     // Vertical baseline for chrome glyphs: cell rect's top is centred in
     // the strip so the glyph sits visually in the middle of the chrome row.
@@ -126,7 +106,7 @@ pub fn draw_tab_bar(
             basin_x,
             glyph_y,
             BASIN_MARK,
-            ACCENT_BRIGHT,
+            theme.accent_bright,
         );
     }
 
@@ -135,7 +115,7 @@ pub fn draw_tab_bar(
     let right_w = right_str.chars().count() as f64 * cell_w;
     let right_pad = 14.0 * window_scale; // D: .right-indicators { padding: 0 14px }
     let right_start_x = (total_w - right_w - right_pad).max(0.0);
-    draw_right_indicators(raster, painter, metrics, &right_str, right_start_x, glyph_y);
+    draw_right_indicators(raster, painter, metrics, theme, &right_str, right_start_x, glyph_y);
 
     // ── Tabs ─────────────────────────────────────────────────────────────
     let n = tabs.count();
@@ -176,7 +156,7 @@ pub fn draw_tab_bar(
         // the hairline. Matches D's `.tab.active { background: charcoal }
         // .tab.active::after { left:4px; right:4px; bottom:0; height:2px }`.
         if is_active {
-            raster.fill_pixel_rect(x, 0.0, tw, chrome_top_px - 1.0, CHARCOAL);
+            raster.fill_pixel_rect(x, 0.0, tw, chrome_top_px - 1.0, theme.charcoal);
             let inset = 4.0 * window_scale;
             let rule_y = chrome_top_px - 4.0;
             raster.fill_pixel_rect(
@@ -184,13 +164,13 @@ pub fn draw_tab_bar(
                 rule_y,
                 (tw - 2.0 * inset).max(0.0),
                 3.0,
-                ACCENT_BRIGHT,
+                theme.accent_bright,
             );
         }
 
         // Label: pixel-positioned, sitting inside the tab with a 2-cell
         // left pad and a 3-cell gap+× on the right.
-        let fg = if is_active { MIST } else { TEXT_MUTED };
+        let fg = if is_active { theme.foreground } else { theme.text_muted };
         let label = tab_label(tabs, t);
         let label_x0 = x + 2.0 * cell_w;
         let label_x_end = x + tw - 3.0 * cell_w;
@@ -205,14 +185,14 @@ pub fn draw_tab_bar(
         // Close × on active tab.
         let close_x = x + tw - 2.0 * cell_w;
         if is_active && close_x + cell_w <= total_w {
-            raster.glyph_at(painter, metrics, close_x, glyph_y, '×' as u32, TEXT_MUTED);
+            raster.glyph_at(painter, metrics, close_x, glyph_y, '×' as u32, theme.text_muted);
         }
 
         // Unread dot on background tabs with new output.
         let tab_has_unread = tabs.tabs.get(t).is_some_and(|tab| tab.has_unread);
         let dot_x = x + tw - cell_w;
         if !is_active && tab_has_unread && dot_x + cell_w <= total_w {
-            raster.glyph_at(painter, metrics, dot_x, glyph_y, '·' as u32, ATTENTION);
+            raster.glyph_at(painter, metrics, dot_x, glyph_y, '·' as u32, theme.attention);
         }
 
         // Push the close-× hit FIRST so it wins over the surrounding Tab
@@ -248,7 +228,7 @@ pub fn draw_tab_bar(
     // `+` button: one cell of gap after the last tab.
     let add_x = x + cell_w;
     if add_x + cell_w <= right_start_x {
-        raster.glyph_at(painter, metrics, add_x, glyph_y, '+' as u32, TEXT_MUTED);
+        raster.glyph_at(painter, metrics, add_x, glyph_y, '+' as u32, theme.text_muted);
         hits_out.hits.push(TabBarHit {
             rect: PixelRect {
                 x: add_x,
@@ -261,7 +241,7 @@ pub fn draw_tab_bar(
     }
 
     // 1px hairline at the bottom of the strip.
-    raster.fill_pixel_rect(0.0, chrome_top_px - 1.0, total_w, 1.0, CHROME_BORDER);
+    raster.fill_pixel_rect(0.0, chrome_top_px - 1.0, total_w, 1.0, theme.hairline);
 }
 
 /// Build the right-side indicator string. Uses the Nerd Font branch glyph
@@ -276,25 +256,25 @@ fn build_right_str(branch: &str, clock: &str) -> String {
 }
 
 /// Pixel-positioned. Branch glyph in accent, branch name in text-muted,
-/// separator `·` in ash, clock in text-muted. Matches D's `.right-indicators`.
+/// separator `·` in text_subtle, clock in text-muted. Matches D's `.right-indicators`.
 fn draw_right_indicators(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
     metrics: FontMetrics,
+    theme: &Theme,
     right_str: &str,
     start_x: f64,
     glyph_y: f64,
 ) {
-    const ACCENT: [u8; 3] = [0x2f, 0x7f, 0x86];
     let branch_glyph = '\u{e0a0}';
     let sep_glyph = '·';
     for (i, cp) in right_str.chars().enumerate() {
         let color = if cp == branch_glyph && i == 0 {
-            ACCENT
+            theme.info
         } else if cp == sep_glyph {
-            ASH
+            theme.text_subtle
         } else {
-            TEXT_MUTED
+            theme.text_muted
         };
         let x = start_x + i as f64 * metrics.cell_w;
         raster.glyph_at(painter, metrics, x, glyph_y, cp as u32, color);
@@ -365,11 +345,16 @@ mod tests {
         TabBarHits::default()
     }
 
+    fn theme() -> anvil_theme::Theme {
+        anvil_theme::EMBER_DARK
+    }
+
     /// Chrome row always renders — even with 0 tabs the basin mark is drawn.
     /// (Previously this was a no-op below 2 tabs; now chrome is always present.)
     #[test]
     fn draw_tab_bar_noop_below_2_tabs() {
         let m = metrics();
+        let th = theme();
         let mut r = Raster::new(200, 80);
         let mut painter = StubPainter::default();
         r.clear([1, 2, 3]);
@@ -381,6 +366,7 @@ mod tests {
             &mut r,
             &mut painter,
             m,
+            &th,
             &mgr,
             "",
             "12:00",
@@ -406,6 +392,7 @@ mod tests {
     fn draw_tab_bar_noop_for_one_tab() {
         use anvil_workspace::tab::{Tab, TabManager};
         let m = metrics();
+        let th = theme();
         let mut r = Raster::new(200, 80);
         let mut painter = StubPainter::default();
         r.clear([1, 2, 3]);
@@ -418,6 +405,7 @@ mod tests {
             &mut r,
             &mut painter,
             m,
+            &th,
             &mgr,
             "",
             "12:00",
@@ -443,6 +431,7 @@ mod tests {
     fn draw_tab_bar_basin_mark_in_painter_calls() {
         use anvil_workspace::tab::{Tab, TabManager};
         let m = metrics();
+        let th = theme();
         let mut r = Raster::new(400, 80);
         let mut painter = StubPainter::default();
         r.clear([0, 0, 0]);
@@ -455,6 +444,7 @@ mod tests {
             &mut r,
             &mut painter,
             m,
+            &th,
             &mgr,
             "main",
             "14:22",
@@ -463,16 +453,15 @@ mod tests {
             &mut hits,
         );
 
-        const ACCENT_BRIGHT: [u8; 3] = [0x54, 0xb7, 0xc0];
         let basin: Vec<_> = painter
             .calls
             .iter()
-            .filter(|&&(glyph, color)| glyph == 0xF1396 && color == ACCENT_BRIGHT)
+            .filter(|&&(glyph, color)| glyph == 0xF1396 && color == th.accent_bright)
             .collect();
         assert_eq!(
             basin.len(),
             1,
-            "expected exactly one basin mark (U+F1396) in ACCENT_BRIGHT; painter calls: {:?}",
+            "expected exactly one basin mark (U+F1396) in accent_bright; painter calls: {:?}",
             painter.calls
         );
     }
@@ -482,6 +471,7 @@ mod tests {
     fn draw_tab_bar_paints_with_two_tabs() {
         use anvil_workspace::tab::{Tab, TabManager};
         let m = metrics();
+        let th = theme();
         let mut r = Raster::new(400, 80);
         let mut painter = StubPainter::default();
         r.clear([0, 0, 0]);
@@ -496,6 +486,7 @@ mod tests {
             &mut r,
             &mut painter,
             m,
+            &th,
             &mgr,
             "",
             "14:22",
@@ -504,20 +495,21 @@ mod tests {
             &mut hits,
         );
 
-        // Active tab segment should be painted with CHARCOAL (D's
-        // `--charcoal` panel color). pad_x=0, RESERVE=80pt × scale 1.0=80px,
-        // cell_w=10 → tl_cols=8. basin col 8, tabs_start_col 10. Active tab 0
-        // width=10, at cols 10..20. col 15 → x = 150, y = 10 (mid of cell_h=20).
+        // Active tab segment should be painted with theme.charcoal.
+        // pad_x=0, RESERVE=80pt × scale 1.0=80px, cell_w=10 → tl_cols=8.
+        // basin col 8, tabs_start_col 10. Active tab 0 width=10, at cols 10..20.
+        // col 15 → x = 150, y = 10 (mid of cell_h=20).
         let px = pixel_at(&r, 150, 10);
-        assert_eq!(px, CHARCOAL, "expected CHARCOAL for active tab, got {px:?}");
+        assert_eq!(px, th.charcoal, "expected charcoal for active tab, got {px:?}");
     }
 
     /// When a non-active tab has `has_unread`, the painter receives a `·` glyph
-    /// in the attention colour (#b07a14).
+    /// in the attention colour.
     #[test]
     fn draw_tab_bar_unread_dot_on_background_tab() {
         use anvil_workspace::tab::{Tab, TabManager};
         let m = metrics();
+        let th = theme();
         let mut r = Raster::new(400, 80);
         let mut painter = StubPainter::default();
         r.clear([0, 0, 0]);
@@ -533,6 +525,7 @@ mod tests {
             &mut r,
             &mut painter,
             m,
+            &th,
             &mgr,
             "",
             "14:22",
@@ -541,11 +534,10 @@ mod tests {
             &mut hits,
         );
 
-        const ATTENTION: [u8; 3] = [0xb0, 0x7a, 0x14];
         let dot_calls: Vec<_> = painter
             .calls
             .iter()
-            .filter(|&&(glyph, color)| glyph == '·' as u32 && color == ATTENTION)
+            .filter(|&&(glyph, color)| glyph == '·' as u32 && color == th.attention)
             .collect();
         assert_eq!(
             dot_calls.len(),
@@ -560,6 +552,7 @@ mod tests {
     fn draw_tab_bar_no_unread_dot_on_active_tab() {
         use anvil_workspace::tab::{Tab, TabManager};
         let m = metrics();
+        let th = theme();
         let mut r = Raster::new(400, 80);
         let mut painter = StubPainter::default();
         r.clear([0, 0, 0]);
@@ -575,6 +568,7 @@ mod tests {
             &mut r,
             &mut painter,
             m,
+            &th,
             &mgr,
             "",
             "14:22",
@@ -583,11 +577,10 @@ mod tests {
             &mut hits,
         );
 
-        const ATTENTION: [u8; 3] = [0xb0, 0x7a, 0x14];
         let dot_calls: Vec<_> = painter
             .calls
             .iter()
-            .filter(|&&(glyph, color)| glyph == '·' as u32 && color == ATTENTION)
+            .filter(|&&(glyph, color)| glyph == '·' as u32 && color == th.attention)
             .collect();
         assert!(
             dot_calls.is_empty(),

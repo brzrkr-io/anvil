@@ -173,6 +173,14 @@ pub enum BlockState {
     Exited,
 }
 
+/// Whether the block's output looks like a unified diff.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffKind {
+    None,
+    Unified,
+}
+
 /// A shell command and its output, derived from adjacent OSC-133 marks.
 /// All line numbers are ABSOLUTE (comparable to `PromptMark::line`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,6 +201,8 @@ pub struct Block {
     /// Wall-clock duration in milliseconds from 133;C to 133;D.
     /// 0 when the block is still running or the shell didn't emit 133;D.
     pub duration_ms: u64,
+    /// Whether the output is a unified diff. Detected once at block completion.
+    pub diff_kind: DiffKind,
 }
 
 impl Block {
@@ -200,6 +210,26 @@ impl Block {
         self.end_line
             .saturating_sub(self.output_line)
             .saturating_sub(1)
+    }
+
+    /// True when `diff_kind == Unified` AND the absolute line `abs` starts with
+    /// `+ ` or `- ` (single `+`/`-` followed by a space — content lines, not
+    /// `+++`/`---` headers).
+    pub fn is_unified_diff_row(&self, terminal: &Terminal, abs: usize) -> bool {
+        if self.diff_kind != DiffKind::Unified {
+            return false;
+        }
+        if abs < terminal.evicted_lines {
+            return false;
+        }
+        let content = abs - terminal.evicted_lines;
+        let row = terminal.line(content);
+        if row.len() < 2 {
+            return false;
+        }
+        let sigil = row[0].cp;
+        let second = row[1].cp;
+        (sigil == '+' || sigil == '-') && second == ' '
     }
 }
 
@@ -640,6 +670,7 @@ impl Terminal {
             state: BlockState::Running,
             exit_code: 0,
             duration_ms: 0,
+            diff_kind: DiffKind::None,
         };
         let mut j = i + 1;
         while j < marks.len() {
@@ -665,6 +696,9 @@ impl Terminal {
         }
         if b.end_line < b.command_line + 1 {
             b.end_line = b.command_line + 1;
+        }
+        if b.state == BlockState::Exited {
+            b.diff_kind = self.detect_diff_kind(&b);
         }
         b
     }
@@ -721,6 +755,40 @@ impl Terminal {
             }
         }
         result
+    }
+
+    // --- diff detection -------------------------------------------------------
+
+    /// Scan the output rows of a completed block (up to 200) and return
+    /// `DiffKind::Unified` if at least 3 rows match a unified-diff pattern.
+    /// Otherwise `DiffKind::None`.
+    fn detect_diff_kind(&self, block: &Block) -> DiffKind {
+        const MAX_SCAN: usize = 200;
+        const MIN_HITS: usize = 3;
+
+        let start = block.output_line;
+        let end = block.end_line;
+        if end <= start {
+            return DiffKind::None;
+        }
+
+        let scan_end = end.min(start + MAX_SCAN);
+        let mut hits: usize = 0;
+        let mut abs = start;
+        while abs < scan_end {
+            if abs >= self.evicted_lines {
+                let content = abs - self.evicted_lines;
+                let row = self.line(content);
+                if is_diff_row(row) {
+                    hits += 1;
+                    if hits >= MIN_HITS {
+                        return DiffKind::Unified;
+                    }
+                }
+            }
+            abs += 1;
+        }
+        DiffKind::None
     }
 
     // --- internal helpers -----------------------------------------------------
@@ -1136,6 +1204,32 @@ impl Handler for Terminal {
 }
 
 // --- free helpers -------------------------------------------------------------
+
+/// True when a grid row starts with a unified-diff marker:
+/// `--- `, `+++ `, `@@ `, `- ` (single minus + space), or `+ ` (single plus + space).
+fn is_diff_row(row: &[crate::cell::Cell]) -> bool {
+    if row.len() < 2 {
+        return false;
+    }
+    let c0 = row[0].cp;
+    let c1 = row[1].cp;
+    match c0 {
+        '-' | '+' => {
+            if c1 == ' ' {
+                return true;
+            }
+            // `--- ` or `+++ ` header
+            if c1 == c0 && row.len() >= 4 {
+                let c2 = row[2].cp;
+                let c3 = row[3].cp;
+                return c2 == c0 && c3 == ' ';
+            }
+            false
+        }
+        '@' => c1 == '@',
+        _ => false,
+    }
+}
 
 /// Fetch VT parameter `idx`, returning `default` when absent or zero.
 fn vt_param(params: &[u16], idx: usize, default: u16) -> u16 {
@@ -2988,5 +3082,80 @@ mod tests {
         // "38;2;255;128" — only 2 RGB values provided instead of 3 (i+4 >= len).
         term.feed(b"\x1B[38;2;255;128mX");
         assert_eq!('X', term.viewport_row(0)[0].cp);
+    }
+
+    // ── DiffKind detection ────────────────────────────────────────────────────
+
+    /// Helper: feed a completed block sequence and return the Block.
+    fn make_block_with_output(output_lines: &[&[u8]]) -> (Terminal, Block) {
+        let mut term = make_terminal(80, 40);
+        term.feed(b"\x1B]133;A\x07");
+        term.feed(b"\x1B]133;B\x07");
+        term.feed(b"\r\n");
+        term.feed(b"\x1B]133;C\x07");
+        for line in output_lines {
+            term.feed(line);
+            term.feed(b"\r\n");
+        }
+        term.feed(b"\x1B]133;D;exit_code=0\x07");
+        term.feed(b"\x1B]133;A\x07");
+        let b = term.block_at(0).unwrap();
+        (term, b)
+    }
+
+    #[test]
+    fn diff_detection_plain_ls_output_stays_none() {
+        let output: &[&[u8]] = &[
+            b"total 12",
+            b"drwxr-xr-x  2 user group  64 May 24 10:00 .",
+            b"drwxr-xr-x 10 user group 320 May 24 09:00 ..",
+            b"-rw-r--r--  1 user group 100 May 24 10:00 file.txt",
+        ];
+        let (_term, block) = make_block_with_output(output);
+        assert_eq!(BlockState::Exited, block.state);
+        assert_eq!(DiffKind::None, block.diff_kind);
+    }
+
+    #[test]
+    fn diff_detection_unified_diff_output_detected() {
+        let output: &[&[u8]] = &[
+            b"+++ a/file.rs",
+            b"--- b/file.rs",
+            b"@@ -1,3 +1,4 @@",
+            b"+ added line",
+            b"- removed line",
+            b"  context",
+        ];
+        let (_term, block) = make_block_with_output(output);
+        assert_eq!(BlockState::Exited, block.state);
+        assert_eq!(DiffKind::Unified, block.diff_kind);
+    }
+
+    #[test]
+    fn diff_detection_is_unified_diff_row_content_vs_header() {
+        let output: &[&[u8]] = &[
+            b"+++ a/file.rs",
+            b"--- b/file.rs",
+            b"@@ -1,3 +1,4 @@",
+            b"+ added line",
+            b"- removed line",
+            b"  context",
+        ];
+        let (term, block) = make_block_with_output(output);
+        assert_eq!(DiffKind::Unified, block.diff_kind);
+
+        let base = block.output_line;
+        // `+++ a/file.rs` — header (c1 = '+'), not a content row
+        assert!(!block.is_unified_diff_row(&term, base));
+        // `--- b/file.rs` — header (c1 = '-'), not a content row
+        assert!(!block.is_unified_diff_row(&term, base + 1));
+        // `@@ ...` — hunk header, not a content row
+        assert!(!block.is_unified_diff_row(&term, base + 2));
+        // `+ added line` — content row: '+' then ' '
+        assert!(block.is_unified_diff_row(&term, base + 3));
+        // `- removed line` — content row: '-' then ' '
+        assert!(block.is_unified_diff_row(&term, base + 4));
+        // `  context` — not a diff marker
+        assert!(!block.is_unified_diff_row(&term, base + 5));
     }
 }

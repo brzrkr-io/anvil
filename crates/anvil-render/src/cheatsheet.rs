@@ -1,25 +1,13 @@
 //! Keyboard-shortcut cheatsheet overlay.
 //!
 //! Draws a centered modal card listing every shortcut grouped by category.
-//! Palette: chrome constants (CHARCOAL panel, CHROME_BORDER edges, MIST title,
-//! TEXT_MUTED group headers, TEXT_SUBTLE chords, TEXT_MUTED descriptions).
+//! Colors come from the active `Theme` (panel bg, hairlines, foreground, text_muted, text_subtle).
 //!
 //! Call `draw` from renderFrame *last* (on top of grid, HUD, tree, tab bar).
 
+use anvil_theme::Theme;
+
 use crate::raster::{FontMetrics, GlyphPainter, Raster};
-
-// --- Chrome palette constants (match tabbar.rs / statusbar.rs) ---------------
-
-/// Deep fill: card background.
-const CHARCOAL: [u8; 3] = [0x1d, 0x21, 0x29];
-/// 1px hairline border color.
-const CHROME_BORDER: [u8; 3] = [0x23, 0x26, 0x2b];
-/// Dimmed text: group section headers and descriptions.
-const TEXT_MUTED: [u8; 3] = [0xa1, 0xa4, 0xa9];
-/// Lightest label: card title.
-const MIST: [u8; 3] = [0xd2, 0xd8, 0xdb];
-/// Mid-tone: key chord labels.
-const TEXT_SUBTLE: [u8; 3] = [0x6c, 0x6f, 0x74];
 
 // --- Shortcut data ----------------------------------------------------------
 
@@ -175,6 +163,7 @@ pub fn draw(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
     metrics: FontMetrics,
+    theme: &Theme,
     total_cols: usize,
     total_rows: usize,
     chrome_top_px: f64,
@@ -248,22 +237,22 @@ pub fn draw(
     let top_px = (chrome_top_px + (safe_h_px - card_h_px) / 2.0).max(chrome_top_px);
 
     // Fully opaque card surface.
-    raster.fill_pixel_rect(left_px, top_px, card_w_px, card_h_px, CHARCOAL);
+    raster.fill_pixel_rect(left_px, top_px, card_w_px, card_h_px, theme.panel);
 
     // 1px hairline border on all four edges.
     let b = 1.0_f64;
-    raster.fill_pixel_rect(left_px, top_px, card_w_px, b, CHROME_BORDER);
-    raster.fill_pixel_rect(left_px, top_px + card_h_px - b, card_w_px, b, CHROME_BORDER);
-    raster.fill_pixel_rect(left_px, top_px, b, card_h_px, CHROME_BORDER);
-    raster.fill_pixel_rect(left_px + card_w_px - b, top_px, b, card_h_px, CHROME_BORDER);
+    raster.fill_pixel_rect(left_px, top_px, card_w_px, b, theme.hairline);
+    raster.fill_pixel_rect(left_px, top_px + card_h_px - b, card_w_px, b, theme.hairline);
+    raster.fill_pixel_rect(left_px, top_px, b, card_h_px, theme.hairline);
+    raster.fill_pixel_rect(left_px + card_w_px - b, top_px, b, card_h_px, theme.hairline);
 
     // In two-column mode: 1px vertical divider down the centre.
     if two_col {
         let mid_x = left_px + half_cols as f64 * cw;
-        raster.fill_pixel_rect(mid_x, top_px + ch, b, card_h_px - 2.0 * ch, CHROME_BORDER);
+        raster.fill_pixel_rect(mid_x, top_px + ch, b, card_h_px - 2.0 * ch, theme.hairline);
     }
 
-    // --- Row 0: title in MIST.
+    // --- Row 0: title in foreground.
     draw_text_px(
         raster,
         painter,
@@ -271,11 +260,11 @@ pub fn draw(
         left_px + 3.0 * cw,
         top_px,
         "Keyboard Shortcuts",
-        MIST,
+        theme.foreground,
         left_px + card_w_px - 2.0 * cw,
     );
 
-    // --- Row 1: dim hint in TEXT_MUTED.
+    // --- Row 1: dim hint in text_muted.
     draw_text_px(
         raster,
         painter,
@@ -283,7 +272,7 @@ pub fn draw(
         left_px + 3.0 * cw,
         top_px + ch,
         "Cmd+/ or Esc to close",
-        TEXT_MUTED,
+        theme.text_muted,
         left_px + card_w_px - 2.0 * cw,
     );
 
@@ -293,7 +282,7 @@ pub fn draw(
         top_px + 2.0 * ch,
         card_w_px - 4.0 * cw,
         1.0,
-        CHROME_BORDER,
+        theme.hairline,
     );
 
     // --- Content rows (single- or two-column).
@@ -306,6 +295,7 @@ pub fn draw(
             raster,
             painter,
             metrics,
+            theme,
             left_px,
             top_px + 3.0 * ch,
             content_bottom_y,
@@ -320,6 +310,7 @@ pub fn draw(
             raster,
             painter,
             metrics,
+            theme,
             right_x,
             top_px + 3.0 * ch,
             content_bottom_y,
@@ -333,6 +324,7 @@ pub fn draw(
             raster,
             painter,
             metrics,
+            theme,
             left_px,
             top_px + 3.0 * ch,
             content_bottom_y,
@@ -364,6 +356,7 @@ fn draw_column(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
     metrics: FontMetrics,
+    theme: &Theme,
     col_left_px: f64,
     start_y: f64,
     bottom_y: f64,
@@ -397,13 +390,13 @@ fn draw_column(
                         row_y + gap * 0.5,
                         col_width_cols.saturating_sub(4) as f64 * cw,
                         1.0,
-                        CHROME_BORDER,
+                        theme.hairline,
                     );
                     row_y += gap;
                 }
                 first_header = false;
                 draw_text_px(
-                    raster, painter, metrics, chord_x, row_y, label, TEXT_MUTED, max_x,
+                    raster, painter, metrics, chord_x, row_y, label, theme.text_muted, max_x,
                 );
                 row_y += ch;
             }
@@ -415,12 +408,12 @@ fn draw_column(
                     chord_x,
                     row_y,
                     chord,
-                    TEXT_SUBTLE,
+                    theme.text_subtle,
                     desc_x - cw,
                 );
                 if desc_x < max_x {
                     draw_text_px(
-                        raster, painter, metrics, desc_x, row_y, desc, TEXT_MUTED, max_x,
+                        raster, painter, metrics, desc_x, row_y, desc, theme.text_muted, max_x,
                     );
                 }
                 row_y += ch;
@@ -548,8 +541,9 @@ mod tests {
         );
         r.pad_x = 0.0;
         r.pad_y = 0.0;
+        let th = anvil_theme::EMBER_DARK;
         let mut painter = StubPainter::default();
-        draw(&mut r, &mut painter, m, cols, rows, 0.0, 0.0);
+        draw(&mut r, &mut painter, m, &th, cols, rows, 0.0, 0.0);
         assert!(!painter.calls.is_empty());
     }
 
@@ -558,8 +552,9 @@ mod tests {
     fn draw_noop_when_too_small() {
         let m = metrics();
         let mut r = Raster::new(100, 80);
+        let th = anvil_theme::EMBER_DARK;
         let mut painter = StubPainter::default();
-        draw(&mut r, &mut painter, m, 5, 5, 0.0, 0.0);
+        draw(&mut r, &mut painter, m, &th, 5, 5, 0.0, 0.0);
         assert!(painter.calls.is_empty());
     }
 }

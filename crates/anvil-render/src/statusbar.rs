@@ -2,27 +2,10 @@
 //! the window. Draws into the BGRA raster like the tab bar and search bar.
 
 use anvil_agent::{Connection, Snapshot};
+use anvil_theme::Theme;
 
 use crate::agent_panel::{LocalContext, RunState, format_cwd};
 use crate::raster::{FontMetrics, GlyphPainter, Raster};
-
-// --- Chrome palette (matches docs/design/layout-mockups.html Option D) ------
-
-/// charcoal: the bar's raised-panel background (#161a1c).
-const CHARCOAL: [u8; 3] = [0x16, 0x1a, 0x1c];
-/// chrome border: thin hairline above the bar (#23262b). Quieter than
-/// `theme.border` which is tuned for terminal-grid contrast.
-const CHROME_BORDER: [u8; 3] = [0x23, 0x26, 0x2b];
-/// text-muted: default tone for the bar's labels (#a1a4a9).
-const TEXT_MUTED: [u8; 3] = [0xa1, 0xa4, 0xa9];
-/// status.verified: success / clean state — green (#3f8a5b)
-const VERIFIED: [u8; 3] = [0x3f, 0x8a, 0x5b];
-/// status.failure: failure / error state — red (#b13a30)
-const FAILURE: [u8; 3] = [0xb1, 0x3a, 0x30];
-/// status.agent: agent / automation / model activity — violet (#6a5fa3)
-const AGENT_VIOLET: [u8; 3] = [0x6a, 0x5f, 0xa3];
-/// text-subtle: placeholder / disconnected tone (#6c6f74)
-const TEXT_SUBTLE: [u8; 3] = [0x6c, 0x6f, 0x74];
 
 /// Draw the status bar at a FIXED pixel strip — `chrome_bottom_px` tall —
 /// anchored to the window's bottom edge. Glyphs are pixel-positioned and
@@ -44,6 +27,7 @@ pub fn draw_status_bar(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
     metrics: FontMetrics,
+    theme: &Theme,
     local_ctx: &LocalContext,
     agent_snap: &Snapshot,
     clock: &str,
@@ -61,9 +45,9 @@ pub fn draw_status_bar(
     let strip_top = total_h - chrome_bottom_px;
     // Charcoal fill across the bottom strip — reaches the window's bottom
     // edge with no canvas peeking through.
-    raster.fill_pixel_rect(0.0, strip_top, total_w, chrome_bottom_px, CHARCOAL);
+    raster.fill_pixel_rect(0.0, strip_top, total_w, chrome_bottom_px, theme.charcoal);
     // 1px hairline at the top of the strip.
-    raster.fill_pixel_rect(0.0, strip_top, total_w, 1.0, CHROME_BORDER);
+    raster.fill_pixel_rect(0.0, strip_top, total_w, 1.0, theme.hairline);
 
     // Glyphs vertically centred in the strip.
     let glyph_y = strip_top + ((chrome_bottom_px - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
@@ -87,19 +71,19 @@ pub fn draw_status_bar(
 
     if !local_ctx.cwd.is_empty() {
         let cwd = format_cwd(&local_ctx.cwd);
-        draw_run(raster, painter, &cwd, TEXT_MUTED, &mut x);
+        draw_run(raster, painter, &cwd, theme.text_muted, &mut x);
         x += 2.0 * cell_w; // gap
 
         let (sym, color) = match local_ctx.run {
-            RunState::Ok => ("\u{2713}", VERIFIED),
-            RunState::Failed => ("\u{2717}", FAILURE),
-            _ => ("", TEXT_MUTED),
+            RunState::Ok => ("\u{2713}", theme.verified),
+            RunState::Failed => ("\u{2717}", theme.failure),
+            _ => ("", theme.text_muted),
         };
         if !sym.is_empty() {
             draw_run(raster, painter, sym, color, &mut x);
             if local_ctx.run_duration_ms > 0 {
                 let dur = format!(" last {}", format_duration_ms(local_ctx.run_duration_ms));
-                draw_run(raster, painter, &dur, TEXT_MUTED, &mut x);
+                draw_run(raster, painter, &dur, theme.text_muted, &mut x);
             }
         }
     }
@@ -116,12 +100,12 @@ pub fn draw_status_bar(
         (agent_text.chars().count() + sep.chars().count() + clock.chars().count()) as f64 * cell_w;
     let right_start = (total_w - pad_x - right_text_w).max(x);
     let mut rx = right_start;
-    let dot_color = if agent_active { AGENT_VIOLET } else { TEXT_SUBTLE };
+    let dot_color = if agent_active { theme.agent } else { theme.text_subtle };
     for (i, ch) in agent_text.chars().enumerate() {
         if rx + cell_w > total_w {
             break;
         }
-        let fg = if i == 0 { dot_color } else { TEXT_MUTED };
+        let fg = if i == 0 { dot_color } else { theme.text_muted };
         raster.glyph_at(painter, metrics, rx, glyph_y, ch as u32, fg);
         rx += cell_w;
     }
@@ -129,14 +113,14 @@ pub fn draw_status_bar(
         if rx + cell_w > total_w {
             break;
         }
-        raster.glyph_at(painter, metrics, rx, glyph_y, ch as u32, TEXT_MUTED);
+        raster.glyph_at(painter, metrics, rx, glyph_y, ch as u32, theme.text_muted);
         rx += cell_w;
     }
     for ch in clock.chars() {
         if rx + cell_w > total_w {
             break;
         }
-        raster.glyph_at(painter, metrics, rx, glyph_y, ch as u32, TEXT_MUTED);
+        raster.glyph_at(painter, metrics, rx, glyph_y, ch as u32, theme.text_muted);
         rx += cell_w;
     }
 }
@@ -185,6 +169,10 @@ mod tests {
         }
     }
 
+    fn theme() -> anvil_theme::Theme {
+        anvil_theme::EMBER_DARK
+    }
+
     // --- draw_status_bar_smoke -----------------------------------------------
 
     /// Smoke test: no panic, and the bar leaves the background untouched
@@ -192,19 +180,20 @@ mod tests {
     #[test]
     fn draw_status_bar_smoke() {
         let m = metrics();
+        let th = theme();
         let mut r = Raster::new(400, 200);
         let mut painter = StubPainter::default();
         r.clear([0, 0, 0]);
 
         let local_ctx = LocalContext::default();
         let agent_snap = Snapshot::default();
-        let theme = anvil_theme::MINERAL_DARK;
 
         let chrome_bottom_px = m.cell_h * 2.0;
         draw_status_bar(
             &mut r,
             &mut painter,
             m,
+            &th,
             &local_ctx,
             &agent_snap,
             "",
@@ -218,17 +207,18 @@ mod tests {
         let px_y = (strip_top + chrome_bottom_px * 0.5) as usize;
         let px = pixel_at(&r, 4, px_y);
         assert_ne!(
-            px, theme.background,
+            px, th.background,
             "expected status bar painted distinct from canvas, got {px:?}"
         );
     }
 
-    // --- branch_shown_when_git_ok --------------------------------------------
+    // --- cwd_shown_when_set --------------------------------------------------
 
-    /// Branch name chars are drawn in TEXT_MUTED (quiet) when git state is Ok.
+    /// CWD characters are drawn in text_muted.
     #[test]
     fn cwd_shown_when_set() {
         let m = metrics();
+        let th = theme();
         let mut r = Raster::new(400, 200);
         let mut painter = StubPainter::default();
         r.clear([0, 0, 0]);
@@ -243,6 +233,7 @@ mod tests {
             &mut r,
             &mut painter,
             m,
+            &th,
             &local_ctx,
             &agent_snap,
             "",
@@ -250,23 +241,23 @@ mod tests {
             1.0,
         );
 
-        // TEXT_MUTED chars should include cwd content ('a' from "anvil" or similar).
-        let alloy_chars: Vec<char> = painter
+        let muted_chars: Vec<char> = painter
             .calls
             .iter()
-            .filter(|(_, fg)| *fg == TEXT_MUTED)
+            .filter(|(_, fg)| *fg == th.text_muted)
             .filter_map(|(cp, _)| char::from_u32(*cp))
             .collect();
         assert!(
-            !alloy_chars.is_empty(),
-            "expected cwd chars in TEXT_MUTED, got no calls"
+            !muted_chars.is_empty(),
+            "expected cwd chars in text_muted, got no calls"
         );
     }
 
-    /// Last-run exit ✓ rendered in VERIFIED green on Ok.
+    /// Last-run exit ✓ rendered in verified green on Ok.
     #[test]
     fn exit_check_in_verified_green_on_ok_run() {
         let m = metrics();
+        let th = theme();
         let mut r = Raster::new(400, 200);
         let mut painter = StubPainter::default();
         r.clear([0, 0, 0]);
@@ -282,6 +273,7 @@ mod tests {
             &mut r,
             &mut painter,
             m,
+            &th,
             &local_ctx,
             &agent_snap,
             "",
@@ -292,19 +284,20 @@ mod tests {
         let verified_chars: Vec<char> = painter
             .calls
             .iter()
-            .filter(|(_, fg)| *fg == VERIFIED)
+            .filter(|(_, fg)| *fg == th.verified)
             .filter_map(|(cp, _)| char::from_u32(*cp))
             .collect();
         assert!(
             verified_chars.contains(&'\u{2713}'),
-            "expected ✓ in VERIFIED green, got {verified_chars:?}"
+            "expected ✓ in verified, got {verified_chars:?}"
         );
     }
 
-    /// Last-run exit ✗ rendered in FAILURE red on Failed.
+    /// Last-run exit ✗ rendered in failure red on Failed.
     #[test]
     fn exit_cross_in_failure_red_on_failed_run() {
         let m = metrics();
+        let th = theme();
         let mut r = Raster::new(400, 200);
         let mut painter = StubPainter::default();
         r.clear([0, 0, 0]);
@@ -320,6 +313,7 @@ mod tests {
             &mut r,
             &mut painter,
             m,
+            &th,
             &local_ctx,
             &agent_snap,
             "",
@@ -330,23 +324,24 @@ mod tests {
         let failure_chars: Vec<char> = painter
             .calls
             .iter()
-            .filter(|(_, fg)| *fg == FAILURE)
+            .filter(|(_, fg)| *fg == th.failure)
             .filter_map(|(cp, _)| char::from_u32(*cp))
             .collect();
         assert!(
             failure_chars.contains(&'\u{2717}'),
-            "expected ✗ in FAILURE red, got {failure_chars:?}"
+            "expected ✗ in failure, got {failure_chars:?}"
         );
     }
 
     // --- dot_always_present_when_disconnected --------------------------------
 
     /// The agent dot is ALWAYS drawn, even when agent_snap is default
-    /// (NotInstalled). The dot must use TEXT_SUBTLE (not AGENT_VIOLET) and
-    /// the remaining "idle" chars must use TEXT_MUTED.
+    /// (NotInstalled). The dot must use text_subtle (not agent) and
+    /// the remaining "idle" chars must use text_muted.
     #[test]
     fn dot_always_present_when_disconnected() {
         let m = metrics();
+        let th = theme();
         let mut r = Raster::new(400, 200);
         let mut painter = StubPainter::default();
         r.clear([0, 0, 0]);
@@ -358,6 +353,7 @@ mod tests {
             &mut r,
             &mut painter,
             m,
+            &th,
             &local_ctx,
             &agent_snap,
             "",
@@ -365,40 +361,41 @@ mod tests {
             1.0,
         );
 
-        // The dot (●, U+25CF) must appear in TEXT_SUBTLE.
+        // The dot (●, U+25CF) must appear in text_subtle.
         let dot_subtle = painter
             .calls
             .iter()
-            .any(|(cp, fg)| *cp == 0x25CF && *fg == TEXT_SUBTLE);
-        assert!(dot_subtle, "expected ● in TEXT_SUBTLE when disconnected, got {:?}", painter.calls);
+            .any(|(cp, fg)| *cp == 0x25CF && *fg == th.text_subtle);
+        assert!(dot_subtle, "expected ● in text_subtle when disconnected, got {:?}", painter.calls);
 
-        // The "idle" text chars must appear in TEXT_MUTED (not AGENT_VIOLET).
+        // The "idle" text chars must appear in text_muted (not agent).
         let idle_muted: Vec<char> = painter
             .calls
             .iter()
-            .filter(|(_, fg)| *fg == TEXT_MUTED)
+            .filter(|(_, fg)| *fg == th.text_muted)
             .filter_map(|(cp, _)| char::from_u32(*cp))
             .collect();
         assert!(
             idle_muted.contains(&'i'),
-            "expected 'i' from 'idle' in TEXT_MUTED when disconnected, got {idle_muted:?}"
+            "expected 'i' from 'idle' in text_muted when disconnected, got {idle_muted:?}"
         );
 
-        // The dot must NOT appear in AGENT_VIOLET when disconnected.
-        let dot_violet = painter
+        // The dot must NOT appear in agent color when disconnected.
+        let dot_agent = painter
             .calls
             .iter()
-            .any(|(cp, fg)| *cp == 0x25CF && *fg == AGENT_VIOLET);
-        assert!(!dot_violet, "dot must not be AGENT_VIOLET when disconnected");
+            .any(|(cp, fg)| *cp == 0x25CF && *fg == th.agent);
+        assert!(!dot_agent, "dot must not be agent color when disconnected");
     }
 
     // --- running_count_shown_when_live ---------------------------------------
 
-    /// "running" chars are recorded in TEXT_MUTED when connection == Live; the
-    /// leading diamond is in AGENT_VIOLET.
+    /// "running" chars are recorded in text_muted when connection == Live; the
+    /// leading diamond is in agent color.
     #[test]
     fn running_count_shown_when_live() {
         let m = metrics();
+        let th = theme();
         let mut r = Raster::new(400, 200);
         let mut painter = StubPainter::default();
         r.clear([0, 0, 0]);
@@ -413,6 +410,7 @@ mod tests {
             &mut r,
             &mut painter,
             m,
+            &th,
             &local_ctx,
             &agent_snap,
             "",
@@ -420,24 +418,24 @@ mod tests {
             1.0,
         );
 
-        let alloy_chars: Vec<char> = painter
+        let muted_chars: Vec<char> = painter
             .calls
             .iter()
-            .filter(|(_, fg)| *fg == TEXT_MUTED)
+            .filter(|(_, fg)| *fg == th.text_muted)
             .filter_map(|(cp, _)| char::from_u32(*cp))
             .collect();
         assert!(
-            alloy_chars.contains(&'r'),
-            "expected 'r' from 'running' in TEXT_MUTED, got {alloy_chars:?}"
+            muted_chars.contains(&'r'),
+            "expected 'r' from 'running' in text_muted, got {muted_chars:?}"
         );
-        let violet_calls: Vec<_> = painter
+        let agent_calls: Vec<_> = painter
             .calls
             .iter()
-            .filter(|(_, fg)| *fg == AGENT_VIOLET)
+            .filter(|(_, fg)| *fg == th.agent)
             .collect();
         assert!(
-            !violet_calls.is_empty(),
-            "expected diamond glyph in AGENT_VIOLET, got {:?}",
+            !agent_calls.is_empty(),
+            "expected diamond glyph in agent color, got {:?}",
             painter.calls
         );
     }

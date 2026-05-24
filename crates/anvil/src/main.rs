@@ -25,7 +25,7 @@ use anvil_agent::Snapshot as AgentSnapshot;
 use anvil_config::{Chord, Config, Watcher, parse_chord};
 use anvil_platform::AtlasPainter;
 use anvil_platform::appkit::{AppHandler, AppKitApp, KeyEvent, KeyInput, Modifiers, MouseLocation};
-use anvil_platform::font::{Font, register_bundled};
+use anvil_platform::font::{CHROME_PT, Font, FontFace, register_bundled};
 use anvil_platform::metal::{PresentMode, Renderer, present_mode};
 use anvil_platform::pty::Pty;
 use anvil_platform::shell_integration;
@@ -346,6 +346,7 @@ struct Keybindings {
     focus_up: Option<Chord>,
     focus_down: Option<Chord>,
     fold_block: Option<Chord>,
+    toggle_theme: Option<Chord>,
 }
 
 impl Keybindings {
@@ -378,6 +379,7 @@ impl Keybindings {
             focus_up: parse_chord(&kb.focus_up),
             focus_down: parse_chord(&kb.focus_down),
             fold_block: parse_chord(&kb.fold_block),
+            toggle_theme: parse_chord(&kb.toggle_theme),
         }
     }
 }
@@ -397,6 +399,9 @@ pub struct App {
     raster: Raster,
     /// Heap-allocated so its address is stable; `AppShell.painter` borrows it.
     font: Box<Font>,
+    /// Fixed-size chrome font (11 pt × scale) for tab bar, status bar, etc.
+    /// Heap-allocated for the same lifetime-stability reason as `font`.
+    chrome_font: Box<Font>,
     dirty: bool,
     /// When true, the next CPU-path frame must redraw ALL rows (full clear).
     /// Set on theme change, resize, search toggle, etc. Cleared after the frame.
@@ -1242,7 +1247,11 @@ impl App {
     // scroll_pos / viewport_offset actually MOVED since the last frame.
     // Sitting still inside scrollback should be as cheap as sitting at
     // live — partial dirty-row paints are safe when nothing's animating.
-    fn render_frame(&mut self, painter: &mut dyn anvil_render::GlyphPainter) {
+    fn render_frame(
+        &mut self,
+        painter: &mut dyn anvil_render::GlyphPainter,
+        chrome_painter: &mut dyn anvil_render::GlyphPainter,
+    ) {
         // ANVIL_PERF=1 emits per-frame timing to stderr so we can diagnose
         // scroll lag without guessing.
         let perf_log = std::env::var_os("ANVIL_PERF").is_some();
@@ -1303,6 +1312,7 @@ impl App {
             None
         };
         let metrics = self.font.metrics;
+        let chrome_metrics = self.chrome_font.metrics;
 
         // ── Terminal viewport draw ────────────────────────────────────────────
         //
@@ -1451,8 +1461,9 @@ impl App {
             let chrome_top = self.chrome_top_px();
             draw_tab_bar(
                 &mut self.raster,
-                painter,
-                metrics,
+                chrome_painter,
+                chrome_metrics,
+                &self.theme,
                 &self.tabs,
                 &branch,
                 &clock,
@@ -1469,8 +1480,8 @@ impl App {
         if self.search_open {
             draw_search_bar(
                 &mut self.raster,
-                painter,
-                metrics,
+                chrome_painter,
+                chrome_metrics,
                 &self.theme,
                 &self.search,
                 bottom_row,
@@ -1481,8 +1492,9 @@ impl App {
             let chrome_bot = self.chrome_bottom_px();
             anvil_render::statusbar::draw_status_bar(
                 &mut self.raster,
-                painter,
-                metrics,
+                chrome_painter,
+                chrome_metrics,
+                &self.theme,
                 &self.local_ctx,
                 &self.agent_snap,
                 &clock,
@@ -1546,6 +1558,7 @@ impl App {
                 &mut self.raster,
                 painter,
                 metrics,
+                &self.theme,
                 total_cols,
                 total_rows,
                 chrome_top,
@@ -1883,6 +1896,18 @@ impl App {
             self.toggle_fold_at_viewport_top();
             return true;
         });
+        test!(kb.toggle_theme, {
+            self.config.theme = if self.config.theme == "ember-light" {
+                "ember-dark".into()
+            } else {
+                "ember-light".into()
+            };
+            let effective = effective_theme_name(self.system_dark, &self.config.theme);
+            self.theme = resolve_theme(effective, &self.config.theme_overrides);
+            self.force_full_redraw = true;
+            self.dirty = true;
+            return true;
+        });
 
         // ⌘K — command palette.
         if ascii_lower(ch) == 'k' && !mods.shift && !mods.control && !mods.option {
@@ -1955,15 +1980,19 @@ impl App {
 /// Holds all state that requires the main thread or has lifetimes that depend
 /// on the window (Webview, Font, Painter).
 ///
-/// `app.font` is heap-allocated (`Box<Font>`) so its address is stable even as
-/// `AppShell` moves.  `painter` holds a `&'static Font` produced via an unsafe
-/// lifetime extension; this is sound because `painter` is dropped before
-/// `app.font` (struct fields drop in declaration order, and `painter` is
-/// declared after `app`).
+/// `app.font` and `app.chrome_font` are heap-allocated (`Box<Font>`) so their
+/// addresses are stable even as `AppShell` moves.  `painter` and
+/// `chrome_painter` hold `&'static Font` references produced via an unsafe
+/// lifetime extension; this is sound because both painters are dropped before
+/// `app.font`/`app.chrome_font` (struct fields drop in declaration order, and
+/// the painters are declared after `app`).
 pub struct AppShell {
     app: App,
     webview: Webview,
+    /// Terminal grid glyph painter (user font size).
     painter: anvil_platform::font::CoreTextPainter<'static>,
+    /// Chrome glyph painter (11 pt × scale — tab bar, status bar, etc.).
+    chrome_painter: anvil_platform::font::CoreTextPainter<'static>,
 }
 
 impl AppShell {
@@ -2028,19 +2057,24 @@ impl AppShell {
     }
 
     fn new(app: App, webview: Webview) -> Self {
-        // SAFETY: `app.font` is a `Box<Font>` — the heap allocation is stable.
-        // `painter` borrows the Font inside the box; the box (and its allocation)
-        // lives inside `app` which lives inside `AppShell`.  Drop order is
-        // `painter` first (declared last), then `webview`, then `app` (with the
-        // Box).  So the allocation outlives `painter`.
+        // SAFETY: `app.font` and `app.chrome_font` are `Box<Font>` — the heap
+        // allocations are stable.  The painters borrow the Fonts inside the
+        // boxes; the boxes live inside `app` which lives inside `AppShell`.
+        // Drop order is painters first (declared last), then `webview`, then
+        // `app` (with the Boxes).  So the allocations outlive the painters.
         let painter = unsafe {
             let font_ref: &'static Font = &*(app.font.as_ref() as *const Font);
+            anvil_platform::font::CoreTextPainter::new(font_ref)
+        };
+        let chrome_painter = unsafe {
+            let font_ref: &'static Font = &*(app.chrome_font.as_ref() as *const Font);
             anvil_platform::font::CoreTextPainter::new(font_ref)
         };
         Self {
             app,
             webview,
             painter,
+            chrome_painter,
         }
     }
 }
@@ -2195,7 +2229,7 @@ impl AppHandler for AppShell {
         }
 
         if app.dirty {
-            app.render_frame(&mut self.painter);
+            app.render_frame(&mut self.painter, &mut self.chrome_painter);
             app.dirty = false;
         }
 
@@ -2797,12 +2831,12 @@ impl AppHandler for AppShell {
         if !in_live_resize {
             self.app.resize_all_tabs();
         }
-        self.app.render_frame(&mut self.painter);
+        self.app.render_frame(&mut self.painter, &mut self.chrome_painter);
     }
 
     fn live_resize_ended(&mut self) {
         self.app.resize_all_tabs();
-        self.app.render_frame(&mut self.painter);
+        self.app.render_frame(&mut self.painter, &mut self.chrome_painter);
     }
 
     fn focus_gained(&mut self) {
@@ -2934,9 +2968,9 @@ fn format_hex(rgb: [u8; 3]) -> String {
 fn effective_theme_name(system_dark: bool, cfg_theme: &str) -> &str {
     if cfg_theme == "system" {
         if system_dark {
-            "mineral-dark"
+            "ember-dark"
         } else {
-            "mineral-light"
+            "ember-light"
         }
     } else {
         cfg_theme
@@ -3069,6 +3103,13 @@ fn main() -> Result<()> {
         Font::init_first_available(&font_names, pixel_size)
             .or_else(|_| Font::init("Menlo", pixel_size))
             .expect("at least Menlo must be available as a system font"),
+    );
+    // Chrome font: fixed CHROME_PT pt regardless of user terminal size.
+    let chrome_pixel_size = CHROME_PT * window_scale;
+    let chrome_font: Box<Font> = Box::new(
+        Font::init_face(&font_names, chrome_pixel_size, FontFace::Chrome, false)
+            .or_else(|_| Font::init("Menlo", chrome_pixel_size))
+            .expect("at least Menlo must be available for chrome font"),
     );
 
     // -- Cell geometry --------------------------------------------------------
@@ -3206,6 +3247,7 @@ fn main() -> Result<()> {
         renderer: None, // filled after the Metal layer is available
         raster,
         font, // Box<Font> — heap-stable
+        chrome_font, // Box<Font> — fixed 11 pt chrome face
         dirty: true,
         force_full_redraw: true,
         cursor_row_prev: HashMap::new(),
@@ -3422,7 +3464,7 @@ fn main() -> Result<()> {
     // Build the AppShell and stash it in the shared slot.
     let mut shell = AppShell::new(real_app, webview);
     shell.app.snap_anim();
-    shell.app.render_frame(&mut shell.painter);
+    shell.app.render_frame(&mut shell.painter, &mut shell.chrome_painter);
     shell.app.dirty = false;
     *shell_slot.borrow_mut() = Some(shell);
 
@@ -3475,8 +3517,9 @@ mod tests {
 
     #[test]
     fn effective_theme_name_maps_system_to_dark_or_light() {
-        assert_eq!(effective_theme_name(true, "system"), "mineral-dark");
-        assert_eq!(effective_theme_name(false, "system"), "mineral-light");
+        assert_eq!(effective_theme_name(true, "system"), "ember-dark");
+        assert_eq!(effective_theme_name(false, "system"), "ember-light");
+        assert_eq!(effective_theme_name(true, "ember-light"), "ember-light");
         assert_eq!(effective_theme_name(true, "mineral-light"), "mineral-light");
     }
 

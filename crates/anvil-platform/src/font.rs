@@ -28,9 +28,15 @@ use std::ffi::c_void;
 use std::ptr::NonNull;
 
 use anvil_render::{FontMetrics, GlyphPainter, PixelRect};
-use objc2_core_foundation::{CFError, CFRetained, CFString, CGPoint, CGSize};
+use objc2_core_foundation::{
+    CFArray, CFArrayCallBacks, CFDictionary, CFDictionaryKeyCallBacks,
+    CFDictionaryValueCallBacks, CFError, CFRetained, CFString, CGPoint, CGSize,
+};
 #[allow(deprecated)]
-use objc2_core_text::{CTFont, CTFontManagerRegisterGraphicsFont, CTFontOrientation};
+use objc2_core_text::{
+    CTFont, CTFontDescriptor, CTFontManagerRegisterGraphicsFont, CTFontOrientation,
+    CTFontSymbolicTraits, kCTFontFeatureSettingsAttribute,
+};
 use thiserror::Error;
 
 /// The IBM Plex Mono build patched with developer icon glyphs (Nerd Font).
@@ -44,6 +50,36 @@ pub enum FontError {
     FontCreateFailed,
     #[error("no font available from the provided list")]
     NoFontAvailable,
+}
+
+/// Which face variant a `Font` represents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FontFace {
+    Regular,
+    Bold,
+    Italic,
+    BoldItalic,
+    /// Fixed 11 pt (× scale) chrome face — used for tab bar, status bar, etc.
+    Chrome,
+}
+
+impl FontFace {
+    fn symbolic_traits(self) -> CTFontSymbolicTraits {
+        match self {
+            FontFace::Bold => CTFontSymbolicTraits::TraitBold,
+            FontFace::Italic => CTFontSymbolicTraits::TraitItalic,
+            FontFace::BoldItalic => {
+                CTFontSymbolicTraits(
+                    CTFontSymbolicTraits::TraitBold.0 | CTFontSymbolicTraits::TraitItalic.0,
+                )
+            }
+            FontFace::Regular | FontFace::Chrome => CTFontSymbolicTraits(0),
+        }
+    }
+
+    fn needs_traits(self) -> bool {
+        !matches!(self, FontFace::Regular | FontFace::Chrome)
+    }
 }
 
 /// A CoreText font with pre-computed cell metrics.
@@ -67,43 +103,80 @@ impl Font {
         // means identity.  Returns a CFRetained that manages the CF retain count.
         let ct = unsafe { CTFont::with_name(&cf_name, pixel_size, std::ptr::null()) };
 
-        let ascent = unsafe { ct.ascent() };
-        let descent = unsafe { ct.descent() };
-        let leading = unsafe { ct.leading() };
+        Font::from_ct(ct)
+    }
 
-        // Cell width = advance of 'M' (monospace — any glyph works; 'M' is
-        // a safe, always-present choice).
-        let ch: u16 = b'M' as u16;
-        let mut glyph: u16 = 0;
-        // SAFETY: ch and glyph are valid u16 stack values; count = 1.
-        unsafe {
-            ct.glyphs_for_characters(
-                NonNull::new(&ch as *const u16 as *mut u16).unwrap(),
-                NonNull::new(&mut glyph as *mut u16).unwrap(),
-                1,
-            );
-        }
-        let mut adv = CGSize {
-            width: 0.0,
-            height: 0.0,
+    /// Create a font for the given face and pixel size.
+    ///
+    /// For `Bold`, `Italic`, and `BoldItalic` faces the Regular font is loaded
+    /// first, then `copy_with_symbolic_traits` requests the matching variant.
+    /// If CoreText cannot find a bold/italic face in the family (the Nerd Font
+    /// build may not ship them), the method falls back to affine-skew synthesis
+    /// for italic and weight-shift is logged as unavailable.
+    ///
+    /// When `ligatures` is true the returned font is wrapped with an OpenType
+    /// feature descriptor that enables `calt` (contextual alternates).  This
+    /// should be false for the chrome face to avoid surprises in the Basin mark.
+    pub fn init_face(
+        names: &[&str],
+        pixel_size: f64,
+        face: FontFace,
+        ligatures: bool,
+    ) -> Result<Font, FontError> {
+        // Load the base Regular font first from the fallback chain.
+        let base = Font::init_first_available(names, pixel_size)?;
+
+        let ct: CFRetained<CTFont> = if face.needs_traits() {
+            let traits = face.symbolic_traits();
+            // SAFETY: size=0.0 preserves original size; null matrix = identity.
+            let variant =
+                unsafe { base.ct.copy_with_symbolic_traits(0.0, std::ptr::null(), traits, traits) };
+            match variant {
+                Some(v) => v,
+                None => {
+                    // Fallback: for italic faces apply an affine shear matrix.
+                    // For bold-only, log and use the regular face — synthesized
+                    // bold (double draw, weight filter) is out of scope.
+                    let needs_italic = face == FontFace::Italic || face == FontFace::BoldItalic;
+                    if needs_italic {
+                        eprintln!(
+                            "anvil: italic face unavailable for \"{}\"; synthesizing via shear",
+                            names.first().unwrap_or(&"?")
+                        );
+                        // 12° shear: c = tan(12°) ≈ 0.2126.
+                        let skew = objc2_core_foundation::CGAffineTransform {
+                            a: 1.0,
+                            b: 0.0,
+                            c: 0.2126,
+                            d: 1.0,
+                            tx: 0.0,
+                            ty: 0.0,
+                        };
+                        // SAFETY: skew is a valid stack CGAffineTransform.
+                        unsafe {
+                            base.ct.copy_with_attributes(0.0, &skew as *const _, None)
+                        }
+                    } else {
+                        eprintln!(
+                            "anvil: bold face unavailable for \"{}\"; using regular",
+                            names.first().unwrap_or(&"?")
+                        );
+                        base.ct
+                    }
+                }
+            }
+        } else {
+            base.ct
         };
-        // SAFETY: glyph and adv are valid stack values; count = 1.
-        unsafe {
-            ct.advances_for_glyphs(
-                CTFontOrientation::Default,
-                NonNull::new(&glyph as *const u16 as *mut u16).unwrap(),
-                &mut adv as *mut CGSize,
-                1,
-            );
-        }
 
-        let metrics = FontMetrics {
-            cell_w: adv.width.ceil(),
-            cell_h: (ascent + descent + leading).ceil(),
-            descent,
+        // Optionally enable the calt (contextual alternates) OpenType feature.
+        let ct = if ligatures {
+            enable_calt(ct)
+        } else {
+            ct
         };
 
-        Ok(Font { ct, metrics })
+        Font::from_ct(ct)
     }
 
     /// Try each name in order; return the first that loads with a non-zero
@@ -142,7 +215,173 @@ impl Font {
         }
         glyphs[0]
     }
+
+    /// Build a `Font` from an already-loaded `CTFont`.
+    fn from_ct(ct: CFRetained<CTFont>) -> Result<Font, FontError> {
+        let ascent = unsafe { ct.ascent() };
+        let descent = unsafe { ct.descent() };
+        let leading = unsafe { ct.leading() };
+
+        // Cell width = advance of 'M' (monospace — any glyph works; 'M' is
+        // a safe, always-present choice).
+        let ch: u16 = b'M' as u16;
+        let mut glyph: u16 = 0;
+        // SAFETY: ch and glyph are valid u16 stack values; count = 1.
+        unsafe {
+            ct.glyphs_for_characters(
+                NonNull::new(&ch as *const u16 as *mut u16).unwrap(),
+                NonNull::new(&mut glyph as *mut u16).unwrap(),
+                1,
+            );
+        }
+        let mut adv = CGSize {
+            width: 0.0,
+            height: 0.0,
+        };
+        // SAFETY: glyph and adv are valid stack values; count = 1.
+        unsafe {
+            ct.advances_for_glyphs(
+                CTFontOrientation::Default,
+                NonNull::new(&glyph as *const u16 as *mut u16).unwrap(),
+                &mut adv as *mut CGSize,
+                1,
+            );
+        }
+
+        let metrics = FontMetrics {
+            cell_w: adv.width.ceil(),
+            cell_h: (ascent + descent + leading).ceil(),
+            descent,
+        };
+
+        Ok(Font { ct, metrics })
+    }
 }
+
+/// Wrap `ct` in a `CTFontDescriptor` that enables the `calt` OpenType
+/// feature (contextual alternates — responsible for `->`, `=>`, `!=` etc.
+/// in IBM Plex Mono).
+///
+/// Uses the macOS 10.10+ simplified form: a CFArray containing a single
+/// CFString `"calt"` is sufficient as a `kCTFontFeatureSettingsAttribute`
+/// value.  Shaping (rendering ligatures per-run) is a separate follow-up;
+/// this call ensures the feature is active on the CTFont descriptor so that
+/// if the render path ever makes full ligature shaping calls, the feature is
+/// already requested.
+fn enable_calt(base: CFRetained<CTFont>) -> CFRetained<CTFont> {
+    // Build: CFArray [ CFString("calt") ]
+    let tag_str = CFString::from_str("calt");
+    let tag_ptr = tag_str.as_ref() as *const CFString as *const c_void;
+    let mut values = [tag_ptr];
+
+    // SAFETY: values is a valid 1-element *const c_void array; callbacks
+    // pointer points to the global kCFTypeArrayCallBacks constant.
+    let array: Option<CFRetained<CFArray>> = unsafe {
+        unsafe extern "C" {
+            static kCFTypeArrayCallBacks: CFArrayCallBacks;
+        }
+        CFArray::new(
+            None,
+            values.as_mut_ptr(),
+            1,
+            &kCFTypeArrayCallBacks as *const CFArrayCallBacks,
+        )
+    };
+    let array = match array {
+        Some(a) => a,
+        None => {
+            eprintln!("anvil: calt CFArray creation failed; ligature flag not set");
+            return base;
+        }
+    };
+
+    // Build: CFDictionary { kCTFontFeatureSettingsAttribute => array }
+    #[allow(clippy::borrow_deref_ref)]
+    let key_ptr = unsafe { &*kCTFontFeatureSettingsAttribute as *const CFString as *const c_void };
+    let val_ptr = array.as_ref() as *const CFArray as *const c_void;
+    let mut keys = [key_ptr];
+    let mut vals = [val_ptr];
+
+    // SAFETY: keys/vals are 1-element arrays; callback pointers are global statics.
+    let dict: Option<CFRetained<CFDictionary>> = unsafe {
+        unsafe extern "C" {
+            static kCFTypeDictionaryKeyCallBacks: CFDictionaryKeyCallBacks;
+            static kCFTypeDictionaryValueCallBacks: CFDictionaryValueCallBacks;
+        }
+        CFDictionary::new(
+            None,
+            keys.as_mut_ptr(),
+            vals.as_mut_ptr(),
+            1,
+            &kCFTypeDictionaryKeyCallBacks as *const CFDictionaryKeyCallBacks,
+            &kCFTypeDictionaryValueCallBacks as *const CFDictionaryValueCallBacks,
+        )
+    };
+    let dict = match dict {
+        Some(d) => d,
+        None => {
+            eprintln!("anvil: calt CFDictionary creation failed; ligature flag not set");
+            return base;
+        }
+    };
+
+    // Create a CTFontDescriptor from the attributes dict, then copy the
+    // base CTFont with that descriptor applied.
+    // SAFETY: dict is a valid CFDictionary of CTFont attribute key-value pairs.
+    let desc = unsafe { CTFontDescriptor::with_attributes(&dict) };
+
+    // SAFETY: size=0.0 preserves size; null matrix = identity; desc is valid.
+    unsafe { base.copy_with_attributes(0.0, std::ptr::null(), Some(&desc)) }
+}
+
+/// Group of five `Font` instances covering all faces used in one app session.
+///
+/// `grid[0..4]` = Regular, Bold, Italic, BoldItalic (in `FontFace` order).
+/// `chrome` = 11 pt × scale face used for tab bar, status bar, etc.
+pub struct FontBundle {
+    /// `[Regular, Bold, Italic, BoldItalic]` — same family, same pixel size.
+    pub grid: [Font; 4],
+    /// Smaller fixed-size font for chrome UI elements (tab bar, status bar).
+    pub chrome: Font,
+}
+
+impl FontBundle {
+    /// Load all five faces.  `names` is the terminal font fallback chain;
+    /// `pixel_size` is the terminal size (pt × scale).  Chrome is always
+    /// `CHROME_PT * scale` regardless of `pixel_size`.
+    pub fn new(names: &[&str], pixel_size: f64, scale: f64) -> Result<FontBundle, FontError> {
+        let regular = Font::init_face(names, pixel_size, FontFace::Regular, true)?;
+        let bold = Font::init_face(names, pixel_size, FontFace::Bold, true)?;
+        let italic = Font::init_face(names, pixel_size, FontFace::Italic, true)?;
+        let bold_italic = Font::init_face(names, pixel_size, FontFace::BoldItalic, true)?;
+
+        // Assert that all four grid faces share the same advance width —
+        // required for monospace alignment.
+        let rw = regular.metrics.cell_w;
+        for (f, w) in [
+            ("bold", bold.metrics.cell_w),
+            ("italic", italic.metrics.cell_w),
+            ("bold_italic", bold_italic.metrics.cell_w),
+        ] {
+            if (w - rw).abs() > 1.0 {
+                eprintln!(
+                    "anvil: {f} face advance {w:.1} != regular {rw:.1}; monospace alignment may break"
+                );
+            }
+        }
+
+        let chrome_px = CHROME_PT * scale;
+        let chrome = Font::init_face(names, chrome_px, FontFace::Chrome, false)?;
+
+        Ok(FontBundle {
+            grid: [regular, bold, italic, bold_italic],
+            chrome,
+        })
+    }
+}
+
+/// Chrome font size in logical points (rendered at CHROME_PT × scale device px).
+pub const CHROME_PT: f64 = 11.0;
 
 /// Register the bundled Nerd Font with CoreText so `CTFont::with_name` can
 /// resolve it by family name.  Best-effort: on any failure the app falls back
@@ -484,6 +723,93 @@ mod tests {
         assert_eq!(
             space_ink, 0,
             "drawing space inked {space_ink} pixels — codepoint was not resolved through the cmap"
+        );
+    }
+
+    /// FontFace::Bold symbolic traits include TraitBold.
+    #[test]
+    fn font_face_bold_has_correct_traits() {
+        let traits = FontFace::Bold.symbolic_traits();
+        assert_eq!(traits.0 & CTFontSymbolicTraits::TraitBold.0, CTFontSymbolicTraits::TraitBold.0);
+        assert_eq!(traits.0 & CTFontSymbolicTraits::TraitItalic.0, 0);
+    }
+
+    /// FontFace::Italic symbolic traits include TraitItalic.
+    #[test]
+    fn font_face_italic_has_correct_traits() {
+        let traits = FontFace::Italic.symbolic_traits();
+        assert_eq!(
+            traits.0 & CTFontSymbolicTraits::TraitItalic.0,
+            CTFontSymbolicTraits::TraitItalic.0
+        );
+        assert_eq!(traits.0 & CTFontSymbolicTraits::TraitBold.0, 0);
+    }
+
+    /// FontFace::BoldItalic symbolic traits include both Bold and Italic.
+    #[test]
+    fn font_face_bold_italic_has_both_traits() {
+        let traits = FontFace::BoldItalic.symbolic_traits();
+        assert_eq!(
+            traits.0 & CTFontSymbolicTraits::TraitBold.0,
+            CTFontSymbolicTraits::TraitBold.0
+        );
+        assert_eq!(
+            traits.0 & CTFontSymbolicTraits::TraitItalic.0,
+            CTFontSymbolicTraits::TraitItalic.0
+        );
+    }
+
+    /// init_face Regular with ligatures loads with sane metrics.
+    #[test]
+    fn init_face_regular_with_ligatures_loads() {
+        let names = &["IBMPlexMono", "SFMono-Regular", "Menlo"];
+        let f = Font::init_face(names, 26.0, FontFace::Regular, true).unwrap();
+        assert!(f.metrics.cell_w > 0.0);
+        assert!(f.metrics.cell_h > 0.0);
+    }
+
+    /// init_face Bold does not crash and returns a font with sane metrics.
+    #[test]
+    fn init_face_bold_loads() {
+        let names = &["IBMPlexMono", "SFMono-Regular", "Menlo"];
+        let f = Font::init_face(names, 26.0, FontFace::Bold, true).unwrap();
+        assert!(f.metrics.cell_w > 0.0);
+        assert!(f.metrics.cell_h > 0.0);
+    }
+
+    /// init_face Italic does not crash and returns a font with sane metrics.
+    #[test]
+    fn init_face_italic_loads() {
+        let names = &["IBMPlexMono", "SFMono-Regular", "Menlo"];
+        let f = Font::init_face(names, 26.0, FontFace::Italic, true).unwrap();
+        assert!(f.metrics.cell_w > 0.0);
+        assert!(f.metrics.cell_h > 0.0);
+    }
+
+    /// FontBundle::new loads all five faces without panicking.
+    #[test]
+    fn font_bundle_new_loads_all_faces() {
+        let names = &["IBMPlexMono", "SFMono-Regular", "Menlo"];
+        let bundle = FontBundle::new(names, 26.0, 2.0).unwrap();
+        assert!(bundle.grid[0].metrics.cell_w > 0.0); // Regular
+        assert!(bundle.grid[1].metrics.cell_w > 0.0); // Bold
+        assert!(bundle.grid[2].metrics.cell_w > 0.0); // Italic
+        assert!(bundle.grid[3].metrics.cell_w > 0.0); // BoldItalic
+        // Chrome is smaller: CHROME_PT=11 * scale=2 = 22px < 26px.
+        assert!(bundle.chrome.metrics.cell_w < bundle.grid[0].metrics.cell_w + 1.0);
+    }
+
+    /// Chrome font metrics are visibly smaller than the terminal font.
+    #[test]
+    fn chrome_font_is_smaller_than_terminal_font() {
+        let names = &["IBMPlexMono", "SFMono-Regular", "Menlo"];
+        // Terminal at 30px = 15pt × 2× scale; chrome at 11pt × 2× = 22px.
+        let bundle = FontBundle::new(names, 30.0, 2.0).unwrap();
+        assert!(
+            bundle.chrome.metrics.cell_h < bundle.grid[0].metrics.cell_h,
+            "chrome cell_h {} must be < terminal cell_h {}",
+            bundle.chrome.metrics.cell_h,
+            bundle.grid[0].metrics.cell_h
         );
     }
 }
