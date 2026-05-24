@@ -32,7 +32,7 @@ use anvil_platform::shell_integration;
 use anvil_platform::webview::{Webview, WebviewConfig};
 use anvil_prompt_core::git;
 use anvil_render::agent_panel::{
-    GitState, HUD_COLS as HUD_COLS_DEFAULT, LocalContext, RunState, draw_right_hud,
+    GitState, HUD_COLS as HUD_COLS_DEFAULT, HudHit, LocalContext, RunState, draw_right_hud,
 };
 
 /// Minimum and maximum HUD width in terminal columns. The drag handler
@@ -240,6 +240,9 @@ pub struct App {
     /// Mouse is currently dragging the HUD's left edge hairline. While true,
     /// `mouse_dragged` updates `hud_cols` instead of extending a selection.
     hud_drag_active: bool,
+    /// Clickable regions inside the HUD. Refilled by `draw_right_hud` each
+    /// render; consumed by `mouse_down` to dispatch copy / open actions.
+    hud_hits: Vec<HudHit>,
     cheatsheet_visible: bool,
     focused: bool, // window is key window
 
@@ -1152,6 +1155,7 @@ impl App {
                 hud_cols,
                 top_offset,
                 rows,
+                &mut self.hud_hits,
             );
         }
 
@@ -1837,7 +1841,7 @@ impl AppHandler for AppShell {
         // device pixels of that line for slop. This branch must come before
         // click-to-focus and selection-start so the drag wins over both.
         if app.hud_visible {
-            let (rx, _ry) = app.view_pt_to_raster_px(loc);
+            let (rx, ry) = app.view_pt_to_raster_px(loc);
             let cw = app.font.metrics.cell_w;
             let (dw, _) = app.device_size();
             let surface_w_px = app.hud_cols as f64 * cw + GRID_PAD as f64;
@@ -1846,6 +1850,19 @@ impl AppHandler for AppShell {
                 app.hud_drag_active = true;
                 app.dirty = true;
                 return;
+            }
+            // HUD content hit-test: plain click → copy, Cmd-click → open.
+            for hit in &app.hud_hits {
+                let r = hit.rect;
+                if rx >= r.x && rx < r.x + r.w && ry >= r.y && ry < r.y + r.h {
+                    if mods.command && !hit.open.is_empty() {
+                        anvil_platform::system::open_with_default_app(&hit.open);
+                    } else if !hit.copy.is_empty() {
+                        anvil_platform::system::set_clipboard(&hit.copy);
+                    }
+                    app.dirty = true;
+                    return;
+                }
             }
         }
 
@@ -2509,6 +2526,7 @@ fn main() -> Result<()> {
         hud_tick: 0,
         hud_cols: HUD_COLS_DEFAULT,
         hud_drag_active: false,
+        hud_hits: Vec::new(),
         cheatsheet_visible: false,
         focused: true,
         agent_snap: AgentSnapshot::default(),

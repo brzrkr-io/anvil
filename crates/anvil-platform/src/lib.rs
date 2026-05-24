@@ -7,6 +7,7 @@ pub mod glyph_atlas;
 pub mod metal;
 pub mod pty;
 pub mod shell_integration;
+pub mod system;
 pub mod webview;
 
 pub use glyph_atlas::{AtlasError, AtlasPainter};

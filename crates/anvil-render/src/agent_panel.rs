@@ -497,12 +497,27 @@ fn glass_tones_for(theme: &Theme) -> GlassTones {
     }
 }
 
+/// A clickable region inside the HUD. Click → copy text; Cmd-click → open
+/// path/URL in the user's default app. Empty strings disable that gesture.
+#[derive(Clone, Debug)]
+pub struct HudHit {
+    /// Hit rect in device pixels.
+    pub rect: PixelRect,
+    /// Text copied to clipboard on plain click. Empty disables copy.
+    pub copy: String,
+    /// Path or URL opened on Cmd-click. Empty disables open.
+    pub open: String,
+}
+
 /// Render the always-on right-side HUD.
 ///
 /// `surface_rect` is the *pixel* rect the HUD's frosted surface fills —
 /// usually the rightmost slab of the window, top to bottom. Content rows are
 /// positioned by cell coords (`content_col`, `top_row`, `content_cols`,
 /// `rows`) so text aligns to the monospace grid.
+///
+/// `hits` is cleared and refilled each call with the clickable regions
+/// (REPO/branch/HEAD-sha rows). Callers route mouse-down events through it.
 ///
 /// Layout (top-to-bottom, no card chrome — just the glass fill + a 1px
 /// left hairline so it reads as a docked panel, not a popup):
@@ -524,7 +539,9 @@ pub fn draw_right_hud(
     content_cols: usize,
     top_row: usize,
     rows: usize,
+    hits: &mut Vec<HudHit>,
 ) {
+    hits.clear();
     if rows == 0 || content_cols < 12 {
         return;
     }
@@ -580,7 +597,8 @@ pub fn draw_right_hud(
     );
     r += 1;
 
-    // Repo name in foreground (the cwd basename for now).
+    // Repo name in foreground (the cwd basename for now). Click → copy
+    // full cwd; Cmd-click → reveal in Finder.
     if r < bottom {
         let name = repo_display_name(local);
         draw_text(
@@ -593,13 +611,33 @@ pub fn draw_right_hud(
             theme.foreground,
             max_col,
         );
+        push_row_hit(
+            hits,
+            raster,
+            metrics,
+            inner_col,
+            r,
+            hud_cols - 3,
+            &local.cwd,
+            &local.cwd,
+        );
         r += 1;
     }
-    // Parent path, dim.
+    // Parent path, dim. Same actions as the repo row.
     if r < bottom {
         if let Some(parent) = parent_path_compact(&local.cwd, hud_cols - 4) {
             draw_text(
                 raster, painter, metrics, inner_col, r, &parent, meta_color, max_col,
+            );
+            push_row_hit(
+                hits,
+                raster,
+                metrics,
+                inner_col,
+                r,
+                hud_cols - 3,
+                &local.cwd,
+                &local.cwd,
             );
             r += 1;
         }
@@ -648,6 +686,17 @@ pub fn draw_right_hud(
                 &local.branch,
                 theme.foreground,
                 max_col,
+            );
+            // Click anywhere on the branch row → copy the branch name.
+            push_row_hit(
+                hits,
+                raster,
+                metrics,
+                inner_col,
+                r,
+                hud_cols - 3,
+                &local.branch,
+                "",
             );
             r += 1;
 
@@ -716,6 +765,17 @@ pub fn draw_right_hud(
                         c += 1;
                     }
                 }
+                // Click anywhere on the SHA row → copy the short sha.
+                push_row_hit(
+                    hits,
+                    raster,
+                    metrics,
+                    inner_col,
+                    r,
+                    hud_cols - 3,
+                    &local.head_short,
+                    "",
+                );
                 r += 1;
             }
         }
@@ -982,6 +1042,37 @@ pub fn draw_right_hud(
 /// A blank vertical spacer; returns the new row, capped at `bottom`.
 fn blank(r: usize, bottom: usize) -> usize {
     (r + 1).min(bottom)
+}
+
+/// Push a clickable HUD row spanning `width_cells` cells starting at `(col,
+/// row)`. The rect is computed in device-pixel space using the raster's
+/// padding origin so it lines up with the cell glyphs above it.
+fn push_row_hit(
+    hits: &mut Vec<HudHit>,
+    raster: &Raster,
+    metrics: FontMetrics,
+    col: usize,
+    row: usize,
+    width_cells: usize,
+    copy: &str,
+    open: &str,
+) {
+    if copy.is_empty() && open.is_empty() {
+        return;
+    }
+    let cw = metrics.cell_w;
+    let ch = metrics.cell_h;
+    let rect = PixelRect {
+        x: raster.pad_x + col as f64 * cw,
+        y: raster.pad_y + row as f64 * ch,
+        w: width_cells as f64 * cw,
+        h: ch,
+    };
+    hits.push(HudHit {
+        rect,
+        copy: copy.to_string(),
+        open: open.to_string(),
+    });
 }
 
 /// "REPO", "GIT" etc. drawn in the supplied label color (theme-dependent,
@@ -2030,6 +2121,7 @@ mod tests {
             w: 400.0,
             h: 800.0,
         };
+        let mut hits = Vec::new();
         draw_right_hud(
             &mut r,
             &mut painter,
@@ -2042,6 +2134,7 @@ mod tests {
             34,
             1,
             38,
+            &mut hits,
         );
         let chars: Vec<char> = painter
             .calls
@@ -2070,6 +2163,7 @@ mod tests {
             w: 20.0,
             h: 200.0,
         };
+        let mut hits = Vec::new();
         draw_right_hud(
             &mut r,
             &mut painter,
@@ -2082,6 +2176,7 @@ mod tests {
             2, // far too narrow (< 12)
             0,
             10,
+            &mut hits,
         );
         assert!(painter.calls.is_empty(), "expected no draws for narrow HUD");
     }
@@ -2150,6 +2245,7 @@ mod tests {
             w: 400.0,
             h: 800.0,
         };
+        let mut hits = Vec::new();
         draw_right_hud(
             &mut r,
             &mut painter,
@@ -2162,6 +2258,7 @@ mod tests {
             34,
             1,
             38,
+            &mut hits,
         );
         let chars: Vec<char> = painter
             .calls
