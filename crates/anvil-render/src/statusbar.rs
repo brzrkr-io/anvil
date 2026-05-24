@@ -27,7 +27,9 @@ const FAILURE: [u8; 3] = [0xb1, 0x3a, 0x30];
 /// status.agent: agent / automation / model activity — violet (#6a5fa3)
 const AGENT_VIOLET: [u8; 3] = [0x6a, 0x5f, 0xa3];
 
-/// Draw the status bar across `bottom_row` (a cell-row index into the raster).
+/// Draw the status bar at a FIXED pixel strip — `chrome_bottom_px` tall —
+/// anchored to the window's bottom edge. Glyphs are pixel-positioned and
+/// vertically centred in the strip; nothing here uses cell-row indices.
 ///
 /// Left section (2-col inner pad):
 ///   - Branch glyph + name in INFO_TEAL, if git is Ok.
@@ -49,74 +51,64 @@ pub fn draw_status_bar(
     local_ctx: &LocalContext,
     agent_snap: &Snapshot,
     clock: &str,
-    bottom_row: usize,
+    chrome_bottom_px: f64,
+    window_scale: f64,
 ) {
     let cell_w = metrics.cell_w;
     let cell_h = metrics.cell_h;
-    let usable_w = raster.width as f64 - 2.0 * raster.pad_x;
-    let total_cols = ((usable_w.max(0.0)) / cell_w) as usize;
-    if total_cols == 0 {
+    let total_w = raster.width as f64;
+    let total_h = raster.height as f64;
+    if total_w <= 0.0 || chrome_bottom_px <= 0.0 {
         return;
     }
 
-    // Bottom bar background — Option D's charcoal panel that reaches the
-    // very bottom edge. Painted as one continuous rectangle from the bar's
-    // top to the raster's bottom (covers GRID_PAD too) so no canvas color
-    // shows through.
-    let bar_top_y = raster.pad_y + bottom_row as f64 * cell_h;
-    let bar_bottom = (raster.height as f64).max(bar_top_y);
-    raster.fill_pixel_rect(
-        0.0,
-        bar_top_y,
-        raster.width as f64,
-        bar_bottom - bar_top_y,
-        CHARCOAL,
-    );
-    // 1px hairline above the bar — D's `border-top: 1px solid var(--border)`.
-    raster.fill_pixel_rect(0.0, bar_top_y, raster.width as f64, 1.0, CHROME_BORDER);
+    let strip_top = total_h - chrome_bottom_px;
+    // Charcoal fill across the bottom strip — reaches the window's bottom
+    // edge with no canvas peeking through.
+    raster.fill_pixel_rect(0.0, strip_top, total_w, chrome_bottom_px, CHARCOAL);
+    // 1px hairline at the top of the strip.
+    raster.fill_pixel_rect(0.0, strip_top, total_w, 1.0, CHROME_BORDER);
 
-    // ── Left: cwd  ✓/✗ last 0.1s ────────────────────────────────────────────
-    let mut col = 2usize;
-    if !local_ctx.cwd.is_empty() {
-        let cwd = format_cwd(&local_ctx.cwd);
-        for ch in cwd.chars() {
-            if col + 2 >= total_cols {
+    // Glyphs vertically centred in the strip.
+    let glyph_y = strip_top + ((chrome_bottom_px - cell_h) * 0.5).max(0.0);
+    let pad_x = 14.0 * window_scale; // D: .bottom-bar { padding: 0 14px }
+
+    // ── Left: cwd  ✓/✗ last 0.1s ─────────────────────────────────────────
+    let mut x = pad_x;
+    let draw_run = |raster: &mut Raster,
+                    painter: &mut dyn GlyphPainter,
+                    s: &str,
+                    color: [u8; 3],
+                    x: &mut f64| {
+        for ch in s.chars() {
+            if *x + cell_w > total_w {
                 break;
             }
-            raster.cell_glyph(painter, metrics, col, bottom_row, ch as u32, TEXT_MUTED);
-            col += 1;
+            raster.glyph_at(painter, metrics, *x, glyph_y, ch as u32, color);
+            *x += cell_w;
         }
-        col += 2; // gap
+    };
 
-        // Exit symbol + " last <dur>" when we have a last-run result.
+    if !local_ctx.cwd.is_empty() {
+        let cwd = format_cwd(&local_ctx.cwd);
+        draw_run(raster, painter, &cwd, TEXT_MUTED, &mut x);
+        x += 2.0 * cell_w; // gap
+
         let (sym, color) = match local_ctx.run {
-            RunState::Ok => ("\u{2713}", VERIFIED), // ✓
-            RunState::Failed => ("\u{2717}", FAILURE), // ✗
+            RunState::Ok => ("\u{2713}", VERIFIED),
+            RunState::Failed => ("\u{2717}", FAILURE),
             _ => ("", TEXT_MUTED),
         };
         if !sym.is_empty() {
-            for ch in sym.chars() {
-                if col + 2 >= total_cols {
-                    break;
-                }
-                raster.cell_glyph(painter, metrics, col, bottom_row, ch as u32, color);
-                col += 1;
-            }
+            draw_run(raster, painter, sym, color, &mut x);
             if local_ctx.run_duration_ms > 0 {
                 let dur = format!(" last {}", format_duration_ms(local_ctx.run_duration_ms));
-                for ch in dur.chars() {
-                    if col + 2 >= total_cols {
-                        break;
-                    }
-                    raster.cell_glyph(painter, metrics, col, bottom_row, ch as u32, TEXT_MUTED);
-                    col += 1;
-                }
+                draw_run(raster, painter, &dur, TEXT_MUTED, &mut x);
             }
         }
     }
 
-    // ── Right (anchored from the right edge): agent · clock ──────────────────
-    // Build the right segment then position it.
+    // ── Right: agent · clock ─────────────────────────────────────────────
     let agent_text = if agent_snap.connection == Connection::Live {
         if agent_snap.running_count > 0 {
             format!("\u{25cf} {} running", agent_snap.running_count)
@@ -131,22 +123,32 @@ pub fn draw_status_bar(
     } else {
         ""
     };
-    let right_len = agent_text.chars().count() + sep.len() + clock.chars().count();
-    if right_len + 2 < total_cols && col + right_len + 2 < total_cols {
-        let mut c = total_cols - 2 - right_len;
-        for (i, ch) in agent_text.chars().enumerate() {
-            let fg = if i == 0 { AGENT_VIOLET } else { TEXT_MUTED };
-            raster.cell_glyph(painter, metrics, c, bottom_row, ch as u32, fg);
-            c += 1;
+    let right_text_w = (agent_text.chars().count() + sep.chars().count() + clock.chars().count())
+        as f64
+        * cell_w;
+    let right_start = (total_w - pad_x - right_text_w).max(x);
+    let mut rx = right_start;
+    for (i, ch) in agent_text.chars().enumerate() {
+        if rx + cell_w > total_w {
+            break;
         }
-        for ch in sep.chars() {
-            raster.cell_glyph(painter, metrics, c, bottom_row, ch as u32, TEXT_MUTED);
-            c += 1;
+        let fg = if i == 0 { AGENT_VIOLET } else { TEXT_MUTED };
+        raster.glyph_at(painter, metrics, rx, glyph_y, ch as u32, fg);
+        rx += cell_w;
+    }
+    for ch in sep.chars() {
+        if rx + cell_w > total_w {
+            break;
         }
-        for ch in clock.chars() {
-            raster.cell_glyph(painter, metrics, c, bottom_row, ch as u32, TEXT_MUTED);
-            c += 1;
+        raster.glyph_at(painter, metrics, rx, glyph_y, ch as u32, TEXT_MUTED);
+        rx += cell_w;
+    }
+    for ch in clock.chars() {
+        if rx + cell_w > total_w {
+            break;
         }
+        raster.glyph_at(painter, metrics, rx, glyph_y, ch as u32, TEXT_MUTED);
+        rx += cell_w;
     }
 }
 
@@ -223,7 +225,8 @@ mod tests {
             &local_ctx,
             &agent_snap,
             "",
-            row,
+            m.cell_h * 2.0,
+            1.0,
         );
 
         // Status bar paints its row to a mix of bg+surface (quieter than
@@ -263,7 +266,8 @@ mod tests {
             &local_ctx,
             &agent_snap,
             "",
-            row,
+            m.cell_h * 2.0,
+            1.0,
         );
 
         // TEXT_MUTED chars should include cwd content ('a' from "anvil" or similar).
@@ -303,7 +307,8 @@ mod tests {
             &local_ctx,
             &agent_snap,
             "",
-            row,
+            m.cell_h * 2.0,
+            1.0,
         );
 
         let verified_chars: Vec<char> = painter
@@ -342,7 +347,8 @@ mod tests {
             &local_ctx,
             &agent_snap,
             "",
-            row,
+            m.cell_h * 2.0,
+            1.0,
         );
 
         let failure_chars: Vec<char> = painter
@@ -380,7 +386,8 @@ mod tests {
             &local_ctx,
             &agent_snap,
             "",
-            row,
+            m.cell_h * 2.0,
+            1.0,
         );
 
         // With NoRepo and no agent runs, expect zero glyph calls.
@@ -419,7 +426,8 @@ mod tests {
             &local_ctx,
             &agent_snap,
             "",
-            row,
+            m.cell_h * 2.0,
+            1.0,
         );
 
         let alloy_chars: Vec<char> = painter

@@ -530,30 +530,44 @@ impl App {
         let cw = self.font.metrics.cell_w;
         let ch = self.font.metrics.cell_h;
 
-        let top_bar_px = self.top_bar_rows() as f64 * ch;
-        let bot_bar_px = self.bottom_bar_rows() as f64 * ch;
+        let _ = pad;
+        let _ = ch;
+        let top_bar_px = self.chrome_top_px();
+        let bot_bar_px = self.chrome_bottom_px();
         let (right_margin_px, right_gutter_px) = if self.hud_visible {
             (0.0, self.hud_cols as f64 * cw + cw)
         } else {
-            (pad, 0.0)
+            (GRID_PAD as f64, 0.0)
         };
         Rect {
-            x: pad,
-            y: pad + top_bar_px,
-            w: (dw as f64 - pad - right_margin_px - right_gutter_px).max(cw),
-            h: dh as f64 - 2.0 * pad - top_bar_px - bot_bar_px,
+            x: GRID_PAD as f64,
+            y: top_bar_px,
+            w: (dw as f64 - GRID_PAD as f64 - right_margin_px - right_gutter_px).max(cw),
+            h: (dh as f64 - top_bar_px - bot_bar_px).max(ch),
         }
     }
 
+    /// Fixed chrome-top strip height in device pixels (Option D: 36pt).
+    /// The terminal viewport starts at y = chrome_top_px.
+    fn chrome_top_px(&self) -> f64 {
+        36.0 * self.window_scale
+    }
+
+    /// Fixed bottom status-bar strip height in device pixels (Option D: 24pt).
+    /// Anchored to the window's bottom edge.
+    fn chrome_bottom_px(&self) -> f64 {
+        24.0 * self.window_scale
+    }
+
+    /// Number of cell rows the chrome occupies, in cell-grid units. With
+    /// fixed-pixel chrome strips, the chrome no longer consumes whole cell
+    /// rows — terminal cells start immediately below the strip.
     fn top_bar_rows(&self) -> usize {
-        // Chrome row is always present (basin mark + tabs + indicators).
-        1
+        0
     }
 
     fn bottom_bar_rows(&self) -> usize {
-        // Always one row: status bar normally, search bar when open
-        // (they swap in the same row).
-        1
+        0
     }
 
     /// Snap cursor + scroll animation state to current terminal values.
@@ -609,11 +623,12 @@ impl App {
     fn resize_surface(&mut self) {
         let (dw, dh) = self.device_size();
         self.raster.resize(dw, dh);
+        // Chrome top strip is a fixed pixel height; pad_y tracks it so cell
+        // row 0 sits immediately below the chrome.
+        self.raster.pad_y = self.chrome_top_px();
         if let Some(r) = &mut self.renderer {
             r.resize(dw, dh);
         }
-        // Resize invalidates the entire raster — force a full repaint so the
-        // newly-exposed regions don't show as black / stale content.
         self.force_full_redraw = true;
         self.dirty = true;
     }
@@ -802,11 +817,14 @@ impl App {
         let cw = self.font.metrics.cell_w as usize;
         let ch = self.font.metrics.cell_h as usize;
         let cols = ((dw.saturating_sub(2 * GRID_PAD)) / cw).max(1);
-        // Subtract 2 rows: the chrome row at top AND the status row at
-        // bottom. Subtracting only 1 made the PTY think it had a free row
-        // that the renderer was actually using for the status bar — output
-        // and status bar drew on the same pixel band → jumbled glyphs.
-        let rows = (((dh.saturating_sub(2 * GRID_PAD)) / ch).saturating_sub(2)).max(1);
+        // Chrome strips at top/bottom are fixed pixel heights (36pt/24pt);
+        // PTY rows fill the remaining vertical pixels divided by cell_h.
+        let chrome_top_px = (36.0 * self.window_scale) as usize;
+        let chrome_bottom_px = (24.0 * self.window_scale) as usize;
+        let avail = dh
+            .saturating_sub(chrome_top_px)
+            .saturating_sub(chrome_bottom_px);
+        let rows = (avail / ch).max(1);
         let scrollback = self.config.scrollback;
 
         // PaneIds must be unique across ALL tabs because self.ptys is a
@@ -1479,6 +1497,8 @@ impl App {
         {
             let branch = self.local_ctx.branch.clone();
             let clock = local_hhmm();
+            let scale = self.window_scale;
+            let chrome_top = self.chrome_top_px();
             draw_tab_bar(
                 &mut self.raster,
                 painter,
@@ -1487,12 +1507,14 @@ impl App {
                 &self.tabs,
                 &branch,
                 &clock,
-                self.window_scale,
+                scale,
+                chrome_top,
                 &mut self.tab_bar_hits,
             );
         }
 
-        // Bottom row: search bar when open, otherwise the slim status bar.
+        // Bottom strip: search bar when open, otherwise the slim status bar.
+        // Search bar still uses cell-row positioning until refactored separately.
         let total_rows = (((dh.saturating_sub(2 * GRID_PAD)) as f64 / ch) as usize).max(1);
         let bottom_row = total_rows.saturating_sub(1);
         if self.search_open {
@@ -1506,6 +1528,8 @@ impl App {
             );
         } else {
             let clock = local_hhmm();
+            let scale = self.window_scale;
+            let chrome_bot = self.chrome_bottom_px();
             anvil_render::statusbar::draw_status_bar(
                 &mut self.raster,
                 painter,
@@ -1514,7 +1538,8 @@ impl App {
                 &self.local_ctx,
                 &self.agent_snap,
                 &clock,
-                bottom_row,
+                chrome_bot,
+                scale,
             );
         }
 
@@ -3088,7 +3113,15 @@ fn main() -> Result<()> {
     // (resize_all_tabs corrects to exact pane size once the window is up,
     // but the initial PTY needs sane dimensions for the first prompt frame.)
     let cols = (dw.saturating_sub(2 * GRID_PAD) / cw).max(1);
-    let rows = (((dh.saturating_sub(2 * GRID_PAD)) / ch).saturating_sub(2)).max(1);
+    // Chrome strips at top/bottom are fixed pixel heights (36pt/24pt);
+    // PTY rows fill the remaining vertical pixels divided by cell_h.
+    let chrome_top_px_init = (36.0 * window_scale) as usize;
+    let chrome_bottom_px_init = (24.0 * window_scale) as usize;
+    let rows = ((dh
+        .saturating_sub(chrome_top_px_init)
+        .saturating_sub(chrome_bottom_px_init))
+        / ch)
+        .max(1);
 
     // -- Initial tab + PTY ----------------------------------------------------
     let tab = Tab::new_single_pane(cols, rows, config.scrollback);
@@ -3181,9 +3214,11 @@ fn main() -> Result<()> {
     let keybindings = Keybindings::from_config(&config.keybindings);
 
     // -- Raster ---------------------------------------------------------------
+    // pad_y is set to the chrome top strip height so cell row 0 is the
+    // first terminal row (the chrome lives in [0, chrome_top_px)).
     let mut raster = Raster::new(dw, dh);
     raster.pad_x = GRID_PAD as f64;
-    raster.pad_y = GRID_PAD as f64;
+    raster.pad_y = chrome_top_px_init as f64;
 
     // -- Build App ------------------------------------------------------------
     let watcher = cfg_path.map(Watcher::new);

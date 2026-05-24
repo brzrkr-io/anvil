@@ -76,238 +76,188 @@ impl TabBarHits {
 /// Inactive tab: transparent (theme.background), theme.ansi[8] dim text.
 /// Unread dot: amber `·` on inactive tabs with PTY output since last focus.
 /// Close ×: shown on the active tab only (hover requires mouse tracking).
+/// `chrome_top_px` is the FIXED pixel height of the chrome strip — not tied
+/// to `cell_h`. Matches Option D's 36pt chrome row, scaled to device pixels
+/// by the caller. The terminal viewport starts at y = `chrome_top_px`
+/// (i.e. `raster.pad_y` is set to this value upstream).
 #[allow(clippy::too_many_arguments)]
 pub fn draw_tab_bar(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
     metrics: FontMetrics,
-    theme: &Theme,
+    _theme: &Theme,
     tabs: &TabManager,
     branch: &str,
     clock: &str,
-    // Device-pixels-per-point for the current window (1.0 standard, 2.0
-    // retina, 3.0 super-retina). Used to convert the traffic-light reserve
-    // from points to device pixels.
     window_scale: f64,
+    chrome_top_px: f64,
     hits_out: &mut TabBarHits,
 ) {
     hits_out.clear();
 
     let cell_w = metrics.cell_w;
     let cell_h = metrics.cell_h;
-    let usable_w = raster.width as f64 - 2.0 * raster.pad_x;
-    let total_cols = ((usable_w.max(0.0)) / cell_w) as usize;
-    if total_cols == 0 {
+    let total_w = raster.width as f64;
+    if total_w <= 0.0 || chrome_top_px <= 0.0 {
         return;
     }
 
-    // Chrome row background — Option D's graphite band. Painted from the
-    // very top of the raster to just above the hairline so the chrome reads
-    // as a single defined strip, not a few colored cells on canvas.
-    let chrome_top_y = 0.0;
-    let chrome_bottom_y = raster.pad_y + cell_h - 1.0;
-    raster.fill_pixel_rect(
-        0.0,
-        chrome_top_y,
-        raster.width as f64,
-        chrome_bottom_y - chrome_top_y,
-        GRAPHITE,
-    );
+    // ── Chrome strip background ──────────────────────────────────────────
+    // Full-width graphite from y=0 to the 1px hairline. The hairline lives
+    // at chrome_top_px - 1; the strip's painted region is [0, chrome_top_px).
+    raster.fill_pixel_rect(0.0, 0.0, total_w, chrome_top_px - 1.0, GRAPHITE);
 
-    // How many raster columns to skip for the traffic-light zone.
-    // pad_x is already the left offset of col 0 from the window edge.
+    // Bright accent for basin + active-tab rule.
+    const ACCENT_BRIGHT: [u8; 3] = [0x54, 0xb7, 0xc0];
+
+    // Vertical baseline for chrome glyphs: cell rect's top is centred in
+    // the strip so the glyph sits visually in the middle of the chrome row.
+    let glyph_y = ((chrome_top_px - cell_h) * 0.5).max(0.0);
+
+    // Reserve the traffic-light zone (left side of the chrome row).
     let tl_reserve_px = TRAFFIC_LIGHT_RESERVE_PT * window_scale;
-    let tl_cols = (((tl_reserve_px - raster.pad_x).max(0.0)) / cell_w).ceil() as usize;
+    let basin_x = tl_reserve_px;
 
-    // ── Basin mark ◒ ──────────────────────────────────────────────────────────
-    let basin_col = tl_cols;
-    if basin_col < total_cols {
-        // Use the brighter accent so the basin reads against graphite even
-        // with the macOS title-bar material on top.
-        const ACCENT_BRIGHT: [u8; 3] = [0x54, 0xb7, 0xc0];
-        raster.cell_glyph(painter, metrics, basin_col, 0, '◒' as u32, ACCENT_BRIGHT);
+    // ── Basin mark ◒ ─────────────────────────────────────────────────────
+    if basin_x + cell_w < total_w {
+        raster.glyph_at(
+            painter,
+            metrics,
+            basin_x,
+            glyph_y,
+            '◒' as u32,
+            ACCENT_BRIGHT,
+        );
     }
 
-    // ── Right-side indicators ─────────────────────────────────────────────────
-    // Build the right-side string and place it from the right edge.
+    // ── Right indicators (branch · clock) ────────────────────────────────
     let right_str = build_right_str(branch, clock);
-    let right_cols = right_str.chars().count();
-    // Leave one col gap from the right edge.
-    let right_start = if total_cols > right_cols + 1 {
-        total_cols - right_cols - 1
-    } else {
-        0
-    };
-    draw_right_indicators(
-        raster,
-        painter,
-        metrics,
-        theme,
-        &right_str,
-        branch,
-        right_start,
-    );
+    let right_w = right_str.chars().count() as f64 * cell_w;
+    let right_pad = 14.0 * window_scale; // D: .right-indicators { padding: 0 14px }
+    let right_start_x = (total_w - right_w - right_pad).max(0.0);
+    draw_right_indicators(raster, painter, metrics, &right_str, right_start_x, glyph_y);
 
-    // ── Tabs ──────────────────────────────────────────────────────────────────
+    // ── Tabs ─────────────────────────────────────────────────────────────
     let n = tabs.count();
-    // Tabs start 2 cols after the basin mark.
-    let tabs_start_col = basin_col + 2;
-    // Reserve space for right indicators (right_cols + 1 gap + 1 padding) and
-    // the `+` button (2 cols).
-    let add_btn_cols = 2_usize;
-    let right_reserved = right_cols + 2 + add_btn_cols;
-    let tabs_end_col = if total_cols > right_reserved + tabs_start_col {
-        total_cols - right_reserved
-    } else {
-        tabs_start_col
-    };
-    let avail_tab_cols = tabs_end_col.saturating_sub(tabs_start_col);
+    let tabs_start_x = basin_x + 2.0 * cell_w; // 2 cells of breathing after basin
+    let tabs_end_x = (right_start_x - 2.0 * cell_w).max(tabs_start_x);
+    let avail_tab_w = tabs_end_x - tabs_start_x;
 
-    // Compute per-tab widths (content-width: label + 2 left pad + 1 right pad +
-    // 1 close × + 1 gap). Min 8, max 24.
-    let tab_widths: Vec<usize> = (0..n)
+    // Per-tab pixel width: label + 2 left pad + 1 right pad + 1 gap + 1 ×.
+    let raw_widths: Vec<f64> = (0..n)
         .map(|t| {
-            let label = tab_label(tabs, t);
-            let label_len = label.chars().count();
-            // label + 2 left pad + 1 × + 1 right pad
-            // label + 2 left pad + 1 right pad + 1 gap + 1 × = +5
-            let w = label_len + 5;
-            w.clamp(9, 24)
+            let label_len = tab_label(tabs, t).chars().count();
+            let cells = (label_len + 5).clamp(9, 24) as f64;
+            cells * cell_w
         })
         .collect();
-    let total_tab_cols: usize = tab_widths.iter().sum();
-
-    // If there's not enough room, shrink all tabs proportionally to min 8.
-    let tab_widths: Vec<usize> = if total_tab_cols > avail_tab_cols && n > 0 {
-        let min_total = n * 8;
-        if min_total > avail_tab_cols {
-            // Not enough room even at minimum — clamp everything to 8.
-            vec![8; n]
+    let total_raw_w: f64 = raw_widths.iter().sum();
+    let tab_widths: Vec<f64> = if total_raw_w > avail_tab_w && n > 0 {
+        let min_each = 8.0 * cell_w;
+        if (n as f64) * min_each > avail_tab_w {
+            vec![min_each; n]
         } else {
-            // Distribute available space fairly, floor to 8.
-            tab_widths
+            raw_widths
                 .iter()
-                .map(|&w| {
-                    let scaled =
-                        (w as f64 * avail_tab_cols as f64 / total_tab_cols as f64) as usize;
-                    scaled.max(8)
-                })
+                .map(|w| (w * avail_tab_w / total_raw_w).max(min_each))
                 .collect()
         }
     } else {
-        tab_widths
+        raw_widths
     };
 
-    let mut col = tabs_start_col;
+    let mut x = tabs_start_x;
     for t in 0..n {
-        let tw = if t < tab_widths.len() {
-            tab_widths[t]
-        } else {
-            8
-        };
+        let tw = *tab_widths.get(t).unwrap_or(&(8.0 * cell_w));
         let is_active = t == tabs.active;
 
-        // Active tab: charcoal panel with a 2px accent rule pinned to the
-        // chrome row's bottom edge (just above the hairline). Matches D's
-        // `.tab.active::after { left:4px; right:4px; bottom:0; height:2px; }`.
+        // Active tab: charcoal panel covering the FULL chrome strip height
+        // (minus the hairline), then a 3px accent rule pinned just above
+        // the hairline. Matches D's `.tab.active { background: charcoal }
+        // .tab.active::after { left:4px; right:4px; bottom:0; height:2px }`.
         if is_active {
-            for c in col..col + tw {
-                if c < total_cols {
-                    raster.cell_bg(metrics, c, 0, CHARCOAL);
-                }
-            }
-            let rule_x = raster.pad_x + col as f64 * cell_w + 4.0;
-            let rule_w = (tw as f64 * cell_w - 8.0).max(0.0);
-            // 3px rule sitting just above the 1px hairline. Brighter accent
-            // (cyan) reads more clearly than the muted teal at retina.
-            const ACCENT_BRIGHT: [u8; 3] = [0x54, 0xb7, 0xc0];
-            let rule_y = raster.pad_y + cell_h - 4.0;
-            raster.fill_pixel_rect(rule_x, rule_y, rule_w, 3.0, ACCENT_BRIGHT);
+            raster.fill_pixel_rect(x, 0.0, tw, chrome_top_px - 1.0, CHARCOAL);
+            let inset = 4.0 * window_scale;
+            let rule_y = chrome_top_px - 4.0;
+            raster.fill_pixel_rect(
+                x + inset,
+                rule_y,
+                (tw - 2.0 * inset).max(0.0),
+                3.0,
+                ACCENT_BRIGHT,
+            );
         }
 
+        // Label: pixel-positioned, sitting inside the tab with a 2-cell
+        // left pad and a 3-cell gap+× on the right.
         let fg = if is_active { MIST } else { TEXT_MUTED };
-
-        // Label: starts at col + 2 (2-col left pad).
         let label = tab_label(tabs, t);
-        let label_end_col = col + tw - 3; // gap + × on the right
+        let label_x0 = x + 2.0 * cell_w;
+        let label_x_end = x + tw - 3.0 * cell_w;
         for (i, cp) in label.chars().enumerate() {
-            let lc = col + 2 + i;
-            if lc >= label_end_col {
+            let lx = label_x0 + i as f64 * cell_w;
+            if lx + cell_w > label_x_end {
                 break;
             }
-            raster.cell_glyph(painter, metrics, lc, 0, cp as u32, fg);
+            raster.glyph_at(painter, metrics, lx, glyph_y, cp as u32, fg);
         }
 
-        // Close × on active tab (at col + tw - 2).
-        let close_col = col + tw - 2;
-        if is_active && close_col < total_cols {
-            raster.cell_glyph(painter, metrics, close_col, 0, '×' as u32, TEXT_MUTED);
+        // Close × on active tab.
+        let close_x = x + tw - 2.0 * cell_w;
+        if is_active && close_x + cell_w <= total_w {
+            raster.glyph_at(painter, metrics, close_x, glyph_y, '×' as u32, TEXT_MUTED);
         }
 
-        // Unread dot: amber · on background tabs with new output.
+        // Unread dot on background tabs with new output.
         let tab_has_unread = tabs.tabs.get(t).is_some_and(|tab| tab.has_unread);
-        let dot_col = col + tw - 1;
-        if !is_active && tab_has_unread && dot_col < total_cols {
-            raster.cell_glyph(painter, metrics, dot_col, 0, '·' as u32, ATTENTION);
+        let dot_x = x + tw - cell_w;
+        if !is_active && tab_has_unread && dot_x + cell_w <= total_w {
+            raster.glyph_at(painter, metrics, dot_x, glyph_y, '·' as u32, ATTENTION);
         }
 
-        // Hit rects in device pixels.
-        let hit_x = raster.pad_x + col as f64 * cell_w;
-        let hit_y = raster.pad_y;
-        let hit_w = tw as f64 * cell_w;
-        let hit_h = cell_h;
-
+        // Hit rect spans the full strip vertically (clickable anywhere in
+        // the tab's chrome region, not just on the glyph row).
         hits_out.hits.push(TabBarHit {
             rect: PixelRect {
-                x: hit_x,
-                y: hit_y,
-                w: hit_w,
-                h: hit_h,
+                x,
+                y: 0.0,
+                w: tw,
+                h: chrome_top_px,
             },
             kind: TabBarHitKind::Tab(t),
         });
-        // Close × hit: right ~2 cols of the tab.
-        if close_col < total_cols {
-            let cx = raster.pad_x + close_col as f64 * cell_w;
+        if close_x + 2.0 * cell_w <= total_w {
             hits_out.hits.push(TabBarHit {
                 rect: PixelRect {
-                    x: cx,
-                    y: hit_y,
+                    x: close_x,
+                    y: 0.0,
                     w: 2.0 * cell_w,
-                    h: hit_h,
+                    h: chrome_top_px,
                 },
                 kind: TabBarHitKind::CloseTab(t),
             });
         }
 
-        col += tw;
+        x += tw;
     }
 
-    // `+` button: 2 cols after the last tab.
-    let add_col = col;
-    if add_col + 2 <= total_cols {
-        raster.cell_glyph(painter, metrics, add_col, 0, '+' as u32, TEXT_MUTED);
-        let ax = raster.pad_x + add_col as f64 * cell_w;
+    // `+` button: one cell of gap after the last tab.
+    let add_x = x + cell_w;
+    if add_x + cell_w <= right_start_x {
+        raster.glyph_at(painter, metrics, add_x, glyph_y, '+' as u32, TEXT_MUTED);
         hits_out.hits.push(TabBarHit {
             rect: PixelRect {
-                x: ax,
-                y: raster.pad_y,
+                x: add_x,
+                y: 0.0,
                 w: 2.0 * cell_w,
-                h: cell_h,
+                h: chrome_top_px,
             },
             kind: TabBarHitKind::AddTab,
         });
     }
 
-    // 1px hairline below the chrome row to separate it from the terminal
-    // viewport — D's `.chrome-tab-row { border-bottom: 1px solid var(--border); }`.
-    raster.fill_pixel_rect(
-        0.0,
-        chrome_bottom_y,
-        raster.width as f64,
-        1.0,
-        CHROME_BORDER,
-    );
+    // 1px hairline at the bottom of the strip.
+    raster.fill_pixel_rect(0.0, chrome_top_px - 1.0, total_w, 1.0, CHROME_BORDER);
 }
 
 /// Build the right-side indicator string. Uses the Nerd Font branch glyph
@@ -321,30 +271,29 @@ fn build_right_str(branch: &str, clock: &str) -> String {
     }
 }
 
-/// Draw the right-side indicators. Branch glyph in theme.accent; branch
-/// name in text-muted; separator `·` in ash; clock in text-muted. Matches
-/// D's `.right-indicators` block.
+/// Pixel-positioned. Branch glyph in accent, branch name in text-muted,
+/// separator `·` in ash, clock in text-muted. Matches D's `.right-indicators`.
 fn draw_right_indicators(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
     metrics: FontMetrics,
-    theme: &Theme,
     right_str: &str,
-    branch: &str,
-    start_col: usize,
+    start_x: f64,
+    glyph_y: f64,
 ) {
-    let branch_glyph = '\u{e0a0}'; // Nerd Font branch glyph (build_right_str)
+    const ACCENT: [u8; 3] = [0x2f, 0x7f, 0x86];
+    let branch_glyph = '\u{e0a0}';
     let sep_glyph = '·';
     for (i, cp) in right_str.chars().enumerate() {
-        let col = start_col + i;
-        let color = if !branch.is_empty() && cp == branch_glyph && i == 0 {
-            theme.accent
+        let color = if cp == branch_glyph && i == 0 {
+            ACCENT
         } else if cp == sep_glyph {
             ASH
         } else {
             TEXT_MUTED
         };
-        raster.cell_glyph(painter, metrics, col, 0, cp as u32, color);
+        let x = start_x + i as f64 * metrics.cell_w;
+        raster.glyph_at(painter, metrics, x, glyph_y, cp as u32, color);
     }
 }
 
@@ -434,6 +383,7 @@ mod tests {
             "",
             "12:00",
             1.0,
+            m.cell_h * 2.0,
             &mut hits,
         );
         // Basin mark must have been drawn (painter received '◒').
@@ -472,6 +422,7 @@ mod tests {
             "",
             "12:00",
             1.0,
+            m.cell_h * 2.0,
             &mut hits,
         );
         // Chrome is rendered: basin mark present.
@@ -510,6 +461,7 @@ mod tests {
             "main",
             "14:22",
             1.0,
+            m.cell_h * 2.0,
             &mut hits,
         );
 
@@ -553,6 +505,7 @@ mod tests {
             "",
             "14:22",
             1.0,
+            m.cell_h * 2.0,
             &mut hits,
         );
 
@@ -595,6 +548,7 @@ mod tests {
             "",
             "14:22",
             1.0,
+            m.cell_h * 2.0,
             &mut hits,
         );
 
@@ -638,6 +592,7 @@ mod tests {
             "",
             "14:22",
             1.0,
+            m.cell_h * 2.0,
             &mut hits,
         );
 

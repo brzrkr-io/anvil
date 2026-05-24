@@ -192,6 +192,34 @@ impl Raster {
         self.fill_pixel_rect_internal(rect, rgb);
     }
 
+    /// Draw a glyph at an arbitrary pixel position — used by chrome (tab
+    /// bar / status bar) where the strip's height is decoupled from
+    /// `cell_h` and glyphs need to be vertically positioned by hand.
+    ///
+    /// `x_px` / `y_px` are the cell rect's top-left in device pixels.
+    pub fn glyph_at(
+        &mut self,
+        painter: &mut dyn GlyphPainter,
+        metrics: FontMetrics,
+        x_px: f64,
+        y_px: f64,
+        glyph_id: u32,
+        rgb: [u8; 3],
+    ) {
+        if glyph_id == 0 {
+            return;
+        }
+        let dest = PixelRect {
+            x: x_px,
+            y: y_px,
+            w: metrics.cell_w,
+            h: metrics.cell_h,
+        };
+        let w = self.width;
+        let h = self.height;
+        painter.draw_glyph(glyph_id, dest, rgb, metrics, &mut self.pixels, w, h);
+    }
+
     /// Draw one glyph in a cell.  `glyph_id == 0` (missing glyph) is a no-op.
     /// The call is routed to `painter`, which owns the CoreText logic.
     pub fn cell_glyph(
