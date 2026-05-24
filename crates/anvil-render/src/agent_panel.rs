@@ -521,6 +521,73 @@ pub struct HudHit {
     pub open: String,
 }
 
+/// Identifies a HUD section so the caller can persist a custom display
+/// order and route drag-to-reorder gestures.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SectionId {
+    Repo,
+    Git,
+    LastRun,
+    Build,
+    Ports,
+    Recent,
+    Agents,
+    System,
+}
+
+impl SectionId {
+    /// Default top-to-bottom order; mirrors the layout described in
+    /// `draw_right_hud`'s doc comment.
+    pub const DEFAULT_ORDER: [SectionId; 8] = [
+        SectionId::Repo,
+        SectionId::Git,
+        SectionId::LastRun,
+        SectionId::Build,
+        SectionId::Ports,
+        SectionId::Recent,
+        SectionId::Agents,
+        SectionId::System,
+    ];
+
+    /// Stable string token used when persisting the order to disk.
+    pub fn token(self) -> &'static str {
+        match self {
+            SectionId::Repo => "repo",
+            SectionId::Git => "git",
+            SectionId::LastRun => "last_run",
+            SectionId::Build => "build",
+            SectionId::Ports => "ports",
+            SectionId::Recent => "recent",
+            SectionId::Agents => "agents",
+            SectionId::System => "system",
+        }
+    }
+
+    /// Inverse of `token` — parse the persisted name back to an id.
+    pub fn from_token(s: &str) -> Option<SectionId> {
+        match s.trim() {
+            "repo" => Some(SectionId::Repo),
+            "git" => Some(SectionId::Git),
+            "last_run" => Some(SectionId::LastRun),
+            "build" => Some(SectionId::Build),
+            "ports" => Some(SectionId::Ports),
+            "recent" => Some(SectionId::Recent),
+            "agents" => Some(SectionId::Agents),
+            "system" => Some(SectionId::System),
+            _ => None,
+        }
+    }
+}
+
+/// A section-header hit zone reported back by `draw_right_hud`. The caller
+/// uses it to start a drag-to-reorder gesture; on release the section
+/// whose `rect` contains the release point becomes the drop target.
+#[derive(Clone, Debug)]
+pub struct SectionHeaderHit {
+    pub section: SectionId,
+    pub rect: PixelRect,
+}
+
 /// Render the always-on right-side HUD.
 ///
 /// `surface_rect` is the *pixel* rect the HUD's frosted surface fills —
@@ -552,8 +619,11 @@ pub fn draw_right_hud(
     top_row: usize,
     rows: usize,
     hits: &mut Vec<HudHit>,
+    order: &[SectionId],
+    section_hits: &mut Vec<SectionHeaderHit>,
 ) {
     hits.clear();
+    section_hits.clear();
     if rows == 0 || content_cols < 12 {
         return;
     }
@@ -593,624 +663,750 @@ pub fn draw_right_hud(
     let mut r = top_row + 1; // 1-row top breathing room
     let bottom = top_row + rows;
 
-    // --- REPO --------------------------------------------------------------
-    if r >= bottom {
-        return;
-    }
-    draw_section_header(
-        raster,
-        painter,
-        metrics,
-        inner_col,
-        r,
-        "REPO",
-        label_color,
-        max_col,
-    );
-    r += 1;
-
-    // Repo name in foreground (the cwd basename for now). Click → copy
-    // full cwd; Cmd-click → reveal in Finder.
-    if r < bottom {
-        let name = repo_display_name(local);
-        draw_text(
-            raster,
-            painter,
-            metrics,
-            inner_col,
-            r,
-            &name,
-            theme.foreground,
-            max_col,
-        );
-        push_row_hit(
-            hits,
-            raster,
-            metrics,
-            inner_col,
-            r,
-            hud_cols - 3,
-            &local.cwd,
-            &local.cwd,
-        );
-        r += 1;
-    }
-    // Parent path, dim. Same actions as the repo row.
-    if r < bottom {
-        if let Some(parent) = parent_path_compact(&local.cwd, hud_cols - 4) {
-            draw_text(
-                raster, painter, metrics, inner_col, r, &parent, meta_color, max_col,
-            );
-            push_row_hit(
-                hits,
-                raster,
-                metrics,
-                inner_col,
-                r,
-                hud_cols - 3,
-                &local.cwd,
-                &local.cwd,
-            );
-            r += 1;
+    // Section dispatch — iterate the caller-supplied order, falling back to
+    // the default order for any sections not listed. This is the entry
+    // point for drag-to-reorder: the App persists the order to disk and
+    // hands it back here every frame.
+    let mut visited = [false; 8];
+    let resolved_order: Vec<SectionId> = order
+        .iter()
+        .copied()
+        .chain(
+            SectionId::DEFAULT_ORDER
+                .iter()
+                .copied()
+                .filter(|s| !order.contains(s)),
+        )
+        .collect();
+    for &sid in &resolved_order {
+        let idx = SectionId::DEFAULT_ORDER
+            .iter()
+            .position(|&s| s == sid)
+            .unwrap_or(0);
+        if visited[idx] {
+            continue;
         }
-    }
-    r = section_break(raster, metrics, start_col, hud_cols, r, bottom, tones.edge);
-
-    // --- GIT ---------------------------------------------------------------
-    if r >= bottom {
-        return;
-    }
-    draw_section_header(
-        raster,
-        painter,
-        metrics,
-        inner_col,
-        r,
-        "GIT",
-        label_color,
-        max_col,
-    );
-    r += 1;
-
-    if r < bottom {
-        if local.git == GitState::NoRepo || local.branch.is_empty() {
-            draw_text(
-                raster, painter, metrics, inner_col, r, "no repo", meta_color, max_col,
-            );
-            r += 1;
-        } else {
-            // Branch line: nf-pl-branch + name, in INFO_TEAL.
-            let glyph = "\u{e0a0}";
-            raster.cell_glyph(
-                painter,
-                metrics,
-                inner_col,
-                r,
-                glyph.chars().next().unwrap() as u32,
-                INFO_TEAL,
-            );
-            draw_text(
-                raster,
-                painter,
-                metrics,
-                inner_col + 2,
-                r,
-                &local.branch,
-                theme.foreground,
-                max_col,
-            );
-            // Click anywhere on the branch row → copy the branch name.
-            push_row_hit(
-                hits,
-                raster,
-                metrics,
-                inner_col,
-                r,
-                hud_cols - 3,
-                &local.branch,
-                "",
-            );
-            r += 1;
-
-            // Dirty / ahead / behind on the next line, condensed.
-            if r < bottom {
-                let mut bits: Vec<(String, [u8; 3])> = Vec::new();
-                if local.git_dirty > 0 {
-                    bits.push((format!("*{} modified", local.git_dirty), ATTENTION));
-                }
-                let ab = format_ahead_behind(local.git_ahead, local.git_behind);
-                if !ab.is_empty() {
-                    bits.push((ab, INFO_TEAL));
-                }
-                if bits.is_empty() {
-                    bits.push(("clean".to_string(), VERIFIED));
-                }
-                let mut c = inner_col;
-                for (i, (txt, col)) in bits.iter().enumerate() {
-                    if i > 0 {
-                        if c >= max_col {
-                            break;
-                        }
-                        raster.cell_glyph(painter, metrics, c, r, ' ' as u32, meta_color);
-                        c += 1;
-                        if c >= max_col {
-                            break;
-                        }
-                        raster.cell_glyph(painter, metrics, c, r, 0x00b7, meta_color);
-                        c += 1;
-                        if c >= max_col {
-                            break;
-                        }
-                        raster.cell_glyph(painter, metrics, c, r, ' ' as u32, meta_color);
-                        c += 1;
-                    }
-                    for ch in txt.chars() {
-                        if c >= max_col {
-                            break;
-                        }
-                        raster.cell_glyph(painter, metrics, c, r, ch as u32, *col);
-                        c += 1;
-                    }
-                }
-                r += 1;
-            }
-
-            // HEAD commit, when known: short SHA in INFO_TEAL + subject in
-            // meta tone. Subject truncates on cell-width — no wrapping.
-            if r < bottom && !local.head_short.is_empty() {
-                let mut c = inner_col;
-                for ch in local.head_short.chars() {
-                    if c >= max_col {
-                        break;
-                    }
-                    raster.cell_glyph(painter, metrics, c, r, ch as u32, INFO_TEAL);
-                    c += 1;
-                }
-                if !local.head_subject.is_empty() && c + 1 < max_col {
-                    raster.cell_glyph(painter, metrics, c, r, ' ' as u32, meta_color);
-                    c += 1;
-                    for ch in local.head_subject.chars() {
-                        if c >= max_col {
-                            break;
-                        }
-                        raster.cell_glyph(painter, metrics, c, r, ch as u32, meta_color);
-                        c += 1;
-                    }
-                }
-                // Click anywhere on the SHA row → copy the short sha.
-                push_row_hit(
-                    hits,
+        visited[idx] = true;
+        if r >= bottom {
+            break;
+        }
+        match sid {
+            SectionId::Repo => {
+                // --- REPO ------------------------------------------------
+                let header_row = r;
+                draw_section_header(
                     raster,
+                    painter,
                     metrics,
                     inner_col,
                     r,
-                    hud_cols - 3,
-                    &local.head_short,
-                    "",
+                    "REPO",
+                    label_color,
+                    max_col,
                 );
-                r += 1;
-            }
-        }
-    }
-    r = section_break(raster, metrics, start_col, hud_cols, r, bottom, tones.edge);
-
-    // --- LAST RUN ----------------------------------------------------------
-    if r >= bottom {
-        return;
-    }
-    draw_section_header(
-        raster,
-        painter,
-        metrics,
-        inner_col,
-        r,
-        "LAST RUN",
-        label_color,
-        max_col,
-    );
-    r += 1;
-    if r < bottom {
-        let (glyph, gcol) = match local.run {
-            RunState::Idle => ("\u{00b7}", meta_color),
-            RunState::Ok => ("\u{2713}", VERIFIED),    // ✓
-            RunState::Failed => ("\u{2717}", FAILURE), // ✗
-        };
-        raster.cell_glyph(
-            painter,
-            metrics,
-            inner_col,
-            r,
-            glyph.chars().next().unwrap() as u32,
-            gcol,
-        );
-        let text = match local.run {
-            RunState::Idle => "idle".to_string(),
-            RunState::Ok => format!("ok  {}", format_duration(local.run_duration_ms)),
-            RunState::Failed => format!(
-                "exit {}  {}",
-                local.run_exit,
-                format_duration(local.run_duration_ms)
-            ),
-        };
-        draw_text(
-            raster,
-            painter,
-            metrics,
-            inner_col + 2,
-            r,
-            &text,
-            theme.foreground,
-            max_col,
-        );
-        r += 1;
-    }
-    r = section_break(raster, metrics, start_col, hud_cols, r, bottom, tones.edge);
-
-    // --- BUILD -------------------------------------------------------------
-    // Task #9: show detected project kind + last-run outcome.
-    if let Some(ref kind) = local.project_kind {
-        if r < bottom {
-            draw_section_header(
-                raster,
-                painter,
-                metrics,
-                inner_col,
-                r,
-                "BUILD",
-                label_color,
-                max_col,
-            );
-            r += 1;
-        }
-        if r < bottom {
-            // Project kind label (e.g. "cargo", "node", "make").
-            let kind_label = match kind.as_str() {
-                "rust" => "cargo",
-                "node" => "node",
-                "make" => "make",
-                other => other,
-            };
-            let (status_str, status_col) = match local.run {
-                RunState::Idle => ("—".to_string(), meta_color),
-                RunState::Ok => (
-                    format!("ok  {}", format_duration(local.run_duration_ms)),
-                    VERIFIED,
-                ),
-                RunState::Failed => (
-                    format!(
-                        "exit {}  {}",
-                        local.run_exit,
-                        format_duration(local.run_duration_ms)
-                    ),
-                    FAILURE,
-                ),
-            };
-            let mut c = inner_col;
-            for ch in kind_label.chars() {
-                if c >= max_col {
-                    break;
-                }
-                raster.cell_glyph(painter, metrics, c, r, ch as u32, theme.foreground);
-                c += 1;
-            }
-            if c + 1 < max_col {
-                raster.cell_glyph(painter, metrics, c, r, ' ' as u32, meta_color);
-                c += 1;
-            }
-            for ch in status_str.chars() {
-                if c >= max_col {
-                    break;
-                }
-                raster.cell_glyph(painter, metrics, c, r, ch as u32, status_col);
-                c += 1;
-            }
-            r += 1;
-        }
-        r = section_break(raster, metrics, start_col, hud_cols, r, bottom, tones.edge);
-    }
-
-    // --- PORTS -------------------------------------------------------------
-    // Task #7: listening TCP ports (dev servers).
-    if !local.ports.is_empty() {
-        if r < bottom {
-            draw_section_header(
-                raster,
-                painter,
-                metrics,
-                inner_col,
-                r,
-                "PORTS",
-                label_color,
-                max_col,
-            );
-            r += 1;
-        }
-        if r < bottom {
-            let mut c = inner_col;
-            for (i, &port) in local.ports.iter().enumerate() {
-                let s = format!(":{port}");
-                if i > 0 {
-                    // space separator
-                    if c + 1 >= max_col {
-                        break;
-                    }
-                    raster.cell_glyph(painter, metrics, c, r, ' ' as u32, meta_color);
-                    c += 1;
-                }
-                let label_start = c;
-                for ch in s.chars() {
-                    if c >= max_col {
-                        break;
-                    }
-                    raster.cell_glyph(painter, metrics, c, r, ch as u32, INFO_TEAL);
-                    c += 1;
-                }
-                // Per-port click region: plain → copy URL, Cmd → open URL.
-                let url = format!("http://localhost:{port}");
-                push_row_hit(
-                    hits,
+                push_section_header_hit(
+                    section_hits,
                     raster,
                     metrics,
-                    label_start,
-                    r,
-                    c - label_start,
-                    &url,
-                    &url,
+                    sid,
+                    inner_col,
+                    header_row,
+                    hud_cols,
                 );
+                r += 1;
+
+                // Repo name in foreground (the cwd basename for now). Click → copy
+                // full cwd; Cmd-click → reveal in Finder.
+                if r < bottom {
+                    let name = repo_display_name(local);
+                    draw_text(
+                        raster,
+                        painter,
+                        metrics,
+                        inner_col,
+                        r,
+                        &name,
+                        theme.foreground,
+                        max_col,
+                    );
+                    push_row_hit(
+                        hits,
+                        raster,
+                        metrics,
+                        inner_col,
+                        r,
+                        hud_cols - 3,
+                        &local.cwd,
+                        &local.cwd,
+                    );
+                    r += 1;
+                }
+                // Parent path, dim. Same actions as the repo row.
+                if r < bottom {
+                    if let Some(parent) = parent_path_compact(&local.cwd, hud_cols - 4) {
+                        draw_text(
+                            raster, painter, metrics, inner_col, r, &parent, meta_color, max_col,
+                        );
+                        push_row_hit(
+                            hits,
+                            raster,
+                            metrics,
+                            inner_col,
+                            r,
+                            hud_cols - 3,
+                            &local.cwd,
+                            &local.cwd,
+                        );
+                        r += 1;
+                    }
+                }
             }
-            r += 1;
+            SectionId::Git => {
+                // --- GIT ------------------------------------------------
+                let header_row = r;
+                draw_section_header(
+                    raster,
+                    painter,
+                    metrics,
+                    inner_col,
+                    r,
+                    "GIT",
+                    label_color,
+                    max_col,
+                );
+                push_section_header_hit(
+                    section_hits,
+                    raster,
+                    metrics,
+                    sid,
+                    inner_col,
+                    header_row,
+                    hud_cols,
+                );
+                r += 1;
+
+                if r < bottom {
+                    if local.git == GitState::NoRepo || local.branch.is_empty() {
+                        draw_text(
+                            raster, painter, metrics, inner_col, r, "no repo", meta_color, max_col,
+                        );
+                        r += 1;
+                    } else {
+                        // Branch line: nf-pl-branch + name, in INFO_TEAL.
+                        let glyph = "\u{e0a0}";
+                        raster.cell_glyph(
+                            painter,
+                            metrics,
+                            inner_col,
+                            r,
+                            glyph.chars().next().unwrap() as u32,
+                            INFO_TEAL,
+                        );
+                        draw_text(
+                            raster,
+                            painter,
+                            metrics,
+                            inner_col + 2,
+                            r,
+                            &local.branch,
+                            theme.foreground,
+                            max_col,
+                        );
+                        // Click anywhere on the branch row → copy the branch name.
+                        push_row_hit(
+                            hits,
+                            raster,
+                            metrics,
+                            inner_col,
+                            r,
+                            hud_cols - 3,
+                            &local.branch,
+                            "",
+                        );
+                        r += 1;
+
+                        // Dirty / ahead / behind on the next line, condensed.
+                        if r < bottom {
+                            let mut bits: Vec<(String, [u8; 3])> = Vec::new();
+                            if local.git_dirty > 0 {
+                                bits.push((format!("*{} modified", local.git_dirty), ATTENTION));
+                            }
+                            let ab = format_ahead_behind(local.git_ahead, local.git_behind);
+                            if !ab.is_empty() {
+                                bits.push((ab, INFO_TEAL));
+                            }
+                            if bits.is_empty() {
+                                bits.push(("clean".to_string(), VERIFIED));
+                            }
+                            let mut c = inner_col;
+                            for (i, (txt, col)) in bits.iter().enumerate() {
+                                if i > 0 {
+                                    if c >= max_col {
+                                        break;
+                                    }
+                                    raster
+                                        .cell_glyph(painter, metrics, c, r, ' ' as u32, meta_color);
+                                    c += 1;
+                                    if c >= max_col {
+                                        break;
+                                    }
+                                    raster.cell_glyph(painter, metrics, c, r, 0x00b7, meta_color);
+                                    c += 1;
+                                    if c >= max_col {
+                                        break;
+                                    }
+                                    raster
+                                        .cell_glyph(painter, metrics, c, r, ' ' as u32, meta_color);
+                                    c += 1;
+                                }
+                                for ch in txt.chars() {
+                                    if c >= max_col {
+                                        break;
+                                    }
+                                    raster.cell_glyph(painter, metrics, c, r, ch as u32, *col);
+                                    c += 1;
+                                }
+                            }
+                            r += 1;
+                        }
+
+                        // HEAD commit, when known: short SHA in INFO_TEAL + subject in
+                        // meta tone. Subject truncates on cell-width — no wrapping.
+                        if r < bottom && !local.head_short.is_empty() {
+                            let mut c = inner_col;
+                            for ch in local.head_short.chars() {
+                                if c >= max_col {
+                                    break;
+                                }
+                                raster.cell_glyph(painter, metrics, c, r, ch as u32, INFO_TEAL);
+                                c += 1;
+                            }
+                            if !local.head_subject.is_empty() && c + 1 < max_col {
+                                raster.cell_glyph(painter, metrics, c, r, ' ' as u32, meta_color);
+                                c += 1;
+                                for ch in local.head_subject.chars() {
+                                    if c >= max_col {
+                                        break;
+                                    }
+                                    raster
+                                        .cell_glyph(painter, metrics, c, r, ch as u32, meta_color);
+                                    c += 1;
+                                }
+                            }
+                            // Click anywhere on the SHA row → copy the short sha.
+                            push_row_hit(
+                                hits,
+                                raster,
+                                metrics,
+                                inner_col,
+                                r,
+                                hud_cols - 3,
+                                &local.head_short,
+                                "",
+                            );
+                            r += 1;
+                        }
+                    }
+                }
+            }
+            SectionId::LastRun => {
+                // --- LAST RUN ------------------------------------------
+                let header_row = r;
+                draw_section_header(
+                    raster,
+                    painter,
+                    metrics,
+                    inner_col,
+                    r,
+                    "LAST RUN",
+                    label_color,
+                    max_col,
+                );
+                push_section_header_hit(
+                    section_hits,
+                    raster,
+                    metrics,
+                    sid,
+                    inner_col,
+                    header_row,
+                    hud_cols,
+                );
+                r += 1;
+                if r < bottom {
+                    let (glyph, gcol) = match local.run {
+                        RunState::Idle => ("\u{00b7}", meta_color),
+                        RunState::Ok => ("\u{2713}", VERIFIED), // ✓
+                        RunState::Failed => ("\u{2717}", FAILURE), // ✗
+                    };
+                    raster.cell_glyph(
+                        painter,
+                        metrics,
+                        inner_col,
+                        r,
+                        glyph.chars().next().unwrap() as u32,
+                        gcol,
+                    );
+                    let text = match local.run {
+                        RunState::Idle => "idle".to_string(),
+                        RunState::Ok => format!("ok  {}", format_duration(local.run_duration_ms)),
+                        RunState::Failed => format!(
+                            "exit {}  {}",
+                            local.run_exit,
+                            format_duration(local.run_duration_ms)
+                        ),
+                    };
+                    draw_text(
+                        raster,
+                        painter,
+                        metrics,
+                        inner_col + 2,
+                        r,
+                        &text,
+                        theme.foreground,
+                        max_col,
+                    );
+                    r += 1;
+                }
+            }
+            SectionId::Build => {
+                // --- BUILD ---------------------------------------------
+                let Some(ref kind) = local.project_kind else {
+                    continue;
+                };
+                let header_row = r;
+                if r < bottom {
+                    draw_section_header(
+                        raster,
+                        painter,
+                        metrics,
+                        inner_col,
+                        r,
+                        "BUILD",
+                        label_color,
+                        max_col,
+                    );
+                    push_section_header_hit(
+                        section_hits,
+                        raster,
+                        metrics,
+                        sid,
+                        inner_col,
+                        header_row,
+                        hud_cols,
+                    );
+                    r += 1;
+                }
+                if r < bottom {
+                    // Project kind label (e.g. "cargo", "node", "make").
+                    let kind_label = match kind.as_str() {
+                        "rust" => "cargo",
+                        "node" => "node",
+                        "make" => "make",
+                        other => other,
+                    };
+                    let (status_str, status_col) = match local.run {
+                        RunState::Idle => ("—".to_string(), meta_color),
+                        RunState::Ok => (
+                            format!("ok  {}", format_duration(local.run_duration_ms)),
+                            VERIFIED,
+                        ),
+                        RunState::Failed => (
+                            format!(
+                                "exit {}  {}",
+                                local.run_exit,
+                                format_duration(local.run_duration_ms)
+                            ),
+                            FAILURE,
+                        ),
+                    };
+                    let mut c = inner_col;
+                    for ch in kind_label.chars() {
+                        if c >= max_col {
+                            break;
+                        }
+                        raster.cell_glyph(painter, metrics, c, r, ch as u32, theme.foreground);
+                        c += 1;
+                    }
+                    if c + 1 < max_col {
+                        raster.cell_glyph(painter, metrics, c, r, ' ' as u32, meta_color);
+                        c += 1;
+                    }
+                    for ch in status_str.chars() {
+                        if c >= max_col {
+                            break;
+                        }
+                        raster.cell_glyph(painter, metrics, c, r, ch as u32, status_col);
+                        c += 1;
+                    }
+                    r += 1;
+                }
+            }
+            SectionId::Ports => {
+                // --- PORTS ---------------------------------------------
+                if local.ports.is_empty() {
+                    continue;
+                }
+                let header_row = r;
+                if r < bottom {
+                    draw_section_header(
+                        raster,
+                        painter,
+                        metrics,
+                        inner_col,
+                        r,
+                        "PORTS",
+                        label_color,
+                        max_col,
+                    );
+                    push_section_header_hit(
+                        section_hits,
+                        raster,
+                        metrics,
+                        sid,
+                        inner_col,
+                        header_row,
+                        hud_cols,
+                    );
+                    r += 1;
+                }
+                if r < bottom {
+                    let mut c = inner_col;
+                    for (i, &port) in local.ports.iter().enumerate() {
+                        let s = format!(":{port}");
+                        if i > 0 {
+                            // space separator
+                            if c + 1 >= max_col {
+                                break;
+                            }
+                            raster.cell_glyph(painter, metrics, c, r, ' ' as u32, meta_color);
+                            c += 1;
+                        }
+                        let label_start = c;
+                        for ch in s.chars() {
+                            if c >= max_col {
+                                break;
+                            }
+                            raster.cell_glyph(painter, metrics, c, r, ch as u32, INFO_TEAL);
+                            c += 1;
+                        }
+                        // Per-port click region: plain → copy URL, Cmd → open URL.
+                        let url = format!("http://localhost:{port}");
+                        push_row_hit(
+                            hits,
+                            raster,
+                            metrics,
+                            label_start,
+                            r,
+                            c - label_start,
+                            &url,
+                            &url,
+                        );
+                    }
+                    r += 1;
+                }
+            }
+            SectionId::Recent => {
+                // --- RECENT --------------------------------------------
+                if local.recent_files.is_empty() {
+                    continue;
+                }
+                let header_row = r;
+                if r < bottom {
+                    draw_section_header(
+                        raster,
+                        painter,
+                        metrics,
+                        inner_col,
+                        r,
+                        "RECENT",
+                        label_color,
+                        max_col,
+                    );
+                    push_section_header_hit(
+                        section_hits,
+                        raster,
+                        metrics,
+                        sid,
+                        inner_col,
+                        header_row,
+                        hud_cols,
+                    );
+                    r += 1;
+                }
+                for (fi, full_path) in local.recent_files.iter().enumerate() {
+                    if r >= bottom {
+                        break;
+                    }
+                    let basename: &str = full_path
+                        .rsplit('/')
+                        .next()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or(full_path.as_str());
+                    draw_text(
+                        raster, painter, metrics, inner_col, r, basename, meta_color, max_col,
+                    );
+                    // HudHit: Cmd-click opens the full path in the default editor.
+                    let hit_copy = full_path.clone();
+                    let hit_open = full_path.clone();
+                    push_row_hit(
+                        hits,
+                        raster,
+                        metrics,
+                        inner_col,
+                        r,
+                        hud_cols - 3,
+                        &hit_copy,
+                        &hit_open,
+                    );
+                    let _ = fi; // fi available for future use
+                    r += 1;
+                }
+            }
+            SectionId::Agents => {
+                // --- AGENTS --------------------------------------------
+                let header_row = r;
+                draw_section_header(
+                    raster,
+                    painter,
+                    metrics,
+                    inner_col,
+                    r,
+                    "AGENTS",
+                    label_color,
+                    max_col,
+                );
+                push_section_header_hit(
+                    section_hits,
+                    raster,
+                    metrics,
+                    sid,
+                    inner_col,
+                    header_row,
+                    hud_cols,
+                );
+                r += 1;
+                if r < bottom {
+                    let bullet_color = header_bullet_color(snap);
+                    raster.cell_glyph(painter, metrics, inner_col, r, 0x25CF, bullet_color);
+                    let summary = build_header_summary(snap);
+                    let label = if summary.is_empty() {
+                        "no signal".to_string()
+                    } else {
+                        summary
+                    };
+                    draw_text(
+                        raster,
+                        painter,
+                        metrics,
+                        inner_col + 2,
+                        r,
+                        &label,
+                        theme.foreground,
+                        max_col,
+                    );
+                    r += 1;
+                }
+
+                // All priority rows (capped only by remaining HUD vertical space —
+                // the AGENTS section is the de-facto agent dock when there are many
+                // approvals / runs / failures to show).
+                for ap in &snap.approvals {
+                    if r >= bottom {
+                        break;
+                    }
+                    draw_hud_row(
+                        raster,
+                        painter,
+                        metrics,
+                        inner_col,
+                        r,
+                        "\u{25b8}",
+                        ATTENTION,
+                        &ap.connector,
+                        max_col,
+                        theme.foreground,
+                    );
+                    r += 1;
+                }
+                for run in &snap.runs {
+                    if r >= bottom {
+                        break;
+                    }
+                    if run.status != RunStatus::Running {
+                        continue;
+                    }
+                    draw_hud_row(
+                        raster,
+                        painter,
+                        metrics,
+                        inner_col,
+                        r,
+                        "\u{25c6}",
+                        AGENT_VIOLET,
+                        &run.agent,
+                        max_col,
+                        theme.foreground,
+                    );
+                    r += 1;
+                }
+                for f in &snap.findings {
+                    if r >= bottom {
+                        break;
+                    }
+                    if f.severity != FindingSeverity::Failure {
+                        continue;
+                    }
+                    draw_hud_row(
+                        raster,
+                        painter,
+                        metrics,
+                        inner_col,
+                        r,
+                        "\u{2717}",
+                        FAILURE,
+                        &f.summary,
+                        max_col,
+                        theme.foreground,
+                    );
+                    r += 1;
+                }
+            }
+            SectionId::System => {
+                // --- SYSTEM --------------------------------------------
+                let header_row = r;
+                draw_section_header(
+                    raster,
+                    painter,
+                    metrics,
+                    inner_col,
+                    r,
+                    "SYSTEM",
+                    label_color,
+                    max_col,
+                );
+                push_section_header_hit(
+                    section_hits,
+                    raster,
+                    metrics,
+                    sid,
+                    inner_col,
+                    header_row,
+                    hud_cols,
+                );
+                r += 1;
+
+                // mem line: "mem  ▆▆▆▅▃▁  6.2 / 16 GB"
+                if r < bottom {
+                    let ratio = mem_usage_ratio().unwrap_or(0.0);
+                    let bar = gauge_bar(ratio, 6);
+                    let total_gb = total_mem_gb();
+                    let used_gb = ratio * total_gb;
+                    let mem_line = if total_gb > 0.0 {
+                        format!("mem  {bar}  {:.1} / {:.0} GB", used_gb, total_gb)
+                    } else {
+                        format!("mem  {bar}")
+                    };
+                    draw_text(
+                        raster,
+                        painter,
+                        metrics,
+                        inner_col,
+                        r,
+                        &mem_line,
+                        theme.foreground,
+                        max_col,
+                    );
+                    r += 1;
+                }
+
+                // disk line: "disk ▇▇▇▇▆▁  72 / 512 GB"
+                if r < bottom {
+                    let ratio = disk_usage_ratio().unwrap_or(0.0);
+                    let bar = gauge_bar(ratio, 6);
+                    let total_gb = total_disk_gb();
+                    let used_gb = ratio * total_gb;
+                    let disk_line = if total_gb > 0.0 {
+                        format!("disk {bar}  {:.0} / {:.0} GB", used_gb, total_gb)
+                    } else {
+                        format!("disk {bar}")
+                    };
+                    draw_text(
+                        raster,
+                        painter,
+                        metrics,
+                        inner_col,
+                        r,
+                        &disk_line,
+                        theme.foreground,
+                        max_col,
+                    );
+                    r += 1;
+                }
+
+                // load line: "load ▂▂▂▃▂▁  1.42"
+                if r < bottom {
+                    let load_val = format_load_1m();
+                    let load_str = load_val.as_deref().unwrap_or("—");
+                    // Normalize load against CPU count for the gauge (load/ncpu, capped at 1).
+                    let ncpu = num_cpus() as f64;
+                    let load_num: f64 = load_str.parse().unwrap_or(0.0);
+                    let load_ratio = if ncpu > 0.0 {
+                        (load_num / ncpu).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    let bar = gauge_bar(load_ratio, 6);
+                    let line = format!("load {bar}  {load_str}");
+                    draw_text(
+                        raster,
+                        painter,
+                        metrics,
+                        inner_col,
+                        r,
+                        &line,
+                        theme.foreground,
+                        max_col,
+                    );
+                    r += 1;
+                }
+
+                if r < bottom {
+                    if let Some(hm) = format_local_hm() {
+                        draw_text(
+                            raster, painter, metrics, inner_col, r, &hm, meta_color, max_col,
+                        );
+                        // Nothing increments r — it's the last line we draw.
+                    }
+                }
+            }
         }
+        // Inter-section break — a faint hairline + blank row. Skip after
+        // the last visited section so we don't trail a divider into the
+        // empty bottom of the HUD.
         r = section_break(raster, metrics, start_col, hud_cols, r, bottom, tones.edge);
     }
+}
 
-    // --- RECENT ------------------------------------------------------------
-    // Task #8: recently-modified files (basenames).
-    if !local.recent_files.is_empty() {
-        if r < bottom {
-            draw_section_header(
-                raster,
-                painter,
-                metrics,
-                inner_col,
-                r,
-                "RECENT",
-                label_color,
-                max_col,
-            );
-            r += 1;
-        }
-        for (fi, full_path) in local.recent_files.iter().enumerate() {
-            if r >= bottom {
-                break;
-            }
-            let basename: &str = full_path
-                .rsplit('/')
-                .next()
-                .filter(|s| !s.is_empty())
-                .unwrap_or(full_path.as_str());
-            draw_text(
-                raster, painter, metrics, inner_col, r, basename, meta_color, max_col,
-            );
-            // HudHit: Cmd-click opens the full path in the default editor.
-            let hit_copy = full_path.clone();
-            let hit_open = full_path.clone();
-            push_row_hit(
-                hits,
-                raster,
-                metrics,
-                inner_col,
-                r,
-                hud_cols - 3,
-                &hit_copy,
-                &hit_open,
-            );
-            let _ = fi; // fi available for future use
-            r += 1;
-        }
-        r = section_break(raster, metrics, start_col, hud_cols, r, bottom, tones.edge);
-    }
-
-    // --- AGENTS ------------------------------------------------------------
-    if r >= bottom {
-        return;
-    }
-    draw_section_header(
-        raster,
-        painter,
-        metrics,
-        inner_col,
-        r,
-        "AGENTS",
-        label_color,
-        max_col,
-    );
-    r += 1;
-    if r < bottom {
-        let bullet_color = header_bullet_color(snap);
-        raster.cell_glyph(painter, metrics, inner_col, r, 0x25CF, bullet_color);
-        let summary = build_header_summary(snap);
-        let label = if summary.is_empty() {
-            "no signal".to_string()
-        } else {
-            summary
-        };
-        draw_text(
-            raster,
-            painter,
-            metrics,
-            inner_col + 2,
-            r,
-            &label,
-            theme.foreground,
-            max_col,
-        );
-        r += 1;
-    }
-
-    // All priority rows (capped only by remaining HUD vertical space —
-    // the AGENTS section is the de-facto agent dock when there are many
-    // approvals / runs / failures to show).
-    for ap in &snap.approvals {
-        if r >= bottom {
-            break;
-        }
-        draw_hud_row(
-            raster,
-            painter,
-            metrics,
-            inner_col,
-            r,
-            "\u{25b8}",
-            ATTENTION,
-            &ap.connector,
-            max_col,
-            theme.foreground,
-        );
-        r += 1;
-    }
-    for run in &snap.runs {
-        if r >= bottom {
-            break;
-        }
-        if run.status != RunStatus::Running {
-            continue;
-        }
-        draw_hud_row(
-            raster,
-            painter,
-            metrics,
-            inner_col,
-            r,
-            "\u{25c6}",
-            AGENT_VIOLET,
-            &run.agent,
-            max_col,
-            theme.foreground,
-        );
-        r += 1;
-    }
-    for f in &snap.findings {
-        if r >= bottom {
-            break;
-        }
-        if f.severity != FindingSeverity::Failure {
-            continue;
-        }
-        draw_hud_row(
-            raster,
-            painter,
-            metrics,
-            inner_col,
-            r,
-            "\u{2717}",
-            FAILURE,
-            &f.summary,
-            max_col,
-            theme.foreground,
-        );
-        r += 1;
-    }
-    r = section_break(raster, metrics, start_col, hud_cols, r, bottom, tones.edge);
-
-    // --- SYSTEM ------------------------------------------------------------
-    if r >= bottom {
-        return;
-    }
-    draw_section_header(
-        raster,
-        painter,
-        metrics,
-        inner_col,
-        r,
-        "SYSTEM",
-        label_color,
-        max_col,
-    );
-    r += 1;
-
-    // mem line: "mem  ▆▆▆▅▃▁  6.2 / 16 GB"
-    if r < bottom {
-        let ratio = mem_usage_ratio().unwrap_or(0.0);
-        let bar = gauge_bar(ratio, 6);
-        let total_gb = total_mem_gb();
-        let used_gb = ratio * total_gb;
-        let mem_line = if total_gb > 0.0 {
-            format!("mem  {bar}  {:.1} / {:.0} GB", used_gb, total_gb)
-        } else {
-            format!("mem  {bar}")
-        };
-        draw_text(
-            raster,
-            painter,
-            metrics,
-            inner_col,
-            r,
-            &mem_line,
-            theme.foreground,
-            max_col,
-        );
-        r += 1;
-    }
-
-    // disk line: "disk ▇▇▇▇▆▁  72 / 512 GB"
-    if r < bottom {
-        let ratio = disk_usage_ratio().unwrap_or(0.0);
-        let bar = gauge_bar(ratio, 6);
-        let total_gb = total_disk_gb();
-        let used_gb = ratio * total_gb;
-        let disk_line = if total_gb > 0.0 {
-            format!("disk {bar}  {:.0} / {:.0} GB", used_gb, total_gb)
-        } else {
-            format!("disk {bar}")
-        };
-        draw_text(
-            raster,
-            painter,
-            metrics,
-            inner_col,
-            r,
-            &disk_line,
-            theme.foreground,
-            max_col,
-        );
-        r += 1;
-    }
-
-    // load line: "load ▂▂▂▃▂▁  1.42"
-    if r < bottom {
-        let load_val = format_load_1m();
-        let load_str = load_val.as_deref().unwrap_or("—");
-        // Normalize load against CPU count for the gauge (load/ncpu, capped at 1).
-        let ncpu = num_cpus() as f64;
-        let load_num: f64 = load_str.parse().unwrap_or(0.0);
-        let load_ratio = if ncpu > 0.0 {
-            (load_num / ncpu).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let bar = gauge_bar(load_ratio, 6);
-        let line = format!("load {bar}  {load_str}");
-        draw_text(
-            raster,
-            painter,
-            metrics,
-            inner_col,
-            r,
-            &line,
-            theme.foreground,
-            max_col,
-        );
-        r += 1;
-    }
-
-    if r < bottom {
-        if let Some(hm) = format_local_hm() {
-            draw_text(
-                raster, painter, metrics, inner_col, r, &hm, meta_color, max_col,
-            );
-            // Nothing increments r — it's the last line we draw.
-        }
-    }
+/// Record a section-header hit rect so the App can route a drag-to-reorder
+/// gesture that starts on the header.
+fn push_section_header_hit(
+    out: &mut Vec<SectionHeaderHit>,
+    raster: &Raster,
+    metrics: FontMetrics,
+    section: SectionId,
+    col: usize,
+    row: usize,
+    hud_cols: usize,
+) {
+    let cw = metrics.cell_w;
+    let ch = metrics.cell_h;
+    let rect = PixelRect {
+        x: raster.pad_x + col as f64 * cw,
+        y: raster.pad_y + row as f64 * ch,
+        w: (hud_cols.saturating_sub(2)) as f64 * cw,
+        h: ch,
+    };
+    out.push(SectionHeaderHit { section, rect });
 }
 
 /// Section break: draws a faint hairline at `r` (the gap row) and advances
@@ -2350,6 +2546,7 @@ mod tests {
             h: 800.0,
         };
         let mut hits = Vec::new();
+        let mut section_hits: Vec<SectionHeaderHit> = Vec::new();
         draw_right_hud(
             &mut r,
             &mut painter,
@@ -2363,6 +2560,8 @@ mod tests {
             1,
             38,
             &mut hits,
+            &SectionId::DEFAULT_ORDER,
+            &mut section_hits,
         );
         let chars: Vec<char> = painter
             .calls
@@ -2392,6 +2591,7 @@ mod tests {
             h: 200.0,
         };
         let mut hits = Vec::new();
+        let mut section_hits: Vec<SectionHeaderHit> = Vec::new();
         draw_right_hud(
             &mut r,
             &mut painter,
@@ -2405,6 +2605,8 @@ mod tests {
             0,
             10,
             &mut hits,
+            &SectionId::DEFAULT_ORDER,
+            &mut section_hits,
         );
         assert!(painter.calls.is_empty(), "expected no draws for narrow HUD");
     }
@@ -2475,6 +2677,7 @@ mod tests {
             h: 800.0,
         };
         let mut hits = Vec::new();
+        let mut section_hits: Vec<SectionHeaderHit> = Vec::new();
         draw_right_hud(
             &mut r,
             &mut painter,
@@ -2488,6 +2691,8 @@ mod tests {
             1,
             38,
             &mut hits,
+            &SectionId::DEFAULT_ORDER,
+            &mut section_hits,
         );
         let chars: Vec<char> = painter
             .calls
@@ -2523,6 +2728,7 @@ mod tests {
             h: 800.0,
         };
         let mut hits = Vec::new();
+        let mut section_hits: Vec<SectionHeaderHit> = Vec::new();
         draw_right_hud(
             &mut r_full,
             &mut painter_no_kind,
@@ -2536,6 +2742,8 @@ mod tests {
             1,
             38,
             &mut hits,
+            &SectionId::DEFAULT_ORDER,
+            &mut section_hits,
         );
         // "BUILD" section header chars: B, U, I, L, D
         // We check that 'B','U','I','L','D' don't appear as the section
@@ -2582,6 +2790,7 @@ mod tests {
             h: 800.0,
         };
         let mut hits = Vec::new();
+        let mut section_hits: Vec<SectionHeaderHit> = Vec::new();
         draw_right_hud(
             &mut r,
             &mut painter,
@@ -2595,6 +2804,8 @@ mod tests {
             1,
             38,
             &mut hits,
+            &SectionId::DEFAULT_ORDER,
+            &mut section_hits,
         );
         let chars: Vec<char> = painter
             .calls
@@ -2629,6 +2840,7 @@ mod tests {
             h: 800.0,
         };
         let mut hits = Vec::new();
+        let mut section_hits: Vec<SectionHeaderHit> = Vec::new();
         draw_right_hud(
             &mut r,
             &mut painter_empty,
@@ -2642,6 +2854,8 @@ mod tests {
             1,
             38,
             &mut hits,
+            &SectionId::DEFAULT_ORDER,
+            &mut section_hits,
         );
         // "PORTS" section header: look for 'P','O','R','T','S' consecutive.
         let chars: Vec<char> = painter_empty
@@ -2688,6 +2902,7 @@ mod tests {
             h: 800.0,
         };
         let mut hits = Vec::new();
+        let mut section_hits: Vec<SectionHeaderHit> = Vec::new();
         draw_right_hud(
             &mut r,
             &mut painter,
@@ -2701,6 +2916,8 @@ mod tests {
             1,
             38,
             &mut hits,
+            &SectionId::DEFAULT_ORDER,
+            &mut section_hits,
         );
         let chars: Vec<char> = painter
             .calls
@@ -2739,6 +2956,7 @@ mod tests {
             h: 800.0,
         };
         let mut hits = Vec::new();
+        let mut section_hits: Vec<SectionHeaderHit> = Vec::new();
         draw_right_hud(
             &mut r,
             &mut painter,
@@ -2752,6 +2970,8 @@ mod tests {
             1,
             38,
             &mut hits,
+            &SectionId::DEFAULT_ORDER,
+            &mut section_hits,
         );
         // "RECENT" header should not appear.
         let chars: Vec<char> = painter
@@ -2796,6 +3016,7 @@ mod tests {
             h: 800.0,
         };
         let mut hits = Vec::new();
+        let mut section_hits: Vec<SectionHeaderHit> = Vec::new();
         draw_right_hud(
             &mut r,
             &mut painter,
@@ -2809,6 +3030,8 @@ mod tests {
             1,
             38,
             &mut hits,
+            &SectionId::DEFAULT_ORDER,
+            &mut section_hits,
         );
         let chars: Vec<char> = painter
             .calls

@@ -32,7 +32,8 @@ use anvil_platform::shell_integration;
 use anvil_platform::webview::{Webview, WebviewConfig};
 use anvil_prompt_core::git;
 use anvil_render::agent_panel::{
-    GitState, HUD_COLS as HUD_COLS_DEFAULT, HudHit, LocalContext, RunState, draw_right_hud,
+    GitState, HUD_COLS as HUD_COLS_DEFAULT, HudHit, LocalContext, RunState, SectionHeaderHit,
+    SectionId, draw_right_hud,
 };
 
 /// Minimum and maximum HUD width in terminal columns. The drag handler
@@ -235,6 +236,46 @@ fn walk_dir_for_recent(
     }
 }
 
+/// Path used to persist the user's HUD section order.
+///
+/// Lives under `~/.config/anvil/` (XDG-ish) so it survives across launches
+/// without touching the main TOML config (the config crate doesn't have a
+/// writer yet). One section token per line, in display order.
+fn hud_section_order_path() -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    let mut p = std::path::PathBuf::from(home);
+    p.push(".config");
+    p.push("anvil");
+    Some(p.join("section_order.txt"))
+}
+
+fn load_hud_section_order() -> Option<Vec<SectionId>> {
+    let path = hud_section_order_path()?;
+    let text = std::fs::read_to_string(&path).ok()?;
+    let order: Vec<SectionId> = text
+        .lines()
+        .filter_map(|line| SectionId::from_token(line.trim()))
+        .collect();
+    if order.is_empty() {
+        return None;
+    }
+    Some(order)
+}
+
+fn save_hud_section_order(order: &[SectionId]) {
+    let Some(path) = hud_section_order_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let body: String = order
+        .iter()
+        .map(|s| format!("{}\n", s.token()))
+        .collect::<String>();
+    let _ = std::fs::write(&path, body);
+}
+
 /// One-shot `git log -1 --format=%h %s` against `cwd`. Returns (sha, subject)
 /// or empty strings on failure / non-repo. Bounded: takes <10ms in practice.
 fn git_head_oneline(cwd: &std::path::Path) -> (String, String) {
@@ -382,6 +423,15 @@ pub struct App {
     /// Clickable regions inside the HUD. Refilled by `draw_right_hud` each
     /// render; consumed by `mouse_down` to dispatch copy / open actions.
     hud_hits: Vec<HudHit>,
+    /// Display order of HUD sections (user-reorderable via drag on a
+    /// section header). Persisted to a sidecar file at startup.
+    hud_section_order: Vec<SectionId>,
+    /// Section-header hit zones, refilled each render. Used by mouse-down
+    /// to start a drag-to-reorder gesture.
+    hud_section_hits: Vec<SectionHeaderHit>,
+    /// When set, the section the user grabbed on mouse-down for reorder.
+    /// On mouse-up, the section under the cursor becomes the drop target.
+    hud_section_drag: Option<SectionId>,
     /// Current font point size (logical points, not device pixels). Adjusted
     /// at runtime by Cmd+/Cmd- and re-baked into a fresh `Font` + painter.
     font_size_pt: f64,
@@ -1443,6 +1493,8 @@ impl App {
                 top_offset,
                 rows,
                 &mut self.hud_hits,
+                &self.hud_section_order,
+                &mut self.hud_section_hits,
             );
         }
 
@@ -2291,6 +2343,17 @@ impl AppHandler for AppShell {
                 app.dirty = true;
                 return;
             }
+            // Section header hit: start a drag-to-reorder gesture. Wins
+            // over the row hit-test below so a click on the header doesn't
+            // also try to copy something.
+            for h in &app.hud_section_hits {
+                let r = h.rect;
+                if rx >= r.x && rx < r.x + r.w && ry >= r.y && ry < r.y + r.h {
+                    app.hud_section_drag = Some(h.section);
+                    app.dirty = true;
+                    return;
+                }
+            }
             // HUD content hit-test: plain click → copy, Cmd-click → open.
             for hit in &app.hud_hits {
                 let r = hit.rect;
@@ -2468,6 +2531,38 @@ impl AppHandler for AppShell {
         // HUD resize drag: release.
         if app.hud_drag_active {
             app.hud_drag_active = false;
+            app.dirty = true;
+            return;
+        }
+
+        // HUD section reorder: find the section under the release point and
+        // move the dragged section to that slot. Persist the new order.
+        if let Some(grabbed) = app.hud_section_drag.take() {
+            let (rx, ry) = app.view_pt_to_raster_px(loc);
+            let mut target: Option<SectionId> = None;
+            for h in &app.hud_section_hits {
+                let r = h.rect;
+                if rx >= r.x && rx < r.x + r.w && ry >= r.y && ry < r.y + r.h {
+                    target = Some(h.section);
+                    break;
+                }
+            }
+            if let Some(target) = target {
+                if target != grabbed {
+                    let order = &mut app.hud_section_order;
+                    if let (Some(from), Some(to)) = (
+                        order.iter().position(|&s| s == grabbed),
+                        order.iter().position(|&s| s == target),
+                    ) {
+                        let item = order.remove(from);
+                        let insert_at = if to > from { to } else { to };
+                        let insert_at = insert_at.min(order.len());
+                        order.insert(insert_at, item);
+                        save_hud_section_order(order);
+                    }
+                }
+            }
+            app.force_full_redraw = true;
             app.dirty = true;
             return;
         }
@@ -3054,6 +3149,10 @@ fn main() -> Result<()> {
         hud_cols: HUD_COLS_DEFAULT,
         hud_drag_active: false,
         hud_hits: Vec::new(),
+        hud_section_order: load_hud_section_order()
+            .unwrap_or_else(|| SectionId::DEFAULT_ORDER.to_vec()),
+        hud_section_hits: Vec::new(),
+        hud_section_drag: None,
         font_size_pt: font_size_pt_init,
         font_family: font_family.clone(),
         cheatsheet_visible: false,
