@@ -75,6 +75,15 @@ pub struct LocalContext {
     pub run: RunState,
     pub run_exit: i32,
     pub run_duration_ms: i64,
+
+    // BUILD section (task #9): detected project kind ("rust", "node", "make").
+    pub project_kind: Option<String>,
+
+    // PORTS section (task #7): locally-listening TCP ports (dev servers).
+    pub ports: Vec<u16>,
+
+    // RECENT section (task #8): recently-modified files (basenames), max 5.
+    pub recent_files: Vec<String>,
 }
 
 impl Default for LocalContext {
@@ -91,6 +100,9 @@ impl Default for LocalContext {
             run: RunState::Idle,
             run_exit: 0,
             run_duration_ms: 0,
+            project_kind: None,
+            ports: Vec::new(),
+            recent_files: Vec::new(),
         }
     }
 }
@@ -834,6 +846,157 @@ pub fn draw_right_hud(
     }
     r = blank(r, bottom);
 
+    // --- BUILD -------------------------------------------------------------
+    // Task #9: show detected project kind + last-run outcome.
+    if let Some(ref kind) = local.project_kind {
+        if r < bottom {
+            draw_section_header(
+                raster,
+                painter,
+                metrics,
+                inner_col,
+                r,
+                "BUILD",
+                label_color,
+                max_col,
+            );
+            r += 1;
+        }
+        if r < bottom {
+            // Project kind label (e.g. "cargo", "node", "make").
+            let kind_label = match kind.as_str() {
+                "rust" => "cargo",
+                "node" => "node",
+                "make" => "make",
+                other => other,
+            };
+            let (status_str, status_col) = match local.run {
+                RunState::Idle => ("—".to_string(), meta_color),
+                RunState::Ok => (
+                    format!("ok  {}", format_duration(local.run_duration_ms)),
+                    VERIFIED,
+                ),
+                RunState::Failed => (
+                    format!(
+                        "exit {}  {}",
+                        local.run_exit,
+                        format_duration(local.run_duration_ms)
+                    ),
+                    FAILURE,
+                ),
+            };
+            let mut c = inner_col;
+            for ch in kind_label.chars() {
+                if c >= max_col {
+                    break;
+                }
+                raster.cell_glyph(painter, metrics, c, r, ch as u32, theme.foreground);
+                c += 1;
+            }
+            if c + 1 < max_col {
+                raster.cell_glyph(painter, metrics, c, r, ' ' as u32, meta_color);
+                c += 1;
+            }
+            for ch in status_str.chars() {
+                if c >= max_col {
+                    break;
+                }
+                raster.cell_glyph(painter, metrics, c, r, ch as u32, status_col);
+                c += 1;
+            }
+            r += 1;
+        }
+        r = blank(r, bottom);
+    }
+
+    // --- PORTS -------------------------------------------------------------
+    // Task #7: listening TCP ports (dev servers).
+    if !local.ports.is_empty() {
+        if r < bottom {
+            draw_section_header(
+                raster,
+                painter,
+                metrics,
+                inner_col,
+                r,
+                "PORTS",
+                label_color,
+                max_col,
+            );
+            r += 1;
+        }
+        if r < bottom {
+            let mut c = inner_col;
+            for (i, &port) in local.ports.iter().enumerate() {
+                let s = format!(":{port}");
+                if i > 0 {
+                    // space separator
+                    if c + 1 >= max_col {
+                        break;
+                    }
+                    raster.cell_glyph(painter, metrics, c, r, ' ' as u32, meta_color);
+                    c += 1;
+                }
+                for ch in s.chars() {
+                    if c >= max_col {
+                        break;
+                    }
+                    raster.cell_glyph(painter, metrics, c, r, ch as u32, INFO_TEAL);
+                    c += 1;
+                }
+            }
+            r += 1;
+        }
+        r = blank(r, bottom);
+    }
+
+    // --- RECENT ------------------------------------------------------------
+    // Task #8: recently-modified files (basenames).
+    if !local.recent_files.is_empty() {
+        if r < bottom {
+            draw_section_header(
+                raster,
+                painter,
+                metrics,
+                inner_col,
+                r,
+                "RECENT",
+                label_color,
+                max_col,
+            );
+            r += 1;
+        }
+        for (fi, full_path) in local.recent_files.iter().enumerate() {
+            if r >= bottom {
+                break;
+            }
+            let basename: &str = full_path
+                .rsplit('/')
+                .next()
+                .filter(|s| !s.is_empty())
+                .unwrap_or(full_path.as_str());
+            draw_text(
+                raster, painter, metrics, inner_col, r, basename, meta_color, max_col,
+            );
+            // HudHit: Cmd-click opens the full path in the default editor.
+            let hit_copy = full_path.clone();
+            let hit_open = full_path.clone();
+            push_row_hit(
+                hits,
+                raster,
+                metrics,
+                inner_col,
+                r,
+                hud_cols - 3,
+                &hit_copy,
+                &hit_open,
+            );
+            let _ = fi; // fi available for future use
+            r += 1;
+        }
+        r = blank(r, bottom);
+    }
+
     // --- AGENTS ------------------------------------------------------------
     if r >= bottom {
         return;
@@ -1047,6 +1210,7 @@ fn blank(r: usize, bottom: usize) -> usize {
 /// Push a clickable HUD row spanning `width_cells` cells starting at `(col,
 /// row)`. The rect is computed in device-pixel space using the raster's
 /// padding origin so it lines up with the cell glyphs above it.
+#[allow(clippy::too_many_arguments)]
 fn push_row_hit(
     hits: &mut Vec<HudHit>,
     raster: &Raster,
@@ -1864,6 +2028,7 @@ mod tests {
             run: RunState::Ok,
             run_exit: 0,
             run_duration_ms: 1200,
+            ..LocalContext::default()
         };
         let placement = Placement::Floating {
             total_cols: 100,
@@ -1907,6 +2072,7 @@ mod tests {
             run: RunState::Failed,
             run_exit: 1,
             run_duration_ms: 500,
+            ..LocalContext::default()
         };
         let placement = Placement::Floating {
             total_cols: 100,
@@ -2216,6 +2382,328 @@ mod tests {
         assert!(
             GAUGE_BLOCKS.contains(&last),
             "last cell should be a block glyph, got '{last}'"
+        );
+    }
+
+    // --- BUILD section -------------------------------------------------------
+
+    /// BUILD section emits kind label and status when project_kind is Some.
+    #[test]
+    fn build_section_emits_glyphs_when_project_kind_set() {
+        let m = metrics();
+        let mut r = Raster::new(1200, 800);
+        r.pad_x = 24.0;
+        r.pad_y = 24.0;
+        let mut painter = StubPainter::default();
+        let snap = Snapshot {
+            connection: Connection::Live,
+            ..Default::default()
+        };
+        let local = LocalContext {
+            cwd: "/Users/p/anvil".to_string(),
+            project_kind: Some("rust".to_string()),
+            run: RunState::Ok,
+            run_duration_ms: 1200,
+            ..LocalContext::default()
+        };
+        let surface_rect = PixelRect {
+            x: 800.0,
+            y: 0.0,
+            w: 400.0,
+            h: 800.0,
+        };
+        let mut hits = Vec::new();
+        draw_right_hud(
+            &mut r,
+            &mut painter,
+            m,
+            &anvil_theme::MINERAL_DARK,
+            &snap,
+            &local,
+            surface_rect,
+            80,
+            34,
+            1,
+            38,
+            &mut hits,
+        );
+        let chars: Vec<char> = painter
+            .calls
+            .iter()
+            .filter_map(|(cp, _)| char::from_u32(*cp))
+            .collect();
+        // "cargo" label and "ok" status must appear.
+        assert!(chars.contains(&'c') && chars.contains(&'a') && chars.contains(&'r'));
+        assert!(chars.contains(&'o') && chars.contains(&'k'));
+    }
+
+    /// BUILD section is omitted when project_kind is None.
+    #[test]
+    fn build_section_omitted_when_no_project_kind() {
+        let m = metrics();
+        let mut r_full = Raster::new(1200, 800);
+        r_full.pad_x = 24.0;
+        r_full.pad_y = 24.0;
+        let mut painter_no_kind = StubPainter::default();
+        let snap = Snapshot {
+            connection: Connection::Live,
+            ..Default::default()
+        };
+        let local_no_kind = LocalContext {
+            cwd: "/Users/p/anvil".to_string(),
+            project_kind: None,
+            ..LocalContext::default()
+        };
+        let surface_rect = PixelRect {
+            x: 800.0,
+            y: 0.0,
+            w: 400.0,
+            h: 800.0,
+        };
+        let mut hits = Vec::new();
+        draw_right_hud(
+            &mut r_full,
+            &mut painter_no_kind,
+            m,
+            &anvil_theme::MINERAL_DARK,
+            &snap,
+            &local_no_kind,
+            surface_rect,
+            80,
+            34,
+            1,
+            38,
+            &mut hits,
+        );
+        // "BUILD" section header chars: B, U, I, L, D
+        // We check that 'B','U','I','L','D' don't appear as the section
+        // header sequence — simpler: verify "cargo" doesn't appear.
+        let chars: Vec<char> = painter_no_kind
+            .calls
+            .iter()
+            .filter_map(|(cp, _)| char::from_u32(*cp))
+            .collect();
+        // "cargo" (lowercase) should not be in the output.
+        let cargo_str: Vec<char> = "cargo".chars().collect();
+        let has_cargo = chars
+            .windows(cargo_str.len())
+            .any(|w| w == cargo_str.as_slice());
+        assert!(
+            !has_cargo,
+            "expected no 'cargo' label when project_kind=None"
+        );
+    }
+
+    // --- PORTS section -------------------------------------------------------
+
+    /// PORTS section emits port labels when ports vec is non-empty.
+    #[test]
+    fn ports_section_emits_glyphs_when_ports_present() {
+        let m = metrics();
+        let mut r = Raster::new(1200, 800);
+        r.pad_x = 24.0;
+        r.pad_y = 24.0;
+        let mut painter = StubPainter::default();
+        let snap = Snapshot {
+            connection: Connection::Live,
+            ..Default::default()
+        };
+        let local = LocalContext {
+            cwd: "/Users/p/anvil".to_string(),
+            ports: vec![3000, 5173],
+            ..LocalContext::default()
+        };
+        let surface_rect = PixelRect {
+            x: 800.0,
+            y: 0.0,
+            w: 400.0,
+            h: 800.0,
+        };
+        let mut hits = Vec::new();
+        draw_right_hud(
+            &mut r,
+            &mut painter,
+            m,
+            &anvil_theme::MINERAL_DARK,
+            &snap,
+            &local,
+            surface_rect,
+            80,
+            34,
+            1,
+            38,
+            &mut hits,
+        );
+        let chars: Vec<char> = painter
+            .calls
+            .iter()
+            .filter_map(|(cp, _)| char::from_u32(*cp))
+            .collect();
+        // ':' prefix for ":3000" and ":5173" must appear.
+        assert!(chars.contains(&':'), "expected ':' from port labels");
+        // '3' and '5' from the port numbers.
+        assert!(chars.contains(&'3'), "expected '3' from :3000");
+        assert!(chars.contains(&'5'), "expected '5' from :5173");
+    }
+
+    /// PORTS section is omitted when ports vec is empty.
+    #[test]
+    fn ports_section_omitted_when_empty() {
+        let m = metrics();
+        let mut r = Raster::new(1200, 800);
+        r.pad_x = 24.0;
+        r.pad_y = 24.0;
+        let mut painter_empty = StubPainter::default();
+        let snap = Snapshot::default();
+        let local = LocalContext {
+            cwd: "/Users/p/anvil".to_string(),
+            ports: vec![],
+            ..LocalContext::default()
+        };
+        let surface_rect = PixelRect {
+            x: 800.0,
+            y: 0.0,
+            w: 400.0,
+            h: 800.0,
+        };
+        let mut hits = Vec::new();
+        draw_right_hud(
+            &mut r,
+            &mut painter_empty,
+            m,
+            &anvil_theme::MINERAL_DARK,
+            &snap,
+            &local,
+            surface_rect,
+            80,
+            34,
+            1,
+            38,
+            &mut hits,
+        );
+        // "PORTS" section header: look for 'P','O','R','T','S' consecutive.
+        let chars: Vec<char> = painter_empty
+            .calls
+            .iter()
+            .filter_map(|(cp, _)| char::from_u32(*cp))
+            .collect();
+        let ports_label: Vec<char> = "PORTS".chars().collect();
+        let has_ports_header = chars
+            .windows(ports_label.len())
+            .any(|w| w == ports_label.as_slice());
+        assert!(
+            !has_ports_header,
+            "expected no PORTS header when ports is empty"
+        );
+    }
+
+    // --- RECENT section -------------------------------------------------------
+
+    /// RECENT section emits basenames when recent_files is non-empty.
+    #[test]
+    fn recent_section_emits_basenames_when_files_present() {
+        let m = metrics();
+        let mut r = Raster::new(1200, 800);
+        r.pad_x = 24.0;
+        r.pad_y = 24.0;
+        let mut painter = StubPainter::default();
+        let snap = Snapshot {
+            connection: Connection::Live,
+            ..Default::default()
+        };
+        let local = LocalContext {
+            cwd: "/Users/p/anvil".to_string(),
+            recent_files: vec![
+                "/Users/p/anvil/src/main.rs".to_string(),
+                "/Users/p/anvil/Cargo.toml".to_string(),
+            ],
+            ..LocalContext::default()
+        };
+        let surface_rect = PixelRect {
+            x: 800.0,
+            y: 0.0,
+            w: 400.0,
+            h: 800.0,
+        };
+        let mut hits = Vec::new();
+        draw_right_hud(
+            &mut r,
+            &mut painter,
+            m,
+            &anvil_theme::MINERAL_DARK,
+            &snap,
+            &local,
+            surface_rect,
+            80,
+            34,
+            1,
+            38,
+            &mut hits,
+        );
+        let chars: Vec<char> = painter
+            .calls
+            .iter()
+            .filter_map(|(cp, _)| char::from_u32(*cp))
+            .collect();
+        // "main.rs" basename: 'm','a','i','n','.','r','s'
+        assert!(chars.contains(&'m'), "expected 'm' from 'main.rs'");
+        assert!(chars.contains(&'.'), "expected '.' from 'main.rs'");
+        // Hits should be populated (one per file).
+        assert!(
+            hits.len() >= 2,
+            "expected at least 2 HudHits for recent files, got {}",
+            hits.len()
+        );
+    }
+
+    /// RECENT section is omitted when recent_files is empty.
+    #[test]
+    fn recent_section_omitted_when_empty() {
+        let m = metrics();
+        let mut r = Raster::new(1200, 800);
+        r.pad_x = 24.0;
+        r.pad_y = 24.0;
+        let mut painter = StubPainter::default();
+        let snap = Snapshot::default();
+        let local = LocalContext {
+            cwd: "/Users/p/anvil".to_string(),
+            recent_files: vec![],
+            ..LocalContext::default()
+        };
+        let surface_rect = PixelRect {
+            x: 800.0,
+            y: 0.0,
+            w: 400.0,
+            h: 800.0,
+        };
+        let mut hits = Vec::new();
+        draw_right_hud(
+            &mut r,
+            &mut painter,
+            m,
+            &anvil_theme::MINERAL_DARK,
+            &snap,
+            &local,
+            surface_rect,
+            80,
+            34,
+            1,
+            38,
+            &mut hits,
+        );
+        // "RECENT" header should not appear.
+        let chars: Vec<char> = painter
+            .calls
+            .iter()
+            .filter_map(|(cp, _)| char::from_u32(*cp))
+            .collect();
+        let recent_label: Vec<char> = "RECENT".chars().collect();
+        let has_recent = chars
+            .windows(recent_label.len())
+            .any(|w| w == recent_label.as_slice());
+        assert!(
+            !has_recent,
+            "expected no RECENT header when recent_files is empty"
         );
     }
 

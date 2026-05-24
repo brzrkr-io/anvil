@@ -94,6 +94,145 @@ struct GitResult {
     behind: u32,
     head_short: String,
     head_subject: String,
+    /// Locally-listening TCP ports detected at the time of the git query.
+    ports: Vec<u16>,
+    /// Detected project kind: "rust", "node", or "make". None if unrecognised.
+    project_kind: Option<String>,
+}
+
+/// Result sent from the recent-files worker to the main thread.
+struct RecentResult {
+    files: Vec<String>,
+}
+
+/// Detect locally-listening TCP ports via `lsof`.
+///
+/// Cached for 2 s to avoid hammering lsof on every HUD tick. Skips ports
+/// below 1024 (system) and the well-known noise ports 5353 (mDNS) and 7000
+/// (AirPlay).
+fn detect_ports() -> Vec<u16> {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    static PORT_CACHE: Mutex<Option<(Instant, Vec<u16>)>> = Mutex::new(None);
+    const PORT_CACHE_TTL: Duration = Duration::from_secs(2);
+
+    if let Ok(guard) = PORT_CACHE.lock() {
+        if let Some((ts, ref ports)) = *guard {
+            if ts.elapsed() < PORT_CACHE_TTL {
+                return ports.clone();
+            }
+        }
+    }
+
+    let ports = detect_ports_uncached();
+    if let Ok(mut guard) = PORT_CACHE.lock() {
+        *guard = Some((Instant::now(), ports.clone()));
+    }
+    ports
+}
+
+fn detect_ports_uncached() -> Vec<u16> {
+    const SKIP: &[u16] = &[5353, 7000];
+    let Ok(out) = std::process::Command::new("lsof")
+        .args(["-nP", "-iTCP", "-sTCP:LISTEN"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    let mut ports: Vec<u16> = Vec::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines().skip(1) {
+        // Each line has fields separated by whitespace. The NAME column
+        // (last field) looks like "*:3000" or "127.0.0.1:8080".
+        let Some(name) = line.split_whitespace().last() else {
+            continue;
+        };
+        let Some(port_str) = name.rsplit(':').next() else {
+            continue;
+        };
+        let Ok(port) = port_str.parse::<u16>() else {
+            continue;
+        };
+        if port < 1024 || SKIP.contains(&port) {
+            continue;
+        }
+        if !ports.contains(&port) {
+            ports.push(port);
+        }
+    }
+    ports.sort_unstable();
+    ports
+}
+
+/// Detect project kind by checking for well-known marker files in `cwd`.
+/// Returns "rust", "node", or "make" for the first match, or None.
+fn detect_project_kind(cwd: &std::path::Path) -> Option<String> {
+    if cwd.join("Cargo.toml").exists() {
+        return Some("rust".to_string());
+    }
+    if cwd.join("package.json").exists() {
+        return Some("node".to_string());
+    }
+    if cwd.join("Makefile").exists() {
+        return Some("make".to_string());
+    }
+    None
+}
+
+/// Walk `cwd` up to depth `max_depth`, collecting (mtime, path) for regular
+/// files (skipping hidden dirs and known noise dirs like `target/`,
+/// `node_modules/`, `.git/`). Returns the top-`n` most recently modified
+/// files as absolute path strings.
+fn recent_files_in_dir(cwd: &std::path::Path, n: usize) -> Vec<String> {
+    use std::time::SystemTime;
+    const SKIP_DIRS: &[&str] = &["target", "node_modules", ".git"];
+
+    let mut entries: Vec<(SystemTime, String)> = Vec::new();
+    walk_dir_for_recent(cwd, 0, 3, &mut entries, SKIP_DIRS);
+    entries.sort_by_key(|e| std::cmp::Reverse(e.0));
+    entries.into_iter().take(n).map(|(_, p)| p).collect()
+}
+
+fn walk_dir_for_recent(
+    dir: &std::path::Path,
+    depth: usize,
+    max_depth: usize,
+    out: &mut Vec<(std::time::SystemTime, String)>,
+    skip_dirs: &[&str],
+) {
+    use std::fs;
+    if depth > max_depth {
+        return;
+    }
+    let Ok(rd) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in rd.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.starts_with('.') || skip_dirs.contains(&name_str.as_ref()) {
+            continue;
+        }
+        let Ok(ft) = entry.file_type() else {
+            continue;
+        };
+        let path = entry.path();
+        if ft.is_dir() {
+            if depth < max_depth {
+                walk_dir_for_recent(&path, depth + 1, max_depth, out, skip_dirs);
+            }
+        } else if ft.is_file() {
+            if let Ok(meta) = entry.metadata() {
+                if let Ok(mtime) = meta.modified() {
+                    if let Some(s) = path.to_str() {
+                        out.push((mtime, s.to_string()));
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// One-shot `git log -1 --format=%h %s` against `cwd`. Returns (sha, subject)
@@ -254,6 +393,10 @@ pub struct App {
     // -- git worker ---
     git_tx: mpsc::SyncSender<PathBuf>,
     git_rx: mpsc::Receiver<GitResult>,
+
+    // -- recent-files worker ---
+    recent_cwd_tx: mpsc::SyncSender<PathBuf>,
+    recent_rx: mpsc::Receiver<RecentResult>,
 
     // -- command palette ---
     palette: Palette,
@@ -765,16 +908,19 @@ impl App {
     }
 
     /// Concatenate the focused pane's current selection into a single string.
-    /// Multi-row selections separate rows with `\n`. Returns `None` when no
-    /// selection is active or when it's zero-width.
+    /// Multi-row selections separate rows with `\n`. Rect mode picks the
+    /// same column window on every row. Returns `None` when no selection is
+    /// active or when it's zero-width.
     fn focused_selection_text(&self) -> Option<String> {
+        use anvil_workspace::selection::SelectionMode;
         let tab = self.tabs.current()?;
         let pane = tab.registry.get(tab.focused_id())?;
         if !pane.selection.active {
             return None;
         }
-        let (start, end) = pane.selection.ordered();
-        if start == end {
+        let sel = &pane.selection;
+        let (start, end) = sel.ordered();
+        if start == end && sel.anchor.col == sel.head.col {
             return None;
         }
         let mut out = String::new();
@@ -783,14 +929,24 @@ impl App {
                 break;
             }
             let line = pane.terminal.line(row);
-            let (lo, hi) = if start.row == end.row {
-                (start.col, end.col.min(line.len()))
-            } else if row == start.row {
-                (start.col, line.len())
-            } else if row == end.row {
-                (0, end.col.min(line.len()))
-            } else {
-                (0, line.len())
+            let (lo, hi) = match sel.mode {
+                SelectionMode::Rect => {
+                    let a = sel.anchor.col;
+                    let h = sel.head.col;
+                    let (lo, hi) = if a <= h { (a, h) } else { (h, a) };
+                    (lo.min(line.len()), hi.min(line.len()))
+                }
+                SelectionMode::Linear => {
+                    if start.row == end.row {
+                        (start.col, end.col.min(line.len()))
+                    } else if row == start.row {
+                        (start.col, line.len())
+                    } else if row == end.row {
+                        (0, end.col.min(line.len()))
+                    } else {
+                        (0, line.len())
+                    }
+                }
             };
             for cell in &line[lo..hi] {
                 out.push(cell.cp);
@@ -908,9 +1064,15 @@ impl App {
                 self.local_ctx.git_behind = result.behind;
                 self.local_ctx.head_short = result.head_short;
                 self.local_ctx.head_subject = result.head_subject;
+                // Task #7: ports from the git worker.
+                self.local_ctx.ports = result.ports;
+                // Task #9: project kind from the git worker.
+                self.local_ctx.project_kind = result.project_kind;
             }
             // Kick off git worker (try_send is non-blocking; drop if channel full).
             let _ = self.git_tx.try_send(PathBuf::from(&cwd));
+            // Notify the recent-files worker of the current cwd.
+            let _ = self.recent_cwd_tx.try_send(PathBuf::from(&cwd));
 
             // Start the caldera poller lazily once we know the repo root —
             // it spawns its own thread and polls /api/activity every 2s.
@@ -927,6 +1089,11 @@ impl App {
         // a fresh Snapshot every 2s; the read is a cheap mutex peek + clone.
         if let Some(p) = &self.caldera_poller {
             self.agent_snap = p.snapshot();
+        }
+
+        // Task #8: drain the recent-files worker (non-blocking).
+        while let Ok(result) = self.recent_rx.try_recv() {
+            self.local_ctx.recent_files = result.files;
         }
 
         // last-run from focused pane
@@ -952,6 +1119,27 @@ impl App {
     }
 
     fn render_frame(&mut self, painter: &mut dyn anvil_render::GlyphPainter) {
+        // Scroll animation safeguard: when the focused pane is mid-animation
+        // (smooth scroll, overscroll bounce, or the terminal's viewport is
+        // offset), force a full raster redraw. Partial-frame dirty-row
+        // drawing assumes cell pixels stay at the same y position between
+        // frames — that breaks for smooth scroll where the y offset shifts
+        // sub-pixel each frame and old cell pixels linger as vertical streaks.
+        let animating = self
+            .tabs
+            .current()
+            .and_then(|t| t.registry.get(t.focused_id()))
+            .map(|p| {
+                p.scroll_pos != 0.0
+                    || p.overscroll != 0.0
+                    || p.overscroll_target != 0.0
+                    || p.terminal.viewport_offset() != 0
+            })
+            .unwrap_or(false);
+        if animating {
+            self.force_full_redraw = true;
+        }
+
         let is_full_redraw = self.force_full_redraw;
         self.force_full_redraw = false;
 
@@ -2022,17 +2210,22 @@ impl AppHandler for AppShell {
             return;
         }
 
-        // Begin selection.
+        // Begin selection. Option held → rectangular (block) mode.
         if let Some((row, col)) = app.event_cell(loc, false) {
             if let Some(tab) = app.tabs.current_mut() {
                 let id = tab.focused_id();
                 if let Some(pane) = tab.registry.get_mut(id) {
                     let cr = pane.terminal.content_row_of_viewport(row);
-                    use anvil_workspace::selection::{Point, Selection};
+                    use anvil_workspace::selection::{Point, Selection, SelectionMode};
                     pane.selection = Selection {
                         active: true,
                         anchor: Point { row: cr, col },
                         head: Point { row: cr, col },
+                        mode: if mods.option {
+                            SelectionMode::Rect
+                        } else {
+                            SelectionMode::Linear
+                        },
                     };
                 }
             }
@@ -2520,6 +2713,8 @@ fn main() -> Result<()> {
             let result = match info {
                 Some(i) => {
                     let (head_short, head_subject) = git_head_oneline(&cwd);
+                    let ports = detect_ports();
+                    let project_kind = detect_project_kind(&cwd);
                     GitResult {
                         state: if i.dirty > 0 {
                             GitState::Dirty
@@ -2532,19 +2727,51 @@ fn main() -> Result<()> {
                         behind: i.behind,
                         head_short,
                         head_subject,
+                        ports,
+                        project_kind,
                     }
                 }
-                None => GitResult {
-                    state: GitState::NoRepo,
-                    branch: String::new(),
-                    dirty: 0,
-                    ahead: 0,
-                    behind: 0,
-                    head_short: String::new(),
-                    head_subject: String::new(),
-                },
+                None => {
+                    let ports = detect_ports();
+                    let project_kind = detect_project_kind(&cwd);
+                    GitResult {
+                        state: GitState::NoRepo,
+                        branch: String::new(),
+                        dirty: 0,
+                        ahead: 0,
+                        behind: 0,
+                        head_short: String::new(),
+                        head_subject: String::new(),
+                        ports,
+                        project_kind,
+                    }
+                }
             };
             let _ = git_result_tx.send(result);
+        }
+    });
+
+    // -- Recent-files worker --------------------------------------------------
+    // Polls the cwd every 4 s for recently-modified files (top 5 by mtime).
+    // The main thread sends updated cwd values via `recent_cwd_tx` (non-blocking
+    // try_send). The worker drains any pending cwd, runs the walk, and returns
+    // results via `recent_rx`.
+    let (recent_cwd_tx, recent_cwd_rx) = mpsc::sync_channel::<PathBuf>(1);
+    let (recent_tx, recent_rx) = mpsc::sync_channel::<RecentResult>(1);
+    thread::spawn(move || {
+        use std::time::Duration;
+        let mut last_cwd: Option<PathBuf> = std::env::current_dir().ok();
+        loop {
+            // Drain any updated cwd from the main thread (take the latest).
+            while let Ok(cwd) = recent_cwd_rx.try_recv() {
+                last_cwd = Some(cwd);
+            }
+            if let Some(ref cwd) = last_cwd {
+                let files = recent_files_in_dir(cwd, 5);
+                // try_send: drop if channel is full (main thread busy).
+                let _ = recent_tx.try_send(RecentResult { files });
+            }
+            thread::sleep(Duration::from_secs(4));
         }
     });
 
@@ -2613,6 +2840,8 @@ fn main() -> Result<()> {
         caldera_poller: None,
         git_tx,
         git_rx,
+        recent_cwd_tx,
+        recent_rx,
         palette: Palette::default(),
         view_width_pt: win_w,
         view_height_pt: win_h,

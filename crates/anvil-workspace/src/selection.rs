@@ -9,11 +9,25 @@ pub struct Point {
     pub col: usize,
 }
 
+/// How a selection's bounds map to cells.
+///
+/// `Linear` flows reading-order (default; first row from start.col to EOL,
+/// middle rows fully, last row up to end.col). `Rect` selects every cell in
+/// the rectangle `[start.col, end.col) x [start.row, end.row]`, which is the
+/// classic "column" / "block" selection mode (Opt-drag in macOS terminals).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum SelectionMode {
+    #[default]
+    Linear,
+    Rect,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Selection {
     pub active: bool,
     pub anchor: Point,
     pub head: Point,
+    pub mode: SelectionMode,
 }
 
 impl Selection {
@@ -34,9 +48,10 @@ impl Selection {
 
     /// Is the content cell at `(row, col)` inside the selection?
     ///
-    /// The range is half-open: `start.col..end.col` on a single row,
-    /// `start.col..cols` on the first row, `0..cols` on middle rows,
-    /// `0..end.col` on the last row.
+    /// Linear mode uses reading-order ranges (`start.col..cols` on the
+    /// first row, full middle rows, `0..end.col` on the last). Rect mode
+    /// uses the column range `[min(start.col, end.col), max+1)` for every
+    /// row in `[start.row, end.row]`.
     pub fn contains(&self, row: usize, col: usize) -> bool {
         if !self.active {
             return false;
@@ -45,16 +60,28 @@ impl Selection {
         if row < s.row || row > e.row {
             return false;
         }
-        if s.row == e.row {
-            return col >= s.col && col < e.col;
+        match self.mode {
+            SelectionMode::Rect => {
+                let (lo, hi) = if self.anchor.col <= self.head.col {
+                    (self.anchor.col, self.head.col)
+                } else {
+                    (self.head.col, self.anchor.col)
+                };
+                col >= lo && col < hi
+            }
+            SelectionMode::Linear => {
+                if s.row == e.row {
+                    return col >= s.col && col < e.col;
+                }
+                if row == s.row {
+                    return col >= s.col;
+                }
+                if row == e.row {
+                    return col < e.col;
+                }
+                true // middle rows — entire row
+            }
         }
-        if row == s.row {
-            return col >= s.col;
-        }
-        if row == e.row {
-            return col < e.col;
-        }
-        true // middle rows — entire row
     }
 }
 
@@ -78,6 +105,7 @@ mod tests {
             active: true,
             anchor: Point { row: 5, col: 3 },
             head: Point { row: 5, col: 7 },
+            mode: SelectionMode::Linear,
         };
         assert!(!sel.contains(5, 2));
         assert!(sel.contains(5, 3));
@@ -93,6 +121,7 @@ mod tests {
             active: true,
             anchor: Point { row: 5, col: 7 },
             head: Point { row: 5, col: 3 },
+            mode: SelectionMode::Linear,
         };
         assert!(!sel.contains(5, 2));
         assert!(sel.contains(5, 3));
@@ -106,6 +135,7 @@ mod tests {
             active: true,
             anchor: Point { row: 2, col: 4 },
             head: Point { row: 5, col: 10 },
+            mode: SelectionMode::Linear,
         };
         // first row: col >= 4
         assert!(!sel.contains(2, 3));
@@ -129,6 +159,7 @@ mod tests {
             active: true,
             anchor: Point { row: 5, col: 10 },
             head: Point { row: 2, col: 4 },
+            mode: SelectionMode::Linear,
         };
         assert!(!sel.contains(2, 3));
         assert!(sel.contains(2, 4));
@@ -143,9 +174,45 @@ mod tests {
             active: true,
             anchor: Point { row: 3, col: 5 },
             head: Point { row: 3, col: 5 },
+            mode: SelectionMode::Linear,
         };
         assert!(!sel.contains(3, 5)); // zero-width: nothing selected
         assert!(!sel.contains(3, 4));
+    }
+
+    #[test]
+    fn rect_selection_uses_column_range_per_row() {
+        // Anchor at (2,3), head at (5,7), Rect mode → every row 2..=5 has
+        // cells 3..7 selected; outside cols are not.
+        let sel = Selection {
+            active: true,
+            anchor: Point { row: 2, col: 3 },
+            head: Point { row: 5, col: 7 },
+            mode: SelectionMode::Rect,
+        };
+        for row in 2..=5 {
+            assert!(!sel.contains(row, 2));
+            assert!(sel.contains(row, 3));
+            assert!(sel.contains(row, 6));
+            assert!(!sel.contains(row, 7)); // half-open
+        }
+        // Outside the row range.
+        assert!(!sel.contains(1, 5));
+        assert!(!sel.contains(6, 5));
+    }
+
+    #[test]
+    fn rect_selection_reversed_drag_normalizes_columns() {
+        // Anchor right of head → still picks the same column window.
+        let sel = Selection {
+            active: true,
+            anchor: Point { row: 0, col: 7 },
+            head: Point { row: 0, col: 3 },
+            mode: SelectionMode::Rect,
+        };
+        assert!(sel.contains(0, 3));
+        assert!(sel.contains(0, 6));
+        assert!(!sel.contains(0, 7));
     }
 
     #[test]
@@ -154,6 +221,7 @@ mod tests {
             active: true,
             anchor: Point { row: 0, col: 0 },
             head: Point { row: 0, col: 5 },
+            mode: SelectionMode::Linear,
         };
         assert!(sel.contains(0, 0));
         sel.clear();

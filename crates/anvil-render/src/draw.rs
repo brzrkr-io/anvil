@@ -1119,6 +1119,7 @@ mod tests {
             active: true,
             anchor: Point { row: 0, col: 0 },
             head: Point { row: 0, col: 4 },
+            ..Selection::default()
         };
 
         let row = t.viewport_row(0);
