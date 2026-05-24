@@ -129,8 +129,9 @@ pub fn draw_tab_bar(
             let label = tab_label(tabs, t);
             let label_len = label.chars().count();
             // label + 2 left pad + 1 × + 1 right pad
-            let w = label_len + 4;
-            w.clamp(8, 24)
+            // label + 2 left pad + 1 right pad + 1 gap + 1 × = +5
+            let w = label_len + 5;
+            w.clamp(9, 24)
         })
         .collect();
     let total_tab_cols: usize = tab_widths.iter().sum();

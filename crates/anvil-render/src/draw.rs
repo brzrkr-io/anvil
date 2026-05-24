@@ -28,7 +28,10 @@ const FAILURE: [u8; 3] = [0xb1, 0x3a, 0x30];
 /// alloy — muted text for fold summaries (#86919a)
 const ALLOY: [u8; 3] = [0x86, 0x91, 0x9a];
 /// panel-raised — block body background tint (#181a1e)
-const PANEL_RAISED: [u8; 3] = [0x18, 0x1a, 0x1e];
+// Block body tint. Noticeably lighter than theme.background (#181a21) so the
+// block reads as a raised surface card. Earlier values were too close to the
+// canvas to be perceptible.
+const PANEL_RAISED: [u8; 3] = [0x26, 0x2c, 0x36];
 
 // ── Folded blocks ─────────────────────────────────────────────────────────────
 
@@ -483,11 +486,11 @@ pub fn draw_viewport(
                 }
             }
 
-            // Block body tint: apply PANEL_RAISED background to output rows before
-            // drawing cells so the tint shows behind terminal content.
+            // Block body tint: PANEL_RAISED background across the whole block
+            // (command row + output rows) so the block reads as one card.
             if let Some(ref block) = block_opt {
-                let is_output_row = abs >= block.output_line && abs < block.end_line;
-                if is_output_row {
+                let in_block = abs >= block.command_line && abs < block.end_line;
+                if in_block {
                     let ry = y + top_bar_rows;
                     for cx in 0..cols {
                         raster.cell_bg(metrics, cx, ry, PANEL_RAISED);
@@ -2041,12 +2044,12 @@ mod tests {
             None,
         );
 
-        // The accent bar is drawn at x = origin_x - pad_x = 0, 2px wide,
-        // for rows that belong to the block. Check pixels at (x=0, row=0)
-        // and (x=0, row=1) — these are the command and output rows.
+        // Accent bar is now drawn at x = origin_x (inside the cell grid)
+        // half-cell wide, for rows that belong to the block.
         use crate::raster::pixel_at;
-        let row0_px = pixel_at(&r, 0, (m.cell_h * 0.5) as usize); // mid of row 0
-        let row1_px = pixel_at(&r, 0, (m.cell_h * 1.5) as usize); // mid of row 1
+        let bar_x = r.origin_x as usize + 1; // 1px in from the left of the bar
+        let row0_px = pixel_at(&r, bar_x, (m.cell_h * 0.5) as usize);
+        let row1_px = pixel_at(&r, bar_x, (m.cell_h * 1.5) as usize);
 
         assert_eq!(
             row0_px, ACCENT_BRIGHT,
@@ -2097,7 +2100,8 @@ mod tests {
         );
 
         use crate::raster::pixel_at;
-        let row0_px = pixel_at(&r, 0, (m.cell_h * 0.5) as usize);
+        let bar_x = r.origin_x as usize + 1;
+        let row0_px = pixel_at(&r, bar_x, (m.cell_h * 0.5) as usize);
         assert_eq!(
             row0_px, VERIFIED,
             "exit-0 block accent bar should be VERIFIED"
@@ -2143,7 +2147,8 @@ mod tests {
         );
 
         use crate::raster::pixel_at;
-        let row0_px = pixel_at(&r, 0, (m.cell_h * 0.5) as usize);
+        let bar_x = r.origin_x as usize + 1;
+        let row0_px = pixel_at(&r, bar_x, (m.cell_h * 0.5) as usize);
         assert_eq!(
             row0_px, FAILURE,
             "exit-nonzero block accent bar should be FAILURE"

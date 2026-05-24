@@ -246,16 +246,17 @@ impl Raster {
     /// full height of the row along the far-left edge of `pad_x`, indicating
     /// block membership and status.
     pub fn block_accent_bar(&mut self, metrics: FontMetrics, row: usize, rgb: [u8; 3]) {
-        const BAR_W: f64 = 2.0;
+        // Full cell-wide stripe at the LEFT edge of the cell grid. Reads as a
+        // clear vertical band so the eye groups the rows of one block.
+        let cw = metrics.cell_w;
         let ch = metrics.cell_h;
-        // Place the bar flush with the left edge of pad_x.
-        let x = self.origin_x - self.pad_x;
+        let x = self.origin_x;
         let row_top = self.origin_y + row as f64 * ch - self.y_shift_px;
         self.fill_pixel_rect_internal(
             PixelRect {
                 x,
                 y: row_top,
-                w: BAR_W,
+                w: cw,
                 h: ch,
             },
             rgb,
