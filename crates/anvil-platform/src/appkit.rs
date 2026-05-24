@@ -106,8 +106,15 @@ pub trait AppHandler {
     /// Returns `true` if the event was consumed.
     fn perform_key_equivalent(&mut self, event: KeyEvent) -> bool;
 
-    /// Left mouse button pressed.
-    fn mouse_down(&mut self, loc: MouseLocation, mods: Modifiers, view_bounds: (f64, f64));
+    /// Left mouse button pressed. `click_count` is `NSEvent.clickCount` —
+    /// 1 for a single click, 2 for a double-click, 3 for triple, etc.
+    fn mouse_down(
+        &mut self,
+        loc: MouseLocation,
+        mods: Modifiers,
+        click_count: u32,
+        view_bounds: (f64, f64),
+    );
 
     /// Left mouse button released.
     fn mouse_up(&mut self, loc: MouseLocation, mods: Modifiers);
@@ -326,9 +333,10 @@ define_class!(
             let mods = decode_mods(event.modifierFlags());
             let loc = location_in_view(self, event);
             let bounds = self.bounds();
+            let cc = event.clickCount() as u32;
             // SAFETY: handler pointer is valid for the app lifetime.
             let mut h = unsafe { self.ivars().handler.borrow_mut() };
-            h.mouse_down(loc, mods, (bounds.size.width, bounds.size.height));
+            h.mouse_down(loc, mods, cc, (bounds.size.width, bounds.size.height));
         }
 
         #[unsafe(method(mouseDragged:))]

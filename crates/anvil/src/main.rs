@@ -2115,7 +2115,13 @@ impl AppHandler for AppShell {
         false
     }
 
-    fn mouse_down(&mut self, loc: MouseLocation, mods: Modifiers, view_bounds: (f64, f64)) {
+    fn mouse_down(
+        &mut self,
+        loc: MouseLocation,
+        mods: Modifiers,
+        click_count: u32,
+        view_bounds: (f64, f64),
+    ) {
         let app = &mut self.app;
         let (view_w, view_h) = view_bounds;
 
@@ -2233,23 +2239,67 @@ impl AppHandler for AppShell {
             return;
         }
 
-        // Begin selection. Option held → rectangular (block) mode.
+        // Begin / extend / word-or-line-select selection.
+        //   - shift + click on an active selection: extend (move head).
+        //   - double-click: select the whitespace-delimited token at click.
+        //   - triple-click: select the entire line.
+        //   - option + click-drag: rectangular (block) selection.
+        //   - plain click: start a fresh selection at the click point.
         if let Some((row, col)) = app.event_cell(loc, false) {
             if let Some(tab) = app.tabs.current_mut() {
                 let id = tab.focused_id();
                 if let Some(pane) = tab.registry.get_mut(id) {
-                    let cr = pane.terminal.content_row_of_viewport(row);
                     use anvil_workspace::selection::{Point, Selection, SelectionMode};
-                    pane.selection = Selection {
-                        active: true,
-                        anchor: Point { row: cr, col },
-                        head: Point { row: cr, col },
-                        mode: if mods.option {
-                            SelectionMode::Rect
-                        } else {
-                            SelectionMode::Linear
-                        },
-                    };
+                    let cr = pane.terminal.content_row_of_viewport(row);
+
+                    if mods.shift && pane.selection.active {
+                        // Extend the current selection to the click point.
+                        pane.selection.head = Point { row: cr, col };
+                    } else if click_count >= 3 {
+                        // Whole-line selection.
+                        let line_len = pane.terminal.line(cr).len();
+                        pane.selection = Selection {
+                            active: true,
+                            anchor: Point { row: cr, col: 0 },
+                            head: Point {
+                                row: cr,
+                                col: line_len,
+                            },
+                            mode: SelectionMode::Linear,
+                        };
+                    } else if click_count == 2 {
+                        // Word selection — extend left/right while the cell
+                        // codepoint is not ASCII whitespace.
+                        let line = pane.terminal.line(cr).to_vec();
+                        let is_word = |c: char| !c.is_ascii_whitespace();
+                        if col < line.len() && is_word(line[col].cp) {
+                            let mut lo = col;
+                            while lo > 0 && is_word(line[lo - 1].cp) {
+                                lo -= 1;
+                            }
+                            let mut hi = col + 1;
+                            while hi < line.len() && is_word(line[hi].cp) {
+                                hi += 1;
+                            }
+                            pane.selection = Selection {
+                                active: true,
+                                anchor: Point { row: cr, col: lo },
+                                head: Point { row: cr, col: hi },
+                                mode: SelectionMode::Linear,
+                            };
+                        }
+                    } else {
+                        pane.selection = Selection {
+                            active: true,
+                            anchor: Point { row: cr, col },
+                            head: Point { row: cr, col },
+                            mode: if mods.option {
+                                SelectionMode::Rect
+                            } else {
+                                SelectionMode::Linear
+                            },
+                        };
+                    }
                 }
             }
         } else {
@@ -2898,9 +2948,9 @@ fn main() -> Result<()> {
                 .as_mut()
                 .is_some_and(|h| h.perform_key_equivalent(e))
         }
-        fn mouse_down(&mut self, l: MouseLocation, m: Modifiers, b: (f64, f64)) {
+        fn mouse_down(&mut self, l: MouseLocation, m: Modifiers, _click_count: u32, b: (f64, f64)) {
             if let Some(h) = &mut *self.0.borrow_mut() {
-                h.mouse_down(l, m, b)
+                h.mouse_down(l, m, _click_count, b)
             }
         }
         fn mouse_up(&mut self, l: MouseLocation, m: Modifiers) {
