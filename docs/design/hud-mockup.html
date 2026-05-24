@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Anvil — HUD Redesign Mockup</title>
+  <style>
+    :root {
+      --graphite: #0b0d0e;
+      --charcoal: #161a1c;
+      --ash: #374046;
+      --alloy: #86919a;
+      --mist: #d2d8db;
+      --bone: #eef1f2;
+      --accent: #2f7f86;
+      --accent-bright: #54b7c0;
+      --verified: #3f8a5b;
+      --attention: #b07a14;
+      --failure: #b13a30;
+      --agent: #6a5fa3;
+      --border: #23262b;
+      --text: #e7e5df;
+      --text-muted: #a1a4a9;
+      --text-subtle: #6c6f74;
+      --info-teal: #3a8a9d;
+      --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+      --font-sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      background: #060708;
+      color: var(--mist);
+      font-family: var(--font-sans);
+      min-height: 100vh;
+      padding: 48px 32px 96px;
+    }
+    h1 { font-size: 22px; font-weight: 500; letter-spacing: -0.01em; margin: 0 0 6px; }
+    h1 .basin { color: var(--accent); font-family: var(--font-mono); margin-right: 8px; }
+    .intro { max-width: 720px; color: var(--text-muted); font-size: 13px; line-height: 1.6; margin-bottom: 40px; }
+    .window {
+      width: 100%; max-width: 1100px; height: 640px;
+      border-radius: 10px; overflow: hidden;
+      box-shadow: 0 0 0 1px rgba(255,255,255,0.04), 0 20px 60px rgba(0,0,0,0.6), 0 8px 24px rgba(0,0,0,0.4);
+      background: var(--graphite); display: flex; flex-direction: column;
+      font-family: var(--font-mono); font-size: 13px; line-height: 1.4;
+    }
+    .traffic-lights { display: flex; gap: 8px; align-items: center; }
+    .traffic-lights .dot { width: 12px; height: 12px; border-radius: 50%; background: #4d5359; }
+    .traffic-lights .dot.red   { background: #ff5f57; }
+    .traffic-lights .dot.yellow{ background: #febc2e; }
+    .traffic-lights .dot.green { background: #28c840; }
+    .chrome-tab-row {
+      display: flex; align-items: center; height: 36px;
+      background: var(--graphite); border-bottom: 1px solid var(--border);
+      padding: 0 12px; gap: 14px; flex-shrink: 0;
+    }
+    .basin-mark { font-family: var(--font-mono); color: var(--accent); font-size: 15px; line-height: 1; padding: 0 4px; }
+    .tabs { display: flex; gap: 2px; flex: 1; }
+    .tab { padding: 6px 14px; font-size: 12px; color: var(--text-muted); font-family: var(--font-mono);
+      display: flex; align-items: center; gap: 8px; position: relative; border-radius: 4px; }
+    .tab.active { background: var(--charcoal); color: var(--mist); }
+    .tab.active::after { content: ""; position: absolute; left: 4px; right: 4px; bottom: 0; height: 2px; background: var(--accent); border-radius: 1px; }
+    .tab .status-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--agent); }
+    .tab .close { color: var(--text-subtle); font-size: 14px; opacity: 0; transition: opacity 0.1s; }
+    .tab.active .close, .tab:hover .close { opacity: 1; }
+    .add-tab { color: var(--text-subtle); font-size: 16px; padding: 0 10px; cursor: pointer; }
+    .right-indicators { margin-left: auto; display: flex; gap: 14px; font-size: 12px; color: var(--text-muted); font-family: var(--font-mono); align-items: center; }
+    .right-indicators .sep { color: var(--ash); }
+    .right-indicators .branch-glyph { color: var(--accent); margin-right: 4px; }
+    .main { flex: 1; overflow: hidden; display: flex; background: var(--graphite); min-height: 0; }
+    .terminal { flex: 1; padding: 12px 20px; overflow: hidden; display: flex; flex-direction: column; gap: 6px; }
+    .block { background: var(--charcoal); border-left: 2px solid var(--verified); padding: 6px 12px; display: flex; flex-direction: column; gap: 2px; }
+    .block.failed { border-left-color: var(--failure); }
+    .block.running { border-left-color: var(--accent-bright); }
+    .block-header { display: flex; align-items: baseline; gap: 14px; color: var(--mist); padding-bottom: 4px; }
+    .block-header .cmd { color: var(--mist); font-weight: 500; }
+    .block-header .dur { color: var(--text-subtle); margin-left: auto; font-size: 12px; }
+    .block-header .exit { font-size: 12px; }
+    .block-header .exit.ok { color: var(--verified); }
+    .block-header .exit.bad { color: var(--failure); }
+    .block-header .fold { color: var(--text-subtle); font-size: 12px; }
+    .block-out { color: var(--text-muted); white-space: pre; font-size: 12.5px; line-height: 1.5; }
+    .block-out .err { color: var(--failure); }
+    .block-out .acc { color: var(--accent-bright); }
+    .prompt-line { padding: 6px 12px; color: var(--accent-bright); font-size: 13px; }
+    .prompt-line .cursor { display: inline-block; width: 8px; height: 14px; background: var(--accent-bright); vertical-align: middle; margin-left: 2px; }
+    .bottom-bar { display: flex; align-items: center; height: 24px; background: var(--charcoal); border-top: 1px solid var(--border);
+      padding: 0 14px; gap: 16px; font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); flex-shrink: 0; }
+    .bottom-bar .right { margin-left: auto; display: flex; gap: 14px; }
+    .bottom-bar .ok { color: var(--verified); }
+    .hud { width: 256px; flex-shrink: 0; background: rgba(11, 13, 14, 0.88); border-left: 1px solid var(--border); display: flex; flex-direction: column;
+      font-size: 12px; color: var(--mist); overflow: hidden; }
+    .hud-inner { padding: 10px 0 8px; display: flex; flex-direction: column; gap: 0; height: 100%; overflow: hidden; }
+    .hud-section { display: flex; flex-direction: column; }
+    .hud-section-header { display: flex; align-items: center; padding: 0 14px; height: 18px; gap: 6px; color: #6b7682; font-size: 11px; letter-spacing: 0.02em; white-space: nowrap; flex-shrink: 0; }
+    .hud-section-header .rule-l { color: #2a303c; }
+    .hud-section-header .label { flex-shrink: 0; }
+    .hud-section-header .rule-r { flex: 1; height: 1px; background: #2a303c; margin-left: 4px; }
+    .hud-rows { padding: 2px 14px 0; display: flex; flex-direction: column; gap: 1px; }
+    .hud-row { display: flex; align-items: baseline; gap: 6px; height: 18px; line-height: 18px; white-space: nowrap; overflow: hidden; }
+    .hud-row.meta { color: var(--text-muted); }
+    .hud-break { height: 1px; background: #2a303c; margin: 6px 14px; flex-shrink: 0; }
+    .c-fg { color: #d6dce4; }
+    .c-meta { color: #86919a; }
+    .c-teal { color: #3a8a9d; }
+    .c-verified { color: #3f8a5b; }
+    .c-attn { color: #b07a14; }
+    .c-fail { color: #b13a30; }
+    .c-agent { color: #6a5fa3; }
+    .c-acc { color: #54b7c0; }
+    .c-label { color: #6b7682; }
+    .c-accent { color: #2f7f86; }
+    .notes { max-width: 900px; margin-top: 32px; color: var(--text-muted); font-size: 13px; line-height: 1.7; padding: 20px 24px; border: 1px solid var(--border); border-radius: 8px; background: rgba(255,255,255,0.01); }
+    .notes h2 { font-size: 13px; font-weight: 600; color: var(--mist); margin-bottom: 8px; }
+    .notes ul { list-style: none; padding: 0; }
+    .notes li { padding: 3px 0; }
+    .notes li::before { content: "→ "; color: var(--accent); }
+    .notes code { background: var(--charcoal); padding: 1px 5px; border-radius: 3px; font-family: var(--font-mono); font-size: 11px; }
+  </style>
+</head>
+<body>
+  <h1><span class="basin">◒</span>Anvil — HUD Redesign Mockup</h1>
+  <p class="intro">
+    Option D chrome (merged row + bottom bar) with the redesigned right-docked HUD.
+    Sections top-to-bottom: CONTEXT · REPO+GIT · CI · AGENTS · RECENT · SYSTEM.
+    Toggle: <code>⌘\</code>. All colors from the existing Mineral palette.
+  </p>
+
+  <div class="window">
+    <div class="chrome-tab-row">
+      <div class="traffic-lights"><div class="dot red"></div><div class="dot yellow"></div><div class="dot green"></div></div>
+      <div class="basin-mark">◒</div>
+      <div class="tabs">
+        <div class="tab active"><span>anvil</span><span class="status-dot"></span><span class="close">×</span></div>
+        <div class="tab"><span>api</span><span class="close">×</span></div>
+        <div class="add-tab">+</div>
+      </div>
+      <div class="right-indicators">
+        <span><span class="branch-glyph">⎇</span>rust-port</span>
+        <span class="sep">·</span>
+        <span>14:22</span>
+      </div>
+    </div>
+
+    <div class="main">
+      <div class="terminal">
+        <div class="block">
+          <div class="block-header">
+            <span class="cmd">kubectl get pods -n staging</span>
+            <span class="dur">0.4s</span>
+            <span class="exit ok">✓</span>
+            <span class="fold">▾</span>
+          </div>
+          <div class="block-out">NAME                          READY   STATUS    RESTARTS
+api-7d9f8b9c6-k2p4x           1/1     Running   0
+worker-6c8d9f7b5-m3q9z        1/1     Running   0</div>
+        </div>
+        <div class="block failed">
+          <div class="block-header">
+            <span class="cmd">cargo build --release</span>
+            <span class="dur">14.2s</span>
+            <span class="exit bad">✗ 1</span>
+            <span class="fold">▾</span>
+          </div>
+          <div class="block-out">   Compiling anvil-render v0.1.0
+<span class="err">error[E0308]: mismatched types
+  --&gt; crates/anvil-render/src/raster.rs:42:5</span></div>
+        </div>
+        <div class="block running">
+          <div class="block-header">
+            <span class="cmd">cargo test --workspace</span>
+            <span class="dur" style="color: var(--accent-bright)">running…</span>
+            <span class="fold">▾</span>
+          </div>
+          <div class="block-out"><span class="acc">running 891 tests</span>
+test anvil_term::parser::osc_133::shell_prompt_marks_round_trip … ok</div>
+        </div>
+        <div class="prompt-line">❯<span class="cursor"></span></div>
+      </div>
+
+      <div class="hud">
+        <div class="hud-inner">
+
+          <div class="hud-section">
+            <div class="hud-section-header"><span class="rule-l">─</span><span class="label">CONTEXT</span><div class="rule-r"></div></div>
+            <div class="hud-rows">
+              <div class="hud-row">
+                <span class="c-teal">●</span>
+                <span class="c-fg">prod-us-east-1</span>
+                <span class="c-meta">·</span>
+                <span class="c-meta">staging</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="hud-break"></div>
+
+          <div class="hud-section">
+            <div class="hud-section-header"><span class="rule-l">─</span><span class="label">REPO + GIT</span><div class="rule-r"></div></div>
+            <div class="hud-rows">
+              <div class="hud-row"><span class="c-fg">anvil</span></div>
+              <div class="hud-row meta"><span class="c-meta">~/work/caldera</span></div>
+              <div class="hud-row">
+                <span class="c-teal">⎇</span>
+                <span class="c-fg">rust-port</span>
+                <span class="c-attn">*3 modified</span>
+              </div>
+              <div class="hud-row">
+                <span class="c-teal">fff27e3</span>
+                <span class="c-meta">chrome: D palette + prompt</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="hud-break"></div>
+
+          <div class="hud-section">
+            <div class="hud-section-header"><span class="rule-l">─</span><span class="label">CI</span><div class="rule-r"></div></div>
+            <div class="hud-rows">
+              <div class="hud-row">
+                <span class="c-fail">✗</span>
+                <span class="c-fg">rust-port</span>
+                <span class="c-meta">·</span>
+                <span class="c-meta">1m42s</span>
+              </div>
+              <div class="hud-row"><span class="c-teal">2 open PRs</span></div>
+            </div>
+          </div>
+
+          <div class="hud-break"></div>
+
+          <div class="hud-section">
+            <div class="hud-section-header"><span class="rule-l">─</span><span class="label">AGENTS</span><div class="rule-r"></div></div>
+            <div class="hud-rows">
+              <div class="hud-row"><span class="c-agent">●</span><span class="c-fg">1 running</span></div>
+              <div class="hud-row"><span class="c-agent">◆</span><span class="c-fg">builder</span></div>
+              <div class="hud-row"><span class="c-attn">▸</span><span class="c-fg">approve deploy</span></div>
+            </div>
+          </div>
+
+          <div class="hud-break"></div>
+
+          <div class="hud-section">
+            <div class="hud-section-header"><span class="rule-l">─</span><span class="label">RECENT</span><div class="rule-r"></div></div>
+            <div class="hud-rows">
+              <div class="hud-row meta"><span class="c-meta">agent_panel.rs</span></div>
+              <div class="hud-row meta"><span class="c-meta">raster.rs</span></div>
+              <div class="hud-row meta"><span class="c-meta">lib.rs</span></div>
+            </div>
+          </div>
+
+          <div class="hud-break"></div>
+
+          <div class="hud-section">
+            <div class="hud-section-header"><span class="rule-l">─</span><span class="label">SYSTEM</span><div class="rule-r"></div></div>
+            <div class="hud-rows">
+              <div class="hud-row"><span class="c-fg">mem ▄▅▆▆▃▁ 9/16 GB · load 1.42</span></div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <div class="bottom-bar">
+      <span>~/work/caldera/anvil</span>
+      <span class="ok">✓ last 0.4s</span>
+      <div class="right">
+        <span style="color: var(--agent)">● 1 running</span>
+        <span>14:22</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <h2>Design notes</h2>
+    <ul>
+      <li><strong>CONTEXT</strong>: env-tint dot encodes cluster risk. Prod → ATTENTION amber; staging → INFO_TEAL; dev/local → ALLOY. Hidden when <code>kubectl</code> absent.</li>
+      <li><strong>REPO+GIT</strong>: merged from two sections. Saves one header row. New <code>SectionId::RepoGit</code> variant.</li>
+      <li><strong>CI</strong>: replaces LAST RUN. Status glyph + branch + duration on row 1. Open PR count on row 2 only when &gt; 0. Cmd-click opens PR URL. Requires <code>gh-ci</code> poller.</li>
+      <li><strong>AGENTS</strong>: unchanged semantics. Idle state uses VERIFIED green dot, not ALLOY.</li>
+      <li><strong>SYSTEM</strong>: demoted to single compact row. Clock removed (lives in bottom-bar already).</li>
+      <li>HUD surface: GRAPHITE at 88% alpha. 1px left hairline at <code>tones.edge</code>.</li>
+      <li>Collapse state: <code>u8</code> bitmask on <code>App</code>. Header row always visible. No <code>force_full_redraw</code> from HUD ticks.</li>
+    </ul>
+  </div>
+</body>
+</html>

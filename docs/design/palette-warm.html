@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <title>Anvil — Ember Palette (Warm) — Dark & Light</title>
+  <style>
+    :root[data-theme="dark"] {
+      --background: #1a1815; --surface: #252220; --panel: #2f2c29;
+      --border: #3e3a36; --hairline: #312e2b;
+      --text: #dcd8d2; --text-muted: #9e9690; --text-subtle: #6a6360;
+      --accent-primary: #d05a36; --accent-bright: #de7048; --accent-ember: #c5462a;
+      --graphite: #110f0d; --charcoal: #201d1b; --alloy: #8a827c;
+      --panel-raised: #252220;
+      --verified: #4e9e68; --failure: #c94038; --attention: #c48c1c;
+      --agent: #7d72bc; --info: #3d8e94; --page-bg: #0d0b09;
+    }
+    :root[data-theme="light"] {
+      --background: #f4ede6; --surface: #fdfaf7; --panel: #ede5dc;
+      --border: #ccc4bb; --hairline: #d8d0c8;
+      --text: #1e1a17; --text-muted: #6c6460; --text-subtle: #9e9690;
+      --accent-primary: #b33f25; --accent-bright: #c5462a; --accent-ember: #c5462a;
+      --graphite: #ede5db; --charcoal: #fdfaf7; --alloy: #7a726c;
+      --panel-raised: #f0e9e2;
+      --verified: #2a7044; --failure: #a83426; --attention: #875e10;
+      --agent: #554a88; --info: #296a70; --page-bg: #ddd5cc;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      background: var(--page-bg);
+      font-family: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+      font-size: 13px; line-height: 1.5; color: var(--text);
+      min-height: 100vh; padding: 32px 24px 64px;
+    }
+    h1 { font-size: 17px; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 4px; color: var(--text); }
+    h2 { font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); margin: 24px 0 8px; }
+    p.sub { font-size: 12px; color: var(--text-muted); margin-bottom: 24px; }
+    .toggle-row { display: flex; align-items: center; gap: 12px; margin-bottom: 32px; }
+    button.toggle {
+      font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 11px; font-weight: 500;
+      padding: 5px 12px; border-radius: 4px; border: 1px solid var(--border);
+      background: var(--surface); color: var(--text-muted); cursor: pointer;
+    }
+    button.toggle:hover { color: var(--text); border-color: var(--accent-primary); }
+    .theme-label { font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--accent-primary); font-weight: 500; }
+    .side-by-side { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 40px; }
+    .window { border-radius: 8px; overflow: hidden; border: 1px solid var(--hairline); background: var(--background); }
+    .window-label {
+      font-family: "IBM Plex Mono", monospace; font-size: 10px; font-weight: 500;
+      text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-subtle); margin-bottom: 6px;
+    }
+    .chrome-bar {
+      height: 36px; background: var(--graphite); display: flex; align-items: center;
+      padding: 0 12px 0 84px; border-bottom: 1px solid var(--hairline);
+    }
+    .basin-mark { width: 14px; height: 14px; flex-shrink: 0; margin-right: 12px; }
+    .tab {
+      display: flex; align-items: center; height: 100%; padding: 0 10px;
+      font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--text-muted);
+      position: relative;
+    }
+    .tab.active { background: var(--charcoal); color: var(--text); }
+    .tab.active::after {
+      content: ''; position: absolute; bottom: 0; left: 4px; right: 4px;
+      height: 2px; background: var(--accent-bright); border-radius: 1px 1px 0 0;
+    }
+    .tab-close { margin-left: 6px; color: var(--text-subtle); font-size: 10px; }
+    .chrome-right {
+      margin-left: auto; font-family: "IBM Plex Mono", monospace; font-size: 10px;
+      color: var(--text-muted); display: flex; align-items: center; gap: 4px;
+    }
+    .branch-glyph { color: var(--info); }
+    .terminal-viewport {
+      background: var(--background); padding: 10px 16px;
+      font-family: "IBM Plex Mono", monospace; font-size: 12px; line-height: 1.6; min-height: 180px;
+    }
+    .block-body {
+      background: var(--panel-raised); border-left: 2px solid var(--surface);
+      padding: 4px 8px; margin: 2px 0; border-radius: 0 2px 2px 0;
+    }
+    .prompt-line { display: flex; align-items: center; gap: 8px; }
+    .prompt-dir { color: var(--info); }
+    .prompt-cmd { color: var(--text); }
+    .cursor-block { display: inline-block; width: 8px; height: 1em; background: var(--accent-primary); vertical-align: text-bottom; opacity: 0.9; }
+    .out-keyword { color: var(--attention); }
+    .out-string { color: var(--verified); }
+    .out-comment { color: var(--text-subtle); }
+    .out-number { color: var(--agent); }
+    .out-path { color: var(--info); }
+    .out-error { color: var(--failure); }
+    .out-ok { color: var(--verified); }
+    .out-text { color: var(--text); }
+    .out-muted { color: var(--text-muted); }
+    .exit-ok { color: var(--verified); font-size: 10px; }
+    .exit-fail { color: var(--failure); font-size: 10px; }
+    .block-header {
+      display: flex; justify-content: space-between; align-items: center;
+      color: var(--text-muted); font-size: 10px; padding: 2px 0;
+      border-bottom: 1px solid var(--border); margin-bottom: 2px;
+    }
+    .status-bar {
+      height: 26px; background: var(--charcoal); border-top: 1px solid var(--hairline);
+      display: flex; align-items: center; padding: 0 14px;
+      font-family: "IBM Plex Mono", monospace; font-size: 10px; gap: 8px;
+    }
+    .status-cwd { color: var(--text-muted); }
+    .status-ok { color: var(--verified); }
+    .status-right { margin-left: auto; color: var(--text-subtle); }
+    .status-dot { color: var(--agent); }
+    .compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 40px; }
+    .variant-card { border-radius: 6px; overflow: hidden; border: 1px solid #444; }
+    .variant-card.dark-card { background: #1a1815; color: #dcd8d2; }
+    .variant-card.light-card { background: #f4ede6; color: #1e1a17; }
+    .variant-header {
+      padding: 8px 14px; font-family: "IBM Plex Mono", monospace; font-size: 10px;
+      font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; border-bottom: 1px solid;
+    }
+    .dark-card .variant-header { background: #110f0d; color: #9e9690; border-color: #312e2b; }
+    .light-card .variant-header { background: #ede5db; color: #6c6460; border-color: #d8d0c8; }
+    .token-row-static {
+      display: flex; align-items: center; padding: 4px 14px; border-bottom: 1px solid;
+      font-family: "IBM Plex Mono", monospace; font-size: 11px; gap: 8px;
+    }
+    .dark-card .token-row-static { border-color: #2f2c29; }
+    .light-card .token-row-static { border-color: #d8d0c8; }
+    .token-row-static:last-child { border-bottom: none; }
+    .static-swatch { width: 14px; height: 14px; border-radius: 2px; border: 1px solid rgba(128,128,128,0.25); flex-shrink: 0; }
+    .static-name { flex: 1; }
+    .dark-card .static-name { color: #9e9690; }
+    .light-card .static-name { color: #6c6460; }
+    .static-hex { font-size: 10px; letter-spacing: 0.02em; }
+    .dark-card .static-hex { color: #d05a36; }
+    .light-card .static-hex { color: #b33f25; }
+    .ansi-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; margin-bottom: 24px; }
+    .ansi-cell {
+      border-radius: 3px; padding: 6px 4px 4px;
+      font-family: "IBM Plex Mono", monospace; font-size: 9px; text-align: center;
+    }
+    .ansi-cell .ansi-label { opacity: 0.7; display: block; }
+    .ansi-cell .ansi-hex { font-size: 8px; opacity: 0.65; display: block; margin-top: 1px; }
+    .section-divider { height: 1px; background: var(--border); margin: 32px 0; }
+    .content { max-width: 900px; margin: 0 auto; }
+    .page-header { max-width: 900px; margin: 0 auto 32px; }
+  </style>
+</head>
+<body>
+
+<div class="page-header">
+  <h1>Anvil — Ember Warm Palette</h1>
+  <p class="sub">Design spec for <strong>ember-dark</strong> and <strong>ember-light</strong> theme variants. Warm-shifted neutrals, ember orange primary accent.</p>
+  <div class="toggle-row">
+    <button class="toggle" onclick="toggle()">Toggle theme (⌘⇧T)</button>
+    <span class="theme-label" id="theme-label">ember-dark</span>
+  </div>
+</div>
+
+<div class="content">
+  <h2>Chrome + viewport preview (themed)</h2>
+  <div class="side-by-side">
+
+    <div>
+      <div class="window-label">ember-dark</div>
+      <div class="window" style="--background:#1a1815;--surface:#252220;--panel:#2f2c29;--panel-raised:#252220;--border:#3e3a36;--hairline:#312e2b;--text:#dcd8d2;--text-muted:#9e9690;--text-subtle:#6a6360;--accent-primary:#d05a36;--accent-bright:#de7048;--accent-ember:#c5462a;--graphite:#110f0d;--charcoal:#201d1b;--alloy:#8a827c;--verified:#4e9e68;--failure:#c94038;--attention:#c48c1c;--agent:#7d72bc;--info:#3d8e94;">
+        <div class="chrome-bar">
+          <svg class="basin-mark" viewBox="0 0 24 24" fill="none">
+            <circle cx="12" cy="12" r="10" stroke="#de7048" stroke-width="2" fill="none"/>
+            <path d="M 2 12 L 22 12 A 10 10 0 0 1 2 12 Z" fill="#de7048"/>
+          </svg>
+          <div class="tab active">deploy.sh <span class="tab-close">×</span></div>
+          <div class="tab">k8s-watch</div>
+          <div class="tab">logs</div>
+          <div class="chrome-right">
+            <span class="branch-glyph">⎇ main</span>
+            <span style="color:#3e3a36"> · </span>
+            <span>14:32</span>
+          </div>
+        </div>
+        <div class="terminal-viewport">
+          <div class="prompt-line">
+            <span class="prompt-dir">~/infra/k8s</span>
+            <span class="prompt-cmd">$ kubectl get pods -n production</span>
+          </div>
+          <div class="block-body">
+            <div class="block-header">
+              <span>kubectl get pods -n production</span>
+              <span><span class="exit-ok">✓</span> <span style="color:#6a6360">0.4s</span></span>
+            </div>
+            <div><span class="out-text">NAME                          READY   STATUS    </span><span class="out-ok">Running</span>   <span class="out-muted">AGE</span></div>
+            <div><span class="out-path">api-deploy-7d9f8b-x2k9p</span>   <span class="out-ok">3/3</span>     <span class="out-ok">Running</span>   <span class="out-muted">6d</span></div>
+            <div><span class="out-path">worker-5c8b9d-n4m1q</span>       <span class="out-ok">2/2</span>     <span class="out-ok">Running</span>   <span class="out-muted">2d</span></div>
+            <div><span class="out-path">cache-6f4c2a-p8r3t</span>        <span class="out-error">0/1</span>     <span class="out-error">CrashLoop</span> <span class="out-muted">1h</span></div>
+          </div>
+          <div class="prompt-line" style="margin-top:6px;">
+            <span class="prompt-dir">~/infra/k8s</span>
+            <span class="prompt-cmd">$ terraform plan</span>
+            <span class="cursor-block"></span>
+          </div>
+        </div>
+        <div class="status-bar">
+          <span class="status-cwd">~/infra/k8s</span>
+          <span class="status-ok">✓</span>
+          <span class="status-right">
+            <span class="status-dot">◆</span>
+            <span style="color:#9e9690"> 2 running</span>
+            <span style="color:#6a6360">   14:32</span>
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="window-label" style="color:#6c6460;">ember-light</div>
+      <div class="window" style="background:#f4ede6;border:1px solid #d8d0c8;">
+        <div style="height:36px;background:#ede5db;display:flex;align-items:center;padding:0 12px 0 84px;border-bottom:1px solid #d8d0c8;">
+          <svg style="width:14px;height:14px;flex-shrink:0;margin-right:12px;" viewBox="0 0 24 24" fill="none">
+            <circle cx="12" cy="12" r="10" stroke="#c5462a" stroke-width="2" fill="none"/>
+            <path d="M 2 12 L 22 12 A 10 10 0 0 1 2 12 Z" fill="#c5462a"/>
+          </svg>
+          <div style="display:flex;align-items:center;height:100%;padding:0 10px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#1e1a17;background:#fdfaf7;position:relative;">
+            deploy.sh <span style="margin-left:6px;color:#9e9690;font-size:10px;">×</span>
+            <span style="position:absolute;bottom:0;left:4px;right:4px;height:2px;background:#c5462a;border-radius:1px 1px 0 0;"></span>
+          </div>
+          <div style="display:flex;align-items:center;height:100%;padding:0 10px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#9e9690;">k8s-watch</div>
+          <div style="display:flex;align-items:center;height:100%;padding:0 10px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#9e9690;">logs</div>
+          <div style="margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:10px;color:#6c6460;display:flex;align-items:center;gap:4px;">
+            <span style="color:#296a70">⎇ main</span>
+            <span style="color:#ccc4bb"> · </span>
+            <span>14:32</span>
+          </div>
+        </div>
+        <div style="background:#f4ede6;padding:10px 16px;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.6;min-height:180px;">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="color:#296a70;">~/infra/k8s</span>
+            <span style="color:#1e1a17;">$ kubectl get pods -n production</span>
+          </div>
+          <div style="background:#f0e9e2;border-left:2px solid #ede5dc;padding:4px 8px;margin:2px 0;border-radius:0 2px 2px 0;">
+            <div style="display:flex;justify-content:space-between;align-items:center;color:#6c6460;font-size:10px;padding:2px 0;border-bottom:1px solid #ccc4bb;margin-bottom:2px;">
+              <span>kubectl get pods -n production</span>
+              <span><span style="color:#2a7044;">✓</span> <span style="color:#9e9690;">0.4s</span></span>
+            </div>
+            <div><span style="color:#1e1a17;">NAME                          READY   STATUS    </span><span style="color:#2a7044;">Running</span>   <span style="color:#6c6460;">AGE</span></div>
+            <div><span style="color:#296a70;">api-deploy-7d9f8b-x2k9p</span>   <span style="color:#2a7044;">3/3</span>     <span style="color:#2a7044;">Running</span>   <span style="color:#9e9690;">6d</span></div>
+            <div><span style="color:#296a70;">worker-5c8b9d-n4m1q</span>       <span style="color:#2a7044;">2/2</span>     <span style="color:#2a7044;">Running</span>   <span style="color:#9e9690;">2d</span></div>
+            <div><span style="color:#296a70;">cache-6f4c2a-p8r3t</span>        <span style="color:#a83426;">0/1</span>     <span style="color:#a83426;">CrashLoop</span> <span style="color:#9e9690;">1h</span></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:6px;">
+            <span style="color:#296a70;">~/infra/k8s</span>
+            <span style="color:#1e1a17;">$ terraform plan</span>
+            <span style="display:inline-block;width:8px;height:1em;background:#b33f25;vertical-align:text-bottom;opacity:0.9;"></span>
+          </div>
+        </div>
+        <div style="height:26px;background:#fdfaf7;border-top:1px solid #d8d0c8;display:flex;align-items:center;padding:0 14px;font-family:'IBM Plex Mono',monospace;font-size:10px;gap:8px;">
+          <span style="color:#6c6460;">~/infra/k8s</span>
+          <span style="color:#2a7044;">✓</span>
+          <span style="margin-left:auto;">
+            <span style="color:#554a88;">◆</span>
+            <span style="color:#6c6460;"> 2 running</span>
+            <span style="color:#9e9690;">   14:32</span>
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section-divider"></div>
+  <p class="sub" style="text-align:center;">Anvil — Ember Warm Palette — Design spec 2026-05-24</p>
+</div>
+
+<script>
+  function toggle() {
+    const html = document.documentElement;
+    const current = html.getAttribute('data-theme');
+    const next = current === 'dark' ? 'light' : 'dark';
+    html.setAttribute('data-theme', next);
+    document.getElementById('theme-label').textContent = 'ember-' + next;
+  }
+</script>
+</body>
+</html>
