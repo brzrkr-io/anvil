@@ -5,7 +5,7 @@
 use anvil_agent::{Connection, Snapshot};
 use anvil_theme::Theme;
 
-use crate::agent_panel::{GitState, LocalContext};
+use crate::agent_panel::{LocalContext, RunState, format_cwd};
 use crate::raster::{FontMetrics, GlyphPainter, Raster};
 
 /// The status bar is always one cell row tall.
@@ -15,8 +15,10 @@ pub const STATUS_BAR_ROWS: usize = 1;
 
 /// alloy: muted labels / metadata (#86919a) — the default tone for the bar
 const ALLOY: [u8; 3] = [0x86, 0x91, 0x9a];
-/// status.attention: reviewable warning / pending action (#b07a14)
-const ATTENTION: [u8; 3] = [0xb0, 0x7a, 0x14];
+/// status.verified: success / clean state — green (#3f8a5b)
+const VERIFIED: [u8; 3] = [0x3f, 0x8a, 0x5b];
+/// status.failure: failure / error state — red (#b13a30)
+const FAILURE: [u8; 3] = [0xb1, 0x3a, 0x30];
 /// status.agent: agent / automation / model activity — violet (#6a5fa3)
 const AGENT_VIOLET: [u8; 3] = [0x6a, 0x5f, 0xa3];
 
@@ -48,52 +50,42 @@ pub fn draw_status_bar(
     if total_cols == 0 {
         return;
     }
-
-    // Transparent bar: no surface fill, no top border. Status reads as a
-    // quiet caption floating on the terminal background. Colours pull
-    // attention only when they need to.
     let _ = theme;
 
-    // --- Left: git branch + dirty count, condensed ---------------------------
-    //
-    // Layout: ` main` in ALLOY, then ` *3` in ATTENTION when dirty.
-    // No "modified" / "clean" words — the symbol carries the meaning and the
-    // bar stays narrow.
-    let mut col = 2usize; // 2-col inner left pad
-
-    if local_ctx.git != GitState::NoRepo && !local_ctx.branch.is_empty() {
-        let branch_label = format!("\u{e0a0} {}", local_ctx.branch); // U+E0A0 branch nerd-font glyph
-        for ch in branch_label.chars() {
+    // Left section: condensed cwd + last-exit symbol.
+    let mut col = 2usize;
+    if !local_ctx.cwd.is_empty() {
+        let cwd = format_cwd(&local_ctx.cwd);
+        for ch in cwd.chars() {
             if col + 2 >= total_cols {
                 break;
             }
             raster.cell_glyph(painter, metrics, col, bottom_row, ch as u32, ALLOY);
             col += 1;
         }
-
-        if local_ctx.git_dirty > 0 {
-            // " *N" in attention amber
-            let dirty = format!(" *{}", local_ctx.git_dirty);
-            for ch in dirty.chars() {
-                if col + 2 >= total_cols {
-                    break;
-                }
-                raster.cell_glyph(painter, metrics, col, bottom_row, ch as u32, ATTENTION);
-                col += 1;
+        // Space, then exit symbol.
+        col += 1;
+        let (sym, color) = match local_ctx.run {
+            RunState::Ok => ("\u{2713}", VERIFIED), // ✓
+            RunState::Failed => ("\u{2717}", FAILURE), // ✗
+            _ => ("", ALLOY),
+        };
+        for ch in sym.chars() {
+            if col + 2 >= total_cols {
+                break;
             }
+            raster.cell_glyph(painter, metrics, col, bottom_row, ch as u32, color);
+            col += 1;
         }
     }
 
-    // --- Right: agent runs ---------------------------------------------------
-
+    // Right section: agent presence dot when an agent is live.
     if agent_snap.connection == Connection::Live && agent_snap.running_count > 0 {
-        let label = format!("\u{25c6} {} running", agent_snap.running_count); // ◆
+        let label = format!("\u{25cf} {} running", agent_snap.running_count); // ●
         let right_text_len = label.chars().count();
         if right_text_len + 2 < total_cols && col + right_text_len + 2 < total_cols {
             let start = total_cols - 2 - right_text_len;
             for (i, (c, ch)) in (start..).zip(label.chars()).enumerate() {
-                // First char is the diamond — colour it AGENT_VIOLET; the rest
-                // are quiet ALLOY so the right side reads as one unit.
                 let fg = if i == 0 { AGENT_VIOLET } else { ALLOY };
                 raster.cell_glyph(painter, metrics, c, bottom_row, ch as u32, fg);
             }
@@ -180,95 +172,92 @@ mod tests {
 
     /// Branch name chars are drawn in ALLOY (quiet) when git state is Ok.
     #[test]
-    fn branch_shown_when_git_ok() {
+    fn cwd_shown_when_set() {
         let m = metrics();
         let mut r = Raster::new(400, 200);
         let mut painter = StubPainter::default();
         r.clear([0, 0, 0]);
 
         let local_ctx = LocalContext {
-            git: GitState::Ok,
-            branch: "main".to_string(),
-            git_dirty: 0,
+            cwd: "/Users/test/work/caldera/anvil".to_string(),
             ..LocalContext::default()
         };
         let agent_snap = Snapshot::default();
         let theme = anvil_theme::MINERAL_DARK;
 
         let row = bottom_row(&r, m);
-        draw_status_bar(
-            &mut r,
-            &mut painter,
-            m,
-            &theme,
-            &local_ctx,
-            &agent_snap,
-            row,
-        );
+        draw_status_bar(&mut r, &mut painter, m, &theme, &local_ctx, &agent_snap, row);
 
-        let alloy_calls: Vec<_> = painter
+        // ALLOY chars should include cwd content ('a' from "anvil" or similar).
+        let alloy_chars: Vec<char> = painter
             .calls
             .iter()
             .filter(|(_, fg)| *fg == ALLOY)
-            .collect();
-        let alloy_chars: Vec<char> = alloy_calls
-            .iter()
             .filter_map(|(cp, _)| char::from_u32(*cp))
             .collect();
         assert!(
-            alloy_chars.contains(&'m'),
-            "expected 'm' from 'main' in ALLOY, got {alloy_chars:?}"
+            !alloy_chars.is_empty(),
+            "expected cwd chars in ALLOY, got no calls"
         );
     }
 
-    // --- dirty_count_shown_in_attention_color --------------------------------
-
-    /// "3 modified" is drawn in ATTENTION amber when git_dirty == 3.
+    /// Last-run exit ✓ rendered in VERIFIED green on Ok.
     #[test]
-    fn dirty_count_shown_in_attention_color() {
+    fn exit_check_in_verified_green_on_ok_run() {
         let m = metrics();
         let mut r = Raster::new(400, 200);
         let mut painter = StubPainter::default();
         r.clear([0, 0, 0]);
 
         let local_ctx = LocalContext {
-            git: GitState::Dirty,
-            branch: "main".to_string(),
-            git_dirty: 3,
+            cwd: "/tmp".to_string(),
+            run: RunState::Ok,
             ..LocalContext::default()
         };
         let agent_snap = Snapshot::default();
         let theme = anvil_theme::MINERAL_DARK;
-
         let row = bottom_row(&r, m);
-        draw_status_bar(
-            &mut r,
-            &mut painter,
-            m,
-            &theme,
-            &local_ctx,
-            &agent_snap,
-            row,
-        );
+        draw_status_bar(&mut r, &mut painter, m, &theme, &local_ctx, &agent_snap, row);
 
-        let attention_calls: Vec<_> = painter
+        let verified_chars: Vec<char> = painter
             .calls
             .iter()
-            .filter(|(_, fg)| *fg == ATTENTION)
-            .collect();
-        assert!(
-            !attention_calls.is_empty(),
-            "expected chars in ATTENTION color, got calls: {:?}",
-            painter.calls
-        );
-        // The digit '3' should be among them.
-        let attention_chars: Vec<char> = attention_calls
-            .iter()
+            .filter(|(_, fg)| *fg == VERIFIED)
             .filter_map(|(cp, _)| char::from_u32(*cp))
             .collect();
         assert!(
-            attention_chars.contains(&'3'),
-            "expected '3' in ATTENTION color, got {attention_chars:?}"
+            verified_chars.contains(&'\u{2713}'),
+            "expected ✓ in VERIFIED green, got {verified_chars:?}"
+        );
+    }
+
+    /// Last-run exit ✗ rendered in FAILURE red on Failed.
+    #[test]
+    fn exit_cross_in_failure_red_on_failed_run() {
+        let m = metrics();
+        let mut r = Raster::new(400, 200);
+        let mut painter = StubPainter::default();
+        r.clear([0, 0, 0]);
+
+        let local_ctx = LocalContext {
+            cwd: "/tmp".to_string(),
+            run: RunState::Failed,
+            ..LocalContext::default()
+        };
+        let agent_snap = Snapshot::default();
+        let theme = anvil_theme::MINERAL_DARK;
+        let row = bottom_row(&r, m);
+        draw_status_bar(&mut r, &mut painter, m, &theme, &local_ctx, &agent_snap, row);
+
+        let failure_chars: Vec<char> = painter
+            .calls
+            .iter()
+            .filter(|(_, fg)| *fg == FAILURE)
+            .filter_map(|(cp, _)| char::from_u32(*cp))
+            .collect();
+        assert!(
+            failure_chars.contains(&'\u{2717}'),
+            "expected ✗ in FAILURE red, got {failure_chars:?}"
         );
     }
 

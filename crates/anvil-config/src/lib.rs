@@ -168,7 +168,7 @@ impl Default for Keybindings {
             search_open: "cmd+f".into(),
             search_next: "cmd+g".into(),
             search_prev: "cmd+shift+g".into(),
-            hud_toggle: "cmd+j".into(),
+            hud_toggle: "cmd+\\".into(),
             cheatsheet_toggle: "cmd+/".into(),
             split_right: "cmd+d".into(),
             split_down: "cmd+shift+d".into(),

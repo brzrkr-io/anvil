@@ -551,9 +551,9 @@ impl App {
     }
 
     fn bottom_bar_rows(&self) -> usize {
-        // Search bar adds a row when open; the always-on status bar has been
-        // replaced by the docked right HUD.
-        if self.search_open { 1 } else { 0 }
+        // Always one row: status bar normally, search bar when open
+        // (they swap in the same row).
+        1
     }
 
     /// Snap cursor + scroll animation state to current terminal values.
@@ -1480,16 +1480,27 @@ impl App {
             );
         }
 
-        // Search bar (last row above any bottom chrome).
+        // Bottom row: search bar when open, otherwise the slim status bar.
+        let total_rows = (((dh.saturating_sub(2 * GRID_PAD)) as f64 / ch) as usize).max(1);
+        let bottom_row = total_rows.saturating_sub(1);
         if self.search_open {
-            let total_rows = (((dh.saturating_sub(2 * GRID_PAD)) as f64 / ch) as usize).max(1);
             draw_search_bar(
                 &mut self.raster,
                 painter,
                 metrics,
                 &self.theme,
                 &self.search,
-                total_rows.saturating_sub(1),
+                bottom_row,
+            );
+        } else {
+            anvil_render::statusbar::draw_status_bar(
+                &mut self.raster,
+                painter,
+                metrics,
+                &self.theme,
+                &self.local_ctx,
+                &self.agent_snap,
+                bottom_row,
             );
         }
 
@@ -3201,7 +3212,7 @@ fn main() -> Result<()> {
         search: anvil_term::Search::new(),
         search_open: false,
         // Docked right HUD on by default — Cmd+J toggles it.
-        hud_visible: true,
+        hud_visible: false,
         hud_tick: 0,
         hud_cols: HUD_COLS_DEFAULT,
         hud_drag_active: false,
