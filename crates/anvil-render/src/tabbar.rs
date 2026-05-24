@@ -262,6 +262,19 @@ pub fn draw_tab_bar(
             kind: TabBarHitKind::AddTab,
         });
     }
+
+    // 1px hairline below the chrome row to separate it from the terminal
+    // viewport — matches D mockup's `.chrome-tab-row { border-bottom: 1px
+    // solid var(--border); }`. The hairline anchors the chrome as defined
+    // chrome rather than floating text.
+    let chrome_bottom_y = raster.pad_y + cell_h - 1.0;
+    raster.fill_pixel_rect(
+        0.0,
+        chrome_bottom_y,
+        raster.width as f64,
+        1.0,
+        theme.border,
+    );
 }
 
 /// Build the right-side indicator string. Uses the Nerd Font branch glyph
