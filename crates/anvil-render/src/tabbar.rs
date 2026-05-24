@@ -69,6 +69,14 @@ pub fn draw_tab_bar(
             }
             raster.cell_glyph(painter, metrics, start_col + 2 + i, 0, cp as u32, fg);
         }
+
+        // Activity dot: dim amber · at the right edge for background tabs with
+        // new PTY output since last focus. Active tab never shows a dot.
+        const ATTENTION: [u8; 3] = [0xb0, 0x7a, 0x14]; // status.attention #b07a14
+        let tab_has_unread = tabs.tabs.get(t).is_some_and(|tab| tab.has_unread);
+        if !is_active && tab_has_unread && end_col >= 2 {
+            raster.cell_glyph(painter, metrics, end_col - 2, 0, '·' as u32, ATTENTION);
+        }
     }
 
     // 1px hairline along the bottom of the tab bar — the boundary between
@@ -204,6 +212,70 @@ mod tests {
         assert_eq!(
             px, theme.surface,
             "expected surface for active tab, got {px:?}"
+        );
+    }
+
+    /// When a non-active tab has `has_unread`, the painter receives a `·` glyph
+    /// in the attention colour (#b07a14).
+    #[test]
+    fn draw_tab_bar_unread_dot_on_background_tab() {
+        use anvil_workspace::tab::{Tab, TabManager};
+        let m = metrics();
+        let mut r = Raster::new(400, 80);
+        let mut painter = StubPainter::default();
+        r.clear([0, 0, 0]);
+
+        let mut mgr = TabManager::default();
+        mgr.push(Tab::new_single_pane(20, 4, 0)); // tab 0 — active
+        mgr.push(Tab::new_single_pane(20, 4, 0)); // tab 1 — background with unread
+        mgr.active = 0;
+        mgr.tabs[1].has_unread = true;
+        let theme = anvil_theme::MINERAL_DARK;
+
+        draw_tab_bar(&mut r, &mut painter, m, &theme, &mgr);
+
+        // There must be exactly one call with the · glyph in ATTENTION colour.
+        const ATTENTION: [u8; 3] = [0xb0, 0x7a, 0x14];
+        let dot_calls: Vec<_> = painter
+            .calls
+            .iter()
+            .filter(|&&(glyph, color)| glyph == '·' as u32 && color == ATTENTION)
+            .collect();
+        assert_eq!(
+            dot_calls.len(),
+            1,
+            "expected exactly one · in attention colour; got painter calls: {:?}",
+            painter.calls
+        );
+    }
+
+    /// Active tab never shows the unread dot even when has_unread is true.
+    #[test]
+    fn draw_tab_bar_no_unread_dot_on_active_tab() {
+        use anvil_workspace::tab::{Tab, TabManager};
+        let m = metrics();
+        let mut r = Raster::new(400, 80);
+        let mut painter = StubPainter::default();
+        r.clear([0, 0, 0]);
+
+        let mut mgr = TabManager::default();
+        mgr.push(Tab::new_single_pane(20, 4, 0));
+        mgr.push(Tab::new_single_pane(20, 4, 0));
+        mgr.active = 0;
+        mgr.tabs[0].has_unread = true; // active tab — dot must be suppressed
+        let theme = anvil_theme::MINERAL_DARK;
+
+        draw_tab_bar(&mut r, &mut painter, m, &theme, &mgr);
+
+        const ATTENTION: [u8; 3] = [0xb0, 0x7a, 0x14];
+        let dot_calls: Vec<_> = painter
+            .calls
+            .iter()
+            .filter(|&&(glyph, color)| glyph == '·' as u32 && color == ATTENTION)
+            .collect();
+        assert!(
+            dot_calls.is_empty(),
+            "expected no dot on active tab, got: {dot_calls:?}"
         );
     }
 }

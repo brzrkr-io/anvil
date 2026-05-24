@@ -1606,6 +1606,11 @@ impl AppHandler for AppShell {
                                     }
                                 }
                             }
+                        } else {
+                            // Background tab received output — mark unread and
+                            // request a repaint so the dot appears promptly.
+                            app.tabs.tabs[ti].has_unread = true;
+                            app.dirty = true;
                         }
                     }
                     Some(Ok(_)) => {}

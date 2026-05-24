@@ -73,13 +73,25 @@ pub fn basename(path: &str) -> &str {
 pub struct Tab {
     pub tree: PaneTree,
     pub registry: PaneRegistry,
+    /// True when this tab has received PTY output since it was last focused.
+    /// Cleared on focus; set by the tick loop for background tabs.
+    pub has_unread: bool,
 }
 
 impl Tab {
     /// Create a tab from an existing tree and registry.  The caller is
     /// responsible for creating the PTY for the initial pane.
     pub fn new(tree: PaneTree, registry: PaneRegistry) -> Self {
-        Self { tree, registry }
+        Self {
+            tree,
+            registry,
+            has_unread: false,
+        }
+    }
+
+    /// Clear the unread indicator (called when the tab gains focus).
+    pub fn clear_unread(&mut self) {
+        self.has_unread = false;
     }
 
     /// Create a tab with a single pane backed by a fresh `cols × rows`
@@ -88,7 +100,11 @@ impl Tab {
         let mut registry = PaneRegistry::default();
         let first_id = registry.create_and_register(cols, rows, scrollback);
         let tree = PaneTree::init_single(first_id);
-        Self { tree, registry }
+        Self {
+            tree,
+            registry,
+            has_unread: false,
+        }
     }
 
     /// The id of the focused pane.
@@ -167,14 +183,23 @@ impl TabManager {
 
     pub fn switch_to(&mut self, index: usize) {
         self.active = clamp_index(self.tabs.len(), index);
+        if let Some(tab) = self.tabs.get_mut(self.active) {
+            tab.clear_unread();
+        }
     }
 
     pub fn next(&mut self) {
         self.active = wrap_index(self.tabs.len(), self.active, 1);
+        if let Some(tab) = self.tabs.get_mut(self.active) {
+            tab.clear_unread();
+        }
     }
 
     pub fn prev(&mut self) {
         self.active = wrap_index(self.tabs.len(), self.active, -1);
+        if let Some(tab) = self.tabs.get_mut(self.active) {
+            tab.clear_unread();
+        }
     }
 }
 
@@ -393,5 +418,50 @@ mod tests {
         mgr.push(Tab::new_single_pane(1, 1, 0));
         mgr.push(Tab::new_single_pane(1, 1, 0));
         assert!(mgr.bar_visible());
+    }
+
+    // ── has_unread / clear_unread ─────────────────────────────────────────────
+
+    #[test]
+    fn tab_clear_unread_resets_flag() {
+        let mut tab = Tab::new_single_pane(80, 24, 0);
+        tab.has_unread = true;
+        tab.clear_unread();
+        assert!(!tab.has_unread);
+    }
+
+    #[test]
+    fn tab_manager_switch_to_clears_unread() {
+        let mut mgr = TabManager::default();
+        mgr.push(Tab::new_single_pane(1, 1, 0));
+        mgr.push(Tab::new_single_pane(1, 1, 0));
+        mgr.active = 0;
+        mgr.tabs[1].has_unread = true;
+        mgr.switch_to(1);
+        assert!(!mgr.tabs[1].has_unread);
+    }
+
+    #[test]
+    fn tab_manager_next_clears_unread() {
+        let mut mgr = TabManager::default();
+        mgr.push(Tab::new_single_pane(1, 1, 0));
+        mgr.push(Tab::new_single_pane(1, 1, 0));
+        mgr.active = 0;
+        mgr.tabs[1].has_unread = true;
+        mgr.next();
+        assert_eq!(mgr.active, 1);
+        assert!(!mgr.tabs[1].has_unread);
+    }
+
+    #[test]
+    fn tab_manager_prev_clears_unread() {
+        let mut mgr = TabManager::default();
+        mgr.push(Tab::new_single_pane(1, 1, 0));
+        mgr.push(Tab::new_single_pane(1, 1, 0));
+        mgr.active = 1;
+        mgr.tabs[0].has_unread = true;
+        mgr.prev();
+        assert_eq!(mgr.active, 0);
+        assert!(!mgr.tabs[0].has_unread);
     }
 }
