@@ -356,6 +356,7 @@ struct Keybindings {
     focus_down: Option<Chord>,
     fold_block: Option<Chord>,
     toggle_theme: Option<Chord>,
+    layout_mode_toggle: Option<Chord>,
 }
 
 impl Keybindings {
@@ -390,6 +391,7 @@ impl Keybindings {
             focus_down: parse_chord(&kb.focus_down),
             fold_block: parse_chord(&kb.fold_block),
             toggle_theme: parse_chord(&kb.toggle_theme),
+            layout_mode_toggle: parse_chord(&kb.layout_mode_toggle),
         }
     }
 }
@@ -1629,6 +1631,26 @@ impl App {
             );
         }
 
+        // Context bar: Ide mode only, top strip below the OS title chrome.
+        if self.layout_mode == LayoutMode::Ide {
+            let areas = Docks::for_mode(
+                self.layout_mode,
+                self.window_scale,
+                self.dock_metrics(),
+                self.hud_visible,
+                self.chrome_bottom_px(),
+            )
+            .compute_areas(self.window_inner(), metrics.cell_w, metrics.cell_h);
+            anvil_render::draw_context_bar(
+                &mut self.raster,
+                chrome_painter,
+                chrome_metrics,
+                &self.theme,
+                &self.local_ctx,
+                areas.top_bar,
+            );
+        }
+
         // Bottom strip: search bar when open, otherwise the slim status bar.
         // Both draw into the same fixed-pixel chrome_bottom_px strip.
         let chrome_bot = self.chrome_bottom_px();
@@ -2070,6 +2092,16 @@ impl App {
             let effective = effective_theme_name(self.system_dark, &self.config.theme);
             self.theme = resolve_theme(effective, &self.config.theme_overrides);
             self.force_full_redraw = true;
+            self.dirty = true;
+            return true;
+        });
+        test!(kb.layout_mode_toggle, {
+            self.layout_mode = match self.layout_mode {
+                LayoutMode::Terminal => LayoutMode::Ide,
+                LayoutMode::Ide => LayoutMode::Codex,
+                LayoutMode::Codex => LayoutMode::Terminal,
+            };
+            self.resize_all_tabs();
             self.dirty = true;
             return true;
         });

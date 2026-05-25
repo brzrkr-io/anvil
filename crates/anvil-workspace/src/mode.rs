@@ -94,7 +94,7 @@ impl Docks {
             LayoutMode::Ide => Docks {
                 left_w: 260.0 * scale,
                 right_w: hud_w,
-                top_h: 0.0,
+                top_h: 24.0 * scale,
                 bottom_h: chrome_bottom_px,
             },
         }
@@ -283,6 +283,28 @@ mod tests {
         let d1 = Docks::for_mode(LayoutMode::Ide, 1.0, metrics(10), false, BOTTOM_H);
         let d2 = Docks::for_mode(LayoutMode::Ide, 2.0, metrics(10), false, BOTTOM_H);
         assert_eq!(d2.left_w, d1.left_w * 2.0, "left_w must scale linearly");
+    }
+
+    // ── IDE top bar height ────────────────────────────────────────────────────
+
+    #[test]
+    fn ide_top_bar_h_24px_at_1x() {
+        let docks = docks_for(LayoutMode::Ide, false);
+        assert_eq!(docks.top_h, 24.0, "Ide top_h must be 24px at 1× scale");
+        let areas = docks.compute_areas(INNER, MIN_W, MIN_H);
+        assert_eq!(areas.top_bar.h, 24.0, "top_bar.h must be 24px at 1× scale");
+    }
+
+    #[test]
+    fn terminal_top_bar_h_zero() {
+        let docks = docks_for(LayoutMode::Terminal, false);
+        assert_eq!(docks.top_h, 0.0, "Terminal top_h must remain 0");
+    }
+
+    #[test]
+    fn codex_top_bar_h_zero() {
+        let docks = docks_for(LayoutMode::Codex, false);
+        assert_eq!(docks.top_h, 0.0, "Codex top_h must remain 0");
     }
 
     // ── Round-trip Terminal → Ide → Terminal ──────────────────────────────────

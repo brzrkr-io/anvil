@@ -152,6 +152,8 @@ pub struct Keybindings {
     pub agent_approve: String,
     /// Start a new agent run via the task-handoff endpoint.
     pub agent_start: String,
+    /// Cycle layout mode: Terminal → Ide → Codex → Terminal.
+    pub layout_mode_toggle: String,
 }
 
 impl Default for Keybindings {
@@ -186,6 +188,7 @@ impl Default for Keybindings {
             toggle_theme: "cmd+shift+t".into(),
             agent_approve: "cmd+return".into(),
             agent_start: "cmd+shift+return".into(),
+            layout_mode_toggle: "cmd+shift+e".into(),
         }
     }
 }
