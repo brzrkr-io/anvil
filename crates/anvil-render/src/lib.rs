@@ -12,6 +12,7 @@ pub mod batch;
 pub mod cheatsheet;
 pub mod context_bar;
 pub mod draw;
+pub mod editor;
 pub mod left_dock;
 pub mod raster;
 pub mod searchbar;
@@ -22,6 +23,7 @@ pub mod workspace;
 pub use atlas::{GlyphRasterizer, GlyphSlot, ShelfPacker};
 pub use batch::{CellBatch, CellInstance};
 pub use context_bar::draw_context_bar;
+pub use editor::draw_editor_into;
 pub use draw::{
     CursorConfig, CursorParams, CursorStyle, FoldedBlocks, GridPainters, cursor_opacity, draw_cell,
     draw_cursor, draw_viewport, draw_viewport_gpu, resolve_color, rule_row,

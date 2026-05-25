@@ -1858,6 +1858,7 @@ impl App {
                     grid_painters,
                     &tab.tree,
                     &mut tab.registry,
+                    &tab.editor_panes,
                     inner,
                     DIVIDER_PX,
                     metrics,

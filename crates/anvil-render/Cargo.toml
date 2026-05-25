@@ -11,6 +11,7 @@ anvil-theme        = { workspace = true }
 anvil-agent        = { workspace = true }
 anvil-prompt-core  = { path = "../anvil-prompt-core" }
 anvil-editor       = { path = "../anvil-editor" }
+unicode-segmentation = { workspace = true }
 libc               = "0.2"
 
 [dev-dependencies]

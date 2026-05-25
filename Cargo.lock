@@ -153,6 +153,7 @@ dependencies = [
  "anvil-workspace",
  "criterion",
  "libc",
+ "unicode-segmentation",
 ]
 
 [[package]]

@@ -13,12 +13,14 @@ use std::collections::HashMap;
 use anvil_term::{DirtySet, Search};
 use anvil_theme::Theme;
 use anvil_workspace::{
+    editor_pane::EditorPaneRegistry,
     layout::{LayoutEntry, PaneId, PaneTree, Rect},
     pane::PaneRegistry,
 };
 
 use crate::{
     draw::{CursorConfig, CursorParams, FoldedBlocks, GridPainters, draw_viewport},
+    editor::draw_editor_into,
     raster::{FontMetrics, Raster},
 };
 
@@ -53,6 +55,7 @@ pub fn draw_workspace(
     painters: &mut GridPainters<'_>,
     tree: &PaneTree,
     registry: &mut PaneRegistry,
+    editor_panes: &EditorPaneRegistry,
     inner: Rect,
     div_px: f64,
     metrics: FontMetrics,
@@ -135,10 +138,26 @@ pub fn draw_workspace(
                 );
             }
         } else {
-            // ── Native editor pane stub (NE4) ─────────────────────────────
-            // NE5 will replace this with a real editor render. For now, fill
-            // the pane with the background color and paint a centered label.
-            draw_editor_pane_stub(raster, e.rect, theme);
+            // ── Native editor pane (NE5) ──────────────────────────────────
+            if let Some(ep) = pane.editor_id.and_then(|_| editor_panes.get_pane(e.id)) {
+                if let Some(buf) = editor_panes.get_buffer(ep.buffer_id) {
+                    draw_editor_into(
+                        raster,
+                        painters.regular,
+                        ep,
+                        buf,
+                        metrics,
+                        theme,
+                        e.rect,
+                    );
+                } else {
+                    // Buffer missing — fall back to blank fill.
+                    raster.fill_pixel_rect(e.rect.x, e.rect.y, e.rect.w, e.rect.h, theme.background);
+                }
+            } else {
+                // EditorPane not registered yet — blank fill.
+                raster.fill_pixel_rect(e.rect.x, e.rect.y, e.rect.w, e.rect.h, theme.background);
+            }
         }
     }
 
@@ -175,16 +194,6 @@ pub fn draw_workspace_chrome(
     raster.origin_y = 0.0;
     // Draw divider hairlines.
     draw_dividers(raster, &entries, div_px, theme, focused_id);
-}
-
-/// NE4 stub: fill a native editor pane with the charcoal surface color.
-///
-/// NE5 replaces this with a real editor render.  The stub is intentionally
-/// minimal — just a solid fill so the user can see that a new pane appeared.
-/// The raster origin must already be set to the pane's pixel origin before
-/// calling this function.
-fn draw_editor_pane_stub(raster: &mut Raster, rect: Rect, theme: &Theme) {
-    raster.fill_pixel_rect(0.0, 0.0, rect.w, rect.h, theme.charcoal);
 }
 
 /// Fill divider gutters between all adjacent leaf pairs. Called after all pane
@@ -263,7 +272,7 @@ fn draw_dividers(
 mod tests {
     use super::*;
     use crate::raster::{FontMetrics, GlyphPainter, PixelRect, pixel_at};
-    use anvil_workspace::{layout::SplitDir, pane::PaneRegistry};
+    use anvil_workspace::{editor_pane::EditorPaneRegistry, layout::SplitDir, pane::PaneRegistry};
 
     // Stub painter.
     #[derive(Default)]
@@ -344,6 +353,7 @@ mod tests {
         }
 
         let tree = PaneTree::init_single(first_id);
+        let ep_reg = EditorPaneRegistry::default();
         draw_workspace(
             &mut r,
             &mut GridPainters {
@@ -354,6 +364,7 @@ mod tests {
             },
             &tree,
             &mut reg,
+            &ep_reg,
             inner,
             DIVIDER_PX,
             m,
@@ -417,6 +428,7 @@ mod tests {
         let theme = anvil_theme::MINERAL_DARK;
         r.clear(theme.background);
 
+        let ep_reg = EditorPaneRegistry::default();
         draw_workspace(
             &mut r,
             &mut GridPainters {
@@ -427,6 +439,7 @@ mod tests {
             },
             &tree,
             &mut reg,
+            &ep_reg,
             inner,
             TEST_DIV,
             m,
@@ -483,6 +496,7 @@ mod tests {
         let mut italic_p = StubPainter::default();
         let mut bold_italic_p = StubPainter::default();
         r.clear(theme.background);
+        let ep_reg = EditorPaneRegistry::default();
         draw_workspace(
             &mut r,
             &mut GridPainters {
@@ -493,6 +507,7 @@ mod tests {
             },
             &tree,
             &mut reg,
+            &ep_reg,
             inner,
             DIVIDER_PX,
             m,
@@ -559,6 +574,7 @@ mod tests {
         };
         let theme = anvil_theme::MINERAL_DARK;
         r.clear(theme.background);
+        let ep_reg = EditorPaneRegistry::default();
         draw_workspace(
             &mut r,
             &mut GridPainters {
@@ -569,6 +585,7 @@ mod tests {
             },
             &tree,
             &mut reg,
+            &ep_reg,
             inner,
             DIVIDER_PX,
             m,
