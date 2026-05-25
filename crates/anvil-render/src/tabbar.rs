@@ -342,13 +342,15 @@ fn tab_label(tabs: &TabManager, t: usize) -> String {
     };
     let focused_id = tab.tree.focused;
     if let Some(pane) = tab.registry.get(focused_id) {
-        let title = pane.terminal().title();
-        if !title.is_empty() {
-            return title.to_string();
-        }
-        let cwd = pane.terminal().cwd_path();
-        if !cwd.is_empty() {
-            return anvil_workspace::tab::basename(cwd).to_string();
+        if let Some(term) = pane.terminal() {
+            let title = term.title();
+            if !title.is_empty() {
+                return title.to_string();
+            }
+            let cwd = term.cwd_path();
+            if !cwd.is_empty() {
+                return anvil_workspace::tab::basename(cwd).to_string();
+            }
         }
     }
     "shell".to_string()

@@ -1,4 +1,18 @@
-//! Pane: one terminal viewport.
+//! Pane: one terminal viewport (or native editor stub).
+//!
+//! ## Pane content
+//!
+//! A pane holds either a terminal (PTY-backed) or a native editor pane.
+//! The `terminal` field is `Option<Terminal>`: `Some` for terminal panes,
+//! `None` for native editor panes.  The `editor_id` field is `Some(BufferId)`
+//! for native editor panes, `None` for terminal panes.
+//!
+//! Call sites must branch on which variant is present:
+//!
+//! ```ignore
+//! if let Some(terminal) = &pane.terminal { /* terminal path */ }
+//! if let Some(bid) = pane.editor_id { /* editor path */ }
+//! ```
 //!
 //! ## PTY seam
 //!
@@ -24,6 +38,7 @@
 //! `pane.terminal_mut().process(bytes)` directly — no lock needed because
 //! all mutations happen on the main thread.
 
+use anvil_editor::BufferId;
 use anvil_term::Terminal;
 
 use crate::layout::PaneId;
@@ -32,10 +47,16 @@ use crate::selection::Selection;
 /// Maximum number of simultaneously folded blocks per pane.
 const MAX_FOLDED: usize = 32;
 
-/// Per-pane view state and terminal emulator.  No PTY, no threads.
+/// Per-pane view state and terminal emulator (or native editor stub).  No PTY, no threads.
 pub struct Pane {
     pub id: PaneId,
-    pub terminal: Terminal,
+    /// Terminal emulator state.  `Some` for terminal panes, `None` for native
+    /// editor panes.  Always check before use:
+    /// `if let Some(terminal) = &pane.terminal { … }`.
+    pub terminal: Option<Terminal>,
+    /// Buffer identifier for native editor panes.  `Some` when this pane holds
+    /// a native editor; `None` for terminal panes.
+    pub editor_id: Option<BufferId>,
 
     // Per-pane view state animated by the main thread.
     pub scroll_pos: f32,
@@ -59,14 +80,35 @@ pub struct Pane {
 }
 
 impl Pane {
-    /// Create a new pane with a `cols × rows` terminal and `scrollback` history.
+    /// Create a new terminal pane with a `cols × rows` terminal and `scrollback` history.
     /// The caller registers the returned `Pane` in a [`PaneRegistry`] and
     /// separately spawns a PTY + reader thread identified by the same `id`.
     pub fn new(id: PaneId, cols: usize, rows: usize, scrollback: usize) -> Self {
         let terminal = Terminal::new(cols, rows, scrollback);
         Self {
             id,
-            terminal,
+            terminal: Some(terminal),
+            editor_id: None,
+            scroll_pos: 0.0,
+            scroll_target: 0.0,
+            scroll_vel: 0.0,
+            cursor_ax: 0.0,
+            cursor_ay: 0.0,
+            selection: Selection::default(),
+            folded: [0; MAX_FOLDED],
+            folded_count: 0,
+            unseen_baseline: None,
+        }
+    }
+
+    /// Create a new native editor pane.  No PTY is created.
+    /// The caller registers the returned `Pane` in a [`PaneRegistry`] and
+    /// the `buffer_id` in an [`EditorPaneRegistry`].
+    pub fn new_editor(id: PaneId, buffer_id: BufferId) -> Self {
+        Self {
+            id,
+            terminal: None,
+            editor_id: Some(buffer_id),
             scroll_pos: 0.0,
             scroll_target: 0.0,
             scroll_vel: 0.0,
@@ -101,20 +143,26 @@ impl Pane {
         self.folded[..self.folded_count].contains(&cmd_line)
     }
 
-    pub fn terminal(&self) -> &Terminal {
-        &self.terminal
+    /// Returns a reference to the terminal if this is a terminal pane.
+    pub fn terminal(&self) -> Option<&Terminal> {
+        self.terminal.as_ref()
     }
 
-    pub fn terminal_mut(&mut self) -> &mut Terminal {
-        &mut self.terminal
+    /// Returns a mutable reference to the terminal if this is a terminal pane.
+    pub fn terminal_mut(&mut self) -> Option<&mut Terminal> {
+        self.terminal.as_mut()
     }
 
     /// Number of content rows that arrived while the user was scrolled away
-    /// from live bottom.  Returns 0 when pinned to live or when nothing new
-    /// has arrived.
+    /// from live bottom.  Returns 0 when pinned to live, when nothing new
+    /// has arrived, or when this is a native editor pane (no scrollback).
     pub fn unseen_rows(&self) -> usize {
+        let terminal = match &self.terminal {
+            Some(t) => t,
+            None => return 0,
+        };
         match self.unseen_baseline {
-            Some(baseline) => self.terminal.line_count().saturating_sub(baseline),
+            Some(baseline) => terminal.line_count().saturating_sub(baseline),
             None => 0,
         }
     }
@@ -146,6 +194,14 @@ impl PaneRegistry {
         }
     }
 
+    /// Return the `PaneId` that the next `create_and_register*` call will use,
+    /// without advancing the counter.  Used by [`Tab::split_native_editor`] to
+    /// pre-allocate a `BufferId` in the `EditorPaneRegistry` before calling
+    /// into the registry.
+    pub fn peek_next_id(&self) -> PaneId {
+        self.next_id
+    }
+
     /// Allocate a fresh `PaneId`, create the `Pane`, register it, and return
     /// the id.  The caller must separately create the PTY and reader thread
     /// keyed by the returned id.
@@ -153,6 +209,17 @@ impl PaneRegistry {
         let id = self.next_id;
         self.next_id += 1;
         let pane = Pane::new(id, cols, rows, scrollback);
+        self.map.insert(id, pane);
+        id
+    }
+
+    /// Allocate a fresh `PaneId`, create a native editor `Pane` (no terminal),
+    /// register it, and return the id.  The caller must separately register
+    /// a `Buffer` in the tab's `EditorPaneRegistry` using this id.
+    pub fn create_and_register_editor(&mut self, buffer_id: anvil_editor::BufferId) -> PaneId {
+        let id = self.next_id;
+        self.next_id += 1;
+        let pane = Pane::new_editor(id, buffer_id);
         self.map.insert(id, pane);
         id
     }
@@ -259,7 +326,7 @@ mod tests {
     #[test]
     fn unseen_rows_zero_when_baseline_equals_current() {
         let mut p = Pane::new(1, 80, 24, 0);
-        let base = p.terminal.line_count();
+        let base = p.terminal().unwrap().line_count();
         p.unseen_baseline = Some(base);
         assert_eq!(p.unseen_rows(), 0);
     }
@@ -267,12 +334,12 @@ mod tests {
     #[test]
     fn unseen_rows_counts_lines_added_after_baseline() {
         let mut p = Pane::new(1, 80, 24, 100);
-        let base = p.terminal.line_count();
+        let base = p.terminal().unwrap().line_count();
         p.unseen_baseline = Some(base);
         // Feed more lines than the active grid height so rows push into scrollback,
         // which increases line_count() beyond the baseline.
         for _ in 0..30 {
-            p.terminal_mut().feed(b"line of output\r\n");
+            p.terminal_mut().unwrap().feed(b"line of output\r\n");
         }
         assert!(p.unseen_rows() > 0);
     }
@@ -282,16 +349,31 @@ mod tests {
     #[test]
     fn pane_terminal_accessor_returns_correct_dimensions() {
         let p = Pane::new(1, 80, 24, 0);
-        assert_eq!(p.terminal().cols(), 80);
-        assert_eq!(p.terminal().rows(), 24);
+        assert_eq!(p.terminal().unwrap().cols(), 80);
+        assert_eq!(p.terminal().unwrap().rows(), 24);
     }
 
     #[test]
     fn pane_terminal_mut_allows_write() {
         let mut p = Pane::new(1, 80, 24, 0);
-        p.terminal_mut().feed(b"hi");
+        p.terminal_mut().unwrap().feed(b"hi");
         // No panic, terminal consumed the bytes.
-        assert_eq!(p.terminal().cols(), 80);
+        assert_eq!(p.terminal().unwrap().cols(), 80);
+    }
+
+    // ── Pane::new_editor ─────────────────────────────────────────────────────
+
+    #[test]
+    fn pane_new_editor_has_no_terminal() {
+        let p = Pane::new_editor(99, 7);
+        assert!(p.terminal.is_none());
+        assert_eq!(p.editor_id, Some(7));
+    }
+
+    #[test]
+    fn pane_new_editor_unseen_rows_zero() {
+        let p = Pane::new_editor(1, 42);
+        assert_eq!(p.unseen_rows(), 0);
     }
 
     // ── PaneRegistry operations ───────────────────────────────────────────────
@@ -311,7 +393,7 @@ mod tests {
         let id = reg.create_and_register(80, 24, 0);
         let pane = reg.get(id).unwrap();
         assert_eq!(pane.id, id);
-        assert_eq!(pane.terminal().cols(), 80);
+        assert_eq!(pane.terminal().unwrap().cols(), 80);
     }
 
     #[test]

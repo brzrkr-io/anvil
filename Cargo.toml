@@ -69,6 +69,7 @@ anvil-caldera      = { path = "crates/anvil-caldera" }
 anvil-control      = { path = "crates/anvil-control" }
 anvil-prompt-core  = { path = "crates/anvil-prompt-core" }
 anvil-platform     = { path = "crates/anvil-platform" }
+anvil-editor       = { path = "crates/anvil-editor" }
 
 [profile.release]
 opt-level = 3

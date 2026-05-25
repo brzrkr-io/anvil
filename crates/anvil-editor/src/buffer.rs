@@ -107,15 +107,12 @@ impl From<std::io::Error> for IoError {
 pub enum EncodingError {
     /// Bytes were not valid UTF-8 and no BOM indicated another encoding.
     InvalidUtf8,
-    /// A BOM indicated an encoding Anvil does not support (e.g. UTF-32).
-    UnsupportedEncoding,
 }
 
 impl std::fmt::Display for EncodingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             EncodingError::InvalidUtf8 => write!(f, "invalid UTF-8 sequence"),
-            EncodingError::UnsupportedEncoding => write!(f, "unsupported encoding"),
         }
     }
 }
@@ -127,7 +124,11 @@ impl std::error::Error for EncodingError {}
 // ---------------------------------------------------------------------------
 
 /// One recorded edit plus its pre-computed inverse and a wall-clock timestamp.
-pub struct EditRecord {
+///
+/// Crate-private: lives only inside `Buffer::undo_stack`. Not part of the
+/// public surface — the AI proposal layer (NE14) will own the public revision
+/// shape.
+pub(crate) struct EditRecord {
     /// The forward edit (already applied to the rope).
     pub edit: Edit,
     /// The inverse edit (restores the rope to the state before `edit`).
@@ -139,7 +140,7 @@ pub struct EditRecord {
 /// Groups of `EditRecord`s forming an undo/redo history.
 ///
 /// Each `Vec<EditRecord>` is one undo group (e.g. a burst of typed characters).
-pub struct UndoStack {
+pub(crate) struct UndoStack {
     undo: VecDeque<Vec<EditRecord>>,
     redo: VecDeque<Vec<EditRecord>>,
     /// Maximum number of undo groups retained. Oldest groups are evicted first.
@@ -173,7 +174,7 @@ pub struct Buffer {
     pub proposals: Vec<EditProposal>,
     pub ghost_text: Vec<GhostTextSpan>,
     /// Undo/redo history.
-    pub undo_stack: UndoStack,
+    pub(crate) undo_stack: UndoStack,
     /// When `true`, the next `apply_edit` always starts a new undo group.
     force_new_group: bool,
     /// Path this buffer was loaded from or last saved to (NE2).
@@ -253,7 +254,18 @@ impl Buffer {
     ///
     /// On success, records the path and new on-disk mtime.
     pub fn save(&mut self, path: &Path) -> Result<(), IoError> {
-        let tmp = path.with_extension("tmp");
+        // Build sibling tmp path by appending `.tmp` to the file name.
+        // `path.with_extension("tmp")` would mangle multi-suffix names like
+        // `archive.tar.gz` into `archive.tar.tmp`.
+        let file_name = path.file_name().ok_or_else(|| {
+            IoError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "save path has no file name",
+            ))
+        })?;
+        let mut tmp_name = file_name.to_os_string();
+        tmp_name.push(".tmp");
+        let tmp = path.with_file_name(tmp_name);
         let text = self.to_text();
         std::fs::write(&tmp, text.as_bytes())?;
         std::fs::rename(&tmp, path)?;
@@ -513,7 +525,7 @@ impl Buffer {
         }
         // Adjacency: new edit's start must equal the position right after the
         // prior insert (prior.range.start advanced by 1 char).
-        let expected_next = self.position_after_applied(prior.edit.range.start, 1);
+        let expected_next = self.position_after(prior.edit.range.start, 1);
         edit.range.start == expected_next
     }
 
@@ -556,13 +568,6 @@ impl Buffer {
             line,
             col: grapheme_col,
         }
-    }
-
-    /// Like `position_after` but operates on the rope's *current* state after
-    /// edits have been applied (used by coalesce adjacency check).
-    fn position_after_applied(&self, start: Position, n_chars: usize) -> Position {
-        // Identical implementation — delegates to the same rope.
-        self.position_after(start, n_chars)
     }
 
     /// Convert a scalar offset `n` from the start of `line` to a grapheme column.

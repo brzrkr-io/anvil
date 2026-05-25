@@ -4,6 +4,7 @@
 //! PTY creation and reader-thread spawning are platform concerns; this module
 //! is pure.
 
+use crate::editor_pane::EditorPaneRegistry;
 use crate::layout::{PaneId, PaneTree, SplitDir};
 use crate::pane::PaneRegistry;
 
@@ -65,14 +66,18 @@ pub fn basename(path: &str) -> &str {
     }
 }
 
-/// One terminal tab: owns a `PaneTree` (layout) and a `PaneRegistry` (pure
-/// pane state).
+/// One terminal tab: owns a `PaneTree` (layout), a `PaneRegistry` (pure
+/// pane state), and an `EditorPaneRegistry` (native editor panes).
 ///
 /// The platform layer owns a parallel `HashMap<PaneId, Pty>` and
-/// `HashMap<PaneId, ReaderThread>` to back each pane with a real shell.
+/// `HashMap<PaneId, ReaderThread>` to back terminal panes with a real shell.
+/// Native editor panes have no PTY entry.
 pub struct Tab {
     pub tree: PaneTree,
     pub registry: PaneRegistry,
+    /// Native editor pane view state and buffers.  Keyed by `PaneId` (parallel
+    /// to `registry`).  Terminal panes have no entry here.
+    pub editor_panes: EditorPaneRegistry,
     /// True when this tab has received PTY output since it was last focused.
     /// Cleared on focus; set by the tick loop for background tabs.
     pub has_unread: bool,
@@ -90,6 +95,7 @@ impl Tab {
         Self {
             tree,
             registry,
+            editor_panes: EditorPaneRegistry::default(),
             has_unread: false,
             anim_phase: 0.0,
             target_phase: 1.0,
@@ -124,6 +130,7 @@ impl Tab {
         Self {
             tree,
             registry,
+            editor_panes: EditorPaneRegistry::default(),
             has_unread: false,
             anim_phase: 0.0,
             target_phase: 1.0,
@@ -147,6 +154,27 @@ impl Tab {
         let new_id = self.registry.create_and_register(cols, rows, scrollback);
         self.tree.split(dir, new_id)?;
         Ok(new_id)
+    }
+
+    /// Split the focused pane in `dir`, adding a new **native editor** pane.
+    ///
+    /// No PTY is created.  The new pane is registered in both `registry`
+    /// (with `terminal: None`) and `editor_panes` (with a fresh empty `Buffer`).
+    /// Returns the new `PaneId` on success.
+    pub fn split_native_editor(
+        &mut self,
+        dir: SplitDir,
+    ) -> Result<PaneId, crate::layout::LayoutError> {
+        // Peek the pane_id that the registry will assign, so we can pre-register
+        // it in editor_panes before the registry call.
+        let pane_id = self.registry.peek_next_id();
+        let buffer_id = self.editor_panes.new_pane(pane_id);
+        // Advance the registry counter and insert the pane with the known buffer_id.
+        let assigned_id = self.registry.create_and_register_editor(buffer_id);
+        // Invariant: the peek must equal the assigned id.
+        debug_assert_eq!(assigned_id, pane_id);
+        self.tree.split(dir, pane_id)?;
+        Ok(pane_id)
     }
 }
 

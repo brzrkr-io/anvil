@@ -5,8 +5,9 @@
 //!
 //! Colors are emitted as indexed ANSI colors (`\x1b[38;5;Nm`) so the terminal
 //! re-resolves them through the active theme palette on every frame. The active
-//! input arrow uses the theme's ember/attention slot so it reads as the current
-//! command entry point while still failing red when the previous command fails.
+//! input arrow uses the theme's mineral/info slot so it reads as focused shell
+//! input without stealing ember from active execution/agent context. It still
+//! fails red when the previous command fails.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shell {
@@ -21,7 +22,7 @@ const FAILURE_MARK: char = '\u{2717}'; // ✗ — semantic failure mark
 
 // Indexed ANSI colors — resolved through the active theme each frame so a
 // theme switch recolors all prompts in scrollback automatically.
-const PROMPT_EMBER: &str = "\x1b[38;5;11m"; // ANSI 11 = ember/attention — active input arrow
+const PROMPT_MINERAL: &str = "\x1b[38;5;6m"; // ANSI 6 = mineral/info — focused shell input arrow
 const ACCENT_ERR: &str = "\x1b[38;5;1m"; // ANSI 1 = red — error state
 const DIM: &str = "\x1b[38;5;8m"; // ANSI 8 = dim grey — accent dot, transient prompt
 const VERIFIED: &str = "\x1b[38;5;2m"; // ANSI 2 = green — success check
@@ -73,7 +74,7 @@ fn esc(buf: &mut String, shell: Shell, seq: &str) {
 /// The full single-line prompt.
 ///
 /// Layout (column 0 →):  `➜ `
-///   - `➜` (U+279C) is the input glyph. It uses the palette ember/attention slot
+///   - `➜` (U+279C) is the input glyph. It uses the palette mineral/info slot
 ///     while active and flips to error red when the previous command exited non-zero, so command
 ///     entry and failure state read at a glance from the prompt alone.
 ///
@@ -94,7 +95,7 @@ pub fn full(opts: Options) -> String {
     let arrow_color = if opts.failed {
         ACCENT_ERR
     } else {
-        PROMPT_EMBER
+        PROMPT_MINERAL
     };
 
     let mut left_visible: u16 = 0;
@@ -299,10 +300,10 @@ mod tests {
     }
 
     #[test]
-    fn full_paints_arrow_in_palette_ember_on_success() {
+    fn full_paints_arrow_in_palette_mineral_on_success() {
         let out = full(base_opts(Shell::Plain));
-        assert!(out.contains(PROMPT_EMBER));
-        assert!(!out.contains("\x1b[38;5;6m"));
+        assert!(out.contains(PROMPT_MINERAL));
+        assert!(!out.contains("\x1b[38;5;11m"));
         assert!(!out.contains("\x1b[38;5;14m"));
         assert!(!out.contains("\x1b[38;2;197;70;42m"));
     }
@@ -340,9 +341,9 @@ mod tests {
     }
 
     #[test]
-    fn full_uses_palette_ember_for_the_arrow() {
+    fn full_uses_palette_mineral_for_the_arrow() {
         let out = full(base_opts(Shell::Plain));
-        assert!(out.contains(PROMPT_EMBER));
+        assert!(out.contains(PROMPT_MINERAL));
     }
 
     #[test]

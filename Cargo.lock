@@ -179,6 +179,7 @@ dependencies = [
 name = "anvil-workspace"
 version = "0.1.0"
 dependencies = [
+ "anvil-editor",
  "anvil-term",
  "thiserror",
 ]

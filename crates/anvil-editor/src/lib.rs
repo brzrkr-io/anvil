@@ -15,8 +15,10 @@ pub use nvim::bridge::{
 pub use nvim::codec::{CodecError, Value, decode_value, encode_request};
 pub use nvim::transport::{Endpoint, Transport, TransportError};
 
-// Re-export buffer types.
+// Re-export buffer types. `EditRecord` and `UndoStack` are intentionally kept
+// internal to the crate — they live on `Buffer` as private undo state and
+// expose no constructor surface worth a public commitment.
 pub use buffer::{
-    Buffer, BufferId, Cursor, Edit, EditProposal, EditRecord, EncodingError, GhostTextSpan,
-    IoError, Position, Range, UndoStack,
+    Buffer, BufferId, Cursor, Edit, EditProposal, EncodingError, GhostTextSpan, IoError, Position,
+    Range,
 };

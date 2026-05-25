@@ -33,12 +33,12 @@ use std::ffi::c_void;
 /// could reach ~8 MB for an emoji-heavy session.
 const GLYPH_CACHE_CAP: usize = 2048;
 
-/// A tiny LRU cache mapping glyph index → `GlyphMask`.
+/// A tiny LRU cache mapping `(CoreText font identity, glyph index)` → `GlyphMask`.
 ///
 /// Each entry carries a monotonic `tick` that is bumped on every hit or insert.
 /// When the map is full, one linear scan evicts the entry with the smallest tick.
 struct GlyphCache {
-    map: HashMap<u16, (GlyphMask, u64)>,
+    map: HashMap<(usize, u16), (GlyphMask, u64)>,
     tick: u64,
     cap: usize,
 }
@@ -58,7 +58,7 @@ impl GlyphCache {
     }
 
     /// Return a reference to the cached mask, bumping its recency tick.
-    fn get(&mut self, key: u16) -> Option<&GlyphMask> {
+    fn get(&mut self, key: (usize, u16)) -> Option<&GlyphMask> {
         if let Some(entry) = self.map.get_mut(&key) {
             self.tick += 1;
             entry.1 = self.tick;
@@ -69,7 +69,7 @@ impl GlyphCache {
     }
 
     /// Insert a mask. Evicts the LRU entry when the cap is reached.
-    fn insert(&mut self, key: u16, mask: GlyphMask) {
+    fn insert(&mut self, key: (usize, u16), mask: GlyphMask) {
         if self.map.len() >= self.cap && !self.map.contains_key(&key) {
             // Linear scan: find the key with the smallest tick.
             if let Some((&evict_key, _)) = self.map.iter().min_by_key(|(_, (_, t))| t) {
@@ -85,7 +85,7 @@ use std::ptr::NonNull;
 use anvil_render::{FontMetrics, GlyphPainter, PixelRect};
 use objc2_core_foundation::{
     CFArray, CFArrayCallBacks, CFDictionary, CFDictionaryKeyCallBacks, CFDictionaryValueCallBacks,
-    CFError, CFRetained, CFString, CGPoint, CGSize,
+    CFError, CFRange, CFRetained, CFString, CGPoint, CGSize,
 };
 #[allow(deprecated)]
 use objc2_core_text::{
@@ -240,29 +240,10 @@ impl Font {
         Err(FontError::NoFontAvailable)
     }
 
-    /// The glyph index for a Unicode codepoint.  Returns 0 (missing glyph)
-    /// when the font has no glyph for it.
+    /// The glyph index for a Unicode codepoint in the primary font. Returns 0
+    /// (missing glyph) when the primary font has no glyph for it.
     pub fn glyph(&self, cp: u32) -> u16 {
-        let mut chars = [0u16; 2];
-        let mut glyphs = [0u16; 2];
-        let n: isize = if cp <= 0xFFFF {
-            chars[0] = cp as u16;
-            1
-        } else {
-            let v = cp - 0x10000;
-            chars[0] = 0xD800 + (v >> 10) as u16;
-            chars[1] = 0xDC00 + (v & 0x3FF) as u16;
-            2
-        };
-        // SAFETY: chars and glyphs are valid stack buffers; n ≤ 2.
-        unsafe {
-            self.ct.glyphs_for_characters(
-                NonNull::new(chars.as_mut_ptr()).unwrap(),
-                NonNull::new(glyphs.as_mut_ptr()).unwrap(),
-                n,
-            );
-        }
-        glyphs[0]
+        glyph_in_font(&self.ct, cp)
     }
 
     /// Build a `Font` from an already-loaded `CTFont`.
@@ -305,6 +286,46 @@ impl Font {
 
         Ok(Font { ct, metrics })
     }
+}
+
+fn glyph_in_font(ct: &CTFont, cp: u32) -> u16 {
+    let mut chars = [0u16; 2];
+    let mut glyphs = [0u16; 2];
+    let n: isize = if cp <= 0xFFFF {
+        chars[0] = cp as u16;
+        1
+    } else {
+        let v = cp - 0x10000;
+        chars[0] = 0xD800 + (v >> 10) as u16;
+        chars[1] = 0xDC00 + (v & 0x3FF) as u16;
+        2
+    };
+    // SAFETY: chars and glyphs are valid stack buffers; n ≤ 2.
+    unsafe {
+        ct.glyphs_for_characters(
+            NonNull::new(chars.as_mut_ptr()).unwrap(),
+            NonNull::new(glyphs.as_mut_ptr()).unwrap(),
+            n,
+        );
+    }
+    glyphs[0]
+}
+
+/// Build a one-character string/range for CoreText fallback lookup.
+fn fallback_font_for_codepoint(base: &CTFont, codepoint: u32) -> Option<CFRetained<CTFont>> {
+    let ch = char::from_u32(codepoint)?;
+    let text = ch.to_string();
+    let utf16_len = text.encode_utf16().count() as isize;
+    let cf_text = CFString::from_str(&text);
+    Some(unsafe {
+        base.for_string(
+            &cf_text,
+            CFRange {
+                location: 0,
+                length: utf16_len,
+            },
+        )
+    })
 }
 
 /// Wrap `ct` in a `CTFontDescriptor` that enables the `calt` OpenType
@@ -500,13 +521,14 @@ impl<'a> CoreTextPainter<'a> {
             if glyph == 0 {
                 continue;
             }
-            if self.cache.get(glyph).is_none() {
+            let cache_key = (self.font.ct.as_ref() as *const CTFont as usize, glyph);
+            if self.cache.get(cache_key).is_none() {
                 let mask = self
                     .rasterizer
                     .as_mut()
                     .unwrap()
                     .rasterize(&self.font.ct, glyph);
-                self.cache.insert(glyph, mask);
+                self.cache.insert(cache_key, mask);
             }
         }
     }
@@ -529,10 +551,24 @@ impl GlyphPainter for CoreTextPainter<'_> {
         if codepoint == 0 {
             return;
         }
-        let glyph: u16 = self.font.glyph(codepoint);
+        let mut glyph: u16 = self.font.glyph(codepoint);
+        let mut draw_font: &CTFont = &self.font.ct;
+        let fallback_font = if glyph == 0 {
+            fallback_font_for_codepoint(&self.font.ct, codepoint)
+        } else {
+            None
+        };
+        if let Some(fallback) = fallback_font.as_ref() {
+            let fallback_glyph = glyph_in_font(fallback, codepoint);
+            if fallback_glyph != 0 {
+                glyph = fallback_glyph;
+                draw_font = fallback;
+            }
+        }
         if glyph == 0 {
             return;
         }
+        let cache_key = (draw_font as *const CTFont as usize, glyph);
 
         // Masks are sized to the cell. (Re)build the rasterizer if cell
         // dimensions change; invalidate the cache when it does.
@@ -554,15 +590,15 @@ impl GlyphPainter for CoreTextPainter<'_> {
         }
 
         // Rasterize the glyph once; subsequent calls hit the LRU cache.
-        if self.cache.get(glyph).is_none() {
+        if self.cache.get(cache_key).is_none() {
             let mask = self
                 .rasterizer
                 .as_mut()
                 .unwrap()
-                .rasterize(&self.font.ct, glyph);
-            self.cache.insert(glyph, mask);
+                .rasterize(draw_font, glyph);
+            self.cache.insert(cache_key, mask);
         }
-        let mask = self.cache.get(glyph).unwrap();
+        let mask = self.cache.get(cache_key).unwrap();
 
         // Composite the mask into the BGRA8 destination, tinted with fg.
         composite_mask(
@@ -763,6 +799,36 @@ mod tests {
             space_ink, 0,
             "drawing space inked {space_ink} pixels — codepoint was not resolved through the cmap"
         );
+    }
+
+    /// `draw_glyph` uses CoreText fallback for prompt glyphs missing from the
+    /// primary font, preserving the prompt contract instead of substituting a
+    /// different glyph in prompt text.
+    #[test]
+    fn draw_glyph_inks_agreed_prompt_arrow_via_font_fallback() {
+        let names = &[
+            "BlexMono Nerd Font Mono",
+            "IBMPlexMono",
+            "SFMono-Regular",
+            "Menlo",
+        ];
+        let font = Font::init_first_available(names, 26.0).unwrap();
+        let mut painter = CoreTextPainter::new(&font);
+        let w = font.metrics.cell_w.ceil() as usize;
+        let h = font.metrics.cell_h.ceil() as usize;
+        let metrics = font.metrics;
+        let dest = PixelRect {
+            x: 0.0,
+            y: 0.0,
+            w: w as f64,
+            h: h as f64,
+        };
+        let mut buf = vec![0u8; w * h * 4];
+
+        painter.draw_glyph('➜' as u32, dest, [255, 255, 255], metrics, &mut buf, w, h);
+
+        let ink = buf.iter().filter(|&&b| b != 0).count();
+        assert!(ink > 0, "drawing agreed prompt arrow ➜ inked no pixels");
     }
 
     /// FontFace::Bold symbolic traits include TraitBold.

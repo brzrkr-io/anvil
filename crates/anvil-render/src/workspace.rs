@@ -77,59 +77,68 @@ pub fn draw_workspace(
         raster.origin_x = e.rect.x;
         raster.origin_y = e.rect.y;
 
-        let cursor_params: Option<CursorParams> = if e.id == focused_id {
-            Some(CursorParams {
-                ax: pane.cursor_ax,
-                ay: pane.cursor_ay,
-                blink_phase,
-                cfg: cursor_cfg,
-            })
-        } else {
-            None
-        };
+        if let Some(ref mut terminal) = pane.terminal {
+            // ── Terminal pane path ────────────────────────────────────────
 
-        // rule_x bounds: horizontal span of this pane in device pixels.
-        let rule_x_start = e.rect.x;
-        let rule_x_end = e.rect.x + e.rect.w;
+            let cursor_params: Option<CursorParams> = if e.id == focused_id {
+                Some(CursorParams {
+                    ax: pane.cursor_ax,
+                    ay: pane.cursor_ay,
+                    blink_phase,
+                    cfg: cursor_cfg,
+                })
+            } else {
+                None
+            };
 
-        // Fold state for this pane.
-        let folded = FoldedBlocks::new(&pane.folded[..pane.folded_count]);
+            // rule_x bounds: horizontal span of this pane in device pixels.
+            let rule_x_start = e.rect.x;
+            let rule_x_end = e.rect.x + e.rect.w;
 
-        // Per-pane dirty set: None means "draw all rows".
-        let pane_dirty: Option<&DirtySet> = dirty.and_then(|m| m.get(&e.id));
+            // Fold state for this pane.
+            let folded = FoldedBlocks::new(&pane.folded[..pane.folded_count]);
 
-        draw_viewport(
-            raster,
-            painters,
-            &mut pane.terminal,
-            metrics,
-            theme,
-            pane.scroll_pos,
-            pane.selection,
-            search,
-            cursor_params,
-            rule_x_start,
-            rule_x_end,
-            folded,
-            pane_dirty,
-            running_pulse_phase,
-        );
+            // Per-pane dirty set: None means "draw all rows".
+            let pane_dirty: Option<&DirtySet> = dirty.and_then(|m| m.get(&e.id));
 
-        // Living-scrollback indicator (item 20): paint a 4px ember bar at
-        // the bottom edge of the pane when the user is scrolled up and new
-        // output has arrived below.
-        let unseen = pane.unseen_rows();
-        if unseen > 0 {
-            let bar_h = 4.0_f64;
-            let bar_y = e.rect.y + e.rect.h - bar_h;
-            raster.fill_pixel_rect_alpha(
-                e.rect.x,
-                bar_y,
-                e.rect.w,
-                bar_h,
-                theme.accent_ember,
-                0.92,
+            draw_viewport(
+                raster,
+                painters,
+                terminal,
+                metrics,
+                theme,
+                pane.scroll_pos,
+                pane.selection,
+                search,
+                cursor_params,
+                rule_x_start,
+                rule_x_end,
+                folded,
+                pane_dirty,
+                running_pulse_phase,
             );
+
+            // Living-scrollback indicator: paint a 4px ember bar at the
+            // bottom edge of the pane when the user is scrolled up and new
+            // output has arrived below.
+            let unseen = pane.unseen_rows();
+            if unseen > 0 {
+                let bar_h = 4.0_f64;
+                let bar_y = e.rect.y + e.rect.h - bar_h;
+                raster.fill_pixel_rect_alpha(
+                    e.rect.x,
+                    bar_y,
+                    e.rect.w,
+                    bar_h,
+                    theme.accent_ember,
+                    0.92,
+                );
+            }
+        } else {
+            // ── Native editor pane stub (NE4) ─────────────────────────────
+            // NE5 will replace this with a real editor render. For now, fill
+            // the pane with the background color and paint a centered label.
+            draw_editor_pane_stub(raster, e.rect, theme);
         }
     }
 
@@ -166,6 +175,16 @@ pub fn draw_workspace_chrome(
     raster.origin_y = 0.0;
     // Draw divider hairlines.
     draw_dividers(raster, &entries, div_px, theme, focused_id);
+}
+
+/// NE4 stub: fill a native editor pane with the charcoal surface color.
+///
+/// NE5 replaces this with a real editor render.  The stub is intentionally
+/// minimal — just a solid fill so the user can see that a new pane appeared.
+/// The raster origin must already be set to the pane's pixel origin before
+/// calling this function.
+fn draw_editor_pane_stub(raster: &mut Raster, rect: Rect, theme: &Theme) {
+    raster.fill_pixel_rect(0.0, 0.0, rect.w, rect.h, theme.charcoal);
 }
 
 /// Fill divider gutters between all adjacent leaf pairs. Called after all pane
@@ -319,7 +338,9 @@ mod tests {
         let cursor_cfg = CursorConfig::default();
 
         if let Some(pane) = reg.get_mut(first_id) {
-            pane.terminal.feed(b"hello\r\n");
+            if let Some(term) = pane.terminal.as_mut() {
+                term.feed(b"hello\r\n");
+            }
         }
 
         let tree = PaneTree::init_single(first_id);
@@ -375,10 +396,14 @@ mod tests {
         let id1 = reg.create_and_register(20, 6, 0);
         let id2 = reg.create_and_register(20, 6, 0);
         if let Some(p) = reg.get_mut(id1) {
-            p.terminal.feed(b"pane one");
+            if let Some(term) = p.terminal.as_mut() {
+                term.feed(b"pane one");
+            }
         }
         if let Some(p) = reg.get_mut(id2) {
-            p.terminal.feed(b"pane two");
+            if let Some(term) = p.terminal.as_mut() {
+                term.feed(b"pane two");
+            }
         }
 
         let mut tree = PaneTree::init_single(id1);
@@ -521,7 +546,9 @@ mod tests {
         let mut bold_italic_p = StubPainter::default();
         let (mut reg, id) = make_registry_single(20, 6);
         if let Some(pane) = reg.get_mut(id) {
-            pane.terminal.feed(b"hello world\r\n");
+            if let Some(term) = pane.terminal.as_mut() {
+                term.feed(b"hello world\r\n");
+            }
         }
         let tree = PaneTree::init_single(id);
         let inner = Rect {

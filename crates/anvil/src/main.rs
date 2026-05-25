@@ -363,6 +363,9 @@ struct Keybindings {
     toggle_theme: Option<Chord>,
     layout_mode_toggle: Option<Chord>,
     editor_new: Option<Chord>,
+    /// Cmd+Opt+E — open a **native** editor pane (NE4).  Coexists with the
+    /// nvim-backed `editor_new` until NE6 ships (migration §7).
+    editor_new_native: Option<Chord>,
 }
 
 impl Keybindings {
@@ -399,6 +402,7 @@ impl Keybindings {
             toggle_theme: parse_chord(&kb.toggle_theme),
             layout_mode_toggle: parse_chord(&kb.layout_mode_toggle),
             editor_new: parse_chord(&kb.editor_new),
+            editor_new_native: parse_chord("cmd+opt+e"),
         }
     }
 }
@@ -585,7 +589,8 @@ impl App {
         let tab = self.tabs.current()?;
         let id = tab.focused_id();
         let pane = tab.registry.get(id)?;
-        let cwd = pane.terminal.cwd_path();
+        let terminal = pane.terminal.as_ref()?;
+        let cwd = terminal.cwd_path();
         if cwd.is_empty() {
             None
         } else {
@@ -673,13 +678,15 @@ impl App {
         let Some(pane) = tab.registry.get_mut(id) else {
             return;
         };
-        let cur = pane.terminal.cursor();
-        pane.cursor_ax = cur.x as f32;
-        pane.cursor_ay = cur.y as f32;
-        let sp = pane.terminal.viewport_offset() as f32;
-        pane.scroll_pos = sp;
-        pane.scroll_target = sp;
-        pane.scroll_vel = 0.0;
+        if let Some(terminal) = &pane.terminal {
+            let cur = terminal.cursor();
+            pane.cursor_ax = cur.x as f32;
+            pane.cursor_ay = cur.y as f32;
+            let sp = terminal.viewport_offset() as f32;
+            pane.scroll_pos = sp;
+            pane.scroll_target = sp;
+            pane.scroll_vel = 0.0;
+        }
     }
 
     /// Resize every pane in every tab to reflect the current window size.
@@ -695,7 +702,9 @@ impl App {
                 let cols = ((e.rect.w / cw) as usize).max(1);
                 let rows = ((e.rect.h / ch) as usize).max(1);
                 if let Some(pane) = tab.registry.get_mut(e.id) {
-                    pane.terminal.resize(cols, rows);
+                    if let Some(terminal) = &mut pane.terminal {
+                        terminal.resize(cols, rows);
+                    }
                 }
                 if let Some(pty) = self.ptys.get(&e.id) {
                     pty.resize(cols as u16, rows as u16);
@@ -754,7 +763,9 @@ impl App {
         if let Some(tab) = self.tabs.current_mut() {
             let id = tab.focused_id();
             if let Some(pane) = tab.registry.get_mut(id) {
-                self.search.set_query(&pane.terminal, &q);
+                if let Some(terminal) = &pane.terminal {
+                    self.search.set_query(terminal, &q);
+                }
             }
         }
         self.resize_all_tabs();
@@ -770,10 +781,11 @@ impl App {
         if let Some(tab) = self.tabs.current_mut() {
             let id = tab.focused_id();
             if let Some(pane) = tab.registry.get_mut(id) {
-                let term = &pane.terminal;
-                // Cursor content row: history rows + cursor y-position in grid.
-                let anchor = term.line_count().saturating_sub(term.rows()) + term.cursor().y;
-                self.search.set_query_in_block(term, &q, anchor);
+                if let Some(term) = &pane.terminal {
+                    // Cursor content row: history rows + cursor y-position in grid.
+                    let anchor = term.line_count().saturating_sub(term.rows()) + term.cursor().y;
+                    self.search.set_query_in_block(term, &q, anchor);
+                }
             }
         }
         self.resize_all_tabs();
@@ -797,11 +809,13 @@ impl App {
             if let Some(tab) = self.tabs.current_mut() {
                 let id = tab.focused_id();
                 if let Some(pane) = tab.registry.get_mut(id) {
-                    pane.terminal.scroll_to_line(m.row);
-                    let sp = pane.terminal.viewport_offset() as f32;
-                    pane.scroll_pos = sp;
-                    pane.scroll_target = sp;
-                    pane.scroll_vel = 0.0;
+                    if let Some(terminal) = &mut pane.terminal {
+                        terminal.scroll_to_line(m.row);
+                        let sp = terminal.viewport_offset() as f32;
+                        pane.scroll_pos = sp;
+                        pane.scroll_target = sp;
+                        pane.scroll_vel = 0.0;
+                    }
                 }
             }
         }
@@ -1016,6 +1030,43 @@ impl App {
         self.dirty = true;
     }
 
+    /// Open a native editor pane (NE4 stub).  Splits the focused pane
+    /// horizontally and registers it as an editor pane — no PTY is spawned.
+    /// Coexists with `new_editor_pane` (nvim) until NE6; triggered by Cmd+Opt+E.
+    fn new_native_editor_pane(&mut self) {
+        let tab = match self.tabs.current() {
+            Some(t) => t,
+            None => return,
+        };
+        if tab.tree.leaf_count() >= MAX_PANES_PER_TAB {
+            eprintln!("anvil: max pane count ({MAX_PANES_PER_TAB}) reached");
+            return;
+        }
+
+        let new_id = match self
+            .tabs
+            .current_mut()
+            .map(|t| t.split_native_editor(anvil_workspace::layout::SplitDir::Horizontal))
+        {
+            Some(Ok(id)) => id,
+            Some(Err(e)) => {
+                eprintln!("anvil: native editor pane split failed: {e}");
+                return;
+            }
+            None => return,
+        };
+
+        // No PTY is spawned for native editor panes.
+        // Focus the new pane.
+        if let Some(tab) = self.tabs.current_mut() {
+            tab.tree.focused = new_id;
+        }
+
+        self.resize_all_tabs();
+        self.snap_anim();
+        self.dirty = true;
+    }
+
     fn close_focused_pane(&mut self) {
         let (focused_id, next_id) = {
             let tab = match self.tabs.current_mut() {
@@ -1167,19 +1218,20 @@ impl App {
         let Some(pane) = tab.registry.get_mut(id) else {
             return;
         };
-        // The content row currently at the top of the viewport.
-        let top_content = pane.terminal.content_row_of_viewport(0);
-        let top_abs = pane.terminal.absolute_line_of_content(top_content);
+        if let Some(terminal) = &pane.terminal {
+            // The content row currently at the top of the viewport.
+            let top_content = terminal.content_row_of_viewport(0);
+            let top_abs = terminal.absolute_line_of_content(top_content);
 
-        // Find the block at or just before the viewport top.
-        let block_opt = pane
-            .terminal
-            .block_at(top_abs)
-            .or_else(|| pane.terminal.block_before(top_abs + 1));
+            // Find the block at or just before the viewport top.
+            let block_opt = terminal
+                .block_at(top_abs)
+                .or_else(|| terminal.block_before(top_abs + 1));
 
-        if let Some(block) = block_opt {
-            pane.toggle_fold(block.command_line);
-            self.dirty = true;
+            if let Some(block) = block_opt {
+                pane.toggle_fold(block.command_line);
+                self.dirty = true;
+            }
         }
     }
 
@@ -1191,31 +1243,32 @@ impl App {
         let Some(pane) = tab.registry.get_mut(id) else {
             return;
         };
-        let t = &mut pane.terminal;
-        let marks = t.prompt_marks().to_vec();
-        let top_content = t.content_row_of_viewport(0);
-        let ev = t.evicted_lines;
-        let mut best: Option<usize> = None;
-        for m in &marks {
-            use anvil_term::PromptMarkKind;
-            if m.kind != PromptMarkKind::PromptStart {
-                continue;
+        if let Some(t) = &mut pane.terminal {
+            let marks = t.prompt_marks().to_vec();
+            let top_content = t.content_row_of_viewport(0);
+            let ev = t.evicted_lines;
+            let mut best: Option<usize> = None;
+            for m in &marks {
+                use anvil_term::PromptMarkKind;
+                if m.kind != PromptMarkKind::PromptStart {
+                    continue;
+                }
+                if m.line < ev {
+                    continue;
+                }
+                let cr = m.line - ev;
+                if cr < top_content && best.is_none_or(|b| cr > b) {
+                    best = Some(cr);
+                }
             }
-            if m.line < ev {
-                continue;
+            if let Some(cr) = best {
+                t.scroll_to_line(cr);
+                let sp = t.viewport_offset() as f32;
+                pane.scroll_pos = sp;
+                pane.scroll_target = sp;
+                pane.scroll_vel = 0.0;
+                self.dirty = true;
             }
-            let cr = m.line - ev;
-            if cr < top_content && best.is_none_or(|b| cr > b) {
-                best = Some(cr);
-            }
-        }
-        if let Some(cr) = best {
-            t.scroll_to_line(cr);
-            let sp = pane.terminal.viewport_offset() as f32;
-            pane.scroll_pos = sp;
-            pane.scroll_target = sp;
-            pane.scroll_vel = 0.0;
-            self.dirty = true;
         }
     }
 
@@ -1227,35 +1280,36 @@ impl App {
         let Some(pane) = tab.registry.get_mut(id) else {
             return;
         };
-        let t = &mut pane.terminal;
-        let marks = t.prompt_marks().to_vec();
-        let top_content = t.content_row_of_viewport(0);
-        let ev = t.evicted_lines;
-        let mut best: Option<usize> = None;
-        for m in &marks {
-            use anvil_term::PromptMarkKind;
-            if m.kind != PromptMarkKind::PromptStart {
-                continue;
+        if let Some(t) = &mut pane.terminal {
+            let marks = t.prompt_marks().to_vec();
+            let top_content = t.content_row_of_viewport(0);
+            let ev = t.evicted_lines;
+            let mut best: Option<usize> = None;
+            for m in &marks {
+                use anvil_term::PromptMarkKind;
+                if m.kind != PromptMarkKind::PromptStart {
+                    continue;
+                }
+                if m.line < ev {
+                    continue;
+                }
+                let cr = m.line - ev;
+                if cr > top_content && best.is_none_or(|b| cr < b) {
+                    best = Some(cr);
+                }
             }
-            if m.line < ev {
-                continue;
+            if let Some(cr) = best {
+                t.scroll_to_line(cr);
+                let sp = t.viewport_offset() as f32;
+                pane.scroll_pos = sp;
+                pane.scroll_target = sp;
+                pane.scroll_vel = 0.0;
+            } else {
+                t.scroll_to_bottom();
+                pane.scroll_pos = 0.0;
+                pane.scroll_target = 0.0;
+                pane.scroll_vel = 0.0;
             }
-            let cr = m.line - ev;
-            if cr > top_content && best.is_none_or(|b| cr < b) {
-                best = Some(cr);
-            }
-        }
-        if let Some(cr) = best {
-            t.scroll_to_line(cr);
-            let sp = pane.terminal.viewport_offset() as f32;
-            pane.scroll_pos = sp;
-            pane.scroll_target = sp;
-            pane.scroll_vel = 0.0;
-        } else {
-            t.scroll_to_bottom();
-            pane.scroll_pos = 0.0;
-            pane.scroll_target = 0.0;
-            pane.scroll_vel = 0.0;
         }
         self.dirty = true;
     }
@@ -1279,17 +1333,18 @@ impl App {
     fn focused_viewport_text(&self) -> Option<String> {
         let tab = self.tabs.current()?;
         let pane = tab.registry.get(tab.focused_id())?;
-        let rows = pane.terminal.rows();
+        let terminal = pane.terminal.as_ref()?;
+        let rows = terminal.rows();
         if rows == 0 {
             return None;
         }
         let mut out = String::new();
         for vy in 0..rows {
-            let content_row = pane.terminal.content_row_of_viewport(vy);
-            if content_row >= pane.terminal.line_count() {
+            let content_row = terminal.content_row_of_viewport(vy);
+            if content_row >= terminal.line_count() {
                 break;
             }
-            let line = pane.terminal.line(content_row);
+            let line = terminal.line(content_row);
             for cell in line {
                 out.push(cell.cp);
             }
@@ -1319,12 +1374,13 @@ impl App {
         if start == end && sel.anchor.col == sel.head.col {
             return None;
         }
+        let terminal = pane.terminal.as_ref()?;
         let mut out = String::new();
         for row in start.row..=end.row {
-            if row >= pane.terminal.line_count() {
+            if row >= terminal.line_count() {
                 break;
             }
-            let line = pane.terminal.line(row);
+            let line = terminal.line(row);
             let (lo, hi) = match sel.mode {
                 SelectionMode::Rect => {
                     let a = sel.anchor.col;
@@ -1392,7 +1448,8 @@ impl App {
             .tabs
             .current()
             .and_then(|t| t.registry.get(t.focused_id()))
-            .map(|p| p.terminal.modes.mouse_sgr)
+            .and_then(|p| p.terminal.as_ref())
+            .map(|t| t.modes.mouse_sgr)
             .unwrap_or(false);
         let id = self.focused_pane_id();
         let mut buf = [0u8; 32];
@@ -1426,10 +1483,11 @@ impl App {
         let entries = tab.tree.layout(ir, div);
         let pr = entries.iter().find(|e| e.id == pane_id)?.rect;
         let pane = tab.registry.get(pane_id)?;
+        let terminal = pane.terminal.as_ref()?;
         let cw = self.font.metrics.cell_w;
         let ch = self.font.metrics.cell_h;
-        let rows = pane.terminal.rows() as f64;
-        let cols = pane.terminal.cols() as f64;
+        let rows = terminal.rows() as f64;
+        let cols = terminal.cols() as f64;
 
         let rel_x = rx - pr.x;
         let rel_y = ry - pr.y;
@@ -1534,66 +1592,67 @@ impl App {
         if let Some(tab) = self.tabs.current() {
             let id = tab.focused_id();
             if let Some(pane) = tab.registry.get(id) {
-                let lr = pane.terminal.last_run();
-                if lr.running || (lr.duration_ms == 0 && lr.exit_code == 0) {
-                    self.local_ctx.run = RunState::Idle;
-                } else {
-                    self.local_ctx.run = if lr.exit_code == 0 {
-                        RunState::Ok
+                if let Some(t) = &pane.terminal {
+                    let lr = t.last_run();
+                    if lr.running || (lr.duration_ms == 0 && lr.exit_code == 0) {
+                        self.local_ctx.run = RunState::Idle;
                     } else {
-                        RunState::Failed
-                    };
-                    self.local_ctx.run_exit = lr.exit_code;
-                    self.local_ctx.run_duration_ms = lr.duration_ms;
-                }
+                        self.local_ctx.run = if lr.exit_code == 0 {
+                            RunState::Ok
+                        } else {
+                            RunState::Failed
+                        };
+                        self.local_ctx.run_exit = lr.exit_code;
+                        self.local_ctx.run_duration_ms = lr.duration_ms;
+                    }
 
-                // Item 16: collect up to 5 recent prompt command lines,
-                // newest first. For each PromptStart (A-mark) look forward
-                // for the next OutputStart (B-mark) to find command_start_col,
-                // then read the text from that line.
-                let t = &pane.terminal;
-                let marks = t.prompt_marks();
-                let ev = t.evicted_lines;
-                let mut prompts: Vec<String> = Vec::new();
-                let mut i = marks.len();
-                while i > 0 && prompts.len() < 5 {
-                    i -= 1;
-                    if marks[i].kind != anvil_term::PromptMarkKind::PromptStart {
-                        continue;
-                    }
-                    // Find the immediately following OutputStart (B-mark) for
-                    // command_start_col; fall back to the A-mark line/col.
-                    let (cmd_abs_line, cmd_col) = {
-                        let mut found = (marks[i].line, 0usize);
-                        for m in marks.iter().skip(i + 1) {
-                            match m.kind {
-                                anvil_term::PromptMarkKind::OutputStart => {
-                                    found = (m.line, m.col as usize);
-                                    break;
-                                }
-                                anvil_term::PromptMarkKind::PromptStart => break,
-                                _ => {}
-                            }
+                    // Item 16: collect up to 5 recent prompt command lines,
+                    // newest first. For each PromptStart (A-mark) look forward
+                    // for the next OutputStart (B-mark) to find command_start_col,
+                    // then read the text from that line.
+                    let marks = t.prompt_marks();
+                    let ev = t.evicted_lines;
+                    let mut prompts: Vec<String> = Vec::new();
+                    let mut i = marks.len();
+                    while i > 0 && prompts.len() < 5 {
+                        i -= 1;
+                        if marks[i].kind != anvil_term::PromptMarkKind::PromptStart {
+                            continue;
                         }
-                        found
-                    };
-                    if cmd_abs_line < ev {
-                        continue;
+                        // Find the immediately following OutputStart (B-mark) for
+                        // command_start_col; fall back to the A-mark line/col.
+                        let (cmd_abs_line, cmd_col) = {
+                            let mut found = (marks[i].line, 0usize);
+                            for m in marks.iter().skip(i + 1) {
+                                match m.kind {
+                                    anvil_term::PromptMarkKind::OutputStart => {
+                                        found = (m.line, m.col as usize);
+                                        break;
+                                    }
+                                    anvil_term::PromptMarkKind::PromptStart => break,
+                                    _ => {}
+                                }
+                            }
+                            found
+                        };
+                        if cmd_abs_line < ev {
+                            continue;
+                        }
+                        let crow = cmd_abs_line - ev;
+                        let cells = t.line(crow);
+                        let cmd: String = cells
+                            .iter()
+                            .skip(cmd_col)
+                            .filter(|c| c.cp != '\0')
+                            .map(|c| c.cp)
+                            .collect();
+                        let cmd = cmd.trim_end().to_string();
+                        if !cmd.is_empty() {
+                            prompts.push(cmd);
+                        }
                     }
-                    let crow = cmd_abs_line - ev;
-                    let cells = t.line(crow);
-                    let cmd: String = cells
-                        .iter()
-                        .skip(cmd_col)
-                        .filter(|c| c.cp != '\0')
-                        .map(|c| c.cp)
-                        .collect();
-                    let cmd = cmd.trim_end().to_string();
-                    if !cmd.is_empty() {
-                        prompts.push(cmd);
-                    }
-                }
-                self.local_ctx.recent_prompts = prompts;
+                    self.local_ctx.recent_prompts = prompts;
+                } // end if let Some(t)
             }
         }
 
@@ -1618,7 +1677,14 @@ impl App {
             .tabs
             .current()
             .and_then(|t| t.registry.get(t.focused_id()))
-            .map(|p| (p.scroll_pos, p.terminal.viewport_offset()))
+            .map(|p| {
+                let vp = p
+                    .terminal
+                    .as_ref()
+                    .map(|t| t.viewport_offset())
+                    .unwrap_or(0);
+                (p.scroll_pos, vp)
+            })
             .unwrap_or((0.0, 0));
         let moved = cur_scroll != self.last_scroll_pos || cur_vp != self.last_viewport_offset;
         if moved {
@@ -1683,11 +1749,20 @@ impl App {
                     let entries = tab.tree.layout(inner, DIVIDER_PX);
                     for e in &entries {
                         if let Some(pane) = tab.registry.get_mut(e.id) {
-                            let rows = pane.terminal.rows();
+                            // Native editor panes: always full-redraw until NE5 ships.
+                            if pane.terminal.is_none() {
+                                // A full DirtySet (0-row capacity) signals "full".
+                                // draw_workspace skips the terminal path for editor panes.
+                                let ds = DirtySet::all(0);
+                                map.insert(e.id, ds);
+                                continue;
+                            }
+                            let terminal = pane.terminal.as_mut().unwrap();
+                            let rows = terminal.rows();
                             // Drain dirty rows from the terminal model.
-                            let mut ds = pane.terminal.take_dirty_rows();
+                            let mut ds = terminal.take_dirty_rows();
                             // Always redraw the cursor row (blink, move).
-                            let cur = pane.terminal.cursor();
+                            let cur = terminal.cursor();
                             ds.mark(cur.y);
                             // Mark rows covered by the animated cursor position so
                             // intermediate pixels are cleared during smooth-move.
@@ -1701,7 +1776,7 @@ impl App {
                             }
                             // Viewport scroll change → force full for this pane.
                             let scroll_changed =
-                                pane.scroll_pos != 0.0 || pane.terminal.viewport_offset() != 0;
+                                pane.scroll_pos != 0.0 || terminal.viewport_offset() != 0;
                             if scroll_changed {
                                 ds.force_full();
                             }
@@ -1709,7 +1784,7 @@ impl App {
                             // visible row's pixels shifted up; per-row dirty tracking
                             // leaves the old cursor's pixels orphaned at their old
                             // device-pixel y. Force a full redraw to flush them.
-                            let sbl = pane.terminal.scrollback_len();
+                            let sbl = terminal.scrollback_len();
                             let prev_sbl =
                                 self.scrollback_len_prev.get(&e.id).copied().unwrap_or(sbl);
                             if sbl != prev_sbl {
@@ -1753,7 +1828,8 @@ impl App {
                         for (pid, ds) in map {
                             if let Some(tab) = self.tabs.current() {
                                 if let Some(pane) = tab.registry.get(*pid) {
-                                    let total = pane.terminal.rows();
+                                    let total =
+                                        pane.terminal.as_ref().map(|t| t.rows()).unwrap_or(0);
                                     let dirty_count = if ds.is_full() {
                                         total
                                     } else {
@@ -2035,13 +2111,20 @@ impl App {
                         None
                     };
 
+                    // Skip GPU path for native editor panes (NE4 stub — charcoal fill
+                    // is done by draw_workspace_chrome, which calls draw_editor_pane_stub).
+                    if pane.terminal.is_none() {
+                        continue;
+                    }
+                    let terminal = pane.terminal.as_mut().unwrap();
+
                     let folded = FoldedBlocks::new(&pane.folded[..pane.folded_count]);
 
                     draw_viewport_gpu(
                         &mut self.cell_batch,
                         &self.raster,
                         ap,
-                        &mut pane.terminal,
+                        terminal,
                         metrics,
                         &self.theme,
                         pane.scroll_pos,
@@ -2180,7 +2263,9 @@ impl App {
                 if let Some(tab) = self.tabs.current_mut() {
                     let id = tab.focused_id();
                     if let Some(pane) = tab.registry.get_mut(id) {
-                        pane.terminal.feed(b"\x1b[H\x1b[2J");
+                        if let Some(terminal) = &mut pane.terminal {
+                            terminal.feed(b"\x1b[H\x1b[2J");
+                        }
                     }
                 }
                 self.dirty = true;
@@ -2189,12 +2274,14 @@ impl App {
                 if let Some(tab) = self.tabs.current_mut() {
                     let id = tab.focused_id();
                     if let Some(pane) = tab.registry.get_mut(id) {
-                        let len = pane.terminal.scrollback_len() as isize;
-                        pane.terminal.scroll_viewport(len);
-                        let sp = pane.terminal.viewport_offset() as f32;
-                        pane.scroll_pos = sp;
-                        pane.scroll_target = sp;
-                        pane.scroll_vel = 0.0;
+                        if let Some(terminal) = &mut pane.terminal {
+                            let len = terminal.scrollback_len() as isize;
+                            terminal.scroll_viewport(len);
+                            let sp = terminal.viewport_offset() as f32;
+                            pane.scroll_pos = sp;
+                            pane.scroll_target = sp;
+                            pane.scroll_vel = 0.0;
+                        }
                     }
                 }
                 self.dirty = true;
@@ -2203,10 +2290,12 @@ impl App {
                 if let Some(tab) = self.tabs.current_mut() {
                     let id = tab.focused_id();
                     if let Some(pane) = tab.registry.get_mut(id) {
-                        pane.terminal.scroll_to_bottom();
-                        pane.scroll_pos = 0.0;
-                        pane.scroll_target = 0.0;
-                        pane.scroll_vel = 0.0;
+                        if let Some(terminal) = &mut pane.terminal {
+                            terminal.scroll_to_bottom();
+                            pane.scroll_pos = 0.0;
+                            pane.scroll_target = 0.0;
+                            pane.scroll_vel = 0.0;
+                        }
                     }
                 }
                 self.dirty = true;
@@ -2394,7 +2483,9 @@ impl App {
                 if let Some(tab) = self.tabs.current_mut() {
                     let id = tab.focused_id();
                     if let Some(pane) = tab.registry.get_mut(id) {
-                        self.search.rescan(&pane.terminal);
+                        if let Some(terminal) = &pane.terminal {
+                            self.search.rescan(terminal);
+                        }
                     }
                 }
                 self.scroll_to_current_match();
@@ -2439,6 +2530,10 @@ impl App {
             self.new_editor_pane();
             return true;
         });
+        test!(kb.editor_new_native, {
+            self.new_native_editor_pane();
+            return true;
+        });
 
         // ⌘K — command palette.
         if ascii_lower(ch) == 'k' && !mods.shift && !mods.control && !mods.option {
@@ -2467,7 +2562,8 @@ impl App {
                     .tabs
                     .current()
                     .and_then(|t| t.registry.get(t.focused_id()))
-                    .map(|p| p.terminal.modes.bracketed_paste)
+                    .and_then(|p| p.terminal.as_ref())
+                    .map(|t| t.modes.bracketed_paste)
                     .unwrap_or(false);
                 if bracketed {
                     self.write_to_focused_pty(b"\x1b[200~");
@@ -2737,7 +2833,9 @@ impl AppHandler for AppShell {
                     match result {
                         Some(Ok(n)) if n > 0 => {
                             if let Some(pane) = app.tabs.tabs[ti].registry.get_mut(pid) {
-                                pane.terminal.feed(&feed_buf[..n]);
+                                if let Some(terminal) = &mut pane.terminal {
+                                    terminal.feed(&feed_buf[..n]);
+                                }
                             }
                             drained += n;
                             pane_got_data = true;
@@ -2760,7 +2858,9 @@ impl AppHandler for AppShell {
                             app.dirty = true;
                             if app.search_open {
                                 if let Some(pane) = app.tabs.tabs[ti].registry.get_mut(pid) {
-                                    app.search.rescan(&pane.terminal);
+                                    if let Some(terminal) = &pane.terminal {
+                                        app.search.rescan(terminal);
+                                    }
                                 }
                             }
                         }
@@ -2805,7 +2905,7 @@ impl AppHandler for AppShell {
             let tab = app.tabs.current();
             let pane = tab.and_then(|t| t.registry.get(t.focused_id()));
             (
-                pane.and_then(|p| p.terminal.app_cursor_blink),
+                pane.and_then(|p| p.terminal.as_ref()).and_then(|t| t.app_cursor_blink),
                 app.cursor_cfg.blink,
             )
         };
@@ -2847,7 +2947,7 @@ impl AppHandler for AppShell {
                 all_pane_ids_in_tree(t).into_iter().any(|pid| {
                     t.registry
                         .get(pid)
-                        .is_some_and(|p| p.terminal.last_run().running)
+                        .is_some_and(|p| p.terminal.as_ref().map(|t| t.last_run().running).unwrap_or(false))
                 })
             });
             if any_running {
@@ -2867,7 +2967,7 @@ impl AppHandler for AppShell {
                 .tabs
                 .current()
                 .and_then(|t| t.registry.get(t.focused_id()))
-                .is_some_and(|p| p.terminal.any_block_completed_within(within));
+                .is_some_and(|p| p.terminal.as_ref().map(|t| t.any_block_completed_within(within)).unwrap_or(false));
             if pulsing {
                 app.dirty = true;
             }
@@ -2879,9 +2979,11 @@ impl AppHandler for AppShell {
         if let Some(tab) = app.tabs.current_mut() {
             let id = tab.focused_id();
             if let Some(pane) = tab.registry.get_mut(id) {
-                let cur = pane.terminal.cursor();
-                pane.cursor_ax = cur.x as f32;
-                pane.cursor_ay = cur.y as f32;
+                if let Some(terminal) = &pane.terminal {
+                    let cur = terminal.cursor();
+                    pane.cursor_ax = cur.x as f32;
+                    pane.cursor_ay = cur.y as f32;
+                }
             }
         }
 
@@ -2895,14 +2997,17 @@ impl AppHandler for AppShell {
                 let delta = pane.scroll_target - pane.scroll_pos;
                 if delta.abs() > 0.01 {
                     pane.scroll_pos += delta * 0.30;
-                    pane.terminal
-                        .set_viewport_offset(pane.scroll_pos.round() as usize);
+                    if let Some(terminal) = &mut pane.terminal {
+                        terminal.set_viewport_offset(pane.scroll_pos.round() as usize);
+                    }
                     app.dirty = true;
                 } else if delta.abs() > 0.0 {
                     // Snap: quantize to nearest integer row (unit is rows).
                     pane.scroll_pos = pane.scroll_target.round();
                     pane.scroll_vel = 0.0;
-                    pane.terminal.set_viewport_offset(pane.scroll_pos as usize);
+                    if let Some(terminal) = &mut pane.terminal {
+                        terminal.set_viewport_offset(pane.scroll_pos as usize);
+                    }
                     app.dirty = true;
                 }
 
@@ -2910,7 +3015,9 @@ impl AppHandler for AppShell {
                 // content rows have arrived while the user is scrolled up.
                 if pane.scroll_pos > 0.0 {
                     if pane.unseen_baseline.is_none() {
-                        pane.unseen_baseline = Some(pane.terminal.line_count());
+                        if let Some(terminal) = &pane.terminal {
+                            pane.unseen_baseline = Some(terminal.line_count());
+                        }
                     }
                 } else {
                     pane.unseen_baseline = None;
@@ -3039,7 +3146,9 @@ impl AppHandler for AppShell {
                     if let Some(tab) = self.app.tabs.current_mut() {
                         let id = tab.focused_id();
                         if let Some(pane) = tab.registry.get_mut(id) {
-                            self.app.search.set_query(&pane.terminal, &new_q);
+                            if let Some(term) = &pane.terminal {
+                                self.app.search.set_query(term, &new_q);
+                            }
                         }
                     }
                     self.app.scroll_to_current_match();
@@ -3051,7 +3160,9 @@ impl AppHandler for AppShell {
                     if let Some(tab) = self.app.tabs.current_mut() {
                         let id = tab.focused_id();
                         if let Some(pane) = tab.registry.get_mut(id) {
-                            self.app.search.set_query(&pane.terminal, &new_q);
+                            if let Some(term) = &pane.terminal {
+                                self.app.search.set_query(term, &new_q);
+                            }
                         }
                     }
                     self.app.scroll_to_current_match();
@@ -3068,7 +3179,8 @@ impl AppHandler for AppShell {
             .tabs
             .current()
             .and_then(|t| t.registry.get(t.focused_id()))
-            .map(|p| p.terminal.modes.app_cursor_keys)
+            .and_then(|p| p.terminal.as_ref())
+            .map(|t| t.modes.app_cursor_keys)
             .unwrap_or(false);
 
         if let Some(k) = platform_key_to_zig_key(event.key) {
@@ -3082,7 +3194,9 @@ impl AppHandler for AppShell {
         if let Some(tab) = self.app.tabs.current_mut() {
             let id = tab.focused_id();
             if let Some(pane) = tab.registry.get_mut(id) {
-                pane.terminal.scroll_to_bottom();
+                if let Some(terminal) = &mut pane.terminal {
+                    terminal.scroll_to_bottom();
+                }
                 pane.scroll_pos = 0.0;
                 pane.scroll_target = 0.0;
                 pane.scroll_vel = 0.0;
@@ -3280,7 +3394,8 @@ impl AppHandler for AppShell {
                 .tabs
                 .current()
                 .and_then(|t| t.registry.get(t.focused_id()))
-                .map(|p| (p.terminal.modes.mouse_button, p.terminal.modes.mouse_x10))
+                .and_then(|p| p.terminal.as_ref())
+                .map(|t| (t.modes.mouse_button, t.modes.mouse_x10))
                 .unwrap_or((false, false));
             if btn_mode || x10_mode {
                 if let Some((row, col)) = app.event_cell(loc, false) {
@@ -3296,31 +3411,33 @@ impl AppHandler for AppShell {
                 let tab = app.tabs.current_mut().unwrap();
                 let id = tab.focused_id();
                 let pane = tab.registry.get_mut(id).unwrap();
-                let cr = pane.terminal.content_row_of_viewport(row);
-                let abs = pane.terminal.absolute_line_of_content(cr);
-                if let Some(block) = pane.terminal.block_at(abs) {
-                    if block.command_line == abs {
-                        let evicted = pane.terminal.evicted_lines;
-                        let out_start = block.output_line.saturating_sub(evicted);
-                        let out_end = block.end_line.saturating_sub(evicted);
-                        let mut lines: Vec<String> = (out_start..out_end)
-                            .map(|ci| {
-                                pane.terminal
-                                    .line(ci)
-                                    .iter()
-                                    .map(|c| c.cp)
-                                    .collect::<String>()
-                                    .trim_end()
-                                    .to_owned()
-                            })
-                            .collect();
-                        // Trim trailing blank rows.
-                        while lines.last().map(|l: &String| l.is_empty()).unwrap_or(false) {
-                            lines.pop();
+                if let Some(terminal) = &mut pane.terminal {
+                    let cr = terminal.content_row_of_viewport(row);
+                    let abs = terminal.absolute_line_of_content(cr);
+                    if let Some(block) = terminal.block_at(abs) {
+                        if block.command_line == abs {
+                            let evicted = terminal.evicted_lines;
+                            let out_start = block.output_line.saturating_sub(evicted);
+                            let out_end = block.end_line.saturating_sub(evicted);
+                            let mut lines: Vec<String> = (out_start..out_end)
+                                .map(|ci| {
+                                    terminal
+                                        .line(ci)
+                                        .iter()
+                                        .map(|c| c.cp)
+                                        .collect::<String>()
+                                        .trim_end()
+                                        .to_owned()
+                                })
+                                .collect();
+                            // Trim trailing blank rows.
+                            while lines.last().map(|l: &String| l.is_empty()).unwrap_or(false) {
+                                lines.pop();
+                            }
+                            let text = lines.join("\n");
+                            anvil_platform::system::set_clipboard(&text);
+                            return;
                         }
-                        let text = lines.join("\n");
-                        anvil_platform::system::set_clipboard(&text);
-                        return;
                     }
                 }
             }
@@ -3335,13 +3452,15 @@ impl AppHandler for AppShell {
                     let tab = app.tabs.current_mut().unwrap();
                     let id = tab.focused_id();
                     let pane = tab.registry.get_mut(id).unwrap();
-                    let cr = pane.terminal.content_row_of_viewport(row);
-                    let abs = pane.terminal.absolute_line_of_content(cr);
-                    if let Some(block) = pane.terminal.block_at(abs) {
-                        if block.command_line == abs {
-                            pane.toggle_fold(block.command_line);
-                            app.dirty = true;
-                            return;
+                    if let Some(terminal) = &mut pane.terminal {
+                        let cr = terminal.content_row_of_viewport(row);
+                        let abs = terminal.absolute_line_of_content(cr);
+                        if let Some(block) = terminal.block_at(abs) {
+                            if block.command_line == abs {
+                                pane.toggle_fold(block.command_line);
+                                app.dirty = true;
+                                return;
+                            }
                         }
                     }
                 }
@@ -3350,8 +3469,12 @@ impl AppHandler for AppShell {
                     let tab = app.tabs.current_mut().unwrap();
                     let id = tab.focused_id();
                     let pane = tab.registry.get_mut(id).unwrap();
-                    let cr = pane.terminal.content_row_of_viewport(row);
-                    (cr, pane.terminal.line(cr).to_vec())
+                    if let Some(terminal) = &pane.terminal {
+                        let cr = terminal.content_row_of_viewport(row);
+                        (cr, terminal.line(cr).to_vec())
+                    } else {
+                        return;
+                    }
                 };
                 let _ = content_row;
                 let mut line_buf = String::new();
@@ -3388,14 +3511,14 @@ impl AppHandler for AppShell {
                 let id = tab.focused_id();
                 if let Some(pane) = tab.registry.get_mut(id) {
                     use anvil_workspace::selection::{Point, Selection, SelectionMode};
-                    let cr = pane.terminal.content_row_of_viewport(row);
+                    let cr = pane.terminal.as_ref().map(|t| t.content_row_of_viewport(row)).unwrap_or(row);
 
                     if mods.shift && pane.selection.active {
                         // Extend the current selection to the click point.
                         pane.selection.head = Point { row: cr, col };
                     } else if click_count >= 3 {
                         // Whole-line selection.
-                        let line_len = pane.terminal.line(cr).len();
+                        let line_len = pane.terminal.as_ref().map(|t| t.line(cr).len()).unwrap_or(0);
                         pane.selection = Selection {
                             active: true,
                             anchor: Point { row: cr, col: 0 },
@@ -3408,7 +3531,7 @@ impl AppHandler for AppShell {
                     } else if click_count == 2 {
                         // Word selection — extend left/right while the cell
                         // codepoint is not ASCII whitespace.
-                        let line = pane.terminal.line(cr).to_vec();
+                        let line = pane.terminal.as_ref().map(|t| t.line(cr).to_vec()).unwrap_or_default();
                         let is_word = |c: char| !c.is_ascii_whitespace();
                         if col < line.len() && is_word(line[col].cp) {
                             let mut lo = col;
@@ -3510,7 +3633,8 @@ impl AppHandler for AppShell {
             .tabs
             .current()
             .and_then(|t| t.registry.get(t.focused_id()))
-            .map(|p| (p.terminal.modes.mouse_button, p.terminal.modes.mouse_sgr))
+            .and_then(|p| p.terminal.as_ref())
+            .map(|t| (t.modes.mouse_button, t.modes.mouse_sgr))
             .unwrap_or((false, false));
 
         if btn_mode && sgr_mode {
@@ -3652,7 +3776,8 @@ impl AppHandler for AppShell {
             .tabs
             .current()
             .and_then(|t| t.registry.get(t.focused_id()))
-            .map(|p| p.terminal.modes.mouse_button)
+            .and_then(|p| p.terminal.as_ref())
+            .map(|t| t.modes.mouse_button)
             .unwrap_or(false);
         if btn_mode {
             if let Some((row, col)) = app.event_cell(loc, false) {
@@ -3674,7 +3799,7 @@ impl AppHandler for AppShell {
             if let Some(tab) = app.tabs.current_mut() {
                 let id = tab.focused_id();
                 if let Some(pane) = tab.registry.get_mut(id) {
-                    let cr = pane.terminal.content_row_of_viewport(row);
+                    let cr = pane.terminal.as_ref().map(|t| t.content_row_of_viewport(row)).unwrap_or(row);
                     pane.selection.head = anvil_workspace::selection::Point { row: cr, col };
                 }
             }
@@ -3693,7 +3818,8 @@ impl AppHandler for AppShell {
             .tabs
             .current()
             .and_then(|t| t.registry.get(t.focused_id()))
-            .map(|p| (p.terminal.modes.mouse_button, p.terminal.modes.mouse_x10))
+            .and_then(|p| p.terminal.as_ref())
+            .map(|t| (t.modes.mouse_button, t.modes.mouse_x10))
             .unwrap_or((false, false));
         if btn_mode || x10_mode {
             if let Some((row, col)) = app.event_cell(loc, false) {
@@ -3721,10 +3847,12 @@ impl AppHandler for AppShell {
         if let Some(tab) = app.tabs.current_mut() {
             let id = tab.focused_id();
             if let Some(pane) = tab.registry.get_mut(id) {
-                let max_pos = pane.terminal.scrollback_len() as f32;
-                let np = (pane.scroll_target + d).clamp(0.0, max_pos);
-                pane.scroll_target = np;
-                pane.terminal.set_viewport_offset(np.round() as usize);
+                if let Some(terminal) = &mut pane.terminal {
+                    let max_pos = terminal.scrollback_len() as f32;
+                    let np = (pane.scroll_target + d).clamp(0.0, max_pos);
+                    pane.scroll_target = np;
+                    terminal.set_viewport_offset(np.round() as usize);
+                }
             }
         }
         app.dirty = true;
@@ -3814,7 +3942,8 @@ impl AppHandler for AppShell {
                         .tabs
                         .current()
                         .and_then(|t| t.registry.get(t.focused_id()))
-                        .map(|p| p.terminal.modes.bracketed_paste)
+                        .and_then(|p| p.terminal.as_ref())
+                        .map(|t| t.modes.bracketed_paste)
                         .unwrap_or(false);
                     if bracketed {
                         self.app.write_to_focused_pty(b"\x1b[200~");
@@ -3829,7 +3958,9 @@ impl AppHandler for AppShell {
                 if let Some(tab) = self.app.tabs.current_mut() {
                     let id = tab.focused_id();
                     if let Some(pane) = tab.registry.get_mut(id) {
-                        pane.terminal.feed(b"\x1b[H\x1b[2J");
+                        if let Some(terminal) = &mut pane.terminal {
+                            terminal.feed(b"\x1b[H\x1b[2J");
+                        }
                     }
                 }
             }
