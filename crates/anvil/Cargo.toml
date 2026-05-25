@@ -20,6 +20,7 @@ anvil-caldera    = { workspace = true }
 anvil-control    = { workspace = true }
 anvil-editor     = { path = "../../crates/anvil-editor" }
 anvil-prompt-core = { path = "../../crates/anvil-prompt-core" }
+which            = { workspace = true }
 anyhow           = { workspace = true }
 libc             = { workspace = true }
 objc2            = { workspace = true }

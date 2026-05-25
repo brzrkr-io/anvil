@@ -10,6 +10,7 @@ anvil-workspace    = { workspace = true }
 anvil-theme        = { workspace = true }
 anvil-agent        = { workspace = true }
 anvil-prompt-core  = { path = "../anvil-prompt-core" }
+anvil-editor       = { path = "../anvil-editor" }
 libc               = "0.2"
 
 [dev-dependencies]

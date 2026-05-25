@@ -358,6 +358,7 @@ struct Keybindings {
     fold_block: Option<Chord>,
     toggle_theme: Option<Chord>,
     layout_mode_toggle: Option<Chord>,
+    editor_new: Option<Chord>,
 }
 
 impl Keybindings {
@@ -393,6 +394,7 @@ impl Keybindings {
             fold_block: parse_chord(&kb.fold_block),
             toggle_theme: parse_chord(&kb.toggle_theme),
             layout_mode_toggle: parse_chord(&kb.layout_mode_toggle),
+            editor_new: parse_chord(&kb.editor_new),
         }
     }
 }
@@ -517,12 +519,21 @@ pub struct App {
     /// Shares the same endpoint as the poller; created at the same time.
     caldera_client: Option<anvil_caldera::CalderaClient>,
 
-    // -- editor bridge (BR3) ---
+    // -- editor bridge (BR3/BR4) ---
     /// Background thread polling a `nvim --listen` socket. `None` when
     /// `$NVIM_LISTEN_ADDRESS` is unset and no socket has been configured.
     editor_bridge: Option<anvil_editor::EditorBridge>,
     /// Latest snapshot from the editor bridge. Updated each tick.
     editor_snapshot: Option<anvil_editor::EditorSnapshot>,
+    /// PaneId of the editor pane spawned by `new_editor_pane`. At most one
+    /// editor pane at a time (singleton invariant). `None` when no editor
+    /// pane is open.
+    editor_pane_id: Option<PaneId>,
+    /// Monotonic counter bumped per `new_editor_pane` call, used to make
+    /// socket paths unique within a process lifetime.
+    editor_socket_counter: u32,
+    /// Resolved path to the `nvim` binary. Cached on first `which` lookup.
+    nvim_path: Option<std::path::PathBuf>,
 
     // -- git worker ---
     git_tx: mpsc::SyncSender<PathBuf>,
@@ -874,6 +885,127 @@ impl App {
         self.dirty = true;
     }
 
+    fn new_editor_pane(&mut self) {
+        // Singleton invariant: focus the existing pane if still alive.
+        if let Some(eid) = self.editor_pane_id {
+            if self.ptys.contains_key(&eid) {
+                // Find the tab that owns this pane and focus it.
+                for tab in &mut self.tabs.tabs {
+                    if tab.registry.get(eid).is_some() {
+                        tab.tree.focused = eid;
+                        self.dirty = true;
+                        return;
+                    }
+                }
+                // Pane not found in any tab — fall through to spawn a new one.
+            }
+            // Pane is gone; clear stale id.
+            self.editor_pane_id = None;
+        }
+
+        let tab = match self.tabs.current() {
+            Some(t) => t,
+            None => return,
+        };
+        if tab.tree.leaf_count() >= MAX_PANES_PER_TAB {
+            eprintln!("anvil: max pane count ({MAX_PANES_PER_TAB}) reached");
+            return;
+        }
+
+        // Resolve nvim binary (cached after first lookup).
+        if self.nvim_path.is_none() {
+            match which::which("nvim") {
+                Ok(p) => self.nvim_path = Some(p),
+                Err(e) => {
+                    eprintln!("anvil: nvim not found: {e}");
+                    return;
+                }
+            }
+        }
+        let nvim_bin = self.nvim_path.as_ref().unwrap().clone();
+        let nvim_str = match nvim_bin.to_str() {
+            Some(s) => s.to_string(),
+            None => {
+                eprintln!("anvil: nvim path is not valid UTF-8");
+                return;
+            }
+        };
+
+        // Derive socket path: $TMPDIR/anvil-nvim-<pid>-<counter>.sock
+        self.editor_socket_counter += 1;
+        let socket_path = std::env::temp_dir().join(format!(
+            "anvil-nvim-{}-{}.sock",
+            std::process::id(),
+            self.editor_socket_counter
+        ));
+        let socket_str = match socket_path.to_str() {
+            Some(s) => s.to_string(),
+            None => {
+                eprintln!("anvil: editor socket path is not valid UTF-8");
+                return;
+            }
+        };
+
+        // Compute cols/rows the same way split_focused_pane does for Horizontal.
+        let focused_id = tab.focused_id();
+        let ir = self.pane_area_rect();
+        let div = DIVIDER_PX;
+        let cw = self.font.metrics.cell_w;
+        let ch = self.font.metrics.cell_h;
+        let entries = tab.tree.layout(ir, div);
+        let focused_rect = entries
+            .iter()
+            .find(|e| e.id == focused_id)
+            .map(|e| e.rect)
+            .unwrap_or(ir);
+        let cols = ((((focused_rect.w - div) * 0.5) / cw) as usize).max(1);
+        let rows = ((focused_rect.h / ch) as usize).max(1);
+
+        let scrollback = self.config.scrollback;
+        let new_id = match self
+            .tabs
+            .current_mut()
+            .map(|t| t.split(SplitDir::Horizontal, cols, rows, scrollback))
+        {
+            Some(Ok(id)) => id,
+            Some(Err(e)) => {
+                eprintln!("anvil: editor pane split failed: {e}");
+                return;
+            }
+            None => return,
+        };
+
+        // Spawn nvim --listen <socket> in the new pane.
+        match Pty::spawn_exec(&nvim_str, &[&nvim_str, "--listen", &socket_str], cols as u16, rows as u16) {
+            Ok(pty) => {
+                self.ptys.insert(new_id, pty);
+            }
+            Err(e) => {
+                eprintln!("anvil: nvim pty failed: {e}");
+                if let Some(tab) = self.tabs.current_mut() {
+                    tab.tree.close_leaf(new_id);
+                    tab.registry.remove(new_id);
+                }
+                return;
+            }
+        }
+
+        self.editor_pane_id = Some(new_id);
+
+        // Hand socket to the bridge (create it if this is the first time).
+        if let Some(ref bridge) = self.editor_bridge {
+            bridge.set_socket(Some(socket_path));
+            bridge.kick();
+        } else {
+            self.editor_bridge =
+                Some(anvil_editor::EditorBridge::spawn(Some(socket_path)));
+        }
+
+        self.resize_all_tabs();
+        self.snap_anim();
+        self.dirty = true;
+    }
+
     fn close_focused_pane(&mut self) {
         let (focused_id, next_id) = {
             let tab = match self.tabs.current_mut() {
@@ -886,6 +1018,7 @@ impl App {
             (focused_id, next_id)
         };
         self.ptys.remove(&focused_id);
+        self.clear_editor_pane_if(focused_id);
 
         if let Some(nid) = next_id {
             if let Some(tab) = self.tabs.current_mut() {
@@ -902,6 +1035,18 @@ impl App {
                 self.snap_anim();
                 self.dirty = true;
             }
+        }
+    }
+
+    /// If `closed_id` is the editor pane, clear the singleton slot, tell the
+    /// bridge to disconnect, and remove the socket file.
+    fn clear_editor_pane_if(&mut self, closed_id: PaneId) {
+        if self.editor_pane_id != Some(closed_id) {
+            return;
+        }
+        self.editor_pane_id = None;
+        if let Some(ref bridge) = self.editor_bridge {
+            bridge.set_socket(None);
         }
     }
 
@@ -975,6 +1120,7 @@ impl App {
             any_closed = true;
             let mut close_tab = false;
             for id in dead {
+                self.clear_editor_pane_if(id);
                 let next = self.tabs.tabs[tab_i].tree.close_leaf(id);
                 self.tabs.tabs[tab_i].registry.remove(id);
                 if let Some(nid) = next {
@@ -1689,6 +1835,7 @@ impl App {
                 chrome_metrics,
                 &self.theme,
                 &self.local_ctx,
+                self.editor_snapshot.as_ref(),
                 areas.top_bar,
             );
             draw_left_dock(
@@ -2072,6 +2219,9 @@ impl App {
                     poller.kick();
                 }
             }
+            Action::NewEditorPane => {
+                self.new_editor_pane();
+            }
         }
         self.dismiss_palette(webview);
     }
@@ -2239,6 +2389,10 @@ impl App {
             };
             self.resize_all_tabs();
             self.dirty = true;
+            return true;
+        });
+        test!(kb.editor_new, {
+            self.new_editor_pane();
             return true;
         });
 
@@ -4111,6 +4265,9 @@ fn main() -> Result<()> {
             .ok()
             .map(|addr| anvil_editor::EditorBridge::spawn(Some(std::path::PathBuf::from(addr)))),
         editor_snapshot: None,
+        editor_pane_id: None,
+        editor_socket_counter: 0,
+        nvim_path: None,
         git_tx,
         git_rx,
         recent_cwd_tx,

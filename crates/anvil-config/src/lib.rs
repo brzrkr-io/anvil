@@ -154,6 +154,9 @@ pub struct Keybindings {
     pub agent_start: String,
     /// Cycle layout mode: Terminal → Ide → Codex → Terminal.
     pub layout_mode_toggle: String,
+    /// Open a new editor pane running `nvim --listen <socket>`. Second press
+    /// focuses the existing editor pane instead of spawning another.
+    pub editor_new: String,
 }
 
 impl Default for Keybindings {
@@ -189,6 +192,7 @@ impl Default for Keybindings {
             agent_approve: "cmd+return".into(),
             agent_start: "cmd+shift+return".into(),
             layout_mode_toggle: "cmd+shift+e".into(),
+            editor_new: "cmd+e".into(),
         }
     }
 }

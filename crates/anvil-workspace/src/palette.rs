@@ -23,6 +23,8 @@ pub enum Action {
     // Agent actions (only shown when Caldera is Live).
     AgentApprove,
     AgentStart,
+    // Editor pane.
+    NewEditorPane,
 }
 
 pub struct Entry {
@@ -87,6 +89,12 @@ pub const CATALOG: &[Entry] = &[
         title: "Keyboard Shortcuts",
         subtitle: Some("Show the keyboard shortcut cheatsheet"),
         action: Action::CheatsheetShow,
+    },
+    Entry {
+        id: "editor.new",
+        title: "New Editor Pane",
+        subtitle: Some("Open nvim in a new pane (⌘E)"),
+        action: Action::NewEditorPane,
     },
 ];
 
@@ -192,6 +200,11 @@ mod tests {
     fn agent_action_ids_parse() {
         assert_eq!(action_for_id("agent.approve"), Some(Action::AgentApprove));
         assert_eq!(action_for_id("agent.start"), Some(Action::AgentStart));
+    }
+
+    #[test]
+    fn editor_new_id_maps_to_action() {
+        assert_eq!(action_for_id("editor.new"), Some(Action::NewEditorPane));
     }
 
     #[test]

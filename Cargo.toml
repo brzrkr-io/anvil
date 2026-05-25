@@ -39,6 +39,7 @@ anyhow = "1.0"
 # Utilities
 bitflags = "2.11"
 regex = "1"
+which = "7"
 
 # PTY / POSIX
 nix = { version = "0.31", features = ["fs", "ioctl", "process", "signal", "term"] }

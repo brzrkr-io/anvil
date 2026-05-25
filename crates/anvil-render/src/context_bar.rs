@@ -1,8 +1,10 @@
 //! Top context bar — drawn only in Ide mode.
 //!
 //! A fixed-height pixel strip immediately below the OS title strip.
-//! Layout: left-anchored project/git info, right-anchored kube/head info.
+//! Layout: left-anchored project/git info, right-anchored kube/head info,
+//! with an optional editor segment right of kube when nvim is Live.
 
+use anvil_editor::{ConnectionState, EditorSnapshot};
 use anvil_theme::Theme;
 use anvil_workspace::layout::Rect;
 
@@ -14,14 +16,17 @@ use crate::raster::{FontMetrics, GlyphPainter, Raster};
 /// - Background: `theme.charcoal`.
 /// - Bottom edge: 1px hairline (`theme.hairline`).
 /// - Left: project_kind icon + cwd basename · git branch (muted/accent).
-/// - Right: kube_context · head_short.
+/// - Right: editor segment (when Live) · kube_context · head_short.
 /// - Sections omitted when data is absent; no placeholder text.
+/// - `editor`: optional nvim snapshot. Rendered as `edit: <name>[•]` when
+///   `connection == Live`. Omitted otherwise.
 pub fn draw_context_bar(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
     metrics: FontMetrics,
     theme: &Theme,
     local: &LocalContext,
+    editor: Option<&EditorSnapshot>,
     rect: Rect,
 ) {
     let bar_w = rect.w;
@@ -99,6 +104,16 @@ pub fn draw_context_bar(
 
     // ── Right section ─────────────────────────────────────────────────────────
 
+    // Editor segment: "edit: <name>" or "edit: <name>•" when Live + modified.
+    let editor_owned: Option<String> = editor.and_then(|snap| {
+        if snap.connection != ConnectionState::Live {
+            return None;
+        }
+        let name = snap.buffer_name.as_deref().unwrap_or("[no name]");
+        let suffix = if snap.modified { "\u{2022}" } else { "" }; // •
+        Some(format!("edit: {name}{suffix}"))
+    });
+
     // Build the right string segments.
     let kube_str: Option<String> = local
         .kube_context
@@ -113,6 +128,13 @@ pub fn draw_context_bar(
 
     // Assemble right text width for right-alignment.
     let mut right_parts: Vec<(&str, [u8; 3])> = Vec::new();
+    let editor_str_ref: Option<&str> = editor_owned.as_deref();
+    if let Some(es) = editor_str_ref {
+        right_parts.push((es, theme.text_muted));
+        if kube_str.is_some() || head_str.is_some() {
+            right_parts.push((" \u{00b7} ", theme.text_muted));
+        }
+    }
     let kube_owned;
     if let Some(ref ks) = kube_str {
         kube_owned = ks.clone();
@@ -185,7 +207,7 @@ mod tests {
         let mut p = StubPainter::default();
         r.clear([0, 0, 0]);
 
-        draw_context_bar(&mut r, &mut p, m, &th, &LocalContext::default(), bar_rect());
+        draw_context_bar(&mut r, &mut p, m, &th, &LocalContext::default(), None, bar_rect());
 
         let px = pixel_at(&r, 4, 42); // inside the bar
         assert_ne!(px, th.background, "bar background must be painted");
@@ -199,7 +221,7 @@ mod tests {
         let mut r = Raster::new(800, 100);
         let mut p = StubPainter::default();
         let zero = Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 };
-        draw_context_bar(&mut r, &mut p, m, &th, &LocalContext::default(), zero);
+        draw_context_bar(&mut r, &mut p, m, &th, &LocalContext::default(), None, zero);
     }
 
     // CWD basename appears in text_muted.
@@ -214,7 +236,7 @@ mod tests {
             cwd: "/Users/test/anvil".to_string(),
             ..LocalContext::default()
         };
-        draw_context_bar(&mut r, &mut p, m, &th, &local, bar_rect());
+        draw_context_bar(&mut r, &mut p, m, &th, &local, None, bar_rect());
 
         let muted: Vec<char> = p
             .calls
@@ -240,7 +262,7 @@ mod tests {
             git_dirty: 2,
             ..LocalContext::default()
         };
-        draw_context_bar(&mut r, &mut p, m, &th, &local, bar_rect());
+        draw_context_bar(&mut r, &mut p, m, &th, &local, None, bar_rect());
 
         let accent_chars: Vec<char> = p
             .calls
@@ -269,7 +291,7 @@ mod tests {
             git_dirty: 0,
             ..LocalContext::default()
         };
-        draw_context_bar(&mut r, &mut p, m, &th, &local, bar_rect());
+        draw_context_bar(&mut r, &mut p, m, &th, &local, None, bar_rect());
 
         let subtle_chars: Vec<char> = p
             .calls
@@ -297,7 +319,7 @@ mod tests {
             branch: String::new(),
             ..LocalContext::default()
         };
-        draw_context_bar(&mut r, &mut p, m, &th, &local, bar_rect());
+        draw_context_bar(&mut r, &mut p, m, &th, &local, None, bar_rect());
 
         // No accent or text_subtle calls (branch is the only user of those on left).
         let accent_or_subtle = p
@@ -319,7 +341,7 @@ mod tests {
             head_short: "abc1234".to_string(),
             ..LocalContext::default()
         };
-        draw_context_bar(&mut r, &mut p, m, &th, &local, bar_rect());
+        draw_context_bar(&mut r, &mut p, m, &th, &local, None, bar_rect());
 
         let subtle_chars: Vec<char> = p
             .calls
@@ -331,5 +353,56 @@ mod tests {
             subtle_chars.contains(&'a'),
             "expected head_short 'a' in text_subtle, got {subtle_chars:?}"
         );
+    }
+
+    // Editor segment rendered in text_muted when connection is Live.
+    #[test]
+    fn editor_segment_shown_when_live() {
+        let m = font_metrics();
+        let th = theme();
+        let mut r = Raster::new(800, 100);
+        let mut p = StubPainter::default();
+
+        let snap = EditorSnapshot {
+            connection: ConnectionState::Live,
+            buffer_name: Some("foo.rs".to_string()),
+            modified: false,
+            ..EditorSnapshot::default()
+        };
+        draw_context_bar(
+            &mut r, &mut p, m, &th, &LocalContext::default(), Some(&snap), bar_rect(),
+        );
+
+        let muted_chars: Vec<char> = p
+            .calls
+            .iter()
+            .filter(|(_, fg)| *fg == th.text_muted)
+            .filter_map(|(cp, _)| char::from_u32(*cp))
+            .collect();
+        assert!(
+            muted_chars.contains(&'f'),
+            "expected 'f' from 'foo.rs' in text_muted, got {muted_chars:?}"
+        );
+    }
+
+    // Editor segment omitted when Disconnected.
+    #[test]
+    fn editor_segment_omitted_when_disconnected() {
+        let m = font_metrics();
+        let th = theme();
+        let mut r = Raster::new(800, 100);
+        let mut p = StubPainter::default();
+
+        let snap = EditorSnapshot {
+            connection: ConnectionState::Disconnected,
+            buffer_name: Some("foo.rs".to_string()),
+            ..EditorSnapshot::default()
+        };
+        draw_context_bar(
+            &mut r, &mut p, m, &th, &LocalContext::default(), Some(&snap), bar_rect(),
+        );
+
+        // No glyphs should appear (LocalContext is empty; snap is Disconnected).
+        assert!(p.calls.is_empty(), "no glyphs expected when Disconnected");
     }
 }
