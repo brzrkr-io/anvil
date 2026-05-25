@@ -71,7 +71,8 @@ use anvil_control::bridge::{
 
 use objc2::rc::Retained;
 use objc2_app_kit::NSWindow;
-use objc2_foundation::{MainThreadMarker, NSSize};
+use objc2_foundation::{MainThreadMarker, NSSize, NSTimer};
+use block2::RcBlock;
 
 // ── Embedded assets ──────────────────────────────────────────────────────────
 
@@ -2108,9 +2109,20 @@ impl AppShell {
         } else {
             (self.app.view_width_pt - HUD_WIDTH_PT).max(400.0)
         };
-        self.window
-            .setContentSize(NSSize::new(new_w, self.app.view_height_pt));
+        let new_h = self.app.view_height_pt;
         self.app.dirty = true;
+
+        // setContentSize fires the windowDidResize delegate callback
+        // synchronously, which re-enters the AppHandler RefCell. Defer to
+        // the next runloop iteration via a 0-delay NSTimer so the current
+        // borrow (from perform_key_equivalent / key_down) drops first.
+        let window = self.window.clone();
+        let block = RcBlock::new(move |_timer: std::ptr::NonNull<NSTimer>| {
+            window.setContentSize(NSSize::new(new_w, new_h));
+        });
+        unsafe {
+            NSTimer::scheduledTimerWithTimeInterval_repeats_block(0.0, false, &block);
+        }
     }
 }
 

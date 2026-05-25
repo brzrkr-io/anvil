@@ -38,6 +38,7 @@ dependencies = [
  "anvil-theme",
  "anvil-workspace",
  "anyhow",
+ "block2",
  "libc",
  "objc2",
  "objc2-app-kit",
