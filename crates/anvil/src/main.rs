@@ -1725,9 +1725,10 @@ impl App {
                     self.raster.origin_y = e.rect.y;
 
                     let cursor_params = if e.id == focused_id {
+                        let cur = pane.terminal.cursor();
                         Some(anvil_render::CursorParams {
-                            ax: pane.cursor_ax,
-                            ay: pane.cursor_ay,
+                            ax: cur.x as f32,
+                            ay: cur.y as f32,
                             blink_phase: self.blink_phase,
                             cfg: self.cursor_cfg,
                         })
@@ -2448,36 +2449,6 @@ impl AppHandler for AppShell {
                 .is_some_and(|p| p.terminal.any_block_completed_within(within));
             if pulsing {
                 app.dirty = true;
-            }
-        }
-
-        // Cursor: ease toward the terminal cursor position each tick.
-        //
-        // The dirty-row tracker marks floor/ceil of cursor_ay so intermediate
-        // rows are cleared, avoiding the stale-pixel "cursor trail" bug.
-        if let Some(tab) = app.tabs.current_mut() {
-            let id = tab.focused_id();
-            if let Some(pane) = tab.registry.get_mut(id) {
-                let cur = pane.terminal.cursor();
-                let tx = cur.x as f32;
-                let ty = cur.y as f32;
-                // First-frame snap: if still at default (0,0) and cursor isn't,
-                // jump immediately rather than animating from the top-left.
-                if pane.cursor_ax == 0.0 && pane.cursor_ay == 0.0 && (tx != 0.0 || ty != 0.0) {
-                    pane.cursor_ax = tx;
-                    pane.cursor_ay = ty;
-                    app.dirty = true;
-                } else {
-                    let dx = tx - pane.cursor_ax;
-                    let dy = ty - pane.cursor_ay;
-                    if dx.abs() > 0.0 || dy.abs() > 0.0 {
-                        pane.cursor_ax += dx * 0.35;
-                        pane.cursor_ay += dy * 0.35;
-                        if dx.abs() < 0.02 { pane.cursor_ax = tx; }
-                        if dy.abs() < 0.02 { pane.cursor_ay = ty; }
-                        app.dirty = true;
-                    }
-                }
             }
         }
 
