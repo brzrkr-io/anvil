@@ -31,6 +31,34 @@ pub struct DirSnapshot {
     pub entries: Vec<DirEntry>,
 }
 
+/// Render-side mirror of `anvil_editor::bridge::SymbolKind`.
+/// Duplicated so `anvil-render` stays independent of `anvil-editor`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutlineKind {
+    Function,
+    Method,
+    Class,
+    Struct,
+    Enum,
+    Interface,
+    Module,
+    Property,
+    Constant,
+    Variable,
+    Other,
+}
+
+/// A single row in the outline panel (render-side representation).
+/// Duplicated from `anvil_editor::bridge::OutlineSymbol` for the same reason
+/// as `DirEntry` — `anvil-render` must not depend on `anvil-editor`.
+#[derive(Debug, Clone)]
+pub struct OutlineRow {
+    pub name: String,
+    pub kind: OutlineKind,
+    /// Nesting depth (0 = top-level). Used to compute left indent.
+    pub depth: u8,
+}
+
 // ── Row geometry ──────────────────────────────────────────────────────────────
 
 /// Height of a section header row in pixels (fixed; chrome font sized).
@@ -50,6 +78,8 @@ const PAD_X: f64 = 8.0;
 /// - Right-edge 1px hairline: `theme.hairline`.
 /// - 60/40 vertical split: Explorer (top) / Outline (bottom) with a hairline divider.
 /// - `snapshot`: the latest directory listing; `None` means "waiting for cwd".
+/// - `outline`: `None` = not yet ready (shows placeholder text); `Some(&[])` = no
+///   symbols; `Some(rows)` = symbol list.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_left_dock(
     raster: &mut Raster,
@@ -57,6 +87,7 @@ pub fn draw_left_dock(
     metrics: FontMetrics,
     theme: &Theme,
     snapshot: Option<&DirSnapshot>,
+    outline: Option<&[OutlineRow]>,
     rect: Rect,
 ) {
     if rect.w <= 0.0 || rect.h <= 0.0 {
@@ -85,7 +116,7 @@ pub fn draw_left_dock(
     raster.fill_pixel_rect(rect.x, rect.y + explorer_h, rect.w - 1.0, 1.0, theme.hairline);
 
     draw_explorer_section(raster, painter, metrics, theme, snapshot, explorer_rect);
-    draw_outline_section(raster, painter, metrics, theme, outline_rect);
+    draw_outline_section(raster, painter, metrics, theme, outline, outline_rect);
 }
 
 // ── Explorer section ──────────────────────────────────────────────────────────
@@ -209,9 +240,11 @@ fn draw_outline_section(
     painter: &mut dyn GlyphPainter,
     metrics: FontMetrics,
     theme: &Theme,
+    outline: Option<&[OutlineRow]>,
     rect: Rect,
 ) {
     let cell_h = metrics.cell_h;
+    let cell_w = metrics.cell_w;
 
     // ── Header row ────────────────────────────────────────────────────────────
     let header_y = rect.y + ((HEADER_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
@@ -227,34 +260,113 @@ fn draw_outline_section(
     );
     raster.fill_pixel_rect(rect.x, rect.y + HEADER_H - 1.0, rect.w, 1.0, theme.hairline);
 
-    // ── Empty-state content ───────────────────────────────────────────────────
     let content_y = rect.y + HEADER_H;
-    let row1_y = content_y + ((ROW_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
-    draw_text_run(
-        raster,
-        painter,
-        metrics,
-        "Outline unavailable",
-        theme.text_muted,
-        rect.x + PAD_X,
-        row1_y,
-        rect.x + rect.w,
-    );
+    let content_h = rect.h - HEADER_H;
+    if content_h <= 0.0 {
+        return;
+    }
 
-    // Second line at 50% alpha: blend text_subtle toward charcoal.
-    if rect.h > HEADER_H + ROW_H {
-        let row2_y = row1_y + ROW_H;
-        let muted_50 = blend_50(theme.text_subtle, theme.charcoal);
-        draw_text_run(
-            raster,
-            painter,
-            metrics,
-            "Requires nvim bridge (BR5)",
-            muted_50,
-            rect.x + PAD_X,
-            row2_y,
-            rect.x + rect.w,
-        );
+    match outline {
+        None => {
+            // Bridge not Live or first pull pending — existing placeholder text.
+            let row1_y = content_y + ((ROW_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+            draw_text_run(
+                raster,
+                painter,
+                metrics,
+                "Outline unavailable",
+                theme.text_muted,
+                rect.x + PAD_X,
+                row1_y,
+                rect.x + rect.w,
+            );
+            if content_h > ROW_H {
+                let row2_y = row1_y + ROW_H;
+                let muted_50 = blend_50(theme.text_subtle, theme.charcoal);
+                draw_text_run(
+                    raster,
+                    painter,
+                    metrics,
+                    "Requires nvim bridge (BR5)",
+                    muted_50,
+                    rect.x + PAD_X,
+                    row2_y,
+                    rect.x + rect.w,
+                );
+            }
+        }
+        Some([]) => {
+            // Server attached but no symbols.
+            let row_y = content_y + ((ROW_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+            draw_text_run(
+                raster,
+                painter,
+                metrics,
+                "No symbols",
+                theme.text_subtle,
+                rect.x + PAD_X,
+                row_y,
+                rect.x + rect.w,
+            );
+        }
+        Some(rows) => {
+            let available_rows = (content_h / ROW_H).floor() as usize;
+            for (i, row) in rows.iter().enumerate() {
+                if i >= available_rows {
+                    break;
+                }
+                let row_top = content_y + i as f64 * ROW_H;
+                let glyph_y = row_top
+                    + ((ROW_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+
+                // Indent: 2 cells per depth level.
+                let indent_cells = row.depth as usize * 2;
+                let indent_px = indent_cells as f64 * cell_w;
+                let x_start = rect.x + PAD_X + indent_px;
+                let x_max = rect.x + rect.w - PAD_X;
+
+                // Kind glyph.
+                let glyph = outline_kind_glyph(row.kind);
+                draw_text_run(
+                    raster,
+                    painter,
+                    metrics,
+                    glyph,
+                    theme.accent_primary,
+                    x_start,
+                    glyph_y,
+                    x_max,
+                );
+
+                // Name: one cell after the glyph + one space gap.
+                let name_x = x_start + cell_w * 2.0;
+                let max_name_chars =
+                    ((x_max - name_x) / cell_w).floor().max(0.0) as usize;
+                let truncated = truncate_name(&row.name, max_name_chars);
+                draw_text_run(
+                    raster,
+                    painter,
+                    metrics,
+                    &truncated,
+                    theme.text_muted,
+                    name_x,
+                    glyph_y,
+                    x_max,
+                );
+            }
+        }
+    }
+}
+
+/// Return the single-character glyph string for a symbol kind.
+fn outline_kind_glyph(kind: OutlineKind) -> &'static str {
+    match kind {
+        OutlineKind::Function | OutlineKind::Method => "\u{0192}", // ƒ
+        OutlineKind::Class
+        | OutlineKind::Struct
+        | OutlineKind::Enum => "\u{25a2}", // ▢
+        OutlineKind::Module => "\u{2699}", // ⚙
+        _ => "\u{00b7}", // ·
     }
 }
 
@@ -354,7 +466,7 @@ mod tests {
         let mut r = Raster::new(800, 800);
         let mut p = StubPainter::default();
         let zero = Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 };
-        draw_left_dock(&mut r, &mut p, m, &th, None, zero);
+        draw_left_dock(&mut r, &mut p, m, &th, None, None, zero);
         // No panic = pass.
     }
 
@@ -366,7 +478,7 @@ mod tests {
         let mut r = Raster::new(800, 800);
         let mut p = StubPainter::default();
 
-        draw_left_dock(&mut r, &mut p, m, &th, None, dock_rect());
+        draw_left_dock(&mut r, &mut p, m, &th, None, None, dock_rect());
 
         // "Waiting" → 'W' codepoint 87
         let waiting_w: Vec<_> = p
@@ -386,7 +498,7 @@ mod tests {
         let mut p = StubPainter::default();
 
         let snap = DirSnapshot { root: "/anvil".to_string(), entries: vec![] };
-        draw_left_dock(&mut r, &mut p, m, &th, Some(&snap), dock_rect());
+        draw_left_dock(&mut r, &mut p, m, &th, Some(&snap), None, dock_rect());
 
         // "(empty)" → '(' codepoint 40
         let paren: Vec<_> = p
@@ -412,7 +524,7 @@ mod tests {
                 DirEntry { name: "main.rs".to_string(), is_dir: false },
             ],
         };
-        draw_left_dock(&mut r, &mut p, m, &th, Some(&snap), dock_rect());
+        draw_left_dock(&mut r, &mut p, m, &th, Some(&snap), None, dock_rect());
 
         // File entry 'm' should appear in text_muted.
         let file_m: Vec<_> = p
@@ -431,7 +543,7 @@ mod tests {
         assert!(!dir_s.is_empty(), "expected 's' in text_subtle for dir entry");
     }
 
-    /// Outline section always shows "Outline unavailable".
+    /// Outline section with `None` shows "Outline unavailable".
     #[test]
     fn outline_unavailable_always_shown() {
         let m = metrics();
@@ -439,7 +551,7 @@ mod tests {
         let mut r = Raster::new(800, 800);
         let mut p = StubPainter::default();
 
-        draw_left_dock(&mut r, &mut p, m, &th, None, dock_rect());
+        draw_left_dock(&mut r, &mut p, m, &th, None, None, dock_rect());
 
         // "Outline" → 'O' at 79
         let o_muted: Vec<_> = p
@@ -463,9 +575,59 @@ mod tests {
         r.clear([0, 0, 0]);
         let mut p = StubPainter::default();
 
-        draw_left_dock(&mut r, &mut p, m, &th, None, dock_rect());
+        draw_left_dock(&mut r, &mut p, m, &th, None, None, dock_rect());
 
         let px = pixel_at(&r, 50, 400); // middle of dock
         assert_eq!(px, th.charcoal, "dock background must be charcoal");
+    }
+
+    /// `Some(&[])` → "No symbols" row painted in text_subtle.
+    #[test]
+    fn left_dock_renders_outline_no_symbols() {
+        let m = metrics();
+        let th = theme();
+        let mut r = Raster::new(800, 800);
+        let mut p = StubPainter::default();
+
+        draw_left_dock(&mut r, &mut p, m, &th, None, Some(&[]), dock_rect());
+
+        // "No symbols" → 'N' in text_subtle
+        let n_subtle: Vec<_> = p
+            .glyphs
+            .iter()
+            .filter(|(cp, fg)| *cp == 'N' as u32 && *fg == th.text_subtle)
+            .collect();
+        assert!(!n_subtle.is_empty(), "expected 'N' in text_subtle for 'No symbols' row");
+    }
+
+    /// `Some(rows)` → symbol names painted in text_muted.
+    #[test]
+    fn left_dock_renders_outline_with_rows() {
+        let m = metrics();
+        let th = theme();
+        let mut r = Raster::new(800, 800);
+        let mut p = StubPainter::default();
+
+        let rows = vec![
+            OutlineRow { name: "my_fn".to_string(), kind: OutlineKind::Function, depth: 0 },
+            OutlineRow { name: "MyStruct".to_string(), kind: OutlineKind::Struct, depth: 0 },
+        ];
+        draw_left_dock(&mut r, &mut p, m, &th, None, Some(&rows), dock_rect());
+
+        // 'm' from "my_fn" should appear in text_muted.
+        let m_muted: Vec<_> = p
+            .glyphs
+            .iter()
+            .filter(|(cp, fg)| *cp == 'm' as u32 && *fg == th.text_muted)
+            .collect();
+        assert!(!m_muted.is_empty(), "expected 'm' in text_muted for function symbol name");
+
+        // ƒ glyph (0x0192) should appear in accent_primary.
+        let f_accent: Vec<_> = p
+            .glyphs
+            .iter()
+            .filter(|(cp, fg)| *cp == '\u{0192}' as u32 && *fg == th.accent_primary)
+            .collect();
+        assert!(!f_accent.is_empty(), "expected ƒ glyph in accent_primary for function kind");
     }
 }

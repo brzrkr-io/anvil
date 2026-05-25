@@ -55,7 +55,7 @@ use anvil_render::raster::Raster;
 use anvil_render::searchbar::draw_search_bar;
 use anvil_render::tabbar::{TabBarHitKind, TabBarHits, draw_tab_bar};
 use anvil_render::workspace::{DIVIDER_PX, draw_workspace, draw_workspace_chrome};
-use anvil_render::{CellBatch, FoldedBlocks, GridPainters, LeftDockSnapshot, draw_left_dock, draw_viewport_gpu};
+use anvil_render::{CellBatch, FoldedBlocks, GridPainters, LeftDockSnapshot, OutlineKind, OutlineRow, draw_left_dock, draw_viewport_gpu};
 use anvil_term::DirtySet;
 use anvil_theme::{Theme, resolve as resolve_theme};
 use anvil_workspace::interact;
@@ -607,12 +607,14 @@ impl App {
         let cw = self.font.metrics.cell_w;
         let ch = self.font.metrics.cell_h;
         let top_bar_px = self.chrome_top_px();
-        let bot_bar_px = self.chrome_bottom_px();
+        // Bottom status bar is owned by Docks::compute_areas (it returns a
+        // bottom_bar Rect and subtracts bottom_h from pane_h). Subtracting it
+        // here too would double-count and shrink the pane area.
         Rect {
             x: GRID_PAD as f64,
             y: top_bar_px,
             w: (dw as f64 - GRID_PAD as f64).max(cw),
-            h: (dh as f64 - top_bar_px - bot_bar_px).max(ch),
+            h: (dh as f64 - top_bar_px).max(ch),
         }
     }
 
@@ -1838,12 +1840,49 @@ impl App {
                 self.editor_snapshot.as_ref(),
                 areas.top_bar,
             );
+            // Convert editor outline to render-side types for the left dock.
+            let outline_rows: Option<Vec<OutlineRow>> =
+                self.editor_snapshot.as_ref().and_then(|es| {
+                    use anvil_editor::{OutlineState, SymbolKind};
+                    if es.connection != anvil_editor::ConnectionState::Live {
+                        return None;
+                    }
+                    match es.outline_state {
+                        OutlineState::Ready => {
+                            let rows = es
+                                .outline
+                                .iter()
+                                .map(|sym| OutlineRow {
+                                    name: sym.name.clone(),
+                                    kind: match sym.kind {
+                                        SymbolKind::Function => OutlineKind::Function,
+                                        SymbolKind::Method => OutlineKind::Method,
+                                        SymbolKind::Class => OutlineKind::Class,
+                                        SymbolKind::Struct => OutlineKind::Struct,
+                                        SymbolKind::Enum => OutlineKind::Enum,
+                                        SymbolKind::Interface => OutlineKind::Interface,
+                                        SymbolKind::Module => OutlineKind::Module,
+                                        SymbolKind::Property => OutlineKind::Property,
+                                        SymbolKind::Constant => OutlineKind::Constant,
+                                        SymbolKind::Variable => OutlineKind::Variable,
+                                        SymbolKind::Other => OutlineKind::Other,
+                                    },
+                                    depth: sym.depth,
+                                })
+                                .collect();
+                            Some(rows)
+                        }
+                        OutlineState::NoServer => Some(vec![]),
+                        _ => None,
+                    }
+                });
             draw_left_dock(
                 &mut self.raster,
                 chrome_painter,
                 chrome_metrics,
                 &self.theme,
                 self.fs_snapshot.as_ref(),
+                outline_rows.as_deref(),
                 areas.left_dock,
             );
         }

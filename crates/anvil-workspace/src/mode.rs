@@ -75,8 +75,11 @@ impl Docks {
         chrome_bottom_px: f64,
     ) -> Self {
         let cw = metrics.cell_w;
-        // hud_cols * cw + 1 cell of breathing room (matches legacy inner_rect formula)
-        let hud_w = metrics.hud_cols as f64 * cw + cw;
+        // Must match the actual HUD paint width in main.rs::render_frame:
+        // surface_w_px = hud_cols * cw + GRID_PAD.
+        // Mismatch with the carve-out (formerly + cw) caused a horizontal
+        // gap or overlap between pane area and HUD strip when GRID_PAD ≠ cw.
+        let hud_w = metrics.hud_cols as f64 * cw + metrics.grid_pad;
 
         match mode {
             LayoutMode::Terminal | LayoutMode::Codex => {
