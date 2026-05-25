@@ -14,12 +14,12 @@
 //!   `theme.accent`.
 //! - Selection wash: `fill_pixel_rect_alpha` over selected cells at α=0.18
 //!   using `theme.accent_ember`.
-//! - No syntax color (NE8). No soft-wrap (long lines clip).
+//! - Per-grapheme syntax color via `SyntaxLayer::highlights_for_range` (NE8). No soft-wrap (long lines clip).
 //! - Scroll is integer-row-aligned: `floor(editor_pane.scroll_pos)`.
 
 use unicode_segmentation::UnicodeSegmentation as _;
 
-use anvil_editor::Buffer;
+use anvil_editor::{Buffer, SyntaxRole};
 use anvil_theme::Theme;
 use anvil_workspace::{editor_pane::EditorPane, layout::Rect, selection::Selection};
 
@@ -66,6 +66,11 @@ pub fn draw_editor_into(
     // ── Selection bounds (pre-compute for wash pass) ──────────────────────────
     let sel = &editor_pane.selection;
 
+    // ── Full buffer text — computed once per frame for syntax queries. ────────
+    // TODO: replace with streaming / viewport-only allocation when buffers
+    // exceed typical sizes.
+    let full_text = buffer.to_text();
+
     // ── Row loop ──────────────────────────────────────────────────────────────
     for vrow in 0..visible_rows {
         let line_idx = scroll_line + vrow;
@@ -90,10 +95,19 @@ pub fn draw_editor_into(
         }
 
         // ── Buffer content ────────────────────────────────────────────────────
+        let line_byte_start = buffer.line_to_byte(line_idx);
         let line_slice = buffer.line(line_idx);
         let line_str: String = line_slice.chars().collect();
         // Strip trailing newline before grapheme iteration.
         let line_content = line_str.trim_end_matches('\n').trim_end_matches('\r');
+        let line_byte_end = line_byte_start + line_content.len();
+
+        // Per-line syntax highlights (empty when no language is set).
+        let highlights = buffer.syntax().highlights_for_range(
+            line_byte_start,
+            line_byte_end,
+            &full_text,
+        );
 
         let graphemes: Vec<&str> = line_content.graphemes(true).collect();
         let mut painted = 0usize;
@@ -104,14 +118,37 @@ pub fn draw_editor_into(
             content_cols
         };
 
+        // Track the byte offset within the line as we walk graphemes.
+        let mut grapheme_byte = line_byte_start;
         for (col, g) in graphemes.iter().enumerate() {
             if col >= paint_limit {
                 break;
             }
+            // Resolve syntax color for the byte position of this grapheme.
+            let b = grapheme_byte;
+            let role = highlights
+                .iter()
+                .find(|(r, _)| r.contains(&b))
+                .map(|(_, role)| *role)
+                .unwrap_or(SyntaxRole::Plain);
+            let fg = match role {
+                SyntaxRole::Plain      => theme.foreground,
+                SyntaxRole::Keyword    => theme.syntax.keyword,
+                SyntaxRole::String     => theme.syntax.string,
+                SyntaxRole::Number     => theme.syntax.number,
+                SyntaxRole::Comment    => theme.syntax.comment,
+                SyntaxRole::Function   => theme.syntax.function,
+                SyntaxRole::Type       => theme.syntax.type_,
+                SyntaxRole::Variable   => theme.syntax.variable,
+                SyntaxRole::Operator   => theme.syntax.operator,
+                SyntaxRole::Punctuation => theme.syntax.punctuation,
+            };
+
             // Use the first scalar of the grapheme cluster as the glyph key.
             let cp = g.chars().next().unwrap_or(' ') as u32;
             let gx = rect.x + gutter_w + col as f64 * cw;
-            raster.glyph_at(painter, metrics, gx, row_y, cp, theme.foreground);
+            raster.glyph_at(painter, metrics, gx, row_y, cp, fg);
+            grapheme_byte += g.len();
             painted = col + 1;
         }
 
@@ -496,6 +533,66 @@ mod tests {
         assert!(
             fg_cps.contains(&('3' as u32)),
             "'3' from line 3 must appear in fg glyphs"
+        );
+    }
+
+    // ── draw_editor_paints_keyword_color_on_fn_keyword ────────────────────────
+
+    /// A Rust buffer containing "fn main() {}" must paint 'f' and 'n' with
+    /// `theme.syntax.keyword`, not with `theme.foreground`.
+    ///
+    /// This verifies that `draw_editor_into` wires the per-grapheme syntax
+    /// color lookup introduced in NE8.
+    #[test]
+    fn draw_editor_paints_keyword_color_on_fn_keyword() {
+        let src = "fn main() {}\n";
+        let mut buf = Buffer::from_text(src);
+        // Set Rust language and parse so highlight data is available.
+        buf.syntax.set_language_from_path(std::path::Path::new("x.rs"));
+        buf.syntax.parse(src);
+
+        let pane = make_pane(1);
+        let mut raster = Raster::new(400, 200);
+        let mut painter = CapturePainter::default();
+        let theme = MINERAL_DARK;
+
+        draw_editor_into(
+            &mut raster,
+            &mut painter,
+            &pane,
+            &buf,
+            metrics(),
+            &theme,
+            rect(),
+        );
+
+        // 'f' and 'n' must be painted with the keyword color.
+        let keyword_cps: Vec<u32> = painter
+            .calls
+            .iter()
+            .filter(|(_, fg)| *fg == theme.syntax.keyword)
+            .map(|(cp, _)| *cp)
+            .collect();
+
+        assert!(
+            keyword_cps.contains(&('f' as u32)),
+            "'f' must be painted with keyword color; keyword_cps: {keyword_cps:?}"
+        );
+        assert!(
+            keyword_cps.contains(&('n' as u32)),
+            "'n' must be painted with keyword color; keyword_cps: {keyword_cps:?}"
+        );
+
+        // Neither 'f' nor 'n' should appear in plain foreground calls.
+        let fg_cps: Vec<u32> = painter
+            .calls
+            .iter()
+            .filter(|(_, fg)| *fg == theme.foreground)
+            .map(|(cp, _)| *cp)
+            .collect();
+        assert!(
+            !fg_cps.contains(&('f' as u32)),
+            "'f' must not be painted as plain foreground; fg_cps: {fg_cps:?}"
         );
     }
 }

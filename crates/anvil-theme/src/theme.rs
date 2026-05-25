@@ -8,6 +8,25 @@ use serde::{Deserialize, Serialize};
 
 use crate::color::hex_to_rgb;
 
+// ── SyntaxTheme ──────────────────────────────────────────────────────────────
+
+/// Per-role colors used by the syntax-highlighting layer (NE8).
+///
+/// Each field is an RGB triple. The render path falls back to `Theme::foreground`
+/// when a token carries no role.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct SyntaxTheme {
+    pub keyword: [u8; 3],
+    pub string: [u8; 3],
+    pub number: [u8; 3],
+    pub comment: [u8; 3],
+    pub function: [u8; 3],
+    pub type_: [u8; 3],
+    pub variable: [u8; 3],
+    pub operator: [u8; 3],
+    pub punctuation: [u8; 3],
+}
+
 // ── WCAG contrast helpers ────────────────────────────────────────────────────
 
 /// WCAG 2.x contrast ratio between two sRGB colors.
@@ -83,6 +102,8 @@ pub struct Theme {
     pub agent: [u8; 3],
     /// Branch glyph, trace, info. Reads teal.
     pub info: [u8; 3],
+    /// Syntax-highlight role colors (NE8).
+    pub syntax: SyntaxTheme,
 }
 
 impl Theme {
@@ -149,6 +170,17 @@ pub const EMBER_DARK: Theme = Theme {
     attention: [0xc4, 0x8c, 0x1c],
     agent: [0x7d, 0x72, 0xbc],
     info: [0x3d, 0x8e, 0x94],
+    syntax: SyntaxTheme {
+        keyword:     [0xde, 0x70, 0x48], // accent_bright
+        string:      [0x4e, 0x9e, 0x68], // verified
+        number:      [0xc4, 0x8c, 0x1c], // attention
+        comment:     [0x6a, 0x63, 0x60], // text_subtle
+        function:    [0x3d, 0x8e, 0x94], // info
+        type_:       [0x7d, 0x72, 0xbc], // agent
+        variable:    [0xdc, 0xd8, 0xd2], // foreground
+        operator:    [0x9e, 0x96, 0x90], // text_muted
+        punctuation: [0x6a, 0x63, 0x60], // text_subtle
+    },
 };
 
 /// Ember Light — warm off-white canvas with Revision 2 token values.
@@ -193,6 +225,17 @@ pub const EMBER_LIGHT: Theme = Theme {
     attention: [0x6f, 0x4d, 0x08],
     agent: [0x44, 0x38, 0x79],
     info: [0x1f, 0x5e, 0x66],
+    syntax: SyntaxTheme {
+        keyword:     [0xc5, 0x46, 0x2a], // accent_bright
+        string:      [0x1f, 0x5e, 0x36], // verified
+        number:      [0x6f, 0x4d, 0x08], // attention
+        comment:     [0x8a, 0x7e, 0x72], // text_subtle
+        function:    [0x1f, 0x5e, 0x66], // info
+        type_:       [0x44, 0x38, 0x79], // agent
+        variable:    [0x1e, 0x1a, 0x17], // foreground
+        operator:    [0x52, 0x45, 0x3c], // text_muted
+        punctuation: [0x8a, 0x7e, 0x72], // text_subtle
+    },
 };
 
 /// Mineral Dark — a soft, slightly-pastel palette on a calm (not pure-black)
@@ -243,6 +286,17 @@ pub const MINERAL_DARK: Theme = Theme {
     attention: [0xb0, 0x7a, 0x14],
     agent: [0x6a, 0x5f, 0xa3],
     info: [0x54, 0xb7, 0xc0],
+    syntax: SyntaxTheme {
+        keyword:     [0x54, 0xb7, 0xc0], // accent_bright
+        string:      [0x3f, 0x8a, 0x5b], // verified
+        number:      [0xb0, 0x7a, 0x14], // attention
+        comment:     [0x6c, 0x6f, 0x74], // text_subtle
+        function:    [0x54, 0xb7, 0xc0], // info
+        type_:       [0x6a, 0x5f, 0xa3], // agent
+        variable:    [0xd8, 0xdb, 0xe2], // foreground
+        operator:    [0xa1, 0xa4, 0xa9], // text_muted
+        punctuation: [0x6c, 0x6f, 0x74], // text_subtle
+    },
 };
 
 /// Mineral Light — a refined reader-mode palette on the brand bone canvas.
@@ -292,6 +346,17 @@ pub const MINERAL_LIGHT: Theme = Theme {
     attention: [0x94, 0x64, 0x10],
     agent: [0x62, 0x55, 0x8f],
     info: [0x28, 0x6e, 0x76],
+    syntax: SyntaxTheme {
+        keyword:     [0x28, 0x6e, 0x76], // accent_bright
+        string:      [0x32, 0x79, 0x52], // verified
+        number:      [0x94, 0x64, 0x10], // attention
+        comment:     [0x6c, 0x6f, 0x74], // text_subtle
+        function:    [0x28, 0x6e, 0x76], // info
+        type_:       [0x62, 0x55, 0x8f], // agent
+        variable:    [0x1b, 0x1f, 0x24], // foreground
+        operator:    [0xa1, 0xa4, 0xa9], // text_muted
+        punctuation: [0x6c, 0x6f, 0x74], // text_subtle
+    },
 };
 
 // ── Overrides ────────────────────────────────────────────────────────────────

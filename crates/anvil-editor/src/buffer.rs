@@ -10,6 +10,8 @@ use std::time::{Instant, SystemTime};
 
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::syntax::SyntaxLayer;
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -181,6 +183,8 @@ pub struct Buffer {
     tracked_path: Option<PathBuf>,
     /// mtime recorded at last open or save (NE2).
     tracked_mtime: Option<SystemTime>,
+    /// Tree-sitter syntax layer (NE8). Holds the parse tree and highlight cache.
+    pub syntax: SyntaxLayer,
 }
 
 impl Buffer {
@@ -195,6 +199,7 @@ impl Buffer {
             force_new_group: false,
             tracked_path: None,
             tracked_mtime: None,
+            syntax: SyntaxLayer::new(),
         }
     }
 
@@ -209,6 +214,7 @@ impl Buffer {
             force_new_group: false,
             tracked_path: None,
             tracked_mtime: None,
+            syntax: SyntaxLayer::new(),
         }
     }
 
@@ -242,6 +248,9 @@ impl Buffer {
         let mut buf = Buffer::from_text(&text);
         buf.tracked_path = Some(path.to_path_buf());
         buf.tracked_mtime = mtime;
+        // NE8: detect language by extension and do an initial full parse.
+        buf.syntax.set_language_from_path(path);
+        buf.syntax.parse(&text);
         Ok(buf)
     }
 
@@ -342,6 +351,16 @@ impl Buffer {
     /// Convert a 0-indexed line number to the char index of its first char.
     pub fn line_to_char(&self, line: usize) -> usize {
         self.rope.line_to_char(line)
+    }
+
+    /// Convert a 0-indexed line number to the byte offset of its first byte.
+    pub fn line_to_byte(&self, line: usize) -> usize {
+        self.rope.line_to_byte(line)
+    }
+
+    /// Return a reference to the syntax layer for this buffer.
+    pub fn syntax(&self) -> &SyntaxLayer {
+        &self.syntax
     }
 
     // -----------------------------------------------------------------------
@@ -460,6 +479,9 @@ impl Buffer {
         // Mutate the rope.
         self.apply_edit_internal(&edit);
         self.revisions += 1;
+
+        // NE8: invalidate the syntax highlight cache on every edit.
+        self.syntax.invalidate();
 
         // Clear redo — any new edit invalidates the redo path.
         self.undo_stack.redo.clear();
@@ -720,6 +742,7 @@ impl Buffer {
             force_new_group: false,
             tracked_path: None,
             tracked_mtime: None,
+            syntax: SyntaxLayer::new(),
         }
     }
 
@@ -732,6 +755,7 @@ impl Buffer {
     pub fn redo_depth(&self) -> usize {
         self.undo_stack.redo.len()
     }
+
 }
 
 #[cfg(test)]

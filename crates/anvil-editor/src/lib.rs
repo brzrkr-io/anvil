@@ -7,6 +7,7 @@
 
 pub mod buffer;
 pub mod nvim;
+pub mod syntax;
 
 // Re-export nvim bridge types for existing call sites in main.rs.
 pub use nvim::bridge::{
@@ -22,3 +23,4 @@ pub use buffer::{
     Buffer, BufferId, Cursor, Edit, EditProposal, EncodingError, GhostTextSpan, IoError, Position,
     Range,
 };
+pub use syntax::{SyntaxLayer, SyntaxRole};
