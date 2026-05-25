@@ -112,6 +112,23 @@ pub fn draw_workspace(
             folded,
             pane_dirty,
         );
+
+        // Living-scrollback indicator (item 20): paint a 4px ember bar at
+        // the bottom edge of the pane when the user is scrolled up and new
+        // output has arrived below.
+        let unseen = pane.unseen_rows();
+        if unseen > 0 {
+            let bar_h = 4.0_f64;
+            let bar_y = e.rect.y + e.rect.h - bar_h;
+            raster.fill_pixel_rect_alpha(
+                e.rect.x,
+                bar_y,
+                e.rect.w,
+                bar_h,
+                theme.accent_ember,
+                0.92,
+            );
+        }
     }
 
     // Reset origin before chrome draws in absolute space.

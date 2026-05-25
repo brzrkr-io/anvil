@@ -606,7 +606,10 @@ impl App {
         let cur = pane.terminal.cursor();
         pane.cursor_ax = cur.x as f32;
         pane.cursor_ay = cur.y as f32;
-        pane.scroll_pos = pane.terminal.viewport_offset() as f32;
+        let sp = pane.terminal.viewport_offset() as f32;
+        pane.scroll_pos = sp;
+        pane.scroll_target = sp;
+        pane.scroll_vel = 0.0;
     }
 
     /// Resize every pane in every tab to reflect the current window size.
@@ -704,7 +707,10 @@ impl App {
                 let id = tab.focused_id();
                 if let Some(pane) = tab.registry.get_mut(id) {
                     pane.terminal.scroll_to_line(m.row);
-                    pane.scroll_pos = pane.terminal.viewport_offset() as f32;
+                    let sp = pane.terminal.viewport_offset() as f32;
+                    pane.scroll_pos = sp;
+                    pane.scroll_target = sp;
+                    pane.scroll_vel = 0.0;
                 }
             }
         }
@@ -975,7 +981,10 @@ impl App {
         }
         if let Some(cr) = best {
             t.scroll_to_line(cr);
-            pane.scroll_pos = pane.terminal.viewport_offset() as f32;
+            let sp = pane.terminal.viewport_offset() as f32;
+            pane.scroll_pos = sp;
+            pane.scroll_target = sp;
+            pane.scroll_vel = 0.0;
             self.dirty = true;
         }
     }
@@ -1008,10 +1017,15 @@ impl App {
         }
         if let Some(cr) = best {
             t.scroll_to_line(cr);
-            pane.scroll_pos = pane.terminal.viewport_offset() as f32;
+            let sp = pane.terminal.viewport_offset() as f32;
+            pane.scroll_pos = sp;
+            pane.scroll_target = sp;
+            pane.scroll_vel = 0.0;
         } else {
             t.scroll_to_bottom();
             pane.scroll_pos = 0.0;
+            pane.scroll_target = 0.0;
+            pane.scroll_vel = 0.0;
         }
         self.dirty = true;
     }
@@ -1417,6 +1431,12 @@ impl App {
                             // Always redraw the cursor row (blink, move).
                             let cur = pane.terminal.cursor();
                             ds.mark(cur.y);
+                            // Mark rows covered by the animated cursor position so
+                            // intermediate pixels are cleared during smooth-move.
+                            let ay_floor = pane.cursor_ay.floor() as usize;
+                            let ay_ceil = pane.cursor_ay.ceil() as usize;
+                            ds.mark(ay_floor);
+                            ds.mark(ay_ceil);
                             // Also redraw the previous cursor row so stale cursor is erased.
                             if let Some(&prev) = self.cursor_row_prev.get(&e.id) {
                                 ds.mark(prev);
@@ -1446,8 +1466,9 @@ impl App {
                             if pane.selection.active {
                                 ds.force_full();
                             }
-                            // Update cursor_row_prev for next frame.
-                            self.cursor_row_prev.insert(e.id, cur.y);
+                            // Update cursor_row_prev to the animated row so the next
+                            // frame clears the correct pixel rows.
+                            self.cursor_row_prev.insert(e.id, pane.cursor_ay.round() as usize);
                             let _ = rows;
                             map.insert(e.id, ds);
                         }
@@ -1801,7 +1822,10 @@ impl App {
                     if let Some(pane) = tab.registry.get_mut(id) {
                         let len = pane.terminal.scrollback_len() as isize;
                         pane.terminal.scroll_viewport(len);
-                        pane.scroll_pos = pane.terminal.viewport_offset() as f32;
+                        let sp = pane.terminal.viewport_offset() as f32;
+                        pane.scroll_pos = sp;
+                        pane.scroll_target = sp;
+                        pane.scroll_vel = 0.0;
                     }
                 }
                 self.dirty = true;
@@ -1812,6 +1836,8 @@ impl App {
                     if let Some(pane) = tab.registry.get_mut(id) {
                         pane.terminal.scroll_to_bottom();
                         pane.scroll_pos = 0.0;
+                        pane.scroll_target = 0.0;
+                        pane.scroll_vel = 0.0;
                     }
                 }
                 self.dirty = true;
@@ -2395,22 +2421,66 @@ impl AppHandler for AppShell {
             }
         }
 
-        // Cursor: snap to target every frame. No animation.
+        // Cursor: ease toward the terminal cursor position each tick.
         //
-        // The previous code glided the cursor over ~6 ticks (~100ms). During
-        // that glide the cursor was drawn at fractional rows that the dirty
-        // tracker didn't know about, leaving stale cursor pixels at every
-        // intermediate row — the "cursor trail" bug.
+        // The dirty-row tracker marks floor/ceil of cursor_ay so intermediate
+        // rows are cleared, avoiding the stale-pixel "cursor trail" bug.
         if let Some(tab) = app.tabs.current_mut() {
             let id = tab.focused_id();
             if let Some(pane) = tab.registry.get_mut(id) {
                 let cur = pane.terminal.cursor();
                 let tx = cur.x as f32;
                 let ty = cur.y as f32;
-                if (tx - pane.cursor_ax).abs() > 0.0 || (ty - pane.cursor_ay).abs() > 0.0 {
+                // First-frame snap: if still at default (0,0) and cursor isn't,
+                // jump immediately rather than animating from the top-left.
+                if pane.cursor_ax == 0.0 && pane.cursor_ay == 0.0 && (tx != 0.0 || ty != 0.0) {
                     pane.cursor_ax = tx;
                     pane.cursor_ay = ty;
                     app.dirty = true;
+                } else {
+                    let dx = tx - pane.cursor_ax;
+                    let dy = ty - pane.cursor_ay;
+                    if dx.abs() > 0.0 || dy.abs() > 0.0 {
+                        pane.cursor_ax += dx * 0.35;
+                        pane.cursor_ay += dy * 0.35;
+                        if dx.abs() < 0.02 { pane.cursor_ax = tx; }
+                        if dy.abs() < 0.02 { pane.cursor_ay = ty; }
+                        app.dirty = true;
+                    }
+                }
+            }
+        }
+
+        // Smooth-scroll easing (item 21 + item 8).
+        // Eases scroll_pos toward scroll_target at factor 0.30 per frame.
+        // On snap (delta < 0.01), quantizes to the nearest integer row so
+        // the settled position never lands on a sub-pixel boundary.
+        if let Some(tab) = app.tabs.current_mut() {
+            let id = tab.focused_id();
+            if let Some(pane) = tab.registry.get_mut(id) {
+                let delta = pane.scroll_target - pane.scroll_pos;
+                if delta.abs() > 0.01 {
+                    pane.scroll_pos += delta * 0.30;
+                    pane.terminal
+                        .set_viewport_offset(pane.scroll_pos.round() as usize);
+                    app.dirty = true;
+                } else if delta.abs() > 0.0 {
+                    // Snap: quantize to nearest integer row (unit is rows).
+                    pane.scroll_pos = pane.scroll_target.round();
+                    pane.scroll_vel = 0.0;
+                    pane.terminal
+                        .set_viewport_offset(pane.scroll_pos as usize);
+                    app.dirty = true;
+                }
+
+                // Living-scrollback indicator (item 20): track how many new
+                // content rows have arrived while the user is scrolled up.
+                if pane.scroll_pos > 0.0 {
+                    if pane.unseen_baseline.is_none() {
+                        pane.unseen_baseline = Some(pane.terminal.line_count());
+                    }
+                } else {
+                    pane.unseen_baseline = None;
                 }
             }
         }
@@ -3152,8 +3222,8 @@ impl AppHandler for AppShell {
             let id = tab.focused_id();
             if let Some(pane) = tab.registry.get_mut(id) {
                 let max_pos = pane.terminal.scrollback_len() as f32;
-                let np = (pane.scroll_pos + d).clamp(0.0, max_pos);
-                pane.scroll_pos = np;
+                let np = (pane.scroll_target + d).clamp(0.0, max_pos);
+                pane.scroll_target = np;
                 pane.terminal.set_viewport_offset(np.round() as usize);
             }
         }

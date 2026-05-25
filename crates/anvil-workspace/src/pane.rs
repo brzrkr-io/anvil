@@ -50,6 +50,12 @@ pub struct Pane {
     // Folded blocks, keyed by absolute command_line. Bounded.
     pub folded: [usize; MAX_FOLDED],
     pub folded_count: usize,
+
+    /// Living-scrollback indicator: snapshot of `terminal.line_count()` taken
+    /// the moment the user first scrolled away from live bottom.  `None` when
+    /// pinned to live (scroll_pos == 0).  When set and terminal has grown,
+    /// `unseen_rows()` returns the number of rows that arrived while scrolled.
+    pub unseen_baseline: Option<usize>,
 }
 
 impl Pane {
@@ -69,6 +75,7 @@ impl Pane {
             selection: Selection::default(),
             folded: [0; MAX_FOLDED],
             folded_count: 0,
+            unseen_baseline: None,
         }
     }
 
@@ -100,6 +107,16 @@ impl Pane {
 
     pub fn terminal_mut(&mut self) -> &mut Terminal {
         &mut self.terminal
+    }
+
+    /// Number of content rows that arrived while the user was scrolled away
+    /// from live bottom.  Returns 0 when pinned to live or when nothing new
+    /// has arrived.
+    pub fn unseen_rows(&self) -> usize {
+        match self.unseen_baseline {
+            Some(baseline) => self.terminal.line_count().saturating_sub(baseline),
+            None => 0,
+        }
     }
 }
 
@@ -229,6 +246,35 @@ mod tests {
         p.toggle_fold(999);
         assert_eq!(p.folded_count, MAX_FOLDED);
         assert!(!p.is_folded(999));
+    }
+
+    // ── unseen_rows ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn unseen_rows_zero_when_no_baseline() {
+        let p = Pane::new(1, 80, 24, 0);
+        assert_eq!(p.unseen_rows(), 0);
+    }
+
+    #[test]
+    fn unseen_rows_zero_when_baseline_equals_current() {
+        let mut p = Pane::new(1, 80, 24, 0);
+        let base = p.terminal.line_count();
+        p.unseen_baseline = Some(base);
+        assert_eq!(p.unseen_rows(), 0);
+    }
+
+    #[test]
+    fn unseen_rows_counts_lines_added_after_baseline() {
+        let mut p = Pane::new(1, 80, 24, 100);
+        let base = p.terminal.line_count();
+        p.unseen_baseline = Some(base);
+        // Feed more lines than the active grid height so rows push into scrollback,
+        // which increases line_count() beyond the baseline.
+        for _ in 0..30 {
+            p.terminal_mut().feed(b"line of output\r\n");
+        }
+        assert!(p.unseen_rows() > 0);
     }
 
     // ── Pane::terminal / terminal_mut ─────────────────────────────────────────
