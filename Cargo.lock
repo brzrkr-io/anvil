@@ -183,6 +183,7 @@ dependencies = [
  "anvil-editor",
  "anvil-term",
  "thiserror",
+ "unicode-segmentation",
 ]
 
 [[package]]

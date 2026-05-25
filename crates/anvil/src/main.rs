@@ -61,6 +61,7 @@ use anvil_render::{
 };
 use anvil_term::DirtySet;
 use anvil_theme::{Theme, resolve as resolve_theme};
+use anvil_workspace::editor_pane::EditorAction;
 use anvil_workspace::interact;
 use anvil_workspace::keys::{Key, Mods, encode as encode_key, encode_mouse};
 use anvil_workspace::layout::{
@@ -1323,6 +1324,34 @@ impl App {
         }
     }
 
+    /// Return true if the focused pane is a native editor pane (NE6).
+    fn focused_is_native_editor(&self) -> bool {
+        let Some(tab) = self.tabs.current() else {
+            return false;
+        };
+        let id = tab.focused_id();
+        tab.editor_panes.get_pane(id).is_some()
+    }
+
+    /// Apply `action` to the focused native editor pane.
+    ///
+    /// Writes any Cut/Copy text to the system clipboard.  Marks the app dirty
+    /// when the buffer mutated.  No-op when no native editor pane is focused.
+    fn apply_editor_action(&mut self, action: EditorAction) {
+        let Some(tab) = self.tabs.current_mut() else {
+            return;
+        };
+        let id = tab.focused_id();
+        let mut clipboard_out: Option<String> = None;
+        let mutated = tab.editor_panes.apply(id, action, &mut clipboard_out);
+        if let Some(text) = clipboard_out {
+            anvil_platform::system::set_clipboard(&text);
+        }
+        if mutated {
+            self.dirty = true;
+        }
+    }
+
     /// Concatenate the focused pane's current selection into a single string.
     /// Multi-row selections separate rows with `\n`. Rect mode picks the
     /// same column window on every row. Returns `None` when no selection is
@@ -2376,6 +2405,57 @@ impl App {
     fn handle_cmd_chord(&mut self, mods: Modifiers, ch: char, webview: &Webview) -> bool {
         let kb = self.keybindings; // Copy
 
+        // ── Native editor pane Cmd shortcuts (NE6) ────────────────────────────
+        // When a native editor pane is focused, claim Cmd+S/Z/C/X/V/A/L first.
+        // Other Cmd chords (tab, split, palette, search, etc.) fall through to
+        // the normal dispatcher so they keep working even in editor panes.
+        if self.focused_is_native_editor() {
+            let lch = ascii_lower(ch);
+            // Cmd+S → Save
+            if lch == 's' && !mods.shift && !mods.control && !mods.option {
+                self.apply_editor_action(EditorAction::Save);
+                self.dirty = true;
+                return true;
+            }
+            // Cmd+Z → Undo, Cmd+Shift+Z → Redo
+            if lch == 'z' && !mods.control && !mods.option {
+                if mods.shift {
+                    self.apply_editor_action(EditorAction::Redo);
+                } else {
+                    self.apply_editor_action(EditorAction::Undo);
+                }
+                return true;
+            }
+            // Cmd+C → Copy
+            if lch == 'c' && !mods.shift && !mods.control && !mods.option {
+                self.apply_editor_action(EditorAction::Copy);
+                return true;
+            }
+            // Cmd+X → Cut
+            if lch == 'x' && !mods.shift && !mods.control && !mods.option {
+                self.apply_editor_action(EditorAction::Cut);
+                return true;
+            }
+            // Cmd+V → Paste
+            if lch == 'v' && !mods.shift && !mods.control && !mods.option {
+                if let Some(text) = anvil_platform::system::get_clipboard() {
+                    self.apply_editor_action(EditorAction::Paste(text));
+                }
+                return true;
+            }
+            // Cmd+A → SelectAll
+            if lch == 'a' && !mods.shift && !mods.control && !mods.option {
+                self.apply_editor_action(EditorAction::SelectAll);
+                self.dirty = true;
+                return true;
+            }
+            // Cmd+L → GoToLine (interactive prompt deferred to future phase; no-op)
+            if lch == 'l' && !mods.shift && !mods.control && !mods.option {
+                // No-op: GoToLine requires an input modal (NE future).
+                return true;
+            }
+        }
+
         macro_rules! test {
             ($field:expr, $body:block) => {
                 if let Some(chord) = $field {
@@ -3055,6 +3135,26 @@ impl AppHandler for AppShell {
 
         // ⌘ key combos.
         if mods.command {
+            // Native editor: Cmd+Home/End → buffer start/end; Cmd+Up/Down →
+            // buffer start/end.  These must be claimed before the generic
+            // jump-to-prompt bindings so the editor pane intercepts them.
+            if self.app.focused_is_native_editor() {
+                match event.key {
+                    KeyInput::Home | KeyInput::Up => {
+                        self.app.apply_editor_action(EditorAction::MoveBufferStart {
+                            extend: mods.shift,
+                        });
+                        return;
+                    }
+                    KeyInput::End | KeyInput::Down => {
+                        self.app.apply_editor_action(EditorAction::MoveBufferEnd {
+                            extend: mods.shift,
+                        });
+                        return;
+                    }
+                    _ => {}
+                }
+            }
             match event.key {
                 KeyInput::Up if !mods.shift && !mods.control && !mods.option => {
                     self.app.jump_to_prev_prompt();
@@ -3170,6 +3270,17 @@ impl AppHandler for AppShell {
                     self.app.dirty = true;
                 }
                 _ => {}
+            }
+            return;
+        }
+
+        // ── Native editor pane keyboard dispatch (NE6) ───────────────────────
+        // When a native editor pane is focused, map the event to an EditorAction
+        // and apply it instead of writing to a PTY.
+        if self.app.focused_is_native_editor() {
+            let action = key_event_to_editor_action(event);
+            if let Some(action) = action {
+                self.app.apply_editor_action(action);
             }
             return;
         }
@@ -3977,6 +4088,31 @@ impl AppHandler for AppShell {
 }
 
 // ── Key conversion ────────────────────────────────────────────────────────────
+
+/// Map a non-Cmd `KeyEvent` to an `EditorAction` for native editor panes (NE6).
+///
+/// Returns `None` for keys with no editor binding (e.g. F-keys, Escape).
+/// Cmd combos are handled separately in `handle_cmd_chord`.
+fn key_event_to_editor_action(event: KeyEvent) -> Option<EditorAction> {
+    let shift = event.mods.shift;
+    Some(match event.key {
+        KeyInput::Char(ch) => EditorAction::InsertChar(ch),
+        KeyInput::Enter => EditorAction::InsertNewline,
+        KeyInput::Tab => EditorAction::InsertTab,
+        KeyInput::Backspace => EditorAction::Backspace,
+        KeyInput::Delete => EditorAction::Delete,
+        KeyInput::Left => EditorAction::MoveLeft { extend: shift },
+        KeyInput::Right => EditorAction::MoveRight { extend: shift },
+        KeyInput::Up => EditorAction::MoveUp { extend: shift },
+        KeyInput::Down => EditorAction::MoveDown { extend: shift },
+        KeyInput::Home => EditorAction::MoveLineStart { extend: shift },
+        KeyInput::End => EditorAction::MoveLineEnd { extend: shift },
+        KeyInput::PageUp => EditorAction::PageUp { extend: shift },
+        KeyInput::PageDown => EditorAction::PageDown { extend: shift },
+        // Escape and F-keys have no editor binding in insert-only mode.
+        _ => return None,
+    })
+}
 
 fn platform_key_to_zig_key(k: KeyInput) -> Option<Key> {
     Some(match k {

@@ -276,6 +276,13 @@ impl Buffer {
         Ok(())
     }
 
+    /// Return the path this buffer was last loaded from or saved to.
+    ///
+    /// `None` when no path has been set (e.g. a fresh scratch buffer).
+    pub fn tracked_path(&self) -> Option<&std::path::Path> {
+        self.tracked_path.as_deref()
+    }
+
     /// Returns `true` if the file on disk has been modified since the buffer
     /// was last opened or saved.
     ///

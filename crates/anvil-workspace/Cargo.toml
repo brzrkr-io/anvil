@@ -8,3 +8,4 @@ rust-version.workspace = true
 anvil-term = { workspace = true }
 anvil-editor = { workspace = true }
 thiserror = { workspace = true }
+unicode-segmentation = { workspace = true }

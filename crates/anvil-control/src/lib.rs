@@ -2,6 +2,10 @@
 
 pub mod bridge;
 
+/// Re-export the editor action enum so callers can `use anvil_control::EditorAction`
+/// without depending directly on `anvil-workspace`.
+pub use anvil_workspace::editor_pane::EditorAction;
+
 use anvil_agent::{SessionStartRequest, SessionStartResponse};
 use anvil_caldera::{CalderaClient, CalderaError};
 use thiserror::Error;
