@@ -31,8 +31,11 @@ pub struct DirSnapshot {
     pub entries: Vec<DirEntry>,
 }
 
-/// Render-side mirror of `anvil_editor::bridge::SymbolKind`.
-/// Duplicated so `anvil-render` stays independent of `anvil-editor`.
+/// Render-side outline symbol kind.
+///
+/// Duplicated so `anvil-render` stays independent of `anvil-editor`.  The
+/// nvim bridge that originally supplied this data was retired at NE15; the
+/// caller now populates it from the native editor's LSP layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutlineKind {
     Function,
@@ -49,8 +52,7 @@ pub enum OutlineKind {
 }
 
 /// A single row in the outline panel (render-side representation).
-/// Duplicated from `anvil_editor::bridge::OutlineSymbol` for the same reason
-/// as `DirEntry` — `anvil-render` must not depend on `anvil-editor`.
+/// `anvil-render` keeps its own type so it does not depend on `anvil-editor`.
 #[derive(Debug, Clone)]
 pub struct OutlineRow {
     pub name: String,

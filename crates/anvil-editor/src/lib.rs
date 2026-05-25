@@ -1,22 +1,13 @@
-//! `anvil-editor` — rope-backed text buffer and nvim RPC bridge.
-//!
-//! `nvim` submodule: msgpack codec, Unix-socket transport, background polling
-//! bridge. Stays as the default editor pane until NE6 ships.
+//! `anvil-editor` — rope-backed native text buffer, syntax, LSP, and git
+//! gutter. The nvim RPC bridge was retired at NE15; this crate is now fully
+//! native.
 //!
 //! `buffer` module: native `Buffer` type built on `ropey`.
 
 pub mod buffer;
 pub mod git;
 pub mod lsp;
-pub mod nvim;
 pub mod syntax;
-
-// Re-export nvim bridge types for existing call sites in main.rs.
-pub use nvim::bridge::{
-    ConnectionState, EditorBridge, EditorSnapshot, OutlineState, OutlineSymbol, SymbolKind,
-};
-pub use nvim::codec::{CodecError, Value, decode_value, encode_request};
-pub use nvim::transport::{Endpoint, Transport, TransportError};
 
 // Re-export buffer types. `EditRecord` and `UndoStack` are intentionally kept
 // internal to the crate — they live on `Buffer` as private undo state and

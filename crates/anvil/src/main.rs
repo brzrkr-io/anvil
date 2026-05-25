@@ -2000,12 +2000,12 @@ impl App {
                 };
                 Some(name)
             });
-            let editor_ctx = editor_ctx_name
-                .as_deref()
-                .map(|name| anvil_render::context_bar::ContextBarEditor {
+            let editor_ctx = editor_ctx_name.as_deref().map(|name| {
+                anvil_render::context_bar::ContextBarEditor {
                     name,
                     modified: false,
-                });
+                }
+            });
             anvil_render::draw_context_bar(
                 &mut self.raster,
                 chrome_painter,

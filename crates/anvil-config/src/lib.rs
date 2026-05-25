@@ -200,26 +200,6 @@ impl Default for Keybindings {
     }
 }
 
-/// Editor backend configuration — NE4 migration shim (§7).
-///
-/// `backend = "nvim"` (default) keeps existing nvim behaviour.
-/// `backend = "native"` routes `Cmd+E` / `Action::NewEditorPane` to the
-/// native editor path instead.  Unknown values fall back to `"nvim"` with a
-/// warning emitted by `Config::clamp`.
-#[derive(Clone, Debug, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct EditorCfg {
-    pub backend: String,
-}
-
-impl Default for EditorCfg {
-    fn default() -> Self {
-        EditorCfg {
-            backend: "nvim".into(),
-        }
-    }
-}
-
 // ── Config ────────────────────────────────────────────────────────────────────
 
 /// Top-level configuration. Every field is optional in TOML; missing fields
@@ -237,7 +217,6 @@ pub struct Config {
     pub keybindings: Keybindings,
     pub shell_integration: bool,
     pub prompt: PromptCfg,
-    pub editor: EditorCfg,
 }
 
 impl Default for Config {
@@ -252,7 +231,6 @@ impl Default for Config {
             keybindings: Keybindings::default(),
             shell_integration: true,
             prompt: PromptCfg::default(),
-            editor: EditorCfg::default(),
         }
     }
 }
@@ -273,14 +251,6 @@ impl Config {
         }
         if self.window.height < 150.0 || !self.window.height.is_finite() {
             self.window.height = 640.0;
-        }
-        // editor.backend: accept "native" | "nvim"; unknown values fall back to "nvim".
-        if self.editor.backend != "native" && self.editor.backend != "nvim" {
-            eprintln!(
-                "anvil: unknown editor.backend {:?}; falling back to \"nvim\"",
-                self.editor.backend
-            );
-            self.editor.backend = "nvim".into();
         }
     }
 }
@@ -742,24 +712,6 @@ command = "echo prod"
         assert_eq!(cfg.prompt.custom.len(), 1);
         assert_eq!(cfg.prompt.custom[0].label, "aws");
         assert_eq!(cfg.prompt.custom[0].command, "echo prod");
-    }
-
-    // ── EditorCfg ─────────────────────────────────────────────────────────────
-
-    #[test]
-    fn config_editor_backend_defaults_to_nvim() {
-        let cfg = Config::default();
-        assert_eq!(cfg.editor.backend, "nvim");
-    }
-
-    #[test]
-    fn config_editor_backend_native_parses() {
-        let src = r#"
-[editor]
-backend = "native"
-"#;
-        let cfg = parse_str(src).unwrap();
-        assert_eq!(cfg.editor.backend, "native");
     }
 
     // ── resolve_path ──────────────────────────────────────────────────────────

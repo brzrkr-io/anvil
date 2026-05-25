@@ -442,6 +442,25 @@ mod tests {
         assert!(tab.registry.get(new_id).is_some());
     }
 
+    // NE15: Cmd+E is wired to `Tab::split_native_editor`; this confirms a
+    // pane and a buffer are both registered (the routing destination for the
+    // Cmd+E chord and `Action::NewEditorPane` in `main.rs`).
+    #[test]
+    fn tab_split_native_editor_registers_editor_pane_and_buffer() {
+        let mut tab = Tab::new_single_pane(80, 24, 0);
+        let original = tab.focused_id();
+        let new_id = tab
+            .split_native_editor(crate::layout::SplitDir::Horizontal)
+            .unwrap();
+        assert_ne!(new_id, original);
+        // Pane is registered with no terminal (editor-only leaf).
+        let pane = tab.registry.get(new_id).expect("pane registered");
+        assert!(pane.terminal.is_none(), "editor pane must not have a PTY");
+        // EditorPane is registered with a fresh buffer.
+        let ep = tab.editor_panes.get_pane(new_id).expect("editor pane");
+        assert!(tab.editor_panes.get_buffer(ep.buffer_id).is_some());
+    }
+
     // ── TabManager::current / current_mut ─────────────────────────────────────
 
     #[test]

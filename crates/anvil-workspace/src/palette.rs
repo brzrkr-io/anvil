@@ -92,7 +92,7 @@ pub const CATALOG: &[Entry] = &[
     Entry {
         id: "editor.new",
         title: "New Editor Pane",
-        subtitle: Some("Open nvim in a new pane (⌘E)"),
+        subtitle: Some("Open the native editor in a new pane (⌘E)"),
         action: Action::NewEditorPane,
     },
 ];

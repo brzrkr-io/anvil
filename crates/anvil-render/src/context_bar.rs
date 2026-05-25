@@ -2,31 +2,42 @@
 //!
 //! A fixed-height pixel strip immediately below the OS title strip.
 //! Layout: left-anchored project/git info, right-anchored kube/head info,
-//! with an optional editor segment right of kube when nvim is Live.
+//! with an optional editor segment right of kube when a native editor pane
+//! is focused.
 
-use anvil_editor::{ConnectionState, EditorSnapshot};
 use anvil_theme::Theme;
 use anvil_workspace::layout::Rect;
 
 use crate::agent_panel::{LocalContext, format_cwd};
 use crate::raster::{FontMetrics, GlyphPainter, Raster};
 
+/// Editor-segment input for the context bar.
+///
+/// Built by the caller from the focused native editor pane's buffer:
+/// `name` = path basename or `"[scratch]"`; `modified` = dirty flag if
+/// available.  `None` when no native editor pane is focused.
+#[derive(Clone, Debug)]
+pub struct ContextBarEditor<'a> {
+    pub name: &'a str,
+    pub modified: bool,
+}
+
 /// Draw the context bar into `rect`.
 ///
 /// - Background: `theme.charcoal`.
 /// - Bottom edge: 1px hairline (`theme.hairline`).
 /// - Left: project_kind icon + cwd basename · git branch (muted/accent).
-/// - Right: editor segment (when Live) · kube_context · head_short.
+/// - Right: editor segment (when present) · kube_context · head_short.
 /// - Sections omitted when data is absent; no placeholder text.
-/// - `editor`: optional nvim snapshot. Rendered as `edit: <name>[•]` when
-///   `connection == Live`. Omitted otherwise.
+/// - `editor`: optional native editor descriptor. Rendered as
+///   `edit: <name>[•]` when `Some`.
 pub fn draw_context_bar(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
     metrics: FontMetrics,
     theme: &Theme,
     local: &LocalContext,
-    editor: Option<&EditorSnapshot>,
+    editor: Option<ContextBarEditor<'_>>,
     rect: Rect,
 ) {
     let bar_w = rect.w;
@@ -103,14 +114,10 @@ pub fn draw_context_bar(
 
     // ── Right section ─────────────────────────────────────────────────────────
 
-    // Editor segment: "edit: <name>" or "edit: <name>•" when Live + modified.
-    let editor_owned: Option<String> = editor.and_then(|snap| {
-        if snap.connection != ConnectionState::Live {
-            return None;
-        }
-        let name = snap.buffer_name.as_deref().unwrap_or("[no name]");
-        let suffix = if snap.modified { "\u{2022}" } else { "" }; // •
-        Some(format!("edit: {name}{suffix}"))
+    // Editor segment: "edit: <name>" or "edit: <name>•" when modified.
+    let editor_owned: Option<String> = editor.as_ref().map(|e| {
+        let suffix = if e.modified { "\u{2022}" } else { "" }; // •
+        format!("edit: {}{}", e.name, suffix)
     });
 
     // Build the right string segments.
@@ -379,19 +386,17 @@ mod tests {
         );
     }
 
-    // Editor segment rendered in text_muted when connection is Live.
+    // Editor segment rendered in text_muted when present.
     #[test]
-    fn editor_segment_shown_when_live() {
+    fn editor_segment_shown_when_present() {
         let m = font_metrics();
         let th = theme();
         let mut r = Raster::new(800, 100);
         let mut p = StubPainter::default();
 
-        let snap = EditorSnapshot {
-            connection: ConnectionState::Live,
-            buffer_name: Some("foo.rs".to_string()),
+        let ed = ContextBarEditor {
+            name: "foo.rs",
             modified: false,
-            ..EditorSnapshot::default()
         };
         draw_context_bar(
             &mut r,
@@ -399,7 +404,7 @@ mod tests {
             m,
             &th,
             &LocalContext::default(),
-            Some(&snap),
+            Some(ed),
             bar_rect(),
         );
 
@@ -415,30 +420,25 @@ mod tests {
         );
     }
 
-    // Editor segment omitted when Disconnected.
+    // Editor segment omitted when None.
     #[test]
-    fn editor_segment_omitted_when_disconnected() {
+    fn editor_segment_omitted_when_none() {
         let m = font_metrics();
         let th = theme();
         let mut r = Raster::new(800, 100);
         let mut p = StubPainter::default();
 
-        let snap = EditorSnapshot {
-            connection: ConnectionState::Disconnected,
-            buffer_name: Some("foo.rs".to_string()),
-            ..EditorSnapshot::default()
-        };
         draw_context_bar(
             &mut r,
             &mut p,
             m,
             &th,
             &LocalContext::default(),
-            Some(&snap),
+            None,
             bar_rect(),
         );
 
-        // No glyphs should appear (LocalContext is empty; snap is Disconnected).
-        assert!(p.calls.is_empty(), "no glyphs expected when Disconnected");
+        // No glyphs should appear (LocalContext is empty; editor is None).
+        assert!(p.calls.is_empty(), "no glyphs expected when editor is None");
     }
 }
