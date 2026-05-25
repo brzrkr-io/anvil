@@ -6,6 +6,42 @@ pub mod bridge;
 /// without depending directly on `anvil-workspace`.
 pub use anvil_workspace::editor_pane::EditorAction;
 
+// Re-export AI-native buffer types so caldera (external) can depend on this
+// crate alone rather than on `anvil-editor` directly (NE14).
+pub use anvil_editor::BufferId;
+pub use anvil_editor::buffer::{
+    AgentRevision, Edit, EditProposal, GhostTextSpan, Position, ProposalError, ProposalStatus,
+};
+pub use anvil_workspace::layout::PaneId;
+
+/// Inbound messages from an external agent (caldera or similar).
+///
+/// These differ from [`bridge::Inbound`] (which is web-bridge only).
+/// An external agent constructs these variants and hands them to the host
+/// process; `main.rs` routes each variant to the appropriate buffer API.
+///
+/// No actual wire protocol is defined here — that is caldera-side work.
+/// This enum defines the Rust API surface the agent bridge must satisfy.
+#[derive(Debug, Clone)]
+pub enum AgentInbound {
+    /// Request that an edit be staged as a proposal on the focused buffer.
+    AgentPropose {
+        pane_id: PaneId,
+        agent_id: String,
+        edit: Edit,
+        rationale: Option<String>,
+    },
+    /// Set a ghost-text suggestion for the focused buffer at `anchor`.
+    AgentSetGhost {
+        pane_id: PaneId,
+        agent_id: String,
+        anchor: Position,
+        text: String,
+    },
+    /// Clear all ghost-text suggestions on the focused buffer.
+    AgentClearGhost { pane_id: PaneId },
+}
+
 use anvil_agent::{SessionStartRequest, SessionStartResponse};
 use anvil_caldera::{CalderaClient, CalderaError};
 use thiserror::Error;

@@ -10,6 +10,7 @@ use std::time::{Instant, SystemTime};
 
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::git::GitGutter;
 use crate::syntax::SyntaxLayer;
 
 // ---------------------------------------------------------------------------
@@ -52,16 +53,64 @@ pub struct Edit {
 }
 
 // ---------------------------------------------------------------------------
-// AI-native placeholder structs (reserved for NE14)
+// AI-native types (NE14)
 // ---------------------------------------------------------------------------
 
-/// An AI-proposed edit — empty placeholder, reserved for NE14.
-#[derive(Debug, Clone)]
-pub struct EditProposal {}
+/// Status of an [`EditProposal`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProposalStatus {
+    Pending,
+    Accepted,
+    Rejected,
+}
 
-/// A ghost-text span — empty placeholder, reserved for NE14.
+/// An AI-proposed edit waiting for user review.
 #[derive(Debug, Clone)]
-pub struct GhostTextSpan {}
+pub struct EditProposal {
+    /// Which agent submitted this proposal ("caldera", "copilot", etc.).
+    pub agent_id: String,
+    /// Wall-clock time the proposal was submitted.
+    pub proposed_at: Instant,
+    /// The edit to apply if accepted.
+    pub edit: Edit,
+    /// Optional human-readable rationale shown in the review UI.
+    pub rationale: Option<String>,
+    /// Current disposition.
+    pub status: ProposalStatus,
+}
+
+/// Error returned by [`Buffer::accept_proposal`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum ProposalError {
+    /// Index out of bounds.
+    OutOfRange,
+    /// Proposal is not in [`ProposalStatus::Pending`] state.
+    NotPending,
+}
+
+/// An inline ghost-text suggestion displayed after the cursor.
+#[derive(Debug, Clone)]
+pub struct GhostTextSpan {
+    /// Buffer position (line, col) where the ghost text is anchored.
+    pub anchor: Position,
+    /// The text to display (never inserted into the rope until accepted).
+    pub text: String,
+    /// Which agent provided this suggestion.
+    pub source_agent: String,
+}
+
+/// A record of an agent-initiated revision (distinct from the NE3 undo counter).
+#[derive(Debug, Clone)]
+pub struct AgentRevision {
+    /// Monotonic revision counter value at the time of this record.
+    pub revision: u64,
+    /// Which agent caused this revision.
+    pub agent_id: String,
+    /// Wall-clock time.
+    pub at: Instant,
+    /// Optional human-readable note.
+    pub note: Option<String>,
+}
 
 // ---------------------------------------------------------------------------
 // IO error types (NE2)
@@ -172,9 +221,12 @@ pub struct Buffer {
     rope: ropey::Rope,
     /// Monotonic counter bumped on every applied edit. Used by NE14 proposals.
     pub revisions: u64,
-    /// AI-native proposal slots — allocated empty in NE1 so NE14 doesn't break shapes.
+    /// Pending AI-proposed edits awaiting user review (NE14).
     pub proposals: Vec<EditProposal>,
+    /// Inline ghost-text suggestions (NE14). Cleared on any buffer mutation.
     pub ghost_text: Vec<GhostTextSpan>,
+    /// Per-agent revision log (NE14). Distinct from `revisions` (the NE3 undo counter).
+    pub agent_revisions: Vec<AgentRevision>,
     /// Undo/redo history.
     pub(crate) undo_stack: UndoStack,
     /// When `true`, the next `apply_edit` always starts a new undo group.
@@ -185,6 +237,9 @@ pub struct Buffer {
     tracked_mtime: Option<SystemTime>,
     /// Tree-sitter syntax layer (NE8). Holds the parse tree and highlight cache.
     pub syntax: SyntaxLayer,
+    /// Git gutter — diff against HEAD (NE13). Recomputed on `from_path` / `save`.
+    /// `None` for scratch buffers or files outside a git repo.
+    pub git_gutter: Option<GitGutter>,
 }
 
 impl Buffer {
@@ -195,11 +250,13 @@ impl Buffer {
             revisions: 0,
             proposals: Vec::new(),
             ghost_text: Vec::new(),
+            agent_revisions: Vec::new(),
             undo_stack: UndoStack::new(DEFAULT_UNDO_CAP),
             force_new_group: false,
             tracked_path: None,
             tracked_mtime: None,
             syntax: SyntaxLayer::new(),
+            git_gutter: None,
         }
     }
 
@@ -210,11 +267,13 @@ impl Buffer {
             revisions: 0,
             proposals: Vec::new(),
             ghost_text: Vec::new(),
+            agent_revisions: Vec::new(),
             undo_stack: UndoStack::new(DEFAULT_UNDO_CAP),
             force_new_group: false,
             tracked_path: None,
             tracked_mtime: None,
             syntax: SyntaxLayer::new(),
+            git_gutter: None,
         }
     }
 
@@ -251,6 +310,8 @@ impl Buffer {
         // NE8: detect language by extension and do an initial full parse.
         buf.syntax.set_language_from_path(path);
         buf.syntax.parse(&text);
+        // NE13: compute initial git gutter (silent on errors).
+        buf.git_gutter = Some(GitGutter::compute(&text, path));
         Ok(buf)
     }
 
@@ -282,6 +343,9 @@ impl Buffer {
         self.tracked_path = Some(path.to_path_buf());
         self.tracked_mtime = mtime;
         self.flush_undo_group();
+        // NE13: recompute gutter after save so HEAD-blob comparison stays fresh.
+        let text = self.to_text();
+        self.git_gutter = Some(GitGutter::compute(&text, path));
         Ok(())
     }
 
@@ -473,6 +537,80 @@ impl Buffer {
     }
 
     // -----------------------------------------------------------------------
+    // AI-native API (NE14)
+    // -----------------------------------------------------------------------
+
+    /// Submit a new [`EditProposal`] from `agent_id`.
+    ///
+    /// The proposal is appended in `Pending` state; it does NOT modify the rope
+    /// until [`accept_proposal`] is called.
+    pub fn propose_edit(&mut self, agent_id: String, edit: Edit, rationale: Option<String>) {
+        self.proposals.push(EditProposal {
+            agent_id,
+            proposed_at: Instant::now(),
+            edit,
+            rationale,
+            status: ProposalStatus::Pending,
+        });
+    }
+
+    /// Accept the proposal at `idx`: applies its edit through the normal
+    /// `apply_edit` path (so the undo stack records it) and marks it Accepted.
+    ///
+    /// Returns `Err(ProposalError::OutOfRange)` if `idx` is out of bounds.
+    /// Returns `Err(ProposalError::NotPending)` if the proposal is not Pending.
+    pub fn accept_proposal(&mut self, idx: usize) -> Result<(), ProposalError> {
+        let proposal = self.proposals.get(idx).ok_or(ProposalError::OutOfRange)?;
+        if proposal.status != ProposalStatus::Pending {
+            return Err(ProposalError::NotPending);
+        }
+        // Clone the edit so we can apply it after the borrow ends.
+        let edit = proposal.edit.clone();
+        // Route through apply_edit so the undo stack records the inverse.
+        self.apply_edit(edit);
+        self.proposals[idx].status = ProposalStatus::Accepted;
+        Ok(())
+    }
+
+    /// Reject the proposal at `idx` (no-op if out of bounds or already resolved).
+    pub fn reject_proposal(&mut self, idx: usize) {
+        if let Some(p) = self.proposals.get_mut(idx) {
+            if p.status == ProposalStatus::Pending {
+                p.status = ProposalStatus::Rejected;
+            }
+        }
+    }
+
+    /// Set the active ghost-text suggestion from `agent_id` at `anchor`.
+    ///
+    /// Replaces any prior suggestion from the same agent at the same anchor;
+    /// a single ghost span per anchor is the common case (inline completion).
+    pub fn set_ghost_text(&mut self, agent_id: String, anchor: Position, text: String) {
+        self.ghost_text
+            .retain(|s| !(s.source_agent == agent_id && s.anchor == anchor));
+        self.ghost_text.push(GhostTextSpan {
+            anchor,
+            text,
+            source_agent: agent_id,
+        });
+    }
+
+    /// Clear all ghost-text suggestions.
+    pub fn clear_ghost_text(&mut self) {
+        self.ghost_text.clear();
+    }
+
+    /// Append an [`AgentRevision`] entry stamped with the current `revisions` counter.
+    pub fn record_agent_revision(&mut self, agent_id: String, note: Option<String>) {
+        self.agent_revisions.push(AgentRevision {
+            revision: self.revisions,
+            agent_id,
+            at: Instant::now(),
+            note,
+        });
+    }
+
+    // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------
 
@@ -525,6 +663,8 @@ impl Buffer {
     }
 
     /// Apply the rope mutation for `edit` (no undo recording).
+    ///
+    /// Also clears ghost text — any buffer mutation dismisses inline suggestions (NE14).
     fn apply_edit_internal(&mut self, edit: &Edit) {
         let start_char = self.pos_to_char_idx(edit.range.start);
         let end_char = self.pos_to_char_idx(edit.range.end);
@@ -534,6 +674,8 @@ impl Buffer {
         if !edit.replacement.is_empty() {
             self.rope.insert(start_char, &edit.replacement);
         }
+        // NE14: any mutation dismisses the active ghost-text suggestion.
+        self.ghost_text.clear();
     }
 
     /// Check whether `edit` can coalesce into the current top undo group.
@@ -750,11 +892,13 @@ impl Buffer {
             revisions: 0,
             proposals: Vec::new(),
             ghost_text: Vec::new(),
+            agent_revisions: Vec::new(),
             undo_stack: UndoStack::new(cap),
             force_new_group: false,
             tracked_path: None,
             tracked_mtime: None,
             syntax: SyntaxLayer::new(),
+            git_gutter: None,
         }
     }
 
@@ -798,6 +942,7 @@ mod tests {
         assert_eq!(b.line_count(), 1); // ropey: empty rope has 1 "line"
         assert!(b.proposals.is_empty());
         assert!(b.ghost_text.is_empty());
+        assert!(b.agent_revisions.is_empty());
         assert_eq!(b.revisions, 0);
     }
 
@@ -1343,5 +1488,124 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_secs(1));
         std::fs::write(&path, b"modified\n").unwrap();
         assert!(buf.is_externally_modified());
+    }
+
+    // ── NE14: AI-native API ───────────────────────────────────────────────────
+
+    #[test]
+    fn buffer_propose_edit_adds_to_proposals() {
+        let mut b = Buffer::new();
+        b.propose_edit(
+            "caldera".into(),
+            Edit {
+                range: Range {
+                    start: pos(0, 0),
+                    end: pos(0, 0),
+                },
+                replacement: "hello".into(),
+            },
+            Some("initial text".into()),
+        );
+        assert_eq!(b.proposals.len(), 1);
+        assert_eq!(b.proposals[0].agent_id, "caldera");
+        assert_eq!(b.proposals[0].status, ProposalStatus::Pending);
+        // Rope is untouched until accepted.
+        assert_eq!(b.char_count(), 0);
+    }
+
+    #[test]
+    fn buffer_accept_proposal_applies_edit_via_undo_stack() {
+        let mut b = Buffer::new();
+        b.propose_edit(
+            "caldera".into(),
+            Edit {
+                range: Range {
+                    start: pos(0, 0),
+                    end: pos(0, 0),
+                },
+                replacement: "world".into(),
+            },
+            None,
+        );
+        b.accept_proposal(0).expect("accept should succeed");
+        // Text applied.
+        assert_eq!(b.to_text(), "world");
+        // Status updated.
+        assert_eq!(b.proposals[0].status, ProposalStatus::Accepted);
+        // Undo stack recorded it — undo should remove the text.
+        b.undo();
+        assert_eq!(b.to_text(), "");
+    }
+
+    #[test]
+    fn buffer_reject_proposal_marks_rejected_without_applying() {
+        let mut b = Buffer::new();
+        b.propose_edit(
+            "copilot".into(),
+            Edit {
+                range: Range {
+                    start: pos(0, 0),
+                    end: pos(0, 0),
+                },
+                replacement: "ignored".into(),
+            },
+            None,
+        );
+        b.reject_proposal(0);
+        assert_eq!(b.proposals[0].status, ProposalStatus::Rejected);
+        // Rope untouched.
+        assert_eq!(b.char_count(), 0);
+    }
+
+    #[test]
+    fn buffer_set_ghost_text_clears_on_apply_edit() {
+        let mut b = Buffer::new();
+        b.set_ghost_text("caldera".into(), pos(0, 0), "suggestion".into());
+        assert_eq!(b.ghost_text.len(), 1);
+        // Any edit clears ghost text.
+        b.insert_char(pos(0, 0), 'x');
+        assert!(
+            b.ghost_text.is_empty(),
+            "ghost text must clear on apply_edit"
+        );
+    }
+
+    #[test]
+    fn buffer_record_agent_revision_appends_with_monotonic_id() {
+        let mut b = Buffer::new();
+        // Insert something so revisions advances.
+        b.insert_char(pos(0, 0), 'a');
+        let rev_before = b.revisions;
+        b.record_agent_revision("caldera".into(), Some("checkpoint".into()));
+        assert_eq!(b.agent_revisions.len(), 1);
+        assert_eq!(b.agent_revisions[0].revision, rev_before);
+        assert_eq!(b.agent_revisions[0].agent_id, "caldera");
+        assert_eq!(b.agent_revisions[0].note.as_deref(), Some("checkpoint"));
+    }
+
+    #[test]
+    fn buffer_accept_proposal_out_of_range_returns_error() {
+        let mut b = Buffer::new();
+        let err = b.accept_proposal(99).unwrap_err();
+        assert_eq!(err, ProposalError::OutOfRange);
+    }
+
+    #[test]
+    fn buffer_accept_proposal_rejected_returns_not_pending() {
+        let mut b = Buffer::new();
+        b.propose_edit(
+            "caldera".into(),
+            Edit {
+                range: Range {
+                    start: pos(0, 0),
+                    end: pos(0, 0),
+                },
+                replacement: "x".into(),
+            },
+            None,
+        );
+        b.reject_proposal(0);
+        let err = b.accept_proposal(0).unwrap_err();
+        assert_eq!(err, ProposalError::NotPending);
     }
 }

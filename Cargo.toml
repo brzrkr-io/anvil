@@ -43,6 +43,8 @@ which = "7"
 ropey = "1.6"
 unicode-segmentation = "1"
 ignore = "0.4"
+gix = { version = "0.71", default-features = false, features = ["max-performance-safe"] }
+similar = "2"
 grep-matcher = "0.1"
 grep-regex = "0.1"
 grep-searcher = "0.1"

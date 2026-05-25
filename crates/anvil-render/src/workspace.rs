@@ -156,6 +156,7 @@ pub fn draw_workspace(
                         theme,
                         e.rect,
                         diags,
+                        buf.git_gutter.as_ref(),
                     );
                 } else {
                     // Buffer missing — fall back to blank fill.

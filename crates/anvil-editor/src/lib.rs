@@ -6,6 +6,7 @@
 //! `buffer` module: native `Buffer` type built on `ropey`.
 
 pub mod buffer;
+pub mod git;
 pub mod lsp;
 pub mod nvim;
 pub mod syntax;
@@ -21,9 +22,10 @@ pub use nvim::transport::{Endpoint, Transport, TransportError};
 // internal to the crate — they live on `Buffer` as private undo state and
 // expose no constructor surface worth a public commitment.
 pub use buffer::{
-    Buffer, BufferId, Cursor, Edit, EditProposal, EncodingError, GhostTextSpan, IoError, Position,
-    Range,
+    AgentRevision, Buffer, BufferId, Cursor, Edit, EditProposal, EncodingError, GhostTextSpan,
+    IoError, Position, ProposalError, ProposalStatus, Range,
 };
+pub use git::{GitChange, GitGutter};
 pub use syntax::{SyntaxLayer, SyntaxRole};
 
 // Re-export LSP types used by App and main.rs (NE9, NE10).

@@ -131,12 +131,26 @@ pub enum EditorAction {
     HoverRequest,
     /// Dismiss the hover popup.
     HoverDismiss,
+    // ── AI ghost-text (NE14) ─────────────────────────────────────────────────
+    /// Accept the first ghost-text suggestion at the cursor: inserts its text
+    /// at the cursor position and clears all ghost text.
+    AcceptGhostText,
+    /// Dismiss all ghost-text suggestions without inserting anything.
+    DismissGhostText,
+    // ── Multi-cursor (NE13) ──────────────────────────────────────────────────
+    /// Cmd+click: add a secondary cursor at `pos`.  Deduplicates by position.
+    AddCursorAt(Position),
+    /// Esc (when multi-cursor active): drop all secondary cursors, keep primary.
+    ClearSecondaryCursors,
 }
 
 /// Per-pane view state for a native editor pane.
 pub struct EditorPane {
     pub buffer_id: BufferId,
-    pub cursor: Cursor,
+    /// All cursors. `cursors[0]` is the primary cursor (always present).
+    /// Secondary cursors are appended by `AddCursorAt` and dropped by
+    /// `ClearSecondaryCursors`.
+    pub cursors: Vec<Cursor>,
     pub selection: Selection,
     pub scroll_pos: f32,
     pub scroll_target: f32,
@@ -147,6 +161,18 @@ pub struct EditorPane {
     /// Set by `main.rs` when `LspManager::poll_hover` returns a result.
     /// Cleared by `EditorAction::HoverDismiss` or on any buffer-mutating action.
     pub hover_popup: Option<HoverPopup>,
+}
+
+impl EditorPane {
+    /// Return the primary cursor (always at index 0).
+    pub fn primary_cursor(&self) -> &Cursor {
+        &self.cursors[0]
+    }
+
+    /// Return the primary cursor mutably.
+    pub fn primary_cursor_mut(&mut self) -> &mut Cursor {
+        &mut self.cursors[0]
+    }
 }
 
 /// Registry of all native editor panes and their buffers for one `Tab`.
@@ -179,10 +205,10 @@ impl EditorPaneRegistry {
         let origin = Position { line: 0, col: 0 };
         let pane = EditorPane {
             buffer_id,
-            cursor: Cursor {
+            cursors: vec![Cursor {
                 pos: origin,
                 anchor: origin,
-            },
+            }],
             selection: Selection::default(),
             scroll_pos: 0.0,
             scroll_target: 0.0,
@@ -259,18 +285,33 @@ impl EditorPaneRegistry {
         match action {
             // ── Insert ───────────────────────────────────────────────────────
             EditorAction::InsertChar(ch) => {
-                let pos = pane.cursor.pos;
+                // Multi-cursor: collect positions in reverse order (highest
+                // position first) so earlier inserts don't shift later ones.
+                let cursor_positions: Vec<Position> = {
+                    let pane = self.panes.get(&pane_id).unwrap();
+                    let mut positions: Vec<Position> = pane.cursors.iter().map(|c| c.pos).collect();
+                    positions.sort_by_key(|b| std::cmp::Reverse((b.line, b.col)));
+                    positions.dedup();
+                    positions
+                };
                 {
                     let buf = self.buffers.get_mut(&buffer_id).unwrap();
-                    buf.insert_char(pos, ch);
+                    for pos in &cursor_positions {
+                        buf.insert_char(*pos, ch);
+                    }
                 }
+                // Advance each cursor by 1 col (insert_char prepends from
+                // reverse order, so lower cursors are unaffected when walking
+                // from high to low; we advance all cursors uniformly here).
                 let pane = self.panes.get_mut(&pane_id).unwrap();
-                let new_pos = advance_col(pos, 1);
-                set_cursor(pane, new_pos, false);
+                for c in &mut pane.cursors {
+                    c.pos = advance_col(c.pos, 1);
+                    c.anchor = c.pos;
+                }
                 true
             }
             EditorAction::InsertNewline => {
-                let pos = pane.cursor.pos;
+                let pos = pane.cursors[0].pos;
                 {
                     let buf = self.buffers.get_mut(&buffer_id).unwrap();
                     buf.insert_char(pos, '\n');
@@ -284,7 +325,7 @@ impl EditorPaneRegistry {
                 true
             }
             EditorAction::InsertTab => {
-                let pos = pane.cursor.pos;
+                let pos = pane.cursors[0].pos;
                 {
                     let buf = self.buffers.get_mut(&buffer_id).unwrap();
                     buf.insert_str(pos, "    ");
@@ -295,7 +336,7 @@ impl EditorPaneRegistry {
                 true
             }
             EditorAction::Paste(text) => {
-                let pos = pane.cursor.pos;
+                let pos = pane.cursors[0].pos;
                 let line_delta = text.lines().count().saturating_sub(1);
                 let last_line_len = text
                     .lines()
@@ -321,52 +362,108 @@ impl EditorPaneRegistry {
 
             // ── Delete ───────────────────────────────────────────────────────
             EditorAction::Backspace => {
-                let pos = pane.cursor.pos;
-                let buf = self.buffers.get_mut(&buffer_id).unwrap();
-                let prev = prev_position(buf, pos);
-                if prev == pos {
-                    return false; // at buffer start
+                // Multi-cursor: compute (prev, pos) pairs then apply in
+                // reverse position order so higher deletions don't shift lower
+                // cursor positions.
+                let pairs: Vec<(Position, Position)> = {
+                    let pane = self.panes.get(&pane_id).unwrap();
+                    let buf = self.buffers.get(&buffer_id).unwrap();
+                    let mut ps: Vec<(Position, Position)> = pane
+                        .cursors
+                        .iter()
+                        .filter_map(|c| {
+                            let prev = prev_position(buf, c.pos);
+                            if prev != c.pos {
+                                Some((prev, c.pos))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    // Sort descending by the `pos` (end) of each range.
+                    ps.sort_by_key(|b| std::cmp::Reverse((b.1.line, b.1.col)));
+                    ps.dedup_by_key(|p| p.1);
+                    ps
+                };
+                if pairs.is_empty() {
+                    return false;
                 }
-                buf.delete_range(Range {
-                    start: prev,
-                    end: pos,
-                });
+                {
+                    let buf = self.buffers.get_mut(&buffer_id).unwrap();
+                    for (prev, pos) in &pairs {
+                        buf.delete_range(Range {
+                            start: *prev,
+                            end: *pos,
+                        });
+                    }
+                }
+                // Update each cursor: move to its `prev` position.
+                // We walk primary cursor specially; secondary cursors approximate.
                 let pane = self.panes.get_mut(&pane_id).unwrap();
-                set_cursor(pane, prev, false);
+                // Match cursors to their pairs by pos.
+                for c in &mut pane.cursors {
+                    if let Some((prev, _)) = pairs.iter().find(|(_, p)| *p == c.pos) {
+                        c.pos = *prev;
+                        c.anchor = *prev;
+                    }
+                }
                 true
             }
             EditorAction::Delete => {
-                let pos = pane.cursor.pos;
-                let buf = self.buffers.get_mut(&buffer_id).unwrap();
-                let next = next_position(buf, pos);
-                if next == pos {
-                    return false; // at buffer end
+                // Multi-cursor: apply in reverse position order.
+                let pairs: Vec<(Position, Position)> = {
+                    let pane = self.panes.get(&pane_id).unwrap();
+                    let buf = self.buffers.get(&buffer_id).unwrap();
+                    let mut ps: Vec<(Position, Position)> = pane
+                        .cursors
+                        .iter()
+                        .filter_map(|c| {
+                            let next = next_position(buf, c.pos);
+                            if next != c.pos {
+                                Some((c.pos, next))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    ps.sort_by_key(|b| std::cmp::Reverse((b.0.line, b.0.col)));
+                    ps.dedup_by_key(|p| p.0);
+                    ps
+                };
+                if pairs.is_empty() {
+                    return false;
                 }
-                buf.delete_range(Range {
-                    start: pos,
-                    end: next,
-                });
-                // cursor stays at pos (now points to former next char)
+                {
+                    let buf = self.buffers.get_mut(&buffer_id).unwrap();
+                    for (pos, next) in &pairs {
+                        buf.delete_range(Range {
+                            start: *pos,
+                            end: *next,
+                        });
+                    }
+                }
+                // Cursors stay at their positions (each points to the former
+                // next char); no position update needed.
                 true
             }
 
             // ── Cursor movement ──────────────────────────────────────────────
             EditorAction::MoveLeft { extend } => {
                 let buf = self.buffers.get(&buffer_id).unwrap();
-                let new_pos = prev_position(buf, pane.cursor.pos);
+                let new_pos = prev_position(buf, pane.cursors[0].pos);
                 let pane = self.panes.get_mut(&pane_id).unwrap();
                 set_cursor(pane, new_pos, extend);
                 false
             }
             EditorAction::MoveRight { extend } => {
                 let buf = self.buffers.get(&buffer_id).unwrap();
-                let new_pos = next_position(buf, pane.cursor.pos);
+                let new_pos = next_position(buf, pane.cursors[0].pos);
                 let pane = self.panes.get_mut(&pane_id).unwrap();
                 set_cursor(pane, new_pos, extend);
                 false
             }
             EditorAction::MoveUp { extend } => {
-                let pos = pane.cursor.pos;
+                let pos = pane.cursors[0].pos;
                 let new_pos = if pos.line == 0 {
                     Position { line: 0, col: 0 }
                 } else {
@@ -383,7 +480,7 @@ impl EditorPaneRegistry {
                 false
             }
             EditorAction::MoveDown { extend } => {
-                let pos = pane.cursor.pos;
+                let pos = pane.cursors[0].pos;
                 let buf = self.buffers.get(&buffer_id).unwrap();
                 let last_line = buf.line_count().saturating_sub(1);
                 let new_pos = if pos.line >= last_line {
@@ -406,7 +503,7 @@ impl EditorPaneRegistry {
             }
             EditorAction::MoveLineStart { extend } => {
                 let new_pos = Position {
-                    line: pane.cursor.pos.line,
+                    line: pane.cursors[0].pos.line,
                     col: 0,
                 };
                 let pane = self.panes.get_mut(&pane_id).unwrap();
@@ -414,7 +511,7 @@ impl EditorPaneRegistry {
                 false
             }
             EditorAction::MoveLineEnd { extend } => {
-                let line = pane.cursor.pos.line;
+                let line = pane.cursors[0].pos.line;
                 let buf = self.buffers.get(&buffer_id).unwrap();
                 let col = line_grapheme_len(buf, line);
                 let new_pos = Position { line, col };
@@ -441,7 +538,7 @@ impl EditorPaneRegistry {
                 false
             }
             EditorAction::PageUp { extend } => {
-                let pos = pane.cursor.pos;
+                let pos = pane.cursors[0].pos;
                 let page = pane.scroll_pos as usize;
                 let new_line = pos.line.saturating_sub(page.max(1));
                 let buf = self.buffers.get(&buffer_id).unwrap();
@@ -455,7 +552,7 @@ impl EditorPaneRegistry {
                 false
             }
             EditorAction::PageDown { extend } => {
-                let pos = pane.cursor.pos;
+                let pos = pane.cursors[0].pos;
                 let page = pane.scroll_pos as usize;
                 let buf = self.buffers.get(&buffer_id).unwrap();
                 let last_line = buf.line_count().saturating_sub(1);
@@ -476,8 +573,8 @@ impl EditorPaneRegistry {
                 let last_line = buf.line_count().saturating_sub(1);
                 let last_col = line_grapheme_len(buf, last_line);
                 let pane = self.panes.get_mut(&pane_id).unwrap();
-                pane.cursor.anchor = Position { line: 0, col: 0 };
-                pane.cursor.pos = Position {
+                pane.cursors[0].anchor = Position { line: 0, col: 0 };
+                pane.cursors[0].pos = Position {
                     line: last_line,
                     col: last_col,
                 };
@@ -517,9 +614,9 @@ impl EditorPaneRegistry {
                 // Clamp cursor to valid position after undo.
                 let last_line = buf.line_count().saturating_sub(1);
                 let pane = self.panes.get_mut(&pane_id).unwrap();
-                let line = pane.cursor.pos.line.min(last_line);
+                let line = pane.cursors[0].pos.line.min(last_line);
                 let buf = self.buffers.get(&buffer_id).unwrap();
-                let col = pane.cursor.pos.col.min(line_grapheme_len(buf, line));
+                let col = pane.cursors[0].pos.col.min(line_grapheme_len(buf, line));
                 let new_pos = Position { line, col };
                 let pane = self.panes.get_mut(&pane_id).unwrap();
                 set_cursor(pane, new_pos, false);
@@ -530,9 +627,9 @@ impl EditorPaneRegistry {
                 buf.redo();
                 let last_line = buf.line_count().saturating_sub(1);
                 let pane = self.panes.get_mut(&pane_id).unwrap();
-                let line = pane.cursor.pos.line.min(last_line);
+                let line = pane.cursors[0].pos.line.min(last_line);
                 let buf = self.buffers.get(&buffer_id).unwrap();
-                let col = pane.cursor.pos.col.min(line_grapheme_len(buf, line));
+                let col = pane.cursors[0].pos.col.min(line_grapheme_len(buf, line));
                 let new_pos = Position { line, col };
                 let pane = self.panes.get_mut(&pane_id).unwrap();
                 set_cursor(pane, new_pos, false);
@@ -575,8 +672,8 @@ impl EditorPaneRegistry {
                     s.next();
                     if let Some(hit) = s.current_hit() {
                         // Select the match: anchor=start, pos=end.
-                        pane.cursor.anchor = hit.start;
-                        pane.cursor.pos = hit.end;
+                        pane.cursors[0].anchor = hit.start;
+                        pane.cursors[0].pos = hit.end;
                         pane.scroll_target = hit.start.line as f32;
                     }
                 }
@@ -587,8 +684,8 @@ impl EditorPaneRegistry {
                 if let Some(s) = &mut pane.search {
                     s.prev();
                     if let Some(hit) = s.current_hit() {
-                        pane.cursor.anchor = hit.start;
-                        pane.cursor.pos = hit.end;
+                        pane.cursors[0].anchor = hit.start;
+                        pane.cursors[0].pos = hit.end;
                         pane.scroll_target = hit.start.line as f32;
                     }
                 }
@@ -649,8 +746,8 @@ impl EditorPaneRegistry {
                     }
                 }
                 let pane = self.panes.get_mut(&pane_id).unwrap();
-                pane.cursor.anchor = Position { line, col: lo };
-                pane.cursor.pos = Position { line, col: hi };
+                pane.cursors[0].anchor = Position { line, col: lo };
+                pane.cursors[0].pos = Position { line, col: hi };
                 false
             }
             EditorAction::SelectLineAt(pos) => {
@@ -659,8 +756,8 @@ impl EditorPaneRegistry {
                 let line = pos.line.min(last_line);
                 let line_len = line_grapheme_len(buf, line);
                 let pane = self.panes.get_mut(&pane_id).unwrap();
-                pane.cursor.anchor = Position { line, col: 0 };
-                pane.cursor.pos = Position {
+                pane.cursors[0].anchor = Position { line, col: 0 };
+                pane.cursors[0].pos = Position {
                     line,
                     col: line_len,
                 };
@@ -698,6 +795,66 @@ impl EditorPaneRegistry {
                     set_cursor(pane, start, false);
                     return true;
                 }
+                false
+            }
+
+            // ── AI ghost-text (NE14) ─────────────────────────────────────────
+            EditorAction::AcceptGhostText => {
+                let cursor_pos = pane.cursors[0].pos;
+                let span_text = self.buffers.get(&buffer_id).and_then(|b| {
+                    b.ghost_text
+                        .iter()
+                        .find(|s| s.anchor == cursor_pos)
+                        .map(|s| s.text.clone())
+                });
+                if let Some(text) = span_text {
+                    let buf = self.buffers.get_mut(&buffer_id).unwrap();
+                    // insert_str routes through apply_edit, which clears ghost_text.
+                    buf.insert_str(cursor_pos, &text);
+                    let n = text.graphemes(true).count();
+                    let new_pos = Position {
+                        line: cursor_pos.line,
+                        col: cursor_pos.col + n,
+                    };
+                    let pane = self.panes.get_mut(&pane_id).unwrap();
+                    set_cursor(pane, new_pos, false);
+                    true
+                } else {
+                    let buf = self.buffers.get_mut(&buffer_id).unwrap();
+                    buf.clear_ghost_text();
+                    false
+                }
+            }
+            EditorAction::DismissGhostText => {
+                let buf = self.buffers.get_mut(&buffer_id).unwrap();
+                buf.clear_ghost_text();
+                false
+            }
+
+            // ── Multi-cursor (NE13) ──────────────────────────────────────────
+            EditorAction::AddCursorAt(pos) => {
+                let buf = self.buffers.get(&buffer_id).unwrap();
+                let last_line = buf.line_count().saturating_sub(1);
+                let clamped_line = pos.line.min(last_line);
+                let max_col = line_grapheme_len(buf, clamped_line);
+                let clamped = Position {
+                    line: clamped_line,
+                    col: pos.col.min(max_col),
+                };
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                // Deduplicate: don't add if a cursor already sits at this position.
+                let already = pane.cursors.iter().any(|c| c.pos == clamped);
+                if !already {
+                    pane.cursors.push(Cursor {
+                        pos: clamped,
+                        anchor: clamped,
+                    });
+                }
+                false
+            }
+            EditorAction::ClearSecondaryCursors => {
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                pane.cursors.truncate(1);
                 false
             }
         }
@@ -756,9 +913,9 @@ pub fn pixel_to_position(
 
 /// Set the cursor position. When `extend` is false, the anchor snaps to `pos`.
 fn set_cursor(pane: &mut EditorPane, pos: Position, extend: bool) {
-    pane.cursor.pos = pos;
+    pane.cursors[0].pos = pos;
     if !extend {
-        pane.cursor.anchor = pos;
+        pane.cursors[0].anchor = pos;
     }
 }
 
@@ -863,8 +1020,8 @@ fn selected_text(pane: &EditorPane, buf: &Buffer) -> Option<String> {
 
 /// Return the ordered `(start, end)` pair of the cursor's anchor→pos range.
 fn selection_range(pane: &EditorPane) -> (Position, Position) {
-    let a = pane.cursor.anchor;
-    let p = pane.cursor.pos;
+    let a = pane.cursors[0].anchor;
+    let p = pane.cursors[0].pos;
     // Compare by (line, col).
     if (a.line, a.col) <= (p.line, p.col) {
         (a, p)
@@ -907,10 +1064,10 @@ mod tests {
         let origin = Position { line: 0, col: 0 };
         let pane = EditorPane {
             buffer_id: 1,
-            cursor: Cursor {
+            cursors: vec![Cursor {
                 pos: origin,
                 anchor: origin,
-            },
+            }],
             selection: Selection::default(),
             scroll_pos: 0.0,
             scroll_target: 0.0,
@@ -963,8 +1120,8 @@ mod tests {
         // Put cursor at col 5 with anchor at 0 (simulating a selection).
         {
             let pane = reg.get_pane_mut(pid).unwrap();
-            pane.cursor.anchor = Position { line: 0, col: 0 };
-            pane.cursor.pos = Position { line: 0, col: 5 };
+            pane.cursors[0].anchor = Position { line: 0, col: 0 };
+            pane.cursors[0].pos = Position { line: 0, col: 5 };
         }
         let mut clip = None;
         reg.apply(
@@ -977,8 +1134,8 @@ mod tests {
         );
         let pane = reg.get_pane(pid).unwrap();
         // Anchor should equal pos (selection collapsed).
-        assert_eq!(pane.cursor.pos, Position { line: 0, col: 3 });
-        assert_eq!(pane.cursor.anchor, Position { line: 0, col: 3 });
+        assert_eq!(pane.cursors[0].pos, Position { line: 0, col: 3 });
+        assert_eq!(pane.cursors[0].anchor, Position { line: 0, col: 3 });
     }
 
     #[test]
@@ -986,8 +1143,8 @@ mod tests {
         let (mut reg, pid) = make_reg_with_text("hello world");
         {
             let pane = reg.get_pane_mut(pid).unwrap();
-            pane.cursor.anchor = Position { line: 0, col: 2 };
-            pane.cursor.pos = Position { line: 0, col: 2 };
+            pane.cursors[0].anchor = Position { line: 0, col: 2 };
+            pane.cursors[0].pos = Position { line: 0, col: 2 };
         }
         let mut clip = None;
         reg.apply(
@@ -1000,8 +1157,8 @@ mod tests {
         );
         let pane = reg.get_pane(pid).unwrap();
         // Anchor stays at 2; pos moves to 7.
-        assert_eq!(pane.cursor.anchor, Position { line: 0, col: 2 });
-        assert_eq!(pane.cursor.pos, Position { line: 0, col: 7 });
+        assert_eq!(pane.cursors[0].anchor, Position { line: 0, col: 2 });
+        assert_eq!(pane.cursors[0].pos, Position { line: 0, col: 7 });
     }
 
     #[test]
@@ -1015,8 +1172,8 @@ mod tests {
             &mut clip,
         );
         let pane = reg.get_pane(pid).unwrap();
-        assert_eq!(pane.cursor.anchor, Position { line: 0, col: 0 });
-        assert_eq!(pane.cursor.pos, Position { line: 0, col: 5 });
+        assert_eq!(pane.cursors[0].anchor, Position { line: 0, col: 0 });
+        assert_eq!(pane.cursors[0].pos, Position { line: 0, col: 5 });
     }
 
     #[test]
@@ -1030,8 +1187,8 @@ mod tests {
             &mut clip,
         );
         let pane = reg.get_pane(pid).unwrap();
-        assert_eq!(pane.cursor.anchor, Position { line: 1, col: 0 });
-        assert_eq!(pane.cursor.pos, Position { line: 1, col: 3 });
+        assert_eq!(pane.cursors[0].anchor, Position { line: 1, col: 0 });
+        assert_eq!(pane.cursors[0].pos, Position { line: 1, col: 3 });
     }
 
     // ── NE6 apply tests ──────────────────────────────────────────────────────
@@ -1044,7 +1201,7 @@ mod tests {
         assert!(mutated);
         assert_eq!(buf_text(&reg, pid), "x");
         // Cursor should advance one col.
-        assert_eq!(reg.get_pane(pid).unwrap().cursor.pos.col, 1);
+        assert_eq!(reg.get_pane(pid).unwrap().cursors[0].pos.col, 1);
     }
 
     #[test]
@@ -1053,8 +1210,8 @@ mod tests {
         // Move cursor to col 2 (end of "ab").
         {
             let pane = reg.get_pane_mut(pid).unwrap();
-            pane.cursor.pos = Position { line: 0, col: 2 };
-            pane.cursor.anchor = Position { line: 0, col: 2 };
+            pane.cursors[0].pos = Position { line: 0, col: 2 };
+            pane.cursors[0].anchor = Position { line: 0, col: 2 };
         }
         let mut clip = None;
         let mutated = reg.apply(pid, EditorAction::Backspace, &mut clip);
@@ -1062,7 +1219,7 @@ mod tests {
         // "ab" → "a" (col 2 − 1 = col 1 now has nothing).
         let text = buf_text(&reg, pid);
         assert_eq!(text.trim_end_matches('\n'), "a");
-        assert_eq!(reg.get_pane(pid).unwrap().cursor.pos.col, 1);
+        assert_eq!(reg.get_pane(pid).unwrap().cursors[0].pos.col, 1);
     }
 
     #[test]
@@ -1071,9 +1228,9 @@ mod tests {
         let mut clip = None;
         let mutated = reg.apply(pid, EditorAction::MoveRight { extend: false }, &mut clip);
         assert!(!mutated);
-        assert_eq!(reg.get_pane(pid).unwrap().cursor.pos.col, 1);
+        assert_eq!(reg.get_pane(pid).unwrap().cursors[0].pos.col, 1);
         // Anchor snaps to pos.
-        assert_eq!(reg.get_pane(pid).unwrap().cursor.anchor.col, 1);
+        assert_eq!(reg.get_pane(pid).unwrap().cursors[0].anchor.col, 1);
     }
 
     #[test]
@@ -1083,8 +1240,8 @@ mod tests {
         reg.apply(pid, EditorAction::MoveRight { extend: true }, &mut clip);
         let pane = reg.get_pane(pid).unwrap();
         // pos advanced, anchor stayed.
-        assert_eq!(pane.cursor.pos.col, 1);
-        assert_eq!(pane.cursor.anchor.col, 0);
+        assert_eq!(pane.cursors[0].pos.col, 1);
+        assert_eq!(pane.cursors[0].anchor.col, 0);
     }
 
     #[test]
@@ -1093,9 +1250,9 @@ mod tests {
         let mut clip = None;
         reg.apply(pid, EditorAction::SelectAll, &mut clip);
         let pane = reg.get_pane(pid).unwrap();
-        assert_eq!(pane.cursor.anchor, Position { line: 0, col: 0 });
+        assert_eq!(pane.cursors[0].anchor, Position { line: 0, col: 0 });
         // pos should be at last line.
-        assert!(pane.cursor.pos.line > 0);
+        assert!(pane.cursors[0].pos.line > 0);
     }
 
     #[test]
@@ -1104,15 +1261,15 @@ mod tests {
         // Cursor at col 1.
         {
             let pane = reg.get_pane_mut(pid).unwrap();
-            pane.cursor.pos = Position { line: 0, col: 1 };
-            pane.cursor.anchor = Position { line: 0, col: 1 };
+            pane.cursors[0].pos = Position { line: 0, col: 1 };
+            pane.cursors[0].anchor = Position { line: 0, col: 1 };
         }
         let mut clip = None;
         let mutated = reg.apply(pid, EditorAction::Paste("XY".to_string()), &mut clip);
         assert!(mutated);
         let text = buf_text(&reg, pid);
         assert!(text.starts_with("aXYb"), "expected aXYb, got {text}");
-        assert_eq!(reg.get_pane(pid).unwrap().cursor.pos.col, 3);
+        assert_eq!(reg.get_pane(pid).unwrap().cursors[0].pos.col, 3);
     }
 
     #[test]
@@ -1184,5 +1341,103 @@ mod tests {
         assert_eq!(reg.count(), 1);
         assert!(reg.get_pane(2).is_some());
         assert!(reg.get_buffer(bid2).is_some());
+    }
+
+    // ── NE13: Multi-cursor tests ──────────────────────────────────────────────
+
+    /// `AddCursorAt` appends a second entry to `cursors` and deduplicates.
+    #[test]
+    fn multi_cursor_add_appends_to_cursors_vec() {
+        let (mut reg, pid) = make_reg_with_text("hello world");
+        let mut clip = None;
+        // Primary cursor starts at (0,0).
+        assert_eq!(reg.get_pane(pid).unwrap().cursors.len(), 1);
+        // Add a cursor at (0, 5).
+        reg.apply(
+            pid,
+            EditorAction::AddCursorAt(Position { line: 0, col: 5 }),
+            &mut clip,
+        );
+        assert_eq!(
+            reg.get_pane(pid).unwrap().cursors.len(),
+            2,
+            "cursors vec must grow to 2 after AddCursorAt"
+        );
+        assert_eq!(
+            reg.get_pane(pid).unwrap().cursors[1].pos,
+            Position { line: 0, col: 5 }
+        );
+
+        // Adding the same position again must be a no-op (dedup).
+        reg.apply(
+            pid,
+            EditorAction::AddCursorAt(Position { line: 0, col: 5 }),
+            &mut clip,
+        );
+        assert_eq!(
+            reg.get_pane(pid).unwrap().cursors.len(),
+            2,
+            "duplicate AddCursorAt must not grow the vec"
+        );
+    }
+
+    /// `InsertChar` with two cursors inserts the char at both positions.
+    #[test]
+    fn multi_cursor_insert_char_applies_to_all() {
+        // "ab" — primary cursor at col 0, secondary at col 1.
+        let (mut reg, pid) = make_reg_with_text("ab");
+        let mut clip = None;
+        reg.apply(
+            pid,
+            EditorAction::AddCursorAt(Position { line: 0, col: 2 }),
+            &mut clip,
+        );
+        // Primary at 0, secondary at 2.
+        assert_eq!(reg.get_pane(pid).unwrap().cursors.len(), 2);
+
+        // Insert 'X' at both cursors. Reverse order: col 2 first, then col 0.
+        // Result: "Xab" becomes "XaXb" → but actually each cursor inserts at
+        // its current position in reverse order: col 2 → "abX", col 0 → "Xab…"
+        // Let's verify the buffer has 2 extra chars.
+        let orig_len = buf_text(&reg, pid).trim_end_matches('\n').len();
+        reg.apply(pid, EditorAction::InsertChar('X'), &mut clip);
+        let new_text = buf_text(&reg, pid);
+        let new_len = new_text.trim_end_matches('\n').len();
+        assert_eq!(
+            new_len,
+            orig_len + 2,
+            "InsertChar with 2 cursors must insert 2 chars; got: {new_text:?}"
+        );
+    }
+
+    /// `ClearSecondaryCursors` drops all but the primary cursor.
+    #[test]
+    fn multi_cursor_clear_drops_secondary() {
+        let (mut reg, pid) = make_reg_with_text("hello world");
+        let mut clip = None;
+        // Add two secondary cursors.
+        reg.apply(
+            pid,
+            EditorAction::AddCursorAt(Position { line: 0, col: 3 }),
+            &mut clip,
+        );
+        reg.apply(
+            pid,
+            EditorAction::AddCursorAt(Position { line: 0, col: 7 }),
+            &mut clip,
+        );
+        assert_eq!(reg.get_pane(pid).unwrap().cursors.len(), 3);
+
+        reg.apply(pid, EditorAction::ClearSecondaryCursors, &mut clip);
+        assert_eq!(
+            reg.get_pane(pid).unwrap().cursors.len(),
+            1,
+            "ClearSecondaryCursors must leave exactly 1 cursor"
+        );
+        // Primary cursor must still exist.
+        assert_eq!(
+            reg.get_pane(pid).unwrap().primary_cursor().pos,
+            Position { line: 0, col: 0 }
+        );
     }
 }

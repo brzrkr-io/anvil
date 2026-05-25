@@ -21,7 +21,7 @@
 
 use unicode_segmentation::UnicodeSegmentation as _;
 
-use anvil_editor::{Buffer, SyntaxRole};
+use anvil_editor::{Buffer, GitChange, GitGutter, SyntaxRole};
 use anvil_theme::Theme;
 use anvil_workspace::{editor_pane::EditorPane, layout::Rect, selection::Selection};
 
@@ -59,6 +59,9 @@ pub struct RenderDiagnostic {
 /// (translate from `LspManager::diagnostics_for` in `main.rs` before calling).
 /// Pass an empty slice when LSP is unavailable or the buffer has no path.
 ///
+/// `gutter` is the optional git gutter for the buffer.  Pass `None` for scratch
+/// buffers or when git integration is unavailable.
+///
 /// After this call the raster's `origin_x`/`origin_y` are not changed; callers
 /// are expected to set them before calling (matching the `draw_workspace` pattern).
 #[allow(clippy::too_many_arguments)]
@@ -71,6 +74,7 @@ pub fn draw_editor_into(
     theme: &Theme,
     rect: Rect,
     diagnostics: &[RenderDiagnostic],
+    gutter: Option<&GitGutter>,
 ) {
     let cw = metrics.cell_w;
     let ch = metrics.cell_h;
@@ -81,8 +85,10 @@ pub fn draw_editor_into(
     // ── Geometry ──────────────────────────────────────────────────────────────
     let line_count = buffer.line_count().max(1);
     // Gutter width: digits needed for highest line number + 2 padding cols.
+    // When a git gutter is present, expand by 2 more columns (glyph + space).
     let digit_cols = line_count.to_string().len();
-    let gutter_cols = digit_cols + 2;
+    let git_gutter_cols = if gutter.is_some() { 2 } else { 0 };
+    let gutter_cols = digit_cols + 2 + git_gutter_cols;
     let gutter_w = gutter_cols as f64 * cw;
 
     // Available content columns to the right of the gutter.
@@ -138,11 +144,32 @@ pub fn draw_editor_into(
 
         // ── Gutter: right-aligned line number ─────────────────────────────────
         let line_num_str = (line_idx + 1).to_string();
-        // Right-align within the gutter: pad = (digit_cols - digits) + 1 space
+        // Right-align within the digit columns (+1 left-pad space).
         let pad_cols = digit_cols.saturating_sub(line_num_str.len()) + 1;
         for (i, ch_g) in line_num_str.chars().enumerate() {
             let gx = rect.x + (pad_cols + i) as f64 * cw;
             raster.glyph_at(painter, metrics, gx, row_y, ch_g as u32, theme.text_muted);
+        }
+
+        // ── Git gutter glyph (NE13) ───────────────────────────────────────────
+        if let Some(gg) = gutter {
+            // Glyph in column (digit_cols + 1); column (digit_cols + 2) is gap.
+            let glyph_col = digit_cols + 1;
+            let gx = rect.x + glyph_col as f64 * cw;
+            let change = gg
+                .per_line
+                .get(line_idx)
+                .copied()
+                .unwrap_or(GitChange::None);
+            let (cp, color) = match change {
+                GitChange::None => (0u32, theme.text_muted),
+                GitChange::Added => ('+' as u32, theme.verified),
+                GitChange::Modified => ('~' as u32, theme.attention),
+                GitChange::Removed => ('\u{25B4}' as u32, theme.failure), // ▴
+            };
+            if change != GitChange::None {
+                raster.glyph_at(painter, metrics, gx, row_y, cp, color);
+            }
         }
 
         // ── Buffer content ────────────────────────────────────────────────────
@@ -211,16 +238,51 @@ pub fn draw_editor_into(
         let _ = painted; // suppress dead-code lint
     }
 
-    // ── Cursor bar ────────────────────────────────────────────────────────────
-    let cursor_line = editor_pane.cursor.pos.line;
-    let cursor_col = editor_pane.cursor.pos.col;
-    if cursor_line >= scroll_line {
-        let vrow = cursor_line - scroll_line;
-        if vrow < visible_rows {
-            let cx = rect.x + gutter_w + cursor_col as f64 * cw;
-            let cy = rect.y + vrow as f64 * ch;
-            // 2 px-wide vertical bar, full cell height.
-            raster.fill_pixel_rect(cx, cy, 2.0, ch, theme.accent);
+    // ── Cursor bars — primary + secondary (NE13) ─────────────────────────────
+    for (i, cursor) in editor_pane.cursors.iter().enumerate() {
+        let cursor_line = cursor.pos.line;
+        let cursor_col = cursor.pos.col;
+        if cursor_line >= scroll_line {
+            let vrow = cursor_line - scroll_line;
+            if vrow < visible_rows {
+                let cx = rect.x + gutter_w + cursor_col as f64 * cw;
+                let cy = rect.y + vrow as f64 * ch;
+                // Primary cursor: full accent color; secondary: accent_ember.
+                let color = if i == 0 {
+                    theme.accent
+                } else {
+                    theme.accent_ember
+                };
+                // 2 px-wide vertical bar, full cell height.
+                raster.fill_pixel_rect(cx, cy, 2.0, ch, color);
+            }
+        }
+    }
+
+    // ── Ghost-text suggestions (NE14) ────────────────────────────────────────
+    // Paint the first ghost-text span whose anchor equals the cursor position.
+    // Rendered in `theme.text_subtle` (lighter than text_muted) after the cursor.
+    // Only paint when the anchor is exactly at the cursor (common completion case).
+    let cursor_pos = editor_pane.primary_cursor().pos;
+    if let Some(span) = buffer.ghost_text.iter().find(|s| s.anchor == cursor_pos) {
+        if cursor_pos.line >= scroll_line {
+            let vrow = cursor_pos.line - scroll_line;
+            if vrow < visible_rows {
+                let row_y = rect.y + vrow as f64 * ch;
+                // Start painting ghost text at (cursor_col + 0) — the cursor bar
+                // is 2px wide but occupies the same cell column as the ghost text
+                // starts. Ghost text begins at the cell right after the cursor column.
+                let start_col = cursor_pos.col;
+                let chars: Vec<char> = span.text.chars().collect();
+                for (i, &c) in chars.iter().enumerate() {
+                    let col = start_col + i;
+                    if col >= content_cols {
+                        break;
+                    }
+                    let gx = rect.x + gutter_w + col as f64 * cw;
+                    raster.glyph_at(painter, metrics, gx, row_y, c as u32, theme.text_subtle);
+                }
+            }
         }
     }
 
@@ -427,10 +489,10 @@ mod tests {
         let origin = Position { line: 0, col: 0 };
         EditorPane {
             buffer_id,
-            cursor: Cursor {
+            cursors: vec![Cursor {
                 pos: origin,
                 anchor: origin,
-            },
+            }],
             selection: Selection::default(),
             scroll_pos: 0.0,
             scroll_target: 0.0,
@@ -461,6 +523,7 @@ mod tests {
             &theme,
             rect(),
             &[],
+            None,
         );
 
         // The gutter should paint the digit '1' in text_muted.
@@ -507,6 +570,7 @@ mod tests {
             &theme,
             rect(),
             &[],
+            None,
         );
 
         let fg_cps: Vec<u32> = painter
@@ -536,7 +600,7 @@ mod tests {
         let text: String = (0..10).map(|i| format!("line{i}\n")).collect();
         let buf = Buffer::from_text(&text);
         let mut pane = make_pane(1);
-        pane.cursor = Cursor {
+        pane.cursors[0] = Cursor {
             pos: Position { line: 5, col: 3 },
             anchor: Position { line: 5, col: 3 },
         };
@@ -553,7 +617,17 @@ mod tests {
         let mut painter = CapturePainter::default();
         let theme = MINERAL_DARK;
 
-        draw_editor_into(&mut raster, &mut painter, &pane, &buf, m, &theme, r, &[]);
+        draw_editor_into(
+            &mut raster,
+            &mut painter,
+            &pane,
+            &buf,
+            m,
+            &theme,
+            r,
+            &[],
+            None,
+        );
 
         // Cursor pixel: x = gutter_w + col * cw, y = row * ch (row 5, col 3).
         let cx = (r.x + gutter_w + 3.0 * m.cell_w) as usize;
@@ -589,6 +663,7 @@ mod tests {
             &theme,
             rect(),
             &[],
+            None,
         );
 
         let has_overflow_marker = painter
@@ -625,6 +700,7 @@ mod tests {
             &theme,
             rect(),
             &[],
+            None,
         );
 
         // Line 3 starts with 'L' followed by '3'. The foreground calls should
@@ -693,6 +769,7 @@ mod tests {
             &theme,
             rect(),
             &[],
+            None,
         );
 
         // 'f' and 'n' must be painted with the keyword color.
@@ -748,7 +825,17 @@ mod tests {
             severity: RenderSeverity::Error,
         }];
 
-        draw_editor_into(&mut raster, &mut painter, &pane, &buf, m, &theme, r, &diag);
+        draw_editor_into(
+            &mut raster,
+            &mut painter,
+            &pane,
+            &buf,
+            m,
+            &theme,
+            r,
+            &diag,
+            None,
+        );
 
         // The 4 px gutter stripe is at rect.x=0, row 0.
         // Sample the stripe at x=2 (middle of the 4px stripe), y=middle of row 0.
@@ -756,6 +843,75 @@ mod tests {
         assert_eq!(
             px, theme.failure,
             "gutter stripe at x=2,y=row0_mid should be failure color, got {px:?}"
+        );
+    }
+
+    // ── draw_editor_paints_ghost_text_at_cursor ───────────────────────────────
+
+    /// When the buffer has a ghost-text span at the cursor position, the ghost
+    /// text glyphs must be painted in `theme.text_subtle` (not foreground).
+    #[test]
+    fn draw_editor_paints_ghost_text_at_cursor() {
+        use anvil_editor::Position as BufPos;
+
+        let mut buf = Buffer::from_text("hi\n");
+        // Set ghost text anchored at the cursor (line 0, col 2 — end of "hi").
+        buf.set_ghost_text("caldera".into(), BufPos { line: 0, col: 2 }, "xyz".into());
+
+        let mut pane = make_pane(1);
+        // Place cursor at line 0, col 2 to match the anchor.
+        pane.cursors[0] = anvil_editor::Cursor {
+            pos: BufPos { line: 0, col: 2 },
+            anchor: BufPos { line: 0, col: 2 },
+        };
+
+        let mut raster = Raster::new(400, 200);
+        let mut painter = CapturePainter::default();
+        let theme = MINERAL_DARK;
+
+        draw_editor_into(
+            &mut raster,
+            &mut painter,
+            &pane,
+            &buf,
+            metrics(),
+            &theme,
+            rect(),
+            &[],
+            None,
+        );
+
+        // 'x', 'y', 'z' must appear in text_subtle calls.
+        let subtle_cps: Vec<u32> = painter
+            .calls
+            .iter()
+            .filter(|(_, fg)| *fg == theme.text_subtle)
+            .map(|(cp, _)| *cp)
+            .collect();
+
+        assert!(
+            subtle_cps.contains(&('x' as u32)),
+            "'x' of ghost text must be in text_subtle; subtle_cps: {subtle_cps:?}"
+        );
+        assert!(
+            subtle_cps.contains(&('y' as u32)),
+            "'y' of ghost text must be in text_subtle; subtle_cps: {subtle_cps:?}"
+        );
+        assert!(
+            subtle_cps.contains(&('z' as u32)),
+            "'z' of ghost text must be in text_subtle; subtle_cps: {subtle_cps:?}"
+        );
+
+        // Ghost text must NOT appear as plain foreground.
+        let fg_cps: Vec<u32> = painter
+            .calls
+            .iter()
+            .filter(|(_, fg)| *fg == theme.foreground)
+            .map(|(cp, _)| *cp)
+            .collect();
+        assert!(
+            !fg_cps.contains(&('x' as u32)),
+            "'x' must not be plain foreground; fg_cps: {fg_cps:?}"
         );
     }
 }

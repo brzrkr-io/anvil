@@ -1423,13 +1423,21 @@ impl App {
     /// pane (Cmd+K, NE10).  Stores the `(pane_id, request_id)` in
     /// `self.pending_hover` for polling in the tick loop.
     fn trigger_hover_request(&mut self) {
-        let Some(tab) = self.tabs.current() else { return };
+        let Some(tab) = self.tabs.current() else {
+            return;
+        };
         let pane_id = tab.focused_id();
-        let Some(ep) = tab.editor_panes.get_pane(pane_id) else { return };
-        let Some(buf) = tab.editor_panes.get_buffer(ep.buffer_id) else { return };
-        let Some(path) = buf.tracked_path() else { return };
-        let line = ep.cursor.pos.line as u32;
-        let character = ep.cursor.pos.col as u32;
+        let Some(ep) = tab.editor_panes.get_pane(pane_id) else {
+            return;
+        };
+        let Some(buf) = tab.editor_panes.get_buffer(ep.buffer_id) else {
+            return;
+        };
+        let Some(path) = buf.tracked_path() else {
+            return;
+        };
+        let line = ep.cursors[0].pos.line as u32;
+        let character = ep.cursors[0].pos.col as u32;
         let path = path.to_path_buf();
         // Clear any stale popup.
         self.apply_editor_action(EditorAction::HoverRequest);
@@ -1445,7 +1453,9 @@ impl App {
     /// Poll for a hover result and populate the target pane's `hover_popup` if
     /// one arrived.  Called each tick (NE10).
     fn poll_hover_result(&mut self) {
-        let Some((pane_id, req_id)) = self.pending_hover else { return };
+        let Some((pane_id, req_id)) = self.pending_hover else {
+            return;
+        };
         let Some(lsp) = &self.lsp_manager else { return };
         if let Some(result) = lsp.poll_hover(req_id) {
             self.pending_hover = None;
@@ -1454,7 +1464,7 @@ impl App {
                 .tabs
                 .current()
                 .and_then(|t| t.editor_panes.get_pane(pane_id))
-                .map(|ep| ep.cursor.pos)
+                .map(|ep| ep.cursors[0].pos)
                 .unwrap_or(anvil_editor::Position { line: 0, col: 0 });
             if let Some(tab) = self.tabs.current_mut() {
                 if let Some(ep) = tab.editor_panes.get_pane_mut(pane_id) {
@@ -3586,6 +3596,52 @@ impl AppHandler for AppShell {
         // When a native editor pane is focused, map the event to an EditorAction
         // and apply it instead of writing to a PTY.
         if self.app.focused_is_native_editor() {
+            // NE14 ghost-text keybinds take priority over normal Tab/Esc handling.
+            let ghost_text_active = self
+                .app
+                .tabs
+                .current()
+                .and_then(|t| {
+                    let id = t.focused_id();
+                    let ep = t.editor_panes.get_pane(id)?;
+                    let buf = t.editor_panes.get_buffer(ep.buffer_id)?;
+                    Some(!buf.ghost_text.is_empty())
+                })
+                .unwrap_or(false);
+
+            if ghost_text_active {
+                match event.key {
+                    KeyInput::Tab => {
+                        self.app.apply_editor_action(EditorAction::AcceptGhostText);
+                        return;
+                    }
+                    KeyInput::Escape => {
+                        self.app.apply_editor_action(EditorAction::DismissGhostText);
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+
+            // NE13: Esc with multi-cursor active → clear secondary cursors.
+            if event.key == KeyInput::Escape {
+                let has_secondary = self
+                    .app
+                    .tabs
+                    .current()
+                    .and_then(|t| {
+                        let ep = t.editor_panes.get_pane(t.focused_id())?;
+                        Some(ep.cursors.len() > 1)
+                    })
+                    .unwrap_or(false);
+                if has_secondary {
+                    self.app
+                        .apply_editor_action(EditorAction::ClearSecondaryCursors);
+                    self.app.dirty = true;
+                    return;
+                }
+            }
+
             let action = key_event_to_editor_action(event);
             if let Some(action) = action {
                 self.app.apply_editor_action(action);
@@ -3809,9 +3865,13 @@ impl AppHandler for AppShell {
         }
 
         // Native editor mouse: click → cursor, double → word, triple → line (NE7).
+        // Cmd+click (single) → add secondary cursor (NE13).
         if app.focused_is_native_editor() {
             if let Some(pos) = app.native_editor_pos_at(loc) {
-                let action = if click_count >= 3 {
+                let action = if mods.command && click_count == 1 {
+                    // Cmd+click: add secondary cursor at the hit position.
+                    EditorAction::AddCursorAt(pos)
+                } else if click_count >= 3 {
                     EditorAction::SelectLineAt(pos)
                 } else if click_count == 2 {
                     EditorAction::SelectWordAt(pos)
