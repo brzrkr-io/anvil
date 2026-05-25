@@ -148,6 +148,10 @@ pub struct Keybindings {
     pub focus_down: String,
     pub fold_block: String,
     pub toggle_theme: String,
+    /// Approve the topmost pending approval when the HUD is visible.
+    pub agent_approve: String,
+    /// Start a new agent run via the task-handoff endpoint.
+    pub agent_start: String,
 }
 
 impl Default for Keybindings {
@@ -180,6 +184,8 @@ impl Default for Keybindings {
             focus_down: "cmd+shift+j".into(),
             fold_block: "cmd+.".into(),
             toggle_theme: "cmd+shift+t".into(),
+            agent_approve: "cmd+return".into(),
+            agent_start: "cmd+shift+return".into(),
         }
     }
 }

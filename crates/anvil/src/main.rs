@@ -506,6 +506,9 @@ pub struct App {
     agent_snap: AgentSnapshot,
     local_ctx: LocalContext,
     caldera_poller: Option<anvil_caldera::Poller>,
+    /// Separate client used for fire-and-forget actions (approve, start_run).
+    /// Shares the same endpoint as the poller; created at the same time.
+    caldera_client: Option<anvil_caldera::CalderaClient>,
 
     // -- git worker ---
     git_tx: mpsc::SyncSender<PathBuf>,
@@ -1277,6 +1280,8 @@ impl App {
                     anvil_caldera::DEFAULT_ENDPOINT,
                     root,
                 ));
+                self.caldera_client =
+                    Some(anvil_caldera::CalderaClient::new(anvil_caldera::DEFAULT_ENDPOINT));
             }
         }
 
@@ -2566,6 +2571,38 @@ impl AppHandler for AppShell {
                 {
                     // Cmd+ / Cmd= zoom in, Cmd- zoom out, Cmd0 reset.
                     self.handle_zoom_chord(ch);
+                    return;
+                }
+                // Cmd+Return — approve topmost pending approval (HUD must be visible).
+                KeyInput::Enter if !mods.shift && !mods.control && !mods.option => {
+                    if self.app.hud_visible {
+                        if let (Some(client), Some(poller)) =
+                            (&self.app.caldera_client, &self.app.caldera_poller)
+                        {
+                            if let Some(row) = self.app.agent_snap.approvals.first() {
+                                let _ = anvil_caldera::approve(
+                                    client,
+                                    &row.connector,
+                                    &row.pattern,
+                                    &row.reason,
+                                    300,
+                                );
+                                poller.kick();
+                            }
+                        }
+                    }
+                    return;
+                }
+                // Cmd+Shift+Return — start a new agent run.
+                KeyInput::Enter if mods.shift && !mods.control && !mods.option => {
+                    if self.app.hud_visible {
+                        if let (Some(client), Some(poller)) =
+                            (&self.app.caldera_client, &self.app.caldera_poller)
+                        {
+                            let _ = anvil_caldera::start_run(client, "", "");
+                            poller.kick();
+                        }
+                    }
                     return;
                 }
                 KeyInput::Char(ch) if self.app.handle_cmd_chord(mods, ch, &self.webview) => {
@@ -3868,6 +3905,7 @@ fn main() -> Result<()> {
         // The caldera poller is started lazily once we know the repo root
         // (set when the first focused pane's cwd is known); see tick().
         caldera_poller: None,
+        caldera_client: None,
         git_tx,
         git_rx,
         recent_cwd_tx,
