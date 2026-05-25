@@ -62,6 +62,7 @@ pub fn draw_workspace(
     blink_phase: f32,
     cursor_cfg: CursorConfig,
     dirty: Option<&HashMap<PaneId, DirtySet>>,
+    running_pulse_phase: f32,
 ) {
     let entries = tree.layout(inner, div_px);
 
@@ -111,6 +112,7 @@ pub fn draw_workspace(
             rule_x_end,
             folded,
             pane_dirty,
+            running_pulse_phase,
         );
 
         // Living-scrollback indicator (item 20): paint a 4px ember bar at
@@ -340,6 +342,7 @@ mod tests {
             0.0,
             cursor_cfg,
             None,
+            0.0,
         );
 
         assert_eq!(r.origin_x, 0.0, "origin_x must be reset to 0");
@@ -408,6 +411,7 @@ mod tests {
             0.0,
             CursorConfig::default(),
             None,
+            0.0,
         );
 
         // Gutter center: pane1_w = (inner.w - TEST_DIV) * 0.5
@@ -473,6 +477,7 @@ mod tests {
             0.0,
             CursorConfig::default(),
             None,
+            0.0,
         );
 
         // Focused pane (id1) is the left half of inner.
@@ -546,6 +551,7 @@ mod tests {
             0.0,
             CursorConfig::default(),
             None,
+            0.0,
         );
         // "hello world" starts with 'h' — expect glyph calls.
         assert!(!painter.calls.is_empty());

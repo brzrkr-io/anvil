@@ -121,6 +121,7 @@ fn bench_draw_viewport(c: &mut Criterion) {
                 0.0, // rule_x_end
                 FoldedBlocks::empty(),
                 Some(&dirty),
+                0.0,
             );
         });
     });
@@ -167,6 +168,7 @@ fn bench_draw_viewport(c: &mut Criterion) {
                 0.0,
                 FoldedBlocks::empty(),
                 Some(&dirty),
+                0.0,
             );
         });
     });

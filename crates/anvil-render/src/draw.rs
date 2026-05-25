@@ -533,6 +533,8 @@ struct CpuSink<'a> {
     bold: &'a mut dyn GlyphPainter,
     italic: &'a mut dyn GlyphPainter,
     bold_italic: &'a mut dyn GlyphPainter,
+    /// Free-running phase [0,1) for the running-block header dot pulse.
+    running_pulse_phase: f32,
 }
 
 impl<'a> CpuSink<'a> {
@@ -545,7 +547,7 @@ impl<'a> CpuSink<'a> {
     ///   `GridPainters` struct, which requires 4 separate `&mut dyn` refs).
     /// - `raster` is a separate, distinct object from all painters.
     /// - No two mutable pointers alias; only one is accessed at a time per call.
-    fn new(raster: &'a mut Raster, painters: &'a mut GridPainters<'_>) -> Self {
+    fn new(raster: &'a mut Raster, painters: &'a mut GridPainters<'_>, running_pulse_phase: f32) -> Self {
         // SAFETY: each raw pointer is derived from a valid, non-aliasing
         // `&'a mut dyn GlyphPainter` that outlives `CpuSink<'a>`.
         let reg = painters.regular as *mut dyn GlyphPainter;
@@ -558,6 +560,7 @@ impl<'a> CpuSink<'a> {
             bold: unsafe { &mut *bld },
             italic: unsafe { &mut *itl },
             bold_italic: unsafe { &mut *bi },
+            running_pulse_phase,
         }
     }
 }
@@ -632,6 +635,21 @@ impl ViewportSink for CpuSink<'_> {
         theme: &Theme,
     ) {
         draw_block_header_cpu(self.raster, self.regular, m, theme, block, cmd_text, ry, cols);
+
+        // Running-block header dot: sine-modulated 2×2 dot at col 0 while block is Running.
+        if block.state == BlockState::Running {
+            let alpha = 0.45 + 0.55 * (std::f32::consts::TAU * self.running_pulse_phase).sin().max(0.0);
+            let dot_px = (m.cell_w * 0.5 - 1.0).max(0.0);
+            let dot_py = m.cell_h * 0.5 - 1.0;
+            self.raster.fill_pixel_rect_alpha(
+                self.raster.origin_x + dot_px,
+                self.raster.origin_y + ry as f64 * m.cell_h + dot_py,
+                2.0,
+                2.0,
+                theme.accent_bright,
+                alpha as f64,
+            );
+        }
 
         // Block-header pulse: 200ms ember flash on command completion.
         if let Some(t) = block.completed_at {
@@ -740,6 +758,8 @@ struct GpuSink<'a> {
     ch: f32,
     /// Smooth-scroll y shift in pixels (0.0 for live-bottom path).
     shift: f32,
+    /// Free-running phase [0,1) for the running-block header dot pulse.
+    running_pulse_phase: f32,
 }
 
 impl<'a> GpuSink<'a> {
@@ -749,6 +769,7 @@ impl<'a> GpuSink<'a> {
         raster: &'a Raster,
         metrics: FontMetrics,
         shift: f32,
+        running_pulse_phase: f32,
     ) -> Self {
         Self {
             batch,
@@ -757,6 +778,7 @@ impl<'a> GpuSink<'a> {
             cw: metrics.cell_w as f32,
             ch: metrics.cell_h as f32,
             shift,
+            running_pulse_phase,
         }
     }
 
@@ -844,6 +866,25 @@ impl ViewportSink for GpuSink<'_> {
             self.ch,
             self.shift,
         );
+
+        // Running-block header dot: sine-modulated color at col 0 while block is Running.
+        if block.state == BlockState::Running {
+            let alpha = 0.45 + 0.55 * (std::f32::consts::TAU * self.running_pulse_phase).sin().max(0.0);
+            let dot_col = 0.5_f64 - 1.0 / m.cell_w; // ~center of col 0
+            let dot_row = ry as f64 + 0.5 - 1.0 / m.cell_h;
+            let rect = self.raster.cell_rect(m, dot_col, dot_row);
+            let xy = [rect.x as f32, rect.y as f32 - self.shift];
+            // Use accent_bright with the pulsed alpha baked into the color.
+            let ab = theme.accent_bright;
+            let a = alpha;
+            let bg = theme.background;
+            let color = [
+                (ab[0] as f32 * a + bg[0] as f32 * (1.0 - a)) as u8,
+                (ab[1] as f32 * a + bg[1] as f32 * (1.0 - a)) as u8,
+                (ab[2] as f32 * a + bg[2] as f32 * (1.0 - a)) as u8,
+            ];
+            self.batch.push_cell(xy, [2.0, 2.0], None, color, color);
+        }
     }
 
     fn draw_prompt_rule(
@@ -1102,10 +1143,11 @@ pub fn draw_viewport(
     rule_x_end: f64,
     folded: FoldedBlocks<'_>,
     dirty: Option<&DirtySet>,
+    running_pulse_phase: f32,
 ) {
     let rows = terminal.rows();
     let cols = terminal.cols();
-    let mut sink = CpuSink::new(raster, painters);
+    let mut sink = CpuSink::new(raster, painters, running_pulse_phase);
 
     if scroll_pos == 0.0 {
         draw_viewport_into(
@@ -1198,12 +1240,13 @@ pub fn draw_viewport_gpu(
     search: Option<&Search>,
     cursor: Option<CursorParams>,
     folded: FoldedBlocks<'_>,
+    running_pulse_phase: f32,
 ) {
     let rows = terminal.rows();
     let cols = terminal.cols();
 
     if scroll_pos == 0.0 {
-        let mut sink = GpuSink::new(batch, rasterizer, raster, metrics, 0.0);
+        let mut sink = GpuSink::new(batch, rasterizer, raster, metrics, 0.0, running_pulse_phase);
         draw_viewport_into(
             &mut sink,
             terminal,
@@ -1226,7 +1269,7 @@ pub fn draw_viewport_gpu(
         let frac = scroll_pos as f64 - scroll_pos.floor() as f64;
         let shift = ((1.0 - frac) * metrics.cell_h) as f32;
         let off = base + 1;
-        let mut sink = GpuSink::new(batch, rasterizer, raster, metrics, shift);
+        let mut sink = GpuSink::new(batch, rasterizer, raster, metrics, shift, running_pulse_phase);
         draw_viewport_into(
             &mut sink,
             terminal,
@@ -1399,6 +1442,7 @@ mod tests {
             200.0,
             FoldedBlocks::empty(),
             None,
+            0.0,
         );
         // "hello" starts with 'h' (non-space): expect at least one glyph call.
         assert!(!painter.calls.is_empty());
@@ -1440,6 +1484,7 @@ mod tests {
             200.0,
             FoldedBlocks::empty(),
             None,
+            0.0,
         );
         // No panic; scroll path exercised.
     }
@@ -1670,6 +1715,7 @@ mod tests {
             200.0,
             FoldedBlocks::empty(),
             None,
+            0.0,
         );
     }
 
@@ -1714,6 +1760,7 @@ mod tests {
             200.0,
             FoldedBlocks::empty(),
             None,
+            0.0,
         );
     }
 
@@ -1758,6 +1805,7 @@ mod tests {
             200.0,
             FoldedBlocks::empty(),
             None,
+            0.0,
         );
     }
 
@@ -1798,6 +1846,7 @@ mod tests {
             200.0,
             FoldedBlocks::empty(),
             None,
+            0.0,
         );
     }
 
@@ -1845,6 +1894,7 @@ mod tests {
             200.0,
             FoldedBlocks::empty(),
             None,
+            0.0,
         );
     }
 
@@ -1913,6 +1963,7 @@ mod tests {
                 400.0,
                 FoldedBlocks::empty(),
                 None,
+                0.0,
             );
             painter.calls.len() + bp.calls.len() + ip.calls.len() + bip.calls.len()
         };
@@ -1950,6 +2001,7 @@ mod tests {
                 400.0,
                 FoldedBlocks::new(&folded_arr),
                 None,
+                0.0,
             );
             painter.calls.len() + bp.calls.len() + ip.calls.len() + bip.calls.len()
         };
@@ -2109,6 +2161,7 @@ mod tests {
             None,
             None,
             FoldedBlocks::empty(),
+            0.0,
         );
 
         let count = batch.instance_count();
@@ -2169,6 +2222,7 @@ mod tests {
             300.0,
             FoldedBlocks::empty(),
             Some(&dirty),
+            0.0,
         );
 
         // The painter must have received at least one call (row 0 has "hello").
@@ -2212,6 +2266,7 @@ mod tests {
             300.0,
             FoldedBlocks::empty(),
             None, // full redraw
+            0.0,
         );
 
         let partial_calls = painter.calls.len() + bold_p.calls.len() + italic_p.calls.len() + bold_italic_p.calls.len();
@@ -2249,6 +2304,7 @@ mod tests {
             None,
             None,
             FoldedBlocks::empty(),
+            0.0,
         );
         // No panic; scroll path exercised. Instance count may be 0 (cells
         // happen to be spaces) but must not exceed rows+1 * cols.
@@ -2365,6 +2421,7 @@ mod tests {
             200.0,
             FoldedBlocks::empty(),
             None,
+            0.0,
         );
         // The bold 'X' must have routed to bold_p.
         assert!(!bold_p.calls.is_empty(), "bold painter must receive bold cell");

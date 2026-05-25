@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Anvil Agent Prompt Modes</title>
+  <style>
+    :root {
+      --graphite: #0b0d0e;
+      --charcoal: #161a1c;
+      --charcoal2: #101315;
+      --ash: #374046;
+      --alloy: #86919a;
+      --mist: #d2d8db;
+      --bone: #eef1f2;
+      --mineral: #2f7f86;
+      --ember: #c5462a;
+      --verified: #3f8a5b;
+      --attention: #b07a14;
+      --failure: #b13a30;
+      --agent: #6a5fa3;
+      --risk: #a8623a;
+      --line: rgba(210,216,219,.13);
+      --line2: rgba(210,216,219,.25);
+      --mono: "IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+      --sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--bone);
+      background:
+        linear-gradient(rgba(210,216,219,.027) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(210,216,219,.027) 1px, transparent 1px),
+        radial-gradient(circle at 50% -12%, rgba(47,127,134,.24), transparent 34rem),
+        radial-gradient(circle at 82% 28%, rgba(106,95,163,.18), transparent 28rem),
+        radial-gradient(circle at 16% 92%, rgba(197,70,42,.11), transparent 36rem),
+        var(--graphite);
+      background-size: 22px 22px, 22px 22px, auto, auto, auto, auto;
+      font-family: var(--sans);
+      overflow-x: hidden;
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background: linear-gradient(180deg, transparent, rgba(0,0,0,.32));
+      z-index: 0;
+    }
+    .shell { position: relative; z-index: 1; max-width: 1500px; margin: 0 auto; padding: 28px; }
+    .topbar {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      gap: 16px;
+      border: 1px solid var(--line);
+      background: rgba(11,13,14,.64);
+      padding: 10px;
+      font: 11px/1 var(--mono);
+      letter-spacing: .11em;
+      text-transform: uppercase;
+      color: var(--alloy);
+    }
+    .topbar .center { justify-self: center; color: var(--bone); letter-spacing: .18em; }
+    .topbar .right { justify-self: end; color: var(--mineral); }
+    .chipline { display: flex; flex-wrap: wrap; gap: 7px; }
+    .chip { border: 1px solid var(--line); padding: 7px 9px; background: rgba(22,26,28,.72); }
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 470px;
+      gap: 34px;
+      align-items: end;
+      min-height: 360px;
+      padding: 62px 0 38px;
+      border-bottom: 1px solid var(--line);
+      position: relative;
+    }
+    .pixelmap {
+      position: absolute;
+      inset: 18px 0 auto auto;
+      width: 530px;
+      height: 240px;
+      opacity: .55;
+      pointer-events: none;
+      background:
+        linear-gradient(90deg, transparent 0 84%, rgba(47,127,134,.35) 84% 88%, transparent 88%),
+        radial-gradient(circle, rgba(47,127,134,.72) 0 2px, transparent 3px),
+        radial-gradient(circle, rgba(106,95,163,.64) 0 2px, transparent 3px);
+      background-size: 100% 100%, 33px 33px, 47px 47px;
+      mask-image: radial-gradient(circle at 65% 45%, black, transparent 68%);
+    }
+    .kicker { color: var(--mineral); font: 12px/1 var(--mono); letter-spacing: .16em; text-transform: uppercase; margin-bottom: 18px; }
+    h1 {
+      font-family: var(--mono);
+      font-size: clamp(38px, 7vw, 82px);
+      line-height: .92;
+      letter-spacing: -.08em;
+      margin: 0 0 20px;
+      text-transform: uppercase;
+      text-shadow: 0 0 28px rgba(47,127,134,.18);
+    }
+    .hero p { max-width: 760px; color: rgba(238,241,242,.68); line-height: 1.7; font-size: 15px; margin: 0; }
+    .verdict {
+      border: 1px solid rgba(47,127,134,.44);
+      background: linear-gradient(180deg, rgba(47,127,134,.13), rgba(22,26,28,.78));
+      padding: 18px;
+      box-shadow: 0 30px 90px rgba(0,0,0,.34);
+      font-family: var(--mono);
+    }
+    .verdict h2 { margin: 0 0 12px; font-size: 14px; color: var(--bone); text-transform: uppercase; letter-spacing: .12em; }
+    .verdict .row { display: grid; grid-template-columns: 78px 1fr; gap: 12px; padding: 9px 0; border-top: 1px solid rgba(210,216,219,.1); color: var(--alloy); font-size: 12px; line-height: 1.45; }
+    .verdict b { color: var(--mineral); font-weight: 500; }
+    .section-head { display: flex; justify-content: space-between; align-items: end; gap: 18px; margin: 34px 0 14px; }
+    .section-head h2 { margin: 0; font: 18px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+    .section-head p { margin: 0; color: var(--alloy); font: 12px/1.5 var(--mono); max-width: 620px; }
+    .filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 22px; }
+    button.filter {
+      border: 1px solid var(--line);
+      background: rgba(22,26,28,.68);
+      color: var(--alloy);
+      font: 12px/1 var(--mono);
+      padding: 9px 11px;
+      cursor: pointer;
+      transition: 150ms ease;
+    }
+    button.filter:hover, button.filter.active { border-color: rgba(47,127,134,.8); color: var(--bone); background: rgba(47,127,134,.14); }
+    .grid { display: grid; grid-template-columns: repeat(4, minmax(250px, 1fr)); gap: 14px; }
+    .card {
+      min-height: 288px;
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(22,26,28,.92), rgba(11,13,14,.9));
+      padding: 14px;
+      position: relative;
+      overflow: hidden;
+      box-shadow: 0 20px 70px rgba(0,0,0,.25);
+    }
+    .card::before {
+      content:"";
+      position:absolute;
+      inset:0;
+      background: radial-gradient(circle at 92% 8%, color-mix(in srgb, var(--c) 22%, transparent), transparent 8rem);
+      pointer-events:none;
+    }
+    .card:hover { border-color: var(--line2); transform: translateY(-1px); transition: 140ms ease; }
+    .meta { position:relative; display:flex; justify-content:space-between; align-items:center; gap:8px; color:var(--alloy); font: 10px/1 var(--mono); text-transform:uppercase; letter-spacing:.1em; margin-bottom: 12px; }
+    .badge { border:1px solid color-mix(in srgb, var(--c) 58%, transparent); color:var(--bone); background: color-mix(in srgb, var(--c) 14%, transparent); padding: 5px 7px; letter-spacing:0; text-transform:none; }
+    .terminal {
+      position:relative;
+      min-height: 116px;
+      padding: 13px;
+      border: 1px solid rgba(210,216,219,.1);
+      background:
+        linear-gradient(rgba(238,241,242,.025) 1px, transparent 1px),
+        rgba(0,0,0,.28);
+      background-size: 100% 21px;
+      color: rgba(238,241,242,.72);
+      font: 13px/1.65 var(--mono);
+    }
+    .ghost { color: rgba(134,145,154,.62); }
+    .cmd { color: rgba(238,241,242,.9); }
+    .mineral { color: var(--mineral); }
+    .agent { color: var(--agent); }
+    .ember { color: var(--ember); }
+    .verified { color: var(--verified); }
+    .attention { color: var(--attention); }
+    .failure { color: var(--failure); }
+    .risk { color: var(--risk); }
+    .state { color: var(--c); }
+    .dim { color: var(--alloy); }
+    .right { position:absolute; right: 12px; bottom: 10px; color: var(--alloy); font-size: 11px; }
+    .rail { display:inline-block; width: 18px; border-left: 2px solid var(--c); padding-left: 7px; }
+    .trace { display:inline-block; width: 54px; height: 1px; background: linear-gradient(90deg, transparent, var(--c)); vertical-align: middle; margin: 0 8px; box-shadow: 0 0 12px color-mix(in srgb, var(--c) 54%, transparent); }
+    .panel {
+      margin-top: 8px;
+      border: 1px solid color-mix(in srgb, var(--c) 35%, transparent);
+      padding: 8px;
+      background: color-mix(in srgb, var(--c) 8%, transparent);
+      color: var(--alloy);
+      font-size: 11px;
+    }
+    .title { position:relative; margin: 13px 0 8px; font-size: 16px; font-weight: 560; }
+    .desc { position:relative; color: rgba(210,216,219,.66); margin:0; font-size: 13px; line-height:1.5; }
+    .take { position:relative; margin-top: 11px; padding-top: 10px; border-top:1px solid rgba(210,216,219,.08); color: var(--alloy); font: 11px/1.4 var(--mono); }
+    .matrix { display:grid; grid-template-columns: repeat(3, 1fr); gap: 2px; width: 58px; margin: 8px 0; }
+    .px { height: 7px; background: color-mix(in srgb, var(--c) 55%, transparent); }
+    .hidden { display:none; }
+    .compare { margin: 28px 0 0; display:grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+    .compare article { border: 1px solid var(--line); background: rgba(22,26,28,.72); padding: 16px; }
+    .compare h3 { margin: 0 0 10px; font: 14px/1 var(--mono); text-transform:uppercase; letter-spacing:.1em; }
+    .compare p, .compare li { color: rgba(210,216,219,.68); font-size: 13px; line-height:1.55; }
+    .compare ul { padding-left: 18px; margin-bottom: 0; }
+    @media (max-width: 1220px) { .grid { grid-template-columns: repeat(3, 1fr); } .hero { grid-template-columns: 1fr; } }
+    @media (max-width: 880px) { .grid { grid-template-columns: repeat(2, 1fr); } .compare { grid-template-columns: 1fr; } .topbar { grid-template-columns: 1fr; } .topbar .center,.topbar .right { justify-self:start; } }
+    @media (max-width: 580px) { .grid { grid-template-columns: 1fr; } .shell { padding: 16px; } }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <nav class="topbar">
+      <div class="chipline"><span class="chip">operator</span><span class="chip">prompt</span><span class="chip">agent-state</span></div>
+      <div class="center">ANVIL / AGENT PROMPT MODES</div>
+      <div class="right">TRACE READY</div>
+    </nav>
+
+    <section class="hero">
+      <div class="pixelmap"></div>
+      <div>
+        <div class="kicker">[thin trace arrow as canonical prompt]</div>
+        <h1>One prompt.<br>Agent state visible.</h1>
+        <p>You liked option 2, so this explores a sharper “Thin Trace Arrow” world: the operator prompt stays canonical, while Hermes/Caldera agent state appears as a violet trace, chip, rail, drawer, ghost suggestion, or execution layer. It borrows the Honcho-esque dark grid, pixel-code, sparse terminal-card language without copying Honcho branding.</p>
+      </div>
+      <aside class="verdict">
+        <h2>Design answer</h2>
+        <div class="row"><b>Default</b><span>Do not split the shell into a second permanent prompt.</span></div>
+        <div class="row"><b>Toggle</b><span>Yes: add an optional agent companion mode/drawer for Hermes + Caldera OS routing.</span></div>
+        <div class="row"><b>Signal</b><span>Use violet for agent presence, mineral for trace, ember for execution, amber for approval.</span></div>
+        <div class="row"><b>Anchor</b><span>Keep the option-2 thin arrow as the base visual grammar.</span></div>
+      </aside>
+    </section>
+
+    <div class="filters">
+      <button class="filter active" data-filter="all">all 24</button>
+      <button class="filter" data-filter="inline">inline</button>
+      <button class="filter" data-filter="toggle">toggle/drawer</button>
+      <button class="filter" data-filter="multi">multi-agent</button>
+      <button class="filter" data-filter="state">stateful</button>
+      <button class="filter" data-filter="wild">wilder</button>
+    </div>
+
+    <div class="section-head">
+      <h2>[visual options]</h2>
+      <p>Each card shows a different answer to “agent prompt vs agent state.” The strongest path is probably a hybrid: thin normal prompt, plus a toggleable agent layer.</p>
+    </div>
+
+    <section class="grid" id="grid">
+      <article class="card" data-tags="inline" style="--c: var(--mineral)"><div class="meta"><span>01 / base</span><span class="badge">inline</span></div><div class="terminal"><span class="ghost">~/caldera/anvil</span><br><span class="state">›</span> <span class="cmd">cargo test</span></div><div class="title">Thin Trace Arrow</div><p class="desc">Your favorite as the canonical shell prompt. Minimal, sharp, not decorative.</p><div class="take">Use as the always-on default.</div></article>
+
+      <article class="card" data-tags="inline" style="--c: var(--agent)"><div class="meta"><span>02 / agent seen</span><span class="badge">inline</span></div><div class="terminal"><span class="ghost">hermes observing</span><br><span class="agent">◇</span> <span class="mineral">›</span> <span class="cmd">work</span></div><div class="title">Observer Sigil</div><p class="desc">A hollow violet marker says an agent is watching context, but operator remains in control.</p><div class="take">Low-noise agent presence.</div></article>
+
+      <article class="card" data-tags="inline" style="--c: var(--agent)"><div class="meta"><span>03 / agent armed</span><span class="badge">inline</span></div><div class="terminal"><span class="ghost">hermes armed</span><br><span class="agent">◈</span> <span class="mineral">›</span> <span class="cmd">apply plan</span></div><div class="title">Armed Agent Diamond</div><p class="desc">Filled violet diamond means automation can act if routed or approved.</p><div class="take">Good explicit mode signal.</div></article>
+
+      <article class="card" data-tags="inline state" style="--c: var(--attention)"><div class="meta"><span>04 / approval</span><span class="badge">state</span></div><div class="terminal"><span class="ghost">approval requested</span><br><span class="agent">◈</span> <span class="attention">?</span> <span class="mineral">›</span> <span class="cmd">review diff</span></div><div class="title">Approval Interlock</div><p class="desc">Agent state plus amber decision marker. Communicates “paused for human.”</p><div class="take">Best for enterprise safety.</div></article>
+
+      <article class="card" data-tags="inline state" style="--c: var(--ember)"><div class="meta"><span>05 / execution</span><span class="badge">state</span></div><div class="terminal"><span class="ghost">hermes executing</span><br><span class="agent">◈</span> <span class="ember">▶</span> <span class="cmd">run tests</span><span class="right ember">00:18</span></div><div class="title">Ember Execution</div><p class="desc">Ember appears only while work is running. The prompt becomes a live run indicator.</p><div class="take">Strong semantic color use.</div></article>
+
+      <article class="card" data-tags="inline state" style="--c: var(--verified)"><div class="meta"><span>06 / evidence</span><span class="badge">state</span></div><div class="terminal"><span class="ghost">evidence attached</span><br><span class="verified">✓</span> <span class="mineral">›</span> <span class="cmd">ship</span><span class="right verified">test+clippy</span></div><div class="title">Evidence Prompt</div><p class="desc">Green only after verification, not generic success. Feels auditable.</p><div class="take">Good with Caldera evidence.</div></article>
+
+      <article class="card" data-tags="toggle" style="--c: var(--agent)"><div class="meta"><span>07 / chip</span><span class="badge">toggle</span></div><div class="terminal"><span class="ghost">mode chip</span><br><span class="dim">[</span><span class="agent">hermes</span><span class="dim">]</span> <span class="mineral">›</span> <span class="cmd">next</span></div><div class="title">Agent Mode Chip</div><p class="desc">Text is less mysterious than glyphs. Useful if multiple agents are common.</p><div class="take">Best clarity for teams.</div></article>
+
+      <article class="card" data-tags="toggle" style="--c: var(--agent)"><div class="meta"><span>08 / drawer closed</span><span class="badge">toggle</span></div><div class="terminal"><span class="ghost">agent drawer collapsed</span><br><span class="mineral">›</span> <span class="cmd">work</span><span class="right agent">⌘J agent</span></div><div class="title">Collapsed Companion</div><p class="desc">No separate prompt until toggled. Hint shows a summonable agent layer.</p><div class="take">Recommended base UX.</div></article>
+
+      <article class="card" data-tags="toggle" style="--c: var(--agent)"><div class="meta"><span>09 / drawer open</span><span class="badge">toggle</span></div><div class="terminal"><span class="ghost">agent companion</span><br><span class="mineral">›</span> <span class="cmd">work</span><div class="panel"><span class="agent">HERMES</span> observing repo · claim clean · 1 peer live</div></div><div class="title">Open Companion Drawer</div><p class="desc">The prompt remains operator-owned; agent detail expands beside/under it.</p><div class="take">Best hybrid model.</div></article>
+
+      <article class="card" data-tags="toggle" style="--c: var(--agent)"><div class="meta"><span>10 / split rail</span><span class="badge">toggle</span></div><div class="terminal"><span class="rail"><span class="agent">H</span></span> <span class="ghost">watching</span><br><span class="rail"><span class="mineral">›</span></span> <span class="cmd">cargo fmt</span></div><div class="title">Operator/Agent Rail</div><p class="desc">A left rail separates human and automation layers without making two prompts.</p><div class="take">Very 0xide/operator.</div></article>
+
+      <article class="card" data-tags="toggle wild" style="--c: var(--agent)"><div class="meta"><span>11 / dual line</span><span class="badge">toggle</span></div><div class="terminal"><span class="agent">agent</span><span class="trace"></span><span class="ghost">route: hermes</span><br><span class="mineral">›</span> <span class="cmd">approve patch</span></div><div class="title">Dual-Line Agent Prompt</div><p class="desc">More explicit, but risks feeling like a separate prompt. Good as expanded mode only.</p><div class="take">Use sparingly.</div></article>
+
+      <article class="card" data-tags="toggle wild" style="--c: var(--agent)"><div class="meta"><span>12 / ghost suggestion</span><span class="badge">toggle</span></div><div class="terminal"><span class="ghost">suggested: cargo test -p anvil-prompt-core</span><br><span class="mineral">›</span> <span class="cmd">_</span><span class="right agent">tab accept</span></div><div class="title">Ghost Agent Suggestion</div><p class="desc">Agent proposes a command, operator commits. Good safety posture.</p><div class="take">Hermes/copilot feel.</div></article>
+
+      <article class="card" data-tags="multi" style="--c: var(--agent)"><div class="meta"><span>13 / caldera route</span><span class="badge">multi</span></div><div class="terminal"><span class="ghost">operator → hermes → caldera-os</span><br><span class="mineral">›</span><span class="trace"></span><span class="agent">◈</span><span class="trace"></span><span class="cmd">claim file</span></div><div class="title">Caldera Route Trace</div><p class="desc">Shows cross-repo/agent routing as a trace path, not a separate prompt.</p><div class="take">Best Caldera-native visual.</div></article>
+
+      <article class="card" data-tags="multi" style="--c: var(--agent)"><div class="meta"><span>14 / peer lane</span><span class="badge">multi</span></div><div class="terminal"><span class="ghost">peers: hermes.1 codex.2</span><br><span class="agent">h1</span> <span class="dim">│</span> <span class="mineral">›</span> <span class="cmd">sync inbox</span></div><div class="title">Peer Lane Prefix</div><p class="desc">Names the active agent lane when multiple Hermes/Codex workers are present.</p><div class="take">Useful for multi-agent sessions.</div></article>
+
+      <article class="card" data-tags="multi wild" style="--c: var(--mineral)"><div class="meta"><span>15 / trace id</span><span class="badge">multi</span></div><div class="terminal"><span class="ghost">trace id pinned</span><br><span class="dim">tr:9f4c</span> <span class="mineral">›</span> <span class="cmd">inspect run</span></div><div class="title">Trace-ID Prompt</div><p class="desc">Great when Caldera evidence/provenance is the key mental model.</p><div class="take">Cool but can get dense.</div></article>
+
+      <article class="card" data-tags="multi" style="--c: var(--agent)"><div class="meta"><span>16 / handoff</span><span class="badge">multi</span></div><div class="terminal"><span class="ghost">handoff available</span><br><span class="agent">handoff</span> <span class="mineral">›</span> <span class="cmd">resume caldera-os</span></div><div class="title">Handoff Prompt</div><p class="desc">Makes persisted context and another Hermes agent’s work discoverable.</p><div class="take">Honcho-inspired state continuity.</div></article>
+
+      <article class="card" data-tags="state" style="--c: var(--attention)"><div class="meta"><span>17 / collision</span><span class="badge">state</span></div><div class="terminal"><span class="ghost">claim overlap</span><br><span class="attention">lock</span> <span class="mineral">›</span> <span class="cmd">edit file</span><span class="right attention">agent owns</span></div><div class="title">Collaboration Lock</div><p class="desc">Prompt can surface Caldera claims before you stomp another agent’s work.</p><div class="take">Very useful, not decorative.</div></article>
+
+      <article class="card" data-tags="state" style="--c: var(--failure)"><div class="meta"><span>18 / blocked</span><span class="badge">state</span></div><div class="terminal"><span class="ghost">policy blocked</span><br><span class="failure">×</span> <span class="mineral">›</span> <span class="cmd">deploy prod</span><span class="right failure">policy</span></div><div class="title">Policy Break</div><p class="desc">Red is scoped to the blocked state, not the whole interface.</p><div class="take">Good for Caldera policy.</div></article>
+
+      <article class="card" data-tags="state" style="--c: var(--risk)"><div class="meta"><span>19 / risky</span><span class="badge">state</span></div><div class="terminal"><span class="ghost">high risk connector</span><br><span class="risk">risk</span> <span class="mineral">›</span> <span class="cmd">kubectl apply</span></div><div class="title">Risk Prefix</div><p class="desc">Plain language beats mystery glyphs when the operator could make a costly move.</p><div class="take">Production safety state.</div></article>
+
+      <article class="card" data-tags="state" style="--c: var(--attention)"><div class="meta"><span>20 / stale memory</span><span class="badge">state</span></div><div class="terminal"><span class="ghost">context stale</span><br><span class="attention">~ctx</span> <span class="mineral">›</span> <span class="cmd">refresh context</span></div><div class="title">Context Staleness</div><p class="desc">Honcho-like statefulness, but honest: call out stale context before relying on it.</p><div class="take">Important for agent trust.</div></article>
+
+      <article class="card" data-tags="wild" style="--c: var(--agent)"><div class="meta"><span>21 / pixel cells</span><span class="badge">wild</span></div><div class="terminal"><span class="ghost">memory cells active</span><div class="matrix"><span class="px"></span><span class="px"></span><span></span><span></span><span class="px"></span><span class="px"></span><span class="px"></span><span></span><span class="px"></span></div><span class="mineral">›</span> <span class="cmd">context</span></div><div class="title">Pixel Memory Cells</div><p class="desc">Honcho-adjacent visual language. Nice in a companion panel, too weird for default prompt.</p><div class="take">Use as ambient drawer art.</div></article>
+
+      <article class="card" data-tags="wild" style="--c: var(--mineral)"><div class="meta"><span>22 / circuit</span><span class="badge">wild</span></div><div class="terminal"><span class="ghost">circuit trace</span><br><span class="dim">┌──</span><span class="mineral">›</span><span class="dim">──┐</span><br><span class="dim">└</span><span class="cmd"> route agent</span></div><div class="title">Circuit Prompt</div><p class="desc">High aesthetic, lower practicality. Better for launch/splash or expanded agent pane.</p><div class="take">Visually strong, not default.</div></article>
+
+      <article class="card" data-tags="wild toggle" style="--c: var(--agent)"><div class="meta"><span>23 / command deck</span><span class="badge">wild</span></div><div class="terminal"><span class="ghost">AGENT DECK</span><div class="panel"><span class="agent">01 plan</span> · <span class="attention">02 approve</span> · <span class="verified">03 verify</span></div><span class="mineral">›</span> <span class="cmd">select 02</span></div><div class="title">Agent Command Deck</div><p class="desc">A mini Honcho/Hermes control deck above the prompt. Powerful, but should be toggled.</p><div class="take">Best for rich agent mode.</div></article>
+
+      <article class="card" data-tags="inline toggle multi state" style="--c: var(--agent)"><div class="meta"><span>24 / recommended</span><span class="badge">hybrid</span></div><div class="terminal"><span class="ghost">default</span><br><span class="mineral">›</span> <span class="cmd">work</span><br><span class="ghost">agent toggled</span><br><span class="agent">◈</span> <span class="mineral">›</span> <span class="cmd">work</span><div class="panel">Hermes: observing · Caldera: clean · 1 peer</div></div><div class="title">Thin Arrow + Agent Companion</div><p class="desc">Keep option 2 as the shell. Add a toggled violet companion when agent state matters.</p><div class="take">My recommended direction.</div></article>
+    </section>
+
+    <section class="compare">
+      <article><h3>Separate agent prompt</h3><p>Clear, but risky. It fragments the command surface and can feel like another product living inside the terminal.</p><ul><li>Use only in expanded mode.</li><li>Good for command decks or handoff workflows.</li></ul></article>
+      <article><h3>Signify inside prompt</h3><p>Best default. The operator prompt stays trusted; glyph/color state adds context without stealing the line.</p><ul><li>Matches option 2.</li><li>Works for Hermes/Caldera status.</li></ul></article>
+      <article><h3>Hybrid companion</h3><p>Recommended. Normal thin prompt by default; toggle a violet agent drawer/rail for multi-agent details, claims, approvals, and evidence.</p><ul><li>Most Anvil-native.</li><li>Scales to caldera-os and other agents.</li></ul></article>
+    </section>
+  </div>
+
+  <script>
+    const buttons = [...document.querySelectorAll('.filter')];
+    const cards = [...document.querySelectorAll('.card')];
+    buttons.forEach(btn => btn.addEventListener('click', () => {
+      buttons.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const f = btn.dataset.filter;
+      cards.forEach(card => {
+        const tags = card.dataset.tags.split(/\s+/);
+        card.classList.toggle('hidden', f !== 'all' && !tags.includes(f));
+      });
+    }));
+  </script>
+</body>
+</html>

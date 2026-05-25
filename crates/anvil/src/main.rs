@@ -522,6 +522,9 @@ pub struct App {
     agent_pulse_phase: f32,
     last_agent_pulse_opacity: f32,
 
+    // -- running-block header dot pulse (CB6) ---
+    running_pulse_phase: f32,
+
     // -- command palette ---
     palette: Palette,
 
@@ -1558,6 +1561,7 @@ impl App {
                     self.blink_phase,
                     self.cursor_cfg,
                     dirty_map.as_ref(),
+                    self.running_pulse_phase,
                 );
             }
         } else {
@@ -1749,6 +1753,7 @@ impl App {
                         search_ref,
                         cursor_params,
                         folded,
+                        self.running_pulse_phase,
                     );
                 }
                 // Reset raster origin for chrome draws.
@@ -2437,6 +2442,27 @@ impl AppHandler for AppShell {
             }
         }
 
+        // Running-block header dot pulse (CB6): advance phase and keep dirty
+        // while any pane in the current tab has a shell command running.
+        {
+            let any_running = app.tabs.current().is_some_and(|t| {
+                all_pane_ids_in_tree(t)
+                    .into_iter()
+                    .any(|pid| {
+                        t.registry
+                            .get(pid)
+                            .is_some_and(|p| p.terminal.last_run().running)
+                    })
+            });
+            if any_running {
+                app.running_pulse_phase += 1.5 / 60.0;
+                if app.running_pulse_phase >= 1.0 {
+                    app.running_pulse_phase -= 1.0;
+                }
+                app.dirty = true;
+            }
+        }
+
         // Block-header pulse (item 23): keep dirty while any visible block is
         // mid-flash. 250ms window gives a small grace margin beyond 200ms.
         {
@@ -2834,6 +2860,42 @@ impl AppHandler for AppShell {
                     app.write_mouse_event(0, col, row, true);
                 }
                 return;
+            }
+        }
+
+        // ⌥-click: copy block output to clipboard when clicking a block header.
+        if mods.option && !mods.command {
+            if let Some((row, _col)) = app.event_cell(loc, false) {
+                let tab = app.tabs.current_mut().unwrap();
+                let id = tab.focused_id();
+                let pane = tab.registry.get_mut(id).unwrap();
+                let cr = pane.terminal.content_row_of_viewport(row);
+                let abs = pane.terminal.absolute_line_of_content(cr);
+                if let Some(block) = pane.terminal.block_at(abs) {
+                    if block.command_line == abs {
+                        let evicted = pane.terminal.evicted_lines;
+                        let out_start = block.output_line.saturating_sub(evicted);
+                        let out_end = block.end_line.saturating_sub(evicted);
+                        let mut lines: Vec<String> = (out_start..out_end)
+                            .map(|ci| {
+                                pane.terminal
+                                    .line(ci)
+                                    .iter()
+                                    .map(|c| c.cp)
+                                    .collect::<String>()
+                                    .trim_end()
+                                    .to_owned()
+                            })
+                            .collect();
+                        // Trim trailing blank rows.
+                        while lines.last().map(|l: &String| l.is_empty()).unwrap_or(false) {
+                            lines.pop();
+                        }
+                        let text = lines.join("\n");
+                        anvil_platform::system::set_clipboard(&text);
+                        return;
+                    }
+                }
             }
         }
 
@@ -3813,6 +3875,7 @@ fn main() -> Result<()> {
         kube_rx,
         agent_pulse_phase: 0.0,
         last_agent_pulse_opacity: -1.0,
+        running_pulse_phase: 0.0,
         palette: Palette::default(),
         view_width_pt: win_w,
         view_height_pt: win_h,
