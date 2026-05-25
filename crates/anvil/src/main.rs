@@ -10,6 +10,8 @@
 //!   - Agent `Snapshot` + `LocalContext`
 //!   - Git worker via `std::sync::mpsc`
 
+mod kube;
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -492,6 +494,13 @@ pub struct App {
     // -- recent-files worker ---
     recent_cwd_tx: mpsc::SyncSender<PathBuf>,
     recent_rx: mpsc::Receiver<RecentResult>,
+
+    // -- kubectl worker ---
+    kube_rx: mpsc::Receiver<anvil_prompt_core::KubeCtx>,
+
+    // -- pulse (agent dot animation) ---
+    agent_pulse_phase: f32,
+    last_agent_pulse_opacity: f32,
 
     // -- command palette ---
     palette: Palette,
@@ -1221,6 +1230,11 @@ impl App {
             self.local_ctx.recent_files = result.files;
         }
 
+        // Task #20: drain the kubectl worker (non-blocking).
+        while let Ok(ctx) = self.kube_rx.try_recv() {
+            self.local_ctx.kube_context = Some(ctx);
+        }
+
         // last-run from focused pane
         if let Some(tab) = self.tabs.current() {
             let id = tab.focused_id();
@@ -1474,9 +1488,9 @@ impl App {
         }
 
         // Bottom strip: search bar when open, otherwise the slim status bar.
-        // Search bar still uses cell-row positioning until refactored separately.
-        let total_rows = (((dh.saturating_sub(2 * GRID_PAD)) as f64 / ch) as usize).max(1);
-        let bottom_row = total_rows.saturating_sub(1);
+        // Both draw into the same fixed-pixel chrome_bottom_px strip.
+        let chrome_bot = self.chrome_bottom_px();
+        let scale = self.window_scale;
         if self.search_open {
             draw_search_bar(
                 &mut self.raster,
@@ -1484,12 +1498,11 @@ impl App {
                 chrome_metrics,
                 &self.theme,
                 &self.search,
-                bottom_row,
+                chrome_bot,
+                scale,
             );
         } else {
             let clock = local_hhmm();
-            let scale = self.window_scale;
-            let chrome_bot = self.chrome_bottom_px();
             anvil_render::statusbar::draw_status_bar(
                 &mut self.raster,
                 chrome_painter,
@@ -1500,6 +1513,7 @@ impl App {
                 &clock,
                 chrome_bot,
                 scale,
+                self.agent_pulse_phase,
             );
         }
 
@@ -2198,6 +2212,19 @@ impl AppHandler for AppShell {
             app.blink_phase = 0.0;
             app.last_blink_opacity = -1.0;
             app.dirty = true;
+        }
+
+        // Agent dot pulse (item 19).
+        if app.agent_snap.connection == anvil_agent::Connection::Live {
+            app.agent_pulse_phase += 0.3 / 60.0;
+            if app.agent_pulse_phase >= 1.0 {
+                app.agent_pulse_phase -= 1.0;
+            }
+            let opacity = 0.5 + 0.5 * (std::f32::consts::TAU * app.agent_pulse_phase).sin();
+            if (opacity - app.last_agent_pulse_opacity).abs() > 0.02 {
+                app.dirty = true;
+                app.last_agent_pulse_opacity = opacity;
+            }
         }
 
         // Cursor: snap to target every frame. No animation.
@@ -3217,6 +3244,10 @@ fn main() -> Result<()> {
         }
     });
 
+    // -- Kubectl worker -------------------------------------------------------
+    let (kube_tx, kube_rx) = mpsc::sync_channel::<anvil_prompt_core::KubeCtx>(1);
+    kube::spawn_kube_worker(kube_tx);
+
     // -- Theme ----------------------------------------------------------------
     let system_dark = system_is_dark();
     let effective_name = effective_theme_name(system_dark, &config.theme);
@@ -3304,6 +3335,9 @@ fn main() -> Result<()> {
         git_rx,
         recent_cwd_tx,
         recent_rx,
+        kube_rx,
+        agent_pulse_phase: 0.0,
+        last_agent_pulse_opacity: -1.0,
         palette: Palette::default(),
         view_width_pt: win_w,
         view_height_pt: win_h,

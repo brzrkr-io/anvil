@@ -82,6 +82,9 @@ pub struct LocalContext {
 
     // RECENT section (task #8): recently-modified files (basenames), max 5.
     pub recent_files: Vec<String>,
+
+    // KUBE section (task #20): current kubectl context.
+    pub kube_context: Option<anvil_prompt_core::KubeCtx>,
 }
 
 impl Default for LocalContext {
@@ -101,6 +104,7 @@ impl Default for LocalContext {
             project_kind: None,
             ports: Vec::new(),
             recent_files: Vec::new(),
+            kube_context: None,
         }
     }
 }

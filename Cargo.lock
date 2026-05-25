@@ -142,6 +142,7 @@ name = "anvil-render"
 version = "0.1.0"
 dependencies = [
  "anvil-agent",
+ "anvil-prompt-core",
  "anvil-term",
  "anvil-theme",
  "anvil-workspace",

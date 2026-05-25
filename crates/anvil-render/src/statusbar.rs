@@ -7,6 +7,15 @@ use anvil_theme::Theme;
 use crate::agent_panel::{LocalContext, RunState, format_cwd};
 use crate::raster::{FontMetrics, GlyphPainter, Raster};
 
+/// Linear per-channel lerp between two RGB colors: `a*(1-t) + b*t`, clamped to 0..255.
+pub(crate) fn mix_rgb(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
+    [
+        (a[0] as f32 * (1.0 - t) + b[0] as f32 * t).clamp(0.0, 255.0) as u8,
+        (a[1] as f32 * (1.0 - t) + b[1] as f32 * t).clamp(0.0, 255.0) as u8,
+        (a[2] as f32 * (1.0 - t) + b[2] as f32 * t).clamp(0.0, 255.0) as u8,
+    ]
+}
+
 /// Draw the status bar at a FIXED pixel strip — `chrome_bottom_px` tall —
 /// anchored to the window's bottom edge. Glyphs are pixel-positioned and
 /// vertically centred in the strip; nothing here uses cell-row indices.
@@ -33,6 +42,7 @@ pub fn draw_status_bar(
     clock: &str,
     chrome_bottom_px: f64,
     window_scale: f64,
+    pulse_phase: f32,
 ) {
     let cell_w = metrics.cell_w;
     let cell_h = metrics.cell_h;
@@ -100,7 +110,11 @@ pub fn draw_status_bar(
         (agent_text.chars().count() + sep.chars().count() + clock.chars().count()) as f64 * cell_w;
     let right_start = (total_w - pad_x - right_text_w).max(x);
     let mut rx = right_start;
-    let dot_color = if agent_active { theme.agent } else { theme.text_subtle };
+    let dot_color = if agent_active {
+        mix_rgb(theme.charcoal, theme.agent, 0.5 + 0.5 * (std::f32::consts::TAU * pulse_phase).sin())
+    } else {
+        theme.text_subtle
+    };
     for (i, ch) in agent_text.chars().enumerate() {
         if rx + cell_w > total_w {
             break;
@@ -199,6 +213,7 @@ mod tests {
             "",
             chrome_bottom_px,
             1.0,
+            0.0,
         );
 
         // The strip runs from (total_h - chrome_bottom_px) to total_h.
@@ -239,6 +254,7 @@ mod tests {
             "",
             m.cell_h * 2.0,
             1.0,
+            0.0,
         );
 
         let muted_chars: Vec<char> = painter
@@ -279,6 +295,7 @@ mod tests {
             "",
             m.cell_h * 2.0,
             1.0,
+            0.0,
         );
 
         let verified_chars: Vec<char> = painter
@@ -319,6 +336,7 @@ mod tests {
             "",
             m.cell_h * 2.0,
             1.0,
+            0.0,
         );
 
         let failure_chars: Vec<char> = painter
@@ -359,6 +377,7 @@ mod tests {
             "",
             m.cell_h * 2.0,
             1.0,
+            0.0,
         );
 
         // The dot (●, U+25CF) must appear in text_subtle.
@@ -416,6 +435,7 @@ mod tests {
             "",
             m.cell_h * 2.0,
             1.0,
+            0.0,
         );
 
         let muted_chars: Vec<char> = painter
@@ -428,14 +448,15 @@ mod tests {
             muted_chars.contains(&'r'),
             "expected 'r' from 'running' in text_muted, got {muted_chars:?}"
         );
-        let agent_calls: Vec<_> = painter
+        // With pulsing, the dot color is a blend of charcoal→agent; it will not
+        // equal th.agent exactly. Assert it is NOT the idle text_subtle color.
+        let dot_subtle = painter
             .calls
             .iter()
-            .filter(|(_, fg)| *fg == th.agent)
-            .collect();
+            .any(|(cp, fg)| *cp == 0x25CF && *fg == th.text_subtle);
         assert!(
-            !agent_calls.is_empty(),
-            "expected diamond glyph in agent color, got {:?}",
+            !dot_subtle,
+            "expected dot NOT in text_subtle when Live, got {:?}",
             painter.calls
         );
     }
