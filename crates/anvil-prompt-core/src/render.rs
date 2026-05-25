@@ -4,8 +4,9 @@
 //! wrong column.
 //!
 //! Colors are emitted as indexed ANSI colors (`\x1b[38;5;Nm`) so the terminal
-//! re-resolves them through the active theme palette on every frame. A theme
-//! switch therefore recolors all prompts in scrollback automatically.
+//! re-resolves them through the active theme palette on every frame. The active
+//! input arrow uses the theme's info/trace slot so it stays palette-native
+//! without making the prompt another orange surface.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shell {
@@ -18,7 +19,7 @@ const RESET: &str = "\x1b[0m";
 
 // Indexed ANSI colors — resolved through the active theme each frame so a
 // theme switch recolors all prompts in scrollback automatically.
-const ACCENT_BRIGHT: &str = "\x1b[38;5;14m"; // ANSI 14 = bright cyan — input arrow
+const PROMPT_INFO: &str = "\x1b[38;5;6m"; // ANSI 6 = palette info/trace — active input arrow
 const ACCENT_ERR: &str = "\x1b[38;5;1m"; // ANSI 1 = red — error state
 const DIM: &str = "\x1b[38;5;8m"; // ANSI 8 = dim grey — accent dot, transient prompt
 const VERIFIED: &str = "\x1b[38;5;2m"; // ANSI 2 = green — success check
@@ -60,16 +61,10 @@ fn esc(buf: &mut String, shell: Shell, seq: &str) {
 
 /// The full single-line prompt.
 ///
-/// Layout (column 0 →):  `◒ [*N ·] ❯ `
-///   - `◒` (U+25D2 — CIRCLE WITH LOWER HALF BLACK) is the Anvil "Basin" mark
-///     in Unicode form, painted in the mineral accent. It gives the prompt
-///     a brand-rooted, distinctive opening glyph instead of a bare chevron.
-///   - `*N` appears between the basin and the middot when `opts.git_dirty > 0`,
-///     in attention amber. E.g. `◒ *3 · ❯`.
-///   - `❯` (U+276F) is the input glyph, in a slightly cooler tone than the
-///     mark so the eye lands on the typed input that follows it.
-///   - Both glyphs flip to the error red when the previous command exited
-///     non-zero, so failures read at a glance from the prompt alone.
+/// Layout (column 0 →):  `❯ `
+///   - `❯` (U+276F) is the input glyph. It uses the palette info/trace slot
+///     while active and flips to error red when the previous command exited non-zero, so command
+///     entry and failure state read at a glance from the prompt alone.
 ///
 /// When `opts.width > 0` and there is an exit code or a duration, a
 /// right-aligned secondary segment is emitted on the same line, padded with
@@ -82,15 +77,10 @@ pub fn full(opts: Options) -> String {
     let sh = opts.shell;
 
     // Anvil's chrome row already carries cwd + branch + dirty count. The
-    // prompt line itself is the bare `❯` with a trailing space — matches
-    // Option D's `.prompt-line { color: var(--accent-bright); }`. The
+    // prompt line itself is the bare `❯` with a trailing space. The
     // right-aligned exit/duration segment still emits after the arrow.
 
-    let arrow_color = if opts.failed {
-        ACCENT_ERR
-    } else {
-        ACCENT_BRIGHT
-    };
+    let arrow_color = if opts.failed { ACCENT_ERR } else { PROMPT_INFO };
 
     let mut left_visible: u16 = 0;
 
@@ -208,18 +198,14 @@ fn emit_right_segment(buf: &mut String, sh: Shell, opts: Options, seg: &RightSeg
     let _ = opts; // suppress unused warning (opts.shell used via sh)
 }
 
-/// The collapsed transient prompt — `◒ · ❯` all in dim grey.
+/// The collapsed transient prompt — a quiet `❯` echo in dim grey.
 ///
-/// Same three-note shape as the live prompt, but flattened to one tone so
-/// scrollback reads as a quiet echo of the active line, not a louder peer.
+/// Same arrow shape as the live prompt, but flattened to one tone so scrollback
+/// reads as a quiet echo of the active line, not a louder peer.
 pub fn transient(opts: Options) -> String {
     let mut buf = String::new();
     let col = if opts.failed { ACCENT_ERR } else { DIM };
     esc(&mut buf, opts.shell, col);
-    buf.push('\u{25d2}'); // ◒
-    buf.push(' ');
-    buf.push('\u{00b7}'); // ·
-    buf.push(' ');
     buf.push('\u{276f}'); // ❯
     esc(&mut buf, opts.shell, RESET);
     buf.push(' ');
@@ -254,17 +240,19 @@ mod tests {
     }
 
     #[test]
-    fn full_paints_chevron_in_bright_accent_on_success() {
+    fn full_paints_chevron_in_palette_info_on_success() {
         let out = full(base_opts(Shell::Plain));
-        assert!(out.contains(ACCENT_BRIGHT));
+        assert!(out.contains(PROMPT_INFO));
+        assert!(!out.contains("\x1b[38;5;14m"));
+        assert!(!out.contains("\x1b[38;2;197;70;42m"));
     }
 
     #[test]
-    fn transient_carries_all_three_glyphs() {
+    fn transient_is_chevron_only() {
         let out = transient(base_opts(Shell::Plain));
-        assert!(out.contains('\u{25d2}'));
-        assert!(out.contains('\u{00b7}'));
         assert!(out.contains('\u{276f}'));
+        assert!(!out.contains('\u{25d2}')); // no basin
+        assert!(!out.contains('\u{00b7}')); // no middot
     }
 
     #[test]
@@ -279,9 +267,9 @@ mod tests {
     }
 
     #[test]
-    fn full_uses_bright_accent_for_the_chevron() {
+    fn full_uses_palette_info_for_the_chevron() {
         let out = full(base_opts(Shell::Plain));
-        assert!(out.contains(ACCENT_BRIGHT));
+        assert!(out.contains(PROMPT_INFO));
     }
 
     #[test]

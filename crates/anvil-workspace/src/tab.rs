@@ -219,10 +219,12 @@ impl TabManager {
             return false;
         }
         self.tabs[index].target_phase = 0.0;
-        let old_count = self.tabs.len();
-        // Adjust active to point at the next non-closing tab.
-        self.active = next_active_after_close(old_count, index, self.active);
-        if self.tabs.get(self.active).is_some_and(|t| t.target_phase == 0.0) {
+        // Only adjust self.active if the user closed their own active tab —
+        // jump to the first non-closing tab so the viewport stays populated
+        // during the close animation. Closing a different (non-active) tab
+        // must leave self.active untouched; purge_closed_tabs will fix the
+        // index when the closing tab is actually removed.
+        if index == self.active {
             if let Some(i) = self.tabs.iter().position(|t| t.target_phase > 0.0) {
                 self.active = i;
             }
@@ -496,6 +498,30 @@ mod tests {
     fn next_active_after_close_count_one_returns_zero() {
         assert_eq!(next_active_after_close(1, 0, 0), 0);
         assert_eq!(next_active_after_close(0, 0, 0), 0);
+    }
+
+    #[test]
+    fn begin_close_at_non_active_does_not_shift_active() {
+        let mut mgr = TabManager::default();
+        mgr.push(Tab::new_single_pane(1, 1, 0));
+        mgr.push(Tab::new_single_pane(1, 1, 0));
+        mgr.push(Tab::new_single_pane(1, 1, 0));
+        mgr.switch_to(2);
+        assert_eq!(mgr.active, 2);
+        assert!(mgr.begin_close_at(0));
+        assert_eq!(mgr.active, 2);
+    }
+
+    #[test]
+    fn begin_close_at_active_jumps_to_first_non_closing() {
+        let mut mgr = TabManager::default();
+        mgr.push(Tab::new_single_pane(1, 1, 0));
+        mgr.push(Tab::new_single_pane(1, 1, 0));
+        mgr.push(Tab::new_single_pane(1, 1, 0));
+        mgr.switch_to(1);
+        assert!(mgr.begin_close_at(1));
+        assert_ne!(mgr.active, 1);
+        assert!(mgr.tabs[mgr.active].target_phase > 0.0);
     }
 
     // ── TabManager::bar_visible ───────────────────────────────────────────────
