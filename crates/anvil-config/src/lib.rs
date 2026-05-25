@@ -154,8 +154,8 @@ pub struct Keybindings {
     pub agent_start: String,
     /// Cycle layout mode: Terminal → Ide → Codex → Terminal.
     pub layout_mode_toggle: String,
-    /// Open a new editor pane running `nvim --listen <socket>`. Second press
-    /// focuses the existing editor pane instead of spawning another.
+    /// Open a new native editor pane (NE15: nvim path removed; this is the
+    /// only editor path).
     pub editor_new: String,
     /// Cmd+Shift+F: open the project-wide search overlay.
     pub project_search: String,
@@ -205,7 +205,7 @@ impl Default for Keybindings {
 /// `backend = "nvim"` (default) keeps existing nvim behaviour.
 /// `backend = "native"` routes `Cmd+E` / `Action::NewEditorPane` to the
 /// native editor path instead.  Unknown values fall back to `"nvim"` with a
-/// warning; the fallback is applied by `Config::clamp`.
+/// warning emitted by `Config::clamp`.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct EditorCfg {
@@ -274,7 +274,7 @@ impl Config {
         if self.window.height < 150.0 || !self.window.height.is_finite() {
             self.window.height = 640.0;
         }
-        // editor.backend: accept "native" | "nvim"; unknown values → "nvim".
+        // editor.backend: accept "native" | "nvim"; unknown values fall back to "nvim".
         if self.editor.backend != "native" && self.editor.backend != "nvim" {
             eprintln!(
                 "anvil: unknown editor.backend {:?}; falling back to \"nvim\"",
@@ -690,6 +690,13 @@ new_tab = "ctrl+n"
         let cfg = parse_str(src).unwrap();
         assert_eq!(cfg.keybindings.new_tab, "ctrl+n");
         assert_eq!(cfg.keybindings.close_tab, "cmd+w"); // pane close is cmd+shift+w
+    }
+
+    // NE15: Cmd+E is the sole editor pane keybind (nvim path removed).
+    #[test]
+    fn editor_new_default_chord_is_cmd_e() {
+        let kb = Keybindings::default();
+        assert_eq!(kb.editor_new, "cmd+e");
     }
 
     #[test]

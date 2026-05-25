@@ -1330,6 +1330,22 @@ mod tests {
     }
 
     #[test]
+    fn editor_pane_registry_remove_pane_evicts_only_target() {
+        // Insert two panes, remove one, assert count + the other is still present.
+        let mut reg = EditorPaneRegistry::default();
+        let _bid1 = reg.new_pane(10);
+        let bid2 = reg.new_pane(20);
+        assert_eq!(reg.count(), 2);
+        reg.remove_pane(10);
+        assert_eq!(reg.count(), 1, "only the removed pane should be gone");
+        // Pane 20 and its buffer must still be accessible.
+        assert!(reg.get_pane(20).is_some());
+        assert!(reg.get_buffer(bid2).is_some());
+        // Pane 10 is gone.
+        assert!(reg.get_pane(10).is_none());
+    }
+
+    #[test]
     fn editor_pane_registry_multiple_panes_independent() {
         let mut reg = EditorPaneRegistry::default();
         let bid1 = reg.new_pane(1);

@@ -57,8 +57,8 @@ use anvil_render::searchbar::draw_search_bar;
 use anvil_render::tabbar::{TabBarHitKind, TabBarHits, draw_tab_bar};
 use anvil_render::workspace::{DIVIDER_PX, draw_workspace, draw_workspace_chrome};
 use anvil_render::{
-    CellBatch, FoldedBlocks, GridPainters, LeftDockSnapshot, OutlineKind, OutlineRow,
-    draw_left_dock, draw_viewport_gpu,
+    CellBatch, FoldedBlocks, GridPainters, LeftDockSnapshot, OutlineRow, draw_left_dock,
+    draw_viewport_gpu,
 };
 use anvil_term::DirtySet;
 use anvil_theme::{Theme, resolve as resolve_theme};
@@ -370,9 +370,6 @@ struct Keybindings {
     toggle_theme: Option<Chord>,
     layout_mode_toggle: Option<Chord>,
     editor_new: Option<Chord>,
-    /// Cmd+Opt+E — open a **native** editor pane (NE4).  Coexists with the
-    /// nvim-backed `editor_new` until NE6 ships (migration §7).
-    editor_new_native: Option<Chord>,
 }
 
 impl Keybindings {
@@ -410,7 +407,6 @@ impl Keybindings {
             toggle_theme: parse_chord(&kb.toggle_theme),
             layout_mode_toggle: parse_chord(&kb.layout_mode_toggle),
             editor_new: parse_chord(&kb.editor_new),
-            editor_new_native: parse_chord("cmd+opt+e"),
         }
     }
 }
@@ -535,24 +531,10 @@ pub struct App {
     /// Shares the same endpoint as the poller; created at the same time.
     caldera_client: Option<anvil_caldera::CalderaClient>,
 
-    // -- editor bridge (BR3/BR4) ---
-    /// Background thread polling a `nvim --listen` socket. `None` when
-    /// `$NVIM_LISTEN_ADDRESS` is unset and no socket has been configured.
-    editor_bridge: Option<anvil_editor::EditorBridge>,
-    /// Latest snapshot from the editor bridge. Updated each tick.
-    editor_snapshot: Option<anvil_editor::EditorSnapshot>,
-    /// PaneId of the editor pane spawned by `new_editor_pane`. At most one
-    /// editor pane at a time (singleton invariant). `None` when no editor
-    /// pane is open.
-    editor_pane_id: Option<PaneId>,
-    /// Monotonic counter bumped per `new_editor_pane` call, used to make
-    /// socket paths unique within a process lifetime.
-    editor_socket_counter: u32,
+    // -- native editor (NE4+) ---
     /// When set, the buffer position where a native-editor drag-select began
     /// (NE7). Cleared on mouse-up; used by mouse_dragged to extend selection.
     editor_mouse_drag_start: Option<EditorPosition>,
-    /// Resolved path to the `nvim` binary. Cached on first `which` lookup.
-    nvim_path: Option<std::path::PathBuf>,
 
     // -- git worker ---
     git_tx: mpsc::SyncSender<PathBuf>,
@@ -960,134 +942,9 @@ impl App {
         self.dirty = true;
     }
 
-    fn new_editor_pane(&mut self) {
-        // Singleton invariant: focus the existing pane if still alive.
-        if let Some(eid) = self.editor_pane_id {
-            if self.ptys.contains_key(&eid) {
-                // Find the tab that owns this pane and focus it.
-                for tab in &mut self.tabs.tabs {
-                    if tab.registry.get(eid).is_some() {
-                        tab.tree.focused = eid;
-                        self.dirty = true;
-                        return;
-                    }
-                }
-                // Pane not found in any tab — fall through to spawn a new one.
-            }
-            // Pane is gone; clear stale id.
-            self.editor_pane_id = None;
-        }
-
-        let tab = match self.tabs.current() {
-            Some(t) => t,
-            None => return,
-        };
-        if tab.tree.leaf_count() >= MAX_PANES_PER_TAB {
-            eprintln!("anvil: max pane count ({MAX_PANES_PER_TAB}) reached");
-            return;
-        }
-
-        // Resolve nvim binary (cached after first lookup).
-        if self.nvim_path.is_none() {
-            match which::which("nvim") {
-                Ok(p) => self.nvim_path = Some(p),
-                Err(e) => {
-                    eprintln!("anvil: nvim not found: {e}");
-                    return;
-                }
-            }
-        }
-        let nvim_bin = self.nvim_path.as_ref().unwrap().clone();
-        let nvim_str = match nvim_bin.to_str() {
-            Some(s) => s.to_string(),
-            None => {
-                eprintln!("anvil: nvim path is not valid UTF-8");
-                return;
-            }
-        };
-
-        // Derive socket path: $TMPDIR/anvil-nvim-<pid>-<counter>.sock
-        self.editor_socket_counter += 1;
-        let socket_path = std::env::temp_dir().join(format!(
-            "anvil-nvim-{}-{}.sock",
-            std::process::id(),
-            self.editor_socket_counter
-        ));
-        let socket_str = match socket_path.to_str() {
-            Some(s) => s.to_string(),
-            None => {
-                eprintln!("anvil: editor socket path is not valid UTF-8");
-                return;
-            }
-        };
-
-        // Compute cols/rows the same way split_focused_pane does for Horizontal.
-        let focused_id = tab.focused_id();
-        let ir = self.pane_area_rect();
-        let div = DIVIDER_PX;
-        let cw = self.font.metrics.cell_w;
-        let ch = self.font.metrics.cell_h;
-        let entries = tab.tree.layout(ir, div);
-        let focused_rect = entries
-            .iter()
-            .find(|e| e.id == focused_id)
-            .map(|e| e.rect)
-            .unwrap_or(ir);
-        let cols = ((((focused_rect.w - div) * 0.5) / cw) as usize).max(1);
-        let rows = ((focused_rect.h / ch) as usize).max(1);
-
-        let scrollback = self.config.scrollback;
-        let new_id = match self
-            .tabs
-            .current_mut()
-            .map(|t| t.split(SplitDir::Horizontal, cols, rows, scrollback))
-        {
-            Some(Ok(id)) => id,
-            Some(Err(e)) => {
-                eprintln!("anvil: editor pane split failed: {e}");
-                return;
-            }
-            None => return,
-        };
-
-        // Spawn nvim --listen <socket> in the new pane.
-        match Pty::spawn_exec(
-            &nvim_str,
-            &[&nvim_str, "--listen", &socket_str],
-            cols as u16,
-            rows as u16,
-        ) {
-            Ok(pty) => {
-                self.ptys.insert(new_id, pty);
-            }
-            Err(e) => {
-                eprintln!("anvil: nvim pty failed: {e}");
-                if let Some(tab) = self.tabs.current_mut() {
-                    tab.tree.close_leaf(new_id);
-                    tab.registry.remove(new_id);
-                }
-                return;
-            }
-        }
-
-        self.editor_pane_id = Some(new_id);
-
-        // Hand socket to the bridge (create it if this is the first time).
-        if let Some(ref bridge) = self.editor_bridge {
-            bridge.set_socket(Some(socket_path));
-            bridge.kick();
-        } else {
-            self.editor_bridge = Some(anvil_editor::EditorBridge::spawn(Some(socket_path)));
-        }
-
-        self.resize_all_tabs();
-        self.snap_anim();
-        self.dirty = true;
-    }
-
-    /// Open a native editor pane (NE4 stub).  Splits the focused pane
-    /// horizontally and registers it as an editor pane — no PTY is spawned.
-    /// Coexists with `new_editor_pane` (nvim) until NE6; triggered by Cmd+Opt+E.
+    /// Open a native editor pane (NE15: sole editor path).  Splits the
+    /// focused pane horizontally and registers it as an editor pane — no
+    /// PTY is spawned.
     fn new_native_editor_pane(&mut self) {
         let tab = match self.tabs.current() {
             Some(t) => t,
@@ -1131,10 +988,10 @@ impl App {
             let focused_id = tab.focused_id();
             let next_id = tab.tree.close_leaf(focused_id);
             tab.registry.remove(focused_id);
+            tab.editor_panes.remove_pane(focused_id);
             (focused_id, next_id)
         };
         self.ptys.remove(&focused_id);
-        self.clear_editor_pane_if(focused_id);
 
         if let Some(nid) = next_id {
             if let Some(tab) = self.tabs.current_mut() {
@@ -1151,18 +1008,6 @@ impl App {
                 self.snap_anim();
                 self.dirty = true;
             }
-        }
-    }
-
-    /// If `closed_id` is the editor pane, clear the singleton slot, tell the
-    /// bridge to disconnect, and remove the socket file.
-    fn clear_editor_pane_if(&mut self, closed_id: PaneId) {
-        if self.editor_pane_id != Some(closed_id) {
-            return;
-        }
-        self.editor_pane_id = None;
-        if let Some(ref bridge) = self.editor_bridge {
-            bridge.set_socket(None);
         }
     }
 
@@ -1220,12 +1065,20 @@ impl App {
 
         let mut tab_i = 0;
         while tab_i < self.tabs.tabs.len() {
-            // Collect pane ids that no longer have a PTY.
+            // Collect pane ids whose PTY has exited. Editor panes (terminal.is_none())
+            // never have a PTY entry and are always alive — exclude them from dead detection.
             let dead: Vec<PaneId> = {
                 let tab = &self.tabs.tabs[tab_i];
                 all_pane_ids_in_tree(tab)
                     .into_iter()
-                    .filter(|id| !self.ptys.contains_key(id))
+                    .filter(|id| {
+                        !self.ptys.contains_key(id)
+                            && tab
+                                .registry
+                                .get(*id)
+                                .map(|p| p.terminal.is_some())
+                                .unwrap_or(false)
+                    })
                     .collect()
             };
 
@@ -1236,9 +1089,9 @@ impl App {
             any_closed = true;
             let mut close_tab = false;
             for id in dead {
-                self.clear_editor_pane_if(id);
                 let next = self.tabs.tabs[tab_i].tree.close_leaf(id);
                 self.tabs.tabs[tab_i].registry.remove(id);
+                self.tabs.tabs[tab_i].editor_panes.remove_pane(id);
                 if let Some(nid) = next {
                     self.tabs.tabs[tab_i].tree.focused = nid;
                 } else {
@@ -1722,11 +1575,6 @@ impl App {
             self.agent_snap = p.snapshot();
         }
 
-        // Update editor snapshot from the background bridge (BR3).
-        if let Some(bridge) = &self.editor_bridge {
-            self.editor_snapshot = Some(bridge.snapshot());
-        }
-
         // Task #8: drain the recent-files worker (non-blocking).
         while let Ok(result) = self.recent_rx.try_recv() {
             self.local_ctx.recent_files = result.files;
@@ -2135,51 +1983,42 @@ impl App {
                 self.chrome_bottom_px(),
             )
             .compute_areas(self.window_inner(), metrics.cell_w, metrics.cell_h);
+            // NE15: context-bar editor segment reads from the focused native
+            // editor pane's buffer (path basename). No modified flag yet —
+            // Buffer has no dirty-since-save tracking.
+            let editor_ctx_name: Option<String> = self.tabs.current().and_then(|tab| {
+                let id = tab.focused_id();
+                let pane = tab.editor_panes.get_pane(id)?;
+                let buf = tab.editor_panes.get_buffer(pane.buffer_id)?;
+                let name = match buf.tracked_path() {
+                    Some(p) => p
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("[scratch]")
+                        .to_string(),
+                    None => "[scratch]".to_string(),
+                };
+                Some(name)
+            });
+            let editor_ctx = editor_ctx_name
+                .as_deref()
+                .map(|name| anvil_render::context_bar::ContextBarEditor {
+                    name,
+                    modified: false,
+                });
             anvil_render::draw_context_bar(
                 &mut self.raster,
                 chrome_painter,
                 chrome_metrics,
                 &self.theme,
                 &self.local_ctx,
-                self.editor_snapshot.as_ref(),
+                editor_ctx,
                 areas.top_bar,
             );
-            // Convert editor outline to render-side types for the left dock.
-            let outline_rows: Option<Vec<OutlineRow>> =
-                self.editor_snapshot.as_ref().and_then(|es| {
-                    use anvil_editor::{OutlineState, SymbolKind};
-                    if es.connection != anvil_editor::ConnectionState::Live {
-                        return None;
-                    }
-                    match es.outline_state {
-                        OutlineState::Ready => {
-                            let rows = es
-                                .outline
-                                .iter()
-                                .map(|sym| OutlineRow {
-                                    name: sym.name.clone(),
-                                    kind: match sym.kind {
-                                        SymbolKind::Function => OutlineKind::Function,
-                                        SymbolKind::Method => OutlineKind::Method,
-                                        SymbolKind::Class => OutlineKind::Class,
-                                        SymbolKind::Struct => OutlineKind::Struct,
-                                        SymbolKind::Enum => OutlineKind::Enum,
-                                        SymbolKind::Interface => OutlineKind::Interface,
-                                        SymbolKind::Module => OutlineKind::Module,
-                                        SymbolKind::Property => OutlineKind::Property,
-                                        SymbolKind::Constant => OutlineKind::Constant,
-                                        SymbolKind::Variable => OutlineKind::Variable,
-                                        SymbolKind::Other => OutlineKind::Other,
-                                    },
-                                    depth: sym.depth,
-                                })
-                                .collect();
-                            Some(rows)
-                        }
-                        OutlineState::NoServer => Some(vec![]),
-                        _ => None,
-                    }
-                });
+            // NE15: nvim LSP outline removed. Native LSP outline (NE9) does
+            // not yet feed the left-dock; leave the outline section blank
+            // until a follow-up wires `editor_pane.outline`.
+            let outline_rows: Option<Vec<OutlineRow>> = None;
             draw_left_dock(
                 &mut self.raster,
                 chrome_painter,
@@ -2575,7 +2414,8 @@ impl App {
                 }
             }
             Action::NewEditorPane => {
-                self.new_editor_pane();
+                // NE15: nvim path removed; native editor is the only path.
+                self.new_native_editor_pane();
             }
         }
         self.dismiss_palette(webview);
@@ -2823,10 +2663,7 @@ impl App {
             return true;
         });
         test!(kb.editor_new, {
-            self.new_editor_pane();
-            return true;
-        });
-        test!(kb.editor_new_native, {
+            // NE15: nvim path removed; Cmd+E opens a native editor pane.
             self.new_native_editor_pane();
             return true;
         });
@@ -3140,8 +2977,21 @@ impl AppHandler for AppShell {
                             }
                         }
                         Some(Ok(_)) => break, // 0 bytes = EAGAIN drained
-                        Some(Err(_)) | None => {
+                        Some(Err(_)) => {
                             pane_dead = true;
+                            break;
+                        }
+                        None => {
+                            // No PTY entry. Editor panes (terminal.is_none()) have no
+                            // PTY and are always alive — skip draining, do not mark dead.
+                            let is_editor = app.tabs.tabs[ti]
+                                .registry
+                                .get(pid)
+                                .map(|p| p.terminal.is_none())
+                                .unwrap_or(false);
+                            if !is_editor {
+                                pane_dead = true;
+                            }
                             break;
                         }
                     }
@@ -5008,14 +4858,7 @@ fn main() -> Result<()> {
         // (set when the first focused pane's cwd is known); see tick().
         caldera_poller: None,
         caldera_client: None,
-        editor_bridge: std::env::var("NVIM_LISTEN_ADDRESS")
-            .ok()
-            .map(|addr| anvil_editor::EditorBridge::spawn(Some(std::path::PathBuf::from(addr)))),
-        editor_snapshot: None,
-        editor_pane_id: None,
-        editor_socket_counter: 0,
         editor_mouse_drag_start: None,
-        nvim_path: None,
         git_tx,
         git_rx,
         recent_cwd_tx,
