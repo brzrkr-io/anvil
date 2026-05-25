@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Anvil Agent Prompt Redo</title>
+<style>
+:root{
+  --bg:#080909; --panel:#101416; --panel2:#151a1d; --ink:#eef1f2; --muted:#87929a; --dim:#566168;
+  --line:rgba(238,241,242,.13); --line2:rgba(238,241,242,.24);
+  --mineral:#2f7f86; --mineral2:#54a4a8; --ember:#c5462a; --agent:#6a5fa3; --agent2:#a892ff;
+  --green:#3f8a5b; --amber:#b07a14; --red:#b13a30; --risk:#a8623a;
+  --mono:"IBM Plex Mono","SFMono-Regular",Menlo,Consolas,monospace;
+  --sans:"IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+}
+*{box-sizing:border-box} body{margin:0;min-height:100vh;color:var(--ink);font-family:var(--mono);background:
+  linear-gradient(rgba(238,241,242,.025) 1px,transparent 1px),linear-gradient(90deg,rgba(238,241,242,.025) 1px,transparent 1px),
+  radial-gradient(circle at 15% -5%,rgba(197,70,42,.17),transparent 32rem),radial-gradient(circle at 85% 0%,rgba(106,95,163,.24),transparent 34rem),var(--bg);background-size:24px 24px,24px 24px,auto,auto,auto}
+.wrap{max-width:1480px;margin:0 auto;padding:28px}.chrome{border:1px solid var(--line);background:rgba(9,12,13,.84);height:42px;display:flex;align-items:center;justify-content:space-between;padding:0 12px;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.14em}.chrome b{color:var(--ink);font-weight:500}.hero{display:grid;grid-template-columns:1.3fr .7fr;gap:24px;padding:50px 0 28px;border-bottom:1px solid var(--line)}.kicker{color:var(--ember);font-size:12px;text-transform:uppercase;letter-spacing:.18em;margin-bottom:12px}h1{font-family:var(--sans);font-size:clamp(40px,6.5vw,82px);line-height:.9;margin:0 0 18px;letter-spacing:-.065em;text-transform:uppercase}.hero p{max-width:860px;color:rgba(238,241,242,.68);font-size:14px;line-height:1.65;margin:0}.callout{border:1px solid rgba(197,70,42,.35);background:linear-gradient(180deg,rgba(197,70,42,.12),rgba(16,20,22,.82));padding:16px}.callout h2{font-size:13px;letter-spacing:.14em;text-transform:uppercase;margin:0 0 10px}.callout p{font-size:12px;color:var(--muted);line-height:1.55;margin:0 0 8px}.mode-strip{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:18px 0}.mode{border:1px solid var(--line);background:rgba(16,20,22,.82);padding:16px}.mode h3{margin:0 0 12px;font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}.terminal{border:1px solid rgba(238,241,242,.1);background:rgba(0,0,0,.38);padding:14px;min-height:126px;line-height:1.58;font-size:13px;box-shadow:inset 0 0 38px rgba(0,0,0,.22)}.path{color:var(--muted)}.arrow{color:var(--mineral2);font-size:16px}.cmd{color:var(--ink)}.agent{color:var(--agent2)}.ember{color:var(--ember)}.green{color:var(--green)}.amber{color:var(--amber)}.red{color:var(--red)}.muted{color:var(--muted)}.dim{color:var(--dim)}.blocks{letter-spacing:.08em}.bar{display:flex;gap:2px;margin:7px 0}.bar i{display:block;height:7px;flex:1;background:rgba(238,241,242,.08);border:1px solid rgba(238,241,242,.05)}.bar i.on{background:var(--c);border-color:color-mix(in srgb,var(--c) 60%,transparent)}.chips{display:flex;gap:6px;flex-wrap:wrap}.chip{border:1px solid rgba(238,241,242,.12);background:rgba(238,241,242,.045);padding:3px 6px;color:var(--muted);font-size:11px}.chip b{color:var(--ink);font-weight:500}.grid{display:grid;grid-template-columns:repeat(3,minmax(320px,1fr));gap:14px;margin-top:16px}.card{--c:var(--agent2);position:relative;overflow:hidden;border:1px solid var(--line);background:linear-gradient(180deg,rgba(18,22,24,.96),rgba(8,10,11,.95));padding:14px;min-height:360px}.card::before{content:"";position:absolute;right:-90px;top:-90px;width:260px;height:260px;background:radial-gradient(circle,color-mix(in srgb,var(--c) 22%,transparent),transparent 68%)}.meta{position:relative;display:flex;justify-content:space-between;gap:10px;color:var(--muted);font-size:10px;letter-spacing:.12em;text-transform:uppercase;margin-bottom:12px}.tag{color:var(--ink);background:color-mix(in srgb,var(--c) 14%,transparent);border:1px solid color-mix(in srgb,var(--c) 45%,transparent);padding:4px 7px;text-transform:none;letter-spacing:0}.title{position:relative;margin:12px 0 7px;font-size:16px;font-weight:700}.desc{position:relative;font-family:var(--sans);font-size:13px;line-height:1.45;color:rgba(238,241,242,.68);margin:0}.rule{position:relative;margin-top:10px;padding-top:10px;border-top:1px solid rgba(238,241,242,.08);color:var(--muted);font-size:11px;line-height:1.45}.promptline{display:flex;align-items:baseline;gap:8px}.headerline{display:flex;justify-content:space-between;gap:10px;color:var(--muted)}.dash{height:1px;background:linear-gradient(90deg,var(--c),transparent);margin:8px 0}.rail{border-left:2px solid var(--c);padding-left:10px}.large-sigil{font-size:22px;color:var(--c)}.stack{display:grid;gap:5px}.meterrow{display:grid;grid-template-columns:48px 1fr auto;gap:8px;align-items:center;color:var(--muted);font-size:12px}.thin{height:4px;background:rgba(238,241,242,.08);position:relative}.thin::after{content:"";position:absolute;inset:0 auto 0 0;width:var(--w);background:var(--c)}.matrix{color:var(--c);letter-spacing:.12em;line-height:1.45}.wide{grid-column:span 2}.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:20px 0 6px}.tabs button{cursor:pointer;border:1px solid var(--line);background:rgba(16,20,22,.84);color:var(--muted);font-family:var(--mono);padding:8px 10px;font-size:11px;text-transform:uppercase;letter-spacing:.09em}.tabs button.active{border-color:var(--ember);color:var(--ink);background:rgba(197,70,42,.14)}.footer{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:18px}.panel{border:1px solid var(--line);background:rgba(16,20,22,.82);padding:16px}.panel h2{font-size:13px;text-transform:uppercase;letter-spacing:.14em;margin:0 0 12px}.panel pre{white-space:pre-wrap;color:rgba(238,241,242,.72);font-size:12px;line-height:1.55;margin:0}
+@media(max-width:1180px){.hero,.mode-strip,.footer{grid-template-columns:1fr}.grid{grid-template-columns:repeat(2,1fr)}.wide{grid-column:span 1}}@media(max-width:760px){.wrap{padding:16px}.grid{grid-template-columns:1fr}.chrome{height:auto;align-items:flex-start;flex-direction:column;padding:10px}h1{font-size:42px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="chrome"><span>anvil prompt redo</span><b>separate modes, not simultaneous prompts</b><span>shell ⇄ agent</span></div>
+
+  <section class="hero">
+    <div>
+      <div class="kicker">[correction: these are separate prompts]</div>
+      <h1>Agent mode should replace the shell prompt.</h1>
+      <p>No split prompt inside the live terminal. The regular prompt is its own mode. The agent prompt is its own mode. This board only shows them together for comparison, then explores new activated-agent prompts with bars, blocks, token counters, context %, brackets, and hacker/operator telemetry.</p>
+    </div>
+    <aside class="callout">
+      <h2>Actual behavior</h2>
+      <p><b>Shell mode:</b> Enter runs a command.</p>
+      <p><b>Agent mode:</b> Enter sends text to Hermes/agent.</p>
+      <p>The UI swaps prompts. It does not show two active prompts at once.</p>
+    </aside>
+  </section>
+
+  <section class="mode-strip">
+    <div class="mode">
+      <h3>Reference only: regular shell prompt</h3>
+      <div class="terminal"><div class="path">~/caldera/anvil</div><div class="promptline"><span class="arrow">›</span><span class="cmd">cargo test</span></div></div>
+    </div>
+    <div class="mode">
+      <h3>Activated agent prompt replaces it</h3>
+      <div class="terminal"><div class="agent">[hermes] ctx 73% · tok 141k/192k · tools gated</div><div class="promptline"><span class="large-sigil">◈</span><span class="arrow">›</span><span class="cmd">make the prompt smarter</span></div></div>
+    </div>
+  </section>
+
+  <div class="tabs">
+    <button class="active" data-filter="all">all 16</button><button data-filter="default">default</button><button data-filter="dense">dense</button><button data-filter="blocks">blocks</button><button data-filter="wild">wild</button><button data-filter="state">state</button><button data-filter="compact">compact</button>
+  </div>
+
+  <main class="grid" id="grid">
+    <article class="card" data-tags="default dense blocks" style="--c:var(--agent2)"><div class="meta"><span>01 / agent block header</span><span class="tag">default</span></div><div class="terminal"><div class="headerline"><span class="agent">[hermes]</span><span>ctx 73% · tok 141k/192k</span></div><div class="bar" style="--c:var(--agent2)"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></div><div class="muted">repo anvil · tools gated · evidence on</div><br><div class="promptline"><span class="large-sigil">◈</span><span class="arrow">›</span><span>make prompt customizable</span></div></div><div class="title">Agent Block Header</div><p class="desc">Actual agent mode prompt. Header above input, no shell prompt visible.</p><div class="rule">Best sane default.</div></article>
+
+    <article class="card" data-tags="default blocks compact" style="--c:var(--agent2)"><div class="meta"><span>02 / bracket cells</span><span class="tag">compact</span></div><div class="terminal"><div><span class="agent">[h]</span> <span class="muted">ctx</span> <span class="agent blocks">▰▰▰▰▰▰▰▱▱▱</span> 73%</div><div><span class="muted">tok</span> <span class="agent blocks">▣▣▣▣▣▣▣□□□</span> 141k</div><br><div class="promptline"><span class="large-sigil">◈</span><span class="arrow">›</span><span>ask agent</span></div></div><div class="title">Bracket Cells</div><p class="desc">Small but still has the “agent shit”: bracket, context, tokens, blocks.</p><div class="rule">Good for narrow terminals.</div></article>
+
+    <article class="card" data-tags="dense default" style="--c:var(--agent2)"><div class="meta"><span>03 / operator strip</span><span class="tag">dense</span></div><div class="terminal"><div class="agent">[hermes:gpt-5.5]</div><div class="muted">ctx 73% · tok 141k/192k · model routed · shell/file/browser gated</div><div class="dash"></div><div class="promptline"><span class="large-sigil">◈</span><span class="arrow">›</span><span>refine agent prompt modes</span></div></div><div class="title">Operator Strip</div><p class="desc">Thin telemetry strip, then prompt. Dense without being ornamental.</p><div class="rule">Strong alternate default.</div></article>
+
+    <article class="card" data-tags="blocks wild" style="--c:var(--agent2)"><div class="meta"><span>04 / memory blocks</span><span class="tag">wild</span></div><div class="terminal"><div class="matrix">▣▣□▣□▣▣□  memory</div><div class="matrix">▰▰▰▰▰▰▰▱  context</div><div class="matrix">◆◇◆◆◇◆◇◆  tools</div><br><div class="muted">[hermes] facts 42 · handoffs 3 · claims 0</div><div class="promptline"><span class="large-sigil">◈</span><span class="arrow">›</span><span>recall prompt direction</span></div></div><div class="title">Memory Blocks</div><p class="desc">Honcho/context vibe, but as real agent-mode telemetry above the input.</p><div class="rule">Use for context-heavy sessions.</div></article>
+
+    <article class="card" data-tags="blocks dense" style="--c:var(--mineral2)"><div class="meta"><span>05 / telemetry stack</span><span class="tag">blocks</span></div><div class="terminal"><div class="meterrow"><span>ctx</span><div class="thin" style="--w:73%"></div><b>73%</b></div><div class="meterrow"><span>tok</span><div class="thin" style="--w:74%"></div><b>141k</b></div><div class="meterrow"><span>mem</span><div class="thin" style="--w:58%"></div><b>42</b></div><br><div class="promptline"><span class="agent">[hermes]</span><span class="large-sigil">◈</span><span class="arrow">›</span><span>plan safely</span></div></div><div class="title">Telemetry Stack</div><p class="desc">Readable horizontal meters above the agent prompt.</p><div class="rule">Most practical if implementing soon.</div></article>
+
+    <article class="card" data-tags="wild blocks dense" style="--c:var(--agent2)"><div class="meta"><span>06 / sigil deck</span><span class="tag">wild</span></div><div class="terminal"><div class="chips"><span class="chip"><b>◈</b> hermes</span><span class="chip"><b>ctx</b> 73%</span><span class="chip"><b>tok</b> 141k</span><span class="chip"><b>tools</b> 3</span></div><br><div class="matrix">◈ ▰ ▰ ▰ ▰ ▰ ▰ ▱ ▱</div><div class="matrix">◇ ▣ ▣ □ ▣ □ ▣ ▣ □</div><br><div class="promptline"><span class="large-sigil">◈</span><span class="arrow">›</span><span>make this look sick</span></div></div><div class="title">Sigil Deck</div><p class="desc">More personality: chips + block deck + strong Hermes-like sigil.</p><div class="rule">Good “cool default” candidate if you want style.</div></article>
+
+    <article class="card" data-tags="state dense" style="--c:var(--amber)"><div class="meta"><span>07 / approval mode</span><span class="tag">state</span></div><div class="terminal"><div class="amber">[approval] bounded edit requested</div><div class="muted">scope crates/anvil-prompt-core/src/render.rs · lease 05:00</div><div class="meterrow"><span>risk</span><div class="thin" style="--w:42%"></div><b>med</b></div><br><div class="promptline"><span class="amber">?</span><span class="arrow">›</span><span>approve once / deny / inspect diff</span></div></div><div class="title">Approval Mode</div><p class="desc">A separate agent prompt state for safety decisions.</p><div class="rule">No shell prompt; this is agent interaction.</div></article>
+
+    <article class="card" data-tags="state wild blocks" style="--c:var(--ember)"><div class="meta"><span>08 / forge running</span><span class="tag">execution</span></div><div class="terminal"><div class="ember">[forge] active execution · 00:42</div><div class="bar" style="--c:var(--ember)"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></div><div class="bar" style="--c:var(--ember)"><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i></div><div class="muted">cargo test -p anvil-prompt-core</div><br><div class="promptline"><span class="ember">▶</span><span class="arrow">›</span><span>running approved command</span></div></div><div class="title">Forge Running</div><p class="desc">Wild bars are state-specific: execution only, ember only.</p><div class="rule">This is not an input prompt; it is a live agent run state.</div></article>
+
+    <article class="card" data-tags="state blocks" style="--c:var(--green)"><div class="meta"><span>09 / verified closeout</span><span class="tag">state</span></div><div class="terminal"><div class="green">[evidence] test pass · clippy clean</div><div class="green blocks">▰▰▰▰ proof captured</div><div class="muted">cargo test --workspace · exit 0</div><br><div class="promptline"><span class="green">✓</span><span class="arrow">›</span><span>summarize changes</span></div></div><div class="title">Verified Closeout</div><p class="desc">Green appears only after evidence exists.</p><div class="rule">Matches Caldera audit/verification culture.</div></article>
+
+    <article class="card" data-tags="state dense" style="--c:var(--red)"><div class="meta"><span>10 / takeover guard</span><span class="tag">blocked</span></div><div class="terminal"><div class="red">[blocked] shell takeover prevented</div><div class="muted">agent mode cannot type into shell prompt without approval</div><div class="meterrow"><span>risk</span><div class="thin" style="--w:91%"></div><b>high</b></div><br><div class="promptline"><span class="red">×</span><span class="arrow">›</span><span>request explicit approval</span></div></div><div class="title">Takeover Guard</div><p class="desc">Makes the mode boundary explicit when something dangerous happens.</p><div class="rule">Important because separate modes are the whole point.</div></article>
+
+    <article class="card" data-tags="dense blocks" style="--c:var(--mineral2)"><div class="meta"><span>11 / route deck</span><span class="tag">caldera</span></div><div class="terminal"><div class="muted">[route] operator ● hermes ● caldera</div><div class="matrix">●━━●━━●    overlap none</div><div class="matrix">claim ▰▰▰  peer □□□</div><br><div class="promptline"><span class="large-sigil agent">◈</span><span class="arrow">›</span><span>sync with active agent</span></div></div><div class="title">Route Deck</div><p class="desc">Caldera/multi-agent information belongs inside agent mode, not next to shell.</p><div class="rule">Only when collaboration state matters.</div></article>
+
+    <article class="card" data-tags="compact default" style="--c:var(--agent2)"><div class="meta"><span>12 / one-line agent</span><span class="tag">compact</span></div><div class="terminal"><div class="promptline"><span class="agent">[h 73% 141k]</span><span class="large-sigil">◈</span><span class="arrow">›</span><span>ask</span></div></div><div class="title">One-line Agent</div><p class="desc">For small panes: still separate mode, just collapsed.</p><div class="rule">Narrow terminal fallback.</div></article>
+
+    <article class="card" data-tags="wild blocks" style="--c:var(--agent2)"><div class="meta"><span>13 / blacksite prompt</span><span class="tag">wild</span></div><div class="terminal"><div class="agent blocks">[HERMES] ▰▰▰▰▰▰▱▱ 73%</div><div class="muted">tok 141k/192k · policy armed · evidence on</div><div class="dash"></div><div class="promptline"><span class="large-sigil">◆</span><span class="arrow">›</span><span>deploy subagent review</span></div></div><div class="title">Blacksite Prompt</div><p class="desc">More aggressive hacker aesthetic, still legible.</p><div class="rule">Maybe a custom skin, not default.</div></article>
+
+    <article class="card" data-tags="wild blocks dense" style="--c:var(--ember)"><div class="meta"><span>14 / ember agent</span><span class="tag">theme</span></div><div class="terminal"><div class="ember">[hermes] active · ctx 73% · tok 141k</div><div class="bar" style="--c:var(--ember)"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></div><div class="muted">ember accents only when agent is executing/armed</div><br><div class="promptline"><span class="ember">◈</span><span class="arrow">›</span><span>run bounded task</span></div></div><div class="title">Ember Agent</div><p class="desc">Orange theme match, but kept semantic: active/armed state.</p><div class="rule">Useful if you want more orange without breaking brand rules.</div></article>
+
+    <article class="card" data-tags="default dense" style="--c:var(--agent2)"><div class="meta"><span>15 / canonical candidate</span><span class="tag">best default</span></div><div class="terminal"><div class="agent">[hermes] ctx 73% · tok 141k/192k · tools gated</div><div class="muted">repo anvil · evidence on · policy armed</div><div class="bar" style="--c:var(--agent2)"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></div><br><div class="promptline"><span class="large-sigil">◈</span><span class="arrow">›</span><span>make the prompt smarter</span></div></div><div class="title">Canonical Candidate</div><p class="desc">Separate activated agent prompt with the telemetry you asked for, no fake split prompt.</p><div class="rule">This is the one I’d refine for implementation.</div></article>
+
+    <article class="card wide" data-tags="default dense blocks wild" style="--c:var(--agent2)"><div class="meta"><span>16 / lifecycle comparison board</span><span class="tag">comparison only</span></div><div class="terminal"><div class="muted">comparison board, not actual simultaneous UI</div><br><div class="path">shell mode</div><div class="promptline"><span class="arrow">›</span><span>cargo test</span></div><br><div class="path">agent mode</div><div class="agent">[hermes] ctx 73% · tok 141k/192k · tools gated</div><div class="promptline"><span class="large-sigil">◈</span><span class="arrow">›</span><span>make a plan for the prompt</span></div></div><div class="title">Comparison Board Only</div><p class="desc">This is the only place both prompts appear together: a design reference explaining the mode swap.</p><div class="rule">Prevents the earlier wrong idea from leaking into product behavior.</div></article>
+  </main>
+
+  <section class="footer">
+    <div class="panel"><h2>Implementation rule</h2><pre>shell mode:
+  ~/caldera/anvil
+  › cargo test
+  Enter => shell
+
+agent mode:
+  [hermes] ctx 73% · tok 141k/192k · tools gated
+  ◈ › make the prompt smarter
+  Enter => agent
+
+Never show two active prompts in the live input row.</pre></div>
+    <div class="panel"><h2>Config sketch</h2><pre>[prompt.shell]
+skin = "thin-trace-arrow"
+glyph = "›"
+accent = "mineral"
+
+[prompt.agent]
+skin = "canonical-block-header"
+sigil = "◈"
+arrow = "›"
+show_brackets = true
+show_tokens = true
+show_context_percent = true
+show_tools = true
+meter_style = "blocks"
+frame = false
+
+[prompt.agent.compact]
+skin = "one-line-agent"</pre></div>
+  </section>
+</div>
+<script>
+const buttons=[...document.querySelectorAll('button[data-filter]')];
+const cards=[...document.querySelectorAll('.card')];
+buttons.forEach(btn=>btn.addEventListener('click',()=>{buttons.forEach(b=>b.classList.remove('active'));btn.classList.add('active');const f=btn.dataset.filter;cards.forEach(c=>{c.style.display=(f==='all'||c.dataset.tags.includes(f))?'block':'none'});}));
+</script>
+</body>
+</html>

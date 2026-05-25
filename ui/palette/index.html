@@ -50,6 +50,8 @@
 <script>
 (function () {
   var commands = [], filtered = [], sel = 0;
+  // Per-session recency scores keyed by item id. No disk persistence.
+  var recency = {};
   var body = document.body;
   var query = document.getElementById('query');
   var list = document.getElementById('list');
@@ -59,19 +61,39 @@
     window.webkit.messageHandlers.anvil.postMessage(JSON.stringify(obj));
   }
 
-  function fuzzy(needle, hay) {
-    needle = needle.toLowerCase();
-    hay = hay.toLowerCase();
-    var i = 0;
-    for (var j = 0; j < hay.length && i < needle.length; j++) {
-      if (hay[j] === needle[i]) i++;
+  // Returns a numeric match score for needle against hay (lowercased title).
+  // 0 means no match. Higher is better.
+  function score(needle, hay) {
+    if (needle === '') return 1; // empty query: everything passes with equal score
+    var n = needle.toLowerCase();
+    var h = hay.toLowerCase();
+    // Substring match: highest score.
+    if (h.indexOf(n) !== -1) return 100;
+    // Word-start match: any word in hay starts with needle.
+    var words = h.split(/[\s.\-_:]+/);
+    for (var w = 0; w < words.length; w++) {
+      if (words[w].indexOf(n) === 0) return 70;
     }
-    return i === needle.length;
+    // Subsequence match: needle chars appear in order in hay.
+    var i = 0;
+    for (var j = 0; j < h.length && i < n.length; j++) {
+      if (h[j] === n[i]) i++;
+    }
+    if (i === n.length) return 10;
+    return 0; // no match
   }
 
   function render() {
     var q = query.value.trim();
-    filtered = commands.filter(function (c) { return q === '' || fuzzy(q, c.title); });
+    // Filter then sort by score + recency.
+    filtered = commands
+      .map(function (c) {
+        var s = score(q, c.title);
+        return { cmd: c, s: s + (recency[c.id] || 0) };
+      })
+      .filter(function (x) { return x.s > 0; })
+      .sort(function (a, b) { return b.s - a.s; })
+      .map(function (x) { return x.cmd; });
     if (sel >= filtered.length) sel = Math.max(0, filtered.length - 1);
     list.innerHTML = '';
     filtered.forEach(function (c, idx) {
@@ -93,7 +115,14 @@
 
   function invoke(idx) {
     if (idx >= 0 && idx < filtered.length) {
-      post({ type: 'invoke', id: filtered[idx].id });
+      var id = filtered[idx].id;
+      // Update recency: bump invoked item, decay all others by 0.9.
+      var keys = Object.keys(recency);
+      for (var k = 0; k < keys.length; k++) {
+        recency[keys[k]] *= 0.9;
+      }
+      recency[id] = (recency[id] || 0) * 0.9 + 20;
+      post({ type: 'invoke', id: id });
     }
   }
 

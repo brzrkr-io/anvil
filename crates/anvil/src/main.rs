@@ -1882,7 +1882,7 @@ impl App {
     // ── Palette helpers ──────────────────────────────────────────────────────
 
     fn send_palette_show(&self, webview: &Webview) {
-        let cmds: Vec<BridgeCmd> = CATALOG
+        let mut cmds: Vec<BridgeCmd> = CATALOG
             .iter()
             .map(|e| BridgeCmd {
                 id: e.id.to_string(),
@@ -1890,6 +1890,50 @@ impl App {
                 subtitle: e.subtitle.map(|s| s.to_string()),
             })
             .collect();
+
+        // Dynamic: one entry per tab, most-recent-first (reverse index order).
+        let tab_count = self.tabs.tabs.len();
+        for idx in (0..tab_count).rev() {
+            let pane_count = self.tabs.tabs[idx].tree.leaf_count();
+            let panes_label = if pane_count == 1 { "pane".to_string() } else { "panes".to_string() };
+            cmds.push(BridgeCmd {
+                id: format!("tab.switch:{idx}"),
+                title: format!("Tab {} · {} {}", idx + 1, pane_count, panes_label),
+                subtitle: None,
+            });
+        }
+
+        // Layout mode entries.
+        cmds.push(BridgeCmd {
+            id: "layout.mode:terminal".to_string(),
+            title: "Layout: Terminal".to_string(),
+            subtitle: None,
+        });
+        cmds.push(BridgeCmd {
+            id: "layout.mode:ide".to_string(),
+            title: "Layout: Ide".to_string(),
+            subtitle: None,
+        });
+        cmds.push(BridgeCmd {
+            id: "layout.mode:codex".to_string(),
+            title: "Layout: Codex".to_string(),
+            subtitle: None,
+        });
+
+        // Agent actions — only when Caldera is Live.
+        if self.agent_snap.connection == anvil_agent::Connection::Live {
+            cmds.push(BridgeCmd {
+                id: "agent.approve".to_string(),
+                title: "Agent: Approve".to_string(),
+                subtitle: None,
+            });
+            cmds.push(BridgeCmd {
+                id: "agent.start".to_string(),
+                title: "Agent: Start Run".to_string(),
+                subtitle: None,
+            });
+        }
+
         let theme_tokens = ThemeTokens {
             background: format_hex(self.theme.background),
             foreground: format_hex(self.theme.foreground),
@@ -1985,6 +2029,48 @@ impl App {
                 self.cheatsheet_visible = true;
                 self.dirty = true;
                 self.force_full_redraw = true;
+            }
+            Action::SwitchTab(idx) => {
+                self.tabs.switch_to(idx);
+                self.resize_all_tabs();
+                self.dirty = true;
+            }
+            Action::LayoutTerminal => {
+                self.layout_mode = LayoutMode::Terminal;
+                self.resize_all_tabs();
+                self.dirty = true;
+            }
+            Action::LayoutIde => {
+                self.layout_mode = LayoutMode::Ide;
+                self.resize_all_tabs();
+                self.dirty = true;
+            }
+            Action::LayoutCodex => {
+                self.layout_mode = LayoutMode::Codex;
+                self.resize_all_tabs();
+                self.dirty = true;
+            }
+            Action::AgentApprove => {
+                // Mirrors Cmd+Return: approve topmost pending approval.
+                if let (Some(client), Some(poller)) = (&self.caldera_client, &self.caldera_poller) {
+                    if let Some(row) = self.agent_snap.approvals.first() {
+                        let _ = anvil_caldera::approve(
+                            client,
+                            &row.connector,
+                            &row.pattern,
+                            &row.reason,
+                            300,
+                        );
+                        poller.kick();
+                    }
+                }
+            }
+            Action::AgentStart => {
+                // Mirrors Cmd+Shift+Return: start a new agent run.
+                if let (Some(client), Some(poller)) = (&self.caldera_client, &self.caldera_poller) {
+                    let _ = anvil_caldera::start_run(client, "", "");
+                    poller.kick();
+                }
             }
         }
         self.dismiss_palette(webview);
@@ -3449,6 +3535,9 @@ impl AppHandler for AppShell {
         self.app.resize_surface();
         if !in_live_resize {
             self.app.resize_all_tabs();
+        }
+        if self.app.palette.visible {
+            self.webview.set_frame(width, height);
         }
         let mut grid_painters = GridPainters {
             regular: &mut self.painter,

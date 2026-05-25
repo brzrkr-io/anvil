@@ -14,6 +14,15 @@ pub enum Action {
     AppQuit,
     HudToggle,
     CheatsheetShow,
+    // Dynamic: switch to tab by index.
+    SwitchTab(usize),
+    // Layout modes.
+    LayoutTerminal,
+    LayoutIde,
+    LayoutCodex,
+    // Agent actions (only shown when Caldera is Live).
+    AgentApprove,
+    AgentStart,
 }
 
 pub struct Entry {
@@ -82,7 +91,26 @@ pub const CATALOG: &[Entry] = &[
 ];
 
 /// Look up the action for a command id, or `None` if unknown.
+///
+/// Prefix-routed dynamic IDs are resolved first:
+/// - `"tab.switch:{usize}"` → `Action::SwitchTab(n)`
+/// - `"layout.mode:terminal"` → `Action::LayoutTerminal`
+/// - `"layout.mode:ide"` → `Action::LayoutIde`
+/// - `"layout.mode:codex"` → `Action::LayoutCodex`
+/// - `"agent.approve"` → `Action::AgentApprove`
+/// - `"agent.start"` → `Action::AgentStart`
 pub fn action_for_id(id: &str) -> Option<Action> {
+    if let Some(rest) = id.strip_prefix("tab.switch:") {
+        return rest.parse::<usize>().ok().map(Action::SwitchTab);
+    }
+    match id {
+        "layout.mode:terminal" => return Some(Action::LayoutTerminal),
+        "layout.mode:ide" => return Some(Action::LayoutIde),
+        "layout.mode:codex" => return Some(Action::LayoutCodex),
+        "agent.approve" => return Some(Action::AgentApprove),
+        "agent.start" => return Some(Action::AgentStart),
+        _ => {}
+    }
     CATALOG.iter().find(|e| e.id == id).map(|e| e.action)
 }
 
@@ -143,6 +171,27 @@ mod tests {
     #[test]
     fn unknown_id_has_no_action() {
         assert_eq!(action_for_id("nope.nope"), None);
+    }
+
+    #[test]
+    fn dynamic_tab_switch_ids_parse() {
+        assert_eq!(action_for_id("tab.switch:0"), Some(Action::SwitchTab(0)));
+        assert_eq!(action_for_id("tab.switch:3"), Some(Action::SwitchTab(3)));
+        assert_eq!(action_for_id("tab.switch:"), None);
+        assert_eq!(action_for_id("tab.switch:abc"), None);
+    }
+
+    #[test]
+    fn layout_mode_ids_parse() {
+        assert_eq!(action_for_id("layout.mode:terminal"), Some(Action::LayoutTerminal));
+        assert_eq!(action_for_id("layout.mode:ide"), Some(Action::LayoutIde));
+        assert_eq!(action_for_id("layout.mode:codex"), Some(Action::LayoutCodex));
+    }
+
+    #[test]
+    fn agent_action_ids_parse() {
+        assert_eq!(action_for_id("agent.approve"), Some(Action::AgentApprove));
+        assert_eq!(action_for_id("agent.start"), Some(Action::AgentStart));
     }
 
     #[test]
