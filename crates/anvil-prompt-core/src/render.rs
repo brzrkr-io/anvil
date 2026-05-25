@@ -23,6 +23,8 @@ const PROMPT_INFO: &str = "\x1b[38;5;6m"; // ANSI 6 = palette info/trace — act
 const ACCENT_ERR: &str = "\x1b[38;5;1m"; // ANSI 1 = red — error state
 const DIM: &str = "\x1b[38;5;8m"; // ANSI 8 = dim grey — accent dot, transient prompt
 const VERIFIED: &str = "\x1b[38;5;2m"; // ANSI 2 = green — success check
+const AGENT_CTX: &str = "\x1b[38;5;11m"; // ANSI 11 = ember/attention — context meter
+const AGENT_TOK: &str = "\x1b[38;5;13m"; // ANSI 13 = agent violet — token meter
 
 #[derive(Debug, Clone, Copy)]
 pub struct Options {
@@ -39,6 +41,13 @@ pub struct Options {
     pub git_dirty: u32,
     /// Exit code of the previous command (0 = success).
     pub exit_code: u8,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct AgentOptions {
+    pub shell: Shell,
+    pub context_percent: u8,
+    pub token_percent: u8,
 }
 
 /// Append a non-printing escape sequence, wrapped in the shell's zero-width
@@ -210,6 +219,49 @@ pub fn transient(opts: Options) -> String {
     esc(&mut buf, opts.shell, RESET);
     buf.push(' ');
     buf
+}
+
+/// Agent-mode prompt: a compact pipe rail stack with distinct context/token meters.
+///
+/// Layout:
+///   `│ ctx ▮▮▮▮░░ │ tok ▮▮▮░░░ │`
+///   `⌁ `
+///
+/// `⌁` is the live agent caret. The normal shell arrow and normal lightning bolt
+/// are intentionally absent from this mode.
+pub fn agent(opts: AgentOptions) -> String {
+    let mut buf = String::new();
+    let sh = opts.shell;
+
+    esc(&mut buf, sh, DIM);
+    buf.push_str("│ ctx ");
+    esc(&mut buf, sh, AGENT_CTX);
+    push_meter(&mut buf, opts.context_percent);
+    esc(&mut buf, sh, DIM);
+    buf.push_str(" │ tok ");
+    esc(&mut buf, sh, AGENT_TOK);
+    push_meter(&mut buf, opts.token_percent);
+    esc(&mut buf, sh, DIM);
+    buf.push_str(" │");
+    esc(&mut buf, sh, RESET);
+    buf.push('\n');
+
+    esc(&mut buf, sh, AGENT_CTX);
+    buf.push('\u{2301}'); // ⌁
+    esc(&mut buf, sh, RESET);
+    buf.push(' ');
+    esc(&mut buf, sh, "\x1b]133;B\x07");
+    buf
+}
+
+fn push_meter(buf: &mut String, percent: u8) {
+    let filled = ((percent.min(100) as usize * 6) + 50) / 100;
+    for _ in 0..filled {
+        buf.push('▮');
+    }
+    for _ in filled..6 {
+        buf.push('░');
+    }
 }
 
 #[cfg(test)]
@@ -384,5 +436,25 @@ mod tests {
         // Neither success nor failure glyph.
         assert!(!out.contains('\u{2713}')); // ✓
         assert!(!out.contains('\u{2717}')); // ✗
+    }
+
+    #[test]
+    fn agent_prompt_pipe_rail_stack_uses_hook_caret_and_distinct_meter_colours() {
+        let out = agent(AgentOptions {
+            shell: Shell::Plain,
+            context_percent: 73,
+            token_percent: 48,
+        });
+
+        assert!(out.contains('\u{2301}')); // ⌁
+        assert!(!out.contains('\u{276f}')); // no shell arrow
+        assert!(!out.contains('\u{26a1}')); // no normal lightning bolt
+        assert!(out.contains("│ ctx "));
+        assert!(out.contains(" │ tok "));
+        assert!(out.contains("▮▮▮▮░░"));
+        assert!(out.contains("▮▮▮░░░"));
+        assert!(out.contains(AGENT_CTX));
+        assert!(out.contains(AGENT_TOK));
+        assert_ne!(AGENT_CTX, AGENT_TOK);
     }
 }

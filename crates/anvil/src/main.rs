@@ -464,7 +464,7 @@ pub struct App {
     system_dark: bool,
     window_scale: f64,
     /// Current layout mode. Defaults to `Terminal`.
-    /// Set at startup via `ANVIL_LAYOUT_MODE=ide|codex|terminal`.
+    /// Set at startup via `ANVIL_LAYOUT_MODE=ide|terminal`.
     layout_mode: LayoutMode,
 
     // -- UI state ---
@@ -2100,12 +2100,6 @@ impl App {
             title: "Layout: Ide".to_string(),
             subtitle: None,
         });
-        cmds.push(BridgeCmd {
-            id: "layout.mode:codex".to_string(),
-            title: "Layout: Codex".to_string(),
-            subtitle: None,
-        });
-
         // Agent actions — only when Caldera is Live.
         if self.agent_snap.connection == anvil_agent::Connection::Live {
             cmds.push(BridgeCmd {
@@ -2228,11 +2222,6 @@ impl App {
             }
             Action::LayoutIde => {
                 self.layout_mode = LayoutMode::Ide;
-                self.resize_all_tabs();
-                self.dirty = true;
-            }
-            Action::LayoutCodex => {
-                self.layout_mode = LayoutMode::Codex;
                 self.resize_all_tabs();
                 self.dirty = true;
             }
@@ -2423,8 +2412,7 @@ impl App {
         test!(kb.layout_mode_toggle, {
             self.layout_mode = match self.layout_mode {
                 LayoutMode::Terminal => LayoutMode::Ide,
-                LayoutMode::Ide => LayoutMode::Codex,
-                LayoutMode::Codex => LayoutMode::Terminal,
+                LayoutMode::Ide => LayoutMode::Terminal,
             };
             self.resize_all_tabs();
             self.dirty = true;
@@ -4229,7 +4217,6 @@ fn main() -> Result<()> {
     // -- Layout mode (debug env-var override) ---------------------------------
     let layout_mode = match std::env::var("ANVIL_LAYOUT_MODE").as_deref() {
         Ok("ide") => LayoutMode::Ide,
-        Ok("codex") => LayoutMode::Codex,
         _ => LayoutMode::Terminal,
     };
     eprintln!("anvil: layout_mode = {layout_mode:?}");

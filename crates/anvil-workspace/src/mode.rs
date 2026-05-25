@@ -15,13 +15,11 @@ use crate::layout::Rect;
 ///
 /// - `Terminal` — today's layout: no docks, HUD floats via `hud_visible`.
 /// - `Ide` — left explorer dock + right HUD dock, always visible.
-/// - `Codex` — no-op identical to `Terminal` until content is decided (ID3+).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum LayoutMode {
     #[default]
     Terminal,
     Ide,
-    Codex,
 }
 
 // ── FontMetricsForDocks ───────────────────────────────────────────────────────
@@ -49,7 +47,7 @@ pub struct DockMetrics {
 /// Computed once per frame; not stored on `App`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Docks {
-    /// Left dock width in device pixels.  `0` in Terminal/Codex mode.
+    /// Left dock width in device pixels.  `0` in Terminal mode.
     pub left_w: f64,
     /// Right dock width in device pixels.  Carries the HUD strip in Ide mode;
     /// set from `hud_visible` in Terminal mode.
@@ -66,7 +64,6 @@ impl Docks {
     /// - `hud_visible` controls the right strip in Terminal mode.
     /// - In Ide mode the right dock is always the HUD column, regardless of
     ///   `hud_visible` (locked-visible per ID1 spec).
-    /// - Codex is identical to Terminal for now.
     pub fn for_mode(
         mode: LayoutMode,
         scale: f64,
@@ -82,7 +79,7 @@ impl Docks {
         let hud_w = metrics.hud_cols as f64 * cw + metrics.grid_pad;
 
         match mode {
-            LayoutMode::Terminal | LayoutMode::Codex => {
+            LayoutMode::Terminal => {
                 // No HUD: reserve grid_pad on the right (preserves the right GRID_PAD
                 // that inner_rect formerly subtracted from pane width).
                 // HUD on: HUD strip absorbs the right padding entirely.
@@ -221,15 +218,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn widths_sum_to_inner_w_codex() {
-        let areas = docks_for(LayoutMode::Codex, false).compute_areas(INNER, MIN_W, MIN_H);
-        assert_eq!(
-            areas.left_dock.w + areas.pane_area.w + areas.right_dock.w,
-            INNER.w
-        );
-    }
-
     // ── height invariant ──────────────────────────────────────────────────────
 
     #[test]
@@ -259,12 +247,6 @@ mod tests {
         assert_eq!(docks.left_w, 0.0, "Terminal mode must have zero left dock");
         // right_w absorbs the right GRID_PAD when HUD is hidden
         assert_eq!(docks.right_w, GRID_PAD, "Terminal/HUD-off right_w must equal GRID_PAD");
-    }
-
-    #[test]
-    fn codex_zero_left_dock() {
-        let docks = docks_for(LayoutMode::Codex, false);
-        assert_eq!(docks.left_w, 0.0, "Codex must have zero left dock");
     }
 
     // ── Terminal mode: pane_area equals inner minus bottom bar ────────────────
@@ -302,12 +284,6 @@ mod tests {
     fn terminal_top_bar_h_zero() {
         let docks = docks_for(LayoutMode::Terminal, false);
         assert_eq!(docks.top_h, 0.0, "Terminal top_h must remain 0");
-    }
-
-    #[test]
-    fn codex_top_bar_h_zero() {
-        let docks = docks_for(LayoutMode::Codex, false);
-        assert_eq!(docks.top_h, 0.0, "Codex top_h must remain 0");
     }
 
     // ── Round-trip Terminal → Ide → Terminal ──────────────────────────────────

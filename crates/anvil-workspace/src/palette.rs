@@ -19,7 +19,6 @@ pub enum Action {
     // Layout modes.
     LayoutTerminal,
     LayoutIde,
-    LayoutCodex,
     // Agent actions (only shown when Caldera is Live).
     AgentApprove,
     AgentStart,
@@ -104,7 +103,6 @@ pub const CATALOG: &[Entry] = &[
 /// - `"tab.switch:{usize}"` → `Action::SwitchTab(n)`
 /// - `"layout.mode:terminal"` → `Action::LayoutTerminal`
 /// - `"layout.mode:ide"` → `Action::LayoutIde`
-/// - `"layout.mode:codex"` → `Action::LayoutCodex`
 /// - `"agent.approve"` → `Action::AgentApprove`
 /// - `"agent.start"` → `Action::AgentStart`
 pub fn action_for_id(id: &str) -> Option<Action> {
@@ -114,7 +112,6 @@ pub fn action_for_id(id: &str) -> Option<Action> {
     match id {
         "layout.mode:terminal" => return Some(Action::LayoutTerminal),
         "layout.mode:ide" => return Some(Action::LayoutIde),
-        "layout.mode:codex" => return Some(Action::LayoutCodex),
         "agent.approve" => return Some(Action::AgentApprove),
         "agent.start" => return Some(Action::AgentStart),
         _ => {}
@@ -193,7 +190,7 @@ mod tests {
     fn layout_mode_ids_parse() {
         assert_eq!(action_for_id("layout.mode:terminal"), Some(Action::LayoutTerminal));
         assert_eq!(action_for_id("layout.mode:ide"), Some(Action::LayoutIde));
-        assert_eq!(action_for_id("layout.mode:codex"), Some(Action::LayoutCodex));
+        assert_eq!(action_for_id("layout.mode:codex"), None);
     }
 
     #[test]
