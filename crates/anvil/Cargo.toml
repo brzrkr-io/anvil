@@ -18,6 +18,7 @@ anvil-config     = { workspace = true }
 anvil-agent      = { workspace = true }
 anvil-caldera    = { workspace = true }
 anvil-control    = { workspace = true }
+anvil-editor     = { path = "../../crates/anvil-editor" }
 anvil-prompt-core = { path = "../../crates/anvil-prompt-core" }
 anyhow           = { workspace = true }
 libc             = { workspace = true }

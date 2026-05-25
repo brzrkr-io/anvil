@@ -517,6 +517,13 @@ pub struct App {
     /// Shares the same endpoint as the poller; created at the same time.
     caldera_client: Option<anvil_caldera::CalderaClient>,
 
+    // -- editor bridge (BR3) ---
+    /// Background thread polling a `nvim --listen` socket. `None` when
+    /// `$NVIM_LISTEN_ADDRESS` is unset and no socket has been configured.
+    editor_bridge: Option<anvil_editor::EditorBridge>,
+    /// Latest snapshot from the editor bridge. Updated each tick.
+    editor_snapshot: Option<anvil_editor::EditorSnapshot>,
+
     // -- git worker ---
     git_tx: mpsc::SyncSender<PathBuf>,
     git_rx: mpsc::Receiver<GitResult>,
@@ -1324,6 +1331,11 @@ impl App {
         // a fresh Snapshot every 2s; the read is a cheap mutex peek + clone.
         if let Some(p) = &self.caldera_poller {
             self.agent_snap = p.snapshot();
+        }
+
+        // Update editor snapshot from the background bridge (BR3).
+        if let Some(bridge) = &self.editor_bridge {
+            self.editor_snapshot = Some(bridge.snapshot());
         }
 
         // Task #8: drain the recent-files worker (non-blocking).
@@ -4006,6 +4018,10 @@ fn main() -> Result<()> {
         // (set when the first focused pane's cwd is known); see tick().
         caldera_poller: None,
         caldera_client: None,
+        editor_bridge: std::env::var("NVIM_LISTEN_ADDRESS")
+            .ok()
+            .map(|addr| anvil_editor::EditorBridge::spawn(Some(std::path::PathBuf::from(addr)))),
+        editor_snapshot: None,
         git_tx,
         git_rx,
         recent_cwd_tx,
