@@ -18,24 +18,6 @@ use anvil_theme::Theme;
 
 use crate::raster::{FontMetrics, GlyphPainter, PixelRect, Raster};
 
-/// HUD-local theme tone — keeps text legible against the deep-glass surface
-/// regardless of the active app theme (light/dark canvas, same dark panel).
-struct TonedTheme {
-    foreground: [u8; 3],
-}
-
-// --- Brand color constants (Mineral palette) --------------------------------
-
-/// alloy: muted labels / metadata (#86919a)
-const ALLOY: [u8; 3] = [0x86, 0x91, 0x9a];
-/// status.verified: success / passing (#3f8a5b)
-const VERIFIED: [u8; 3] = [0x3f, 0x8a, 0x5b];
-/// status.failure: failed check (#b13a30)
-const FAILURE: [u8; 3] = [0xb1, 0x3a, 0x30];
-/// status.attention: reviewable warning / pending action (#b07a14)
-const ATTENTION: [u8; 3] = [0xb0, 0x7a, 0x14];
-/// status.agent: agent / automation / model activity — violet (#6a5fa3)
-const AGENT_VIOLET: [u8; 3] = [0x6a, 0x5f, 0xa3];
 
 // --- Data types -------------------------------------------------------------
 
@@ -230,13 +212,13 @@ pub fn format_cwd(path: &str) -> String {
 // --- Header helpers ---------------------------------------------------------
 
 /// Determine the bullet color from the current snapshot state.
-pub fn header_bullet_color(snap: &Snapshot) -> [u8; 3] {
+pub fn header_bullet_color(snap: &Snapshot, theme: &Theme) -> [u8; 3] {
     match snap.connection {
         Connection::NotInstalled
         | Connection::NoProject
         | Connection::Disabled
         | Connection::Offline
-        | Connection::ErrorState => ALLOY,
+        | Connection::ErrorState => theme.alloy,
         Connection::Live => {
             // Worst-state priority: failure > attention > agent-active > all-clear.
             if snap
@@ -244,15 +226,15 @@ pub fn header_bullet_color(snap: &Snapshot) -> [u8; 3] {
                 .iter()
                 .any(|f| f.severity == FindingSeverity::Failure)
             {
-                return FAILURE;
+                return theme.failure;
             }
             if snap.pending_approvals_count > 0 {
-                return ATTENTION;
+                return theme.attention;
             }
             if snap.running_count > 0 {
-                return AGENT_VIOLET;
+                return theme.agent;
             }
-            VERIFIED
+            theme.verified
         }
     }
 }
@@ -361,7 +343,7 @@ pub fn draw(
 
     // --- Header row: bullet + "agents" + summary ----------------------------
     if row < max_row {
-        let bullet_color = header_bullet_color(snap);
+        let bullet_color = header_bullet_color(snap, theme);
         let summary = build_header_summary(snap);
         draw_agent_header(
             raster,
@@ -385,15 +367,16 @@ pub fn draw(
         if priority_count >= 3 || row >= max_row {
             break;
         }
-        // U+25B8 BLACK RIGHT-POINTING SMALL TRIANGLE ▸
+        // U+25CF BLACK CIRCLE ●
         draw_priority_row(
             raster,
             painter,
             metrics,
+            theme,
             card_col,
             row,
-            "\u{25b8}",
-            ATTENTION,
+            "\u{25cf}",
+            theme.attention,
             &ap.connector,
             PANEL_COLS,
         );
@@ -409,15 +392,16 @@ pub fn draw(
         if run.status != RunStatus::Running {
             continue;
         }
-        // U+25C6 BLACK DIAMOND ◆
+        // U+25CF BLACK CIRCLE ●
         draw_priority_row(
             raster,
             painter,
             metrics,
+            theme,
             card_col,
             row,
-            "\u{25c6}",
-            AGENT_VIOLET,
+            "\u{25cf}",
+            theme.agent,
             &run.agent,
             PANEL_COLS,
         );
@@ -438,10 +422,11 @@ pub fn draw(
             raster,
             painter,
             metrics,
+            theme,
             card_col,
             row,
             "\u{2717}",
-            FAILURE,
+            theme.failure,
             &finding.summary,
             PANEL_COLS,
         );
@@ -457,63 +442,16 @@ pub fn draw(
 
     // --- Footer: Local context (cwd · branch · last-run) --------------------
     if row < max_row {
-        draw_local_footer(raster, painter, metrics, card_col, row, local, PANEL_COLS);
+        draw_local_footer(raster, painter, metrics, theme, card_col, row, local, PANEL_COLS);
     }
 }
 
 // --- Right-side HUD ---------------------------------------------------------
 
-/// Brand color constants exported for callers that need to compose rows.
-const INFO_TEAL: [u8; 3] = [0x3a, 0x8a, 0x9d];
-
-/// Theme-aware tones for the docked HUD's frosted-glass surface. Computed
-/// per-frame from `theme.background` luminance so the panel feels like the
-/// right material on either light or dark canvases — light mode gets a warm
-/// pale glass with dark ink; dark mode gets a deep cool slate with light ink.
-struct GlassTones {
-    /// Surface fill color (composited at `surface_alpha` over the canvas).
-    surface: [u8; 3],
-    /// How much of the canvas shows through the surface (0.0–1.0).
-    surface_alpha: f64,
-    /// 1px hairline on the HUD's left edge.
-    edge: [u8; 3],
-    /// Section header text (REPO / GIT / …) — quieter than body text.
-    label: [u8; 3],
-    /// Primary body text on the glass.
-    foreground: [u8; 3],
-    /// Dimmer metadata text on the glass (parent path, time, idle state).
-    meta: [u8; 3],
-}
-
 /// Relative luminance, ITU-R BT.709, on 0–255 sRGB (approximate; not gamma
 /// corrected — good enough to choose a light/dark palette).
 fn luma(rgb: [u8; 3]) -> f64 {
     0.2126 * rgb[0] as f64 + 0.7152 * rgb[1] as f64 + 0.0722 * rgb[2] as f64
-}
-
-fn glass_tones_for(theme: &Theme) -> GlassTones {
-    if luma(theme.background) < 128.0 {
-        // Dark canvas → deep cool slate panel with warm off-white ink.
-        GlassTones {
-            surface: [0x14, 0x18, 0x21],
-            surface_alpha: 0.88,
-            edge: [0x2a, 0x30, 0x3c],
-            label: [0x6b, 0x76, 0x82],
-            foreground: [0xd6, 0xdc, 0xe4],
-            meta: [0x86, 0x91, 0x9a],
-        }
-    } else {
-        // Light canvas → warm pale glass with cool dark ink — same role as
-        // a macOS Mail / Finder sidebar in light mode.
-        GlassTones {
-            surface: [0xe3, 0xe7, 0xed],
-            surface_alpha: 0.72,
-            edge: [0xc6, 0xcd, 0xd6],
-            label: [0x7a, 0x83, 0x90],
-            foreground: [0x24, 0x2a, 0x33],
-            meta: [0x55, 0x5e, 0x6b],
-        }
-    }
 }
 
 /// A clickable region inside the HUD. Click → copy text; Cmd-click → open
@@ -630,9 +568,10 @@ pub fn draw_right_hud(
         return;
     }
 
-    let tones = glass_tones_for(app_theme);
+    // Surface alpha: 0.88 for dark canvas, 0.72 for light canvas.
+    let surface_alpha = if luma(app_theme.background) < 128.0 { 0.88 } else { 0.72 };
 
-    // Frosted glass: composite the surface tone over whatever's behind with
+    // Frosted glass: composite theme.panel over whatever's behind with
     // `surface_alpha` < 1, so the canvas tints through. A 1px hairline on
     // the left edge separates the panel from the terminal grid.
     raster.fill_pixel_rect_alpha(
@@ -640,25 +579,20 @@ pub fn draw_right_hud(
         surface_rect.y,
         surface_rect.w,
         surface_rect.h,
-        tones.surface,
-        tones.surface_alpha,
+        app_theme.panel,
+        surface_alpha,
     );
     raster.fill_pixel_rect(
         surface_rect.x,
         surface_rect.y,
         1.0,
         surface_rect.h,
-        tones.edge,
+        app_theme.hairline,
     );
 
     // Bind cell-grid coords for the rest of the function.
     let start_col = content_col;
     let hud_cols = content_cols;
-    let theme = TonedTheme {
-        foreground: tones.foreground,
-    };
-    let label_color = tones.label;
-    let meta_color = tones.meta;
 
     let inner_col = start_col + 2; // 2-col left pad
     let max_col = start_col + hud_cols - 1; // 1-col right pad
@@ -707,8 +641,10 @@ pub fn draw_right_hud(
                     inner_col,
                     r,
                     "CONTEXT",
-                    label_color,
-                    max_col,
+                    app_theme.text_subtle,
+                    start_col,
+                    hud_cols,
+                    app_theme.hairline,
                 );
                 push_section_header_hit(
                     section_hits,
@@ -719,14 +655,14 @@ pub fn draw_right_hud(
                     header_row,
                     hud_cols,
                 );
-                r += 1;
+                r += 2;
 
                 // Row: env-tint dot · cluster · · · namespace
                 if r < bottom {
                     let dot_color = match kube.env_kind {
-                        anvil_prompt_core::EnvKind::Prod => ATTENTION,
-                        anvil_prompt_core::EnvKind::Staging => INFO_TEAL,
-                        anvil_prompt_core::EnvKind::Dev => ALLOY,
+                        anvil_prompt_core::EnvKind::Prod => app_theme.attention,
+                        anvil_prompt_core::EnvKind::Staging => app_theme.info,
+                        anvil_prompt_core::EnvKind::Dev => app_theme.alloy,
                     };
                     let mut c = inner_col;
                     // U+25CF BLACK CIRCLE dot
@@ -736,23 +672,23 @@ pub fn draw_right_hud(
                         if c >= max_col {
                             break;
                         }
-                        raster.cell_glyph(painter, metrics, c, r, ch as u32, theme.foreground);
+                        raster.cell_glyph(painter, metrics, c, r, ch as u32, app_theme.foreground);
                         c += 1;
                     }
                     // · separator
                     if c + 2 < max_col {
-                        raster.cell_glyph(painter, metrics, c, r, ' ' as u32, meta_color);
+                        raster.cell_glyph(painter, metrics, c, r, ' ' as u32, app_theme.text_muted);
                         c += 1;
-                        raster.cell_glyph(painter, metrics, c, r, 0x00b7, meta_color);
+                        raster.cell_glyph(painter, metrics, c, r, 0x00b7, app_theme.text_muted);
                         c += 1;
-                        raster.cell_glyph(painter, metrics, c, r, ' ' as u32, meta_color);
+                        raster.cell_glyph(painter, metrics, c, r, ' ' as u32, app_theme.text_muted);
                         c += 1;
                     }
                     for ch in kube.namespace.chars() {
                         if c >= max_col {
                             break;
                         }
-                        raster.cell_glyph(painter, metrics, c, r, ch as u32, meta_color);
+                        raster.cell_glyph(painter, metrics, c, r, ch as u32, app_theme.text_muted);
                         c += 1;
                     }
                     let ctx_copy = format!("{}/{}", kube.cluster, kube.namespace);
@@ -779,8 +715,10 @@ pub fn draw_right_hud(
                     inner_col,
                     r,
                     "REPO + GIT",
-                    label_color,
-                    max_col,
+                    app_theme.text_subtle,
+                    start_col,
+                    hud_cols,
+                    app_theme.hairline,
                 );
                 push_section_header_hit(
                     section_hits,
@@ -791,7 +729,7 @@ pub fn draw_right_hud(
                     header_row,
                     hud_cols,
                 );
-                r += 1;
+                r += 2;
 
                 // Row 1: repo basename in foreground. Click → copy full cwd.
                 if r < bottom {
@@ -803,7 +741,7 @@ pub fn draw_right_hud(
                         inner_col,
                         r,
                         &name,
-                        theme.foreground,
+                        app_theme.foreground,
                         max_col,
                     );
                     push_row_hit(
@@ -822,7 +760,7 @@ pub fn draw_right_hud(
                 if r < bottom {
                     if let Some(parent) = parent_path_compact(&local.cwd, hud_cols - 4) {
                         draw_text(
-                            raster, painter, metrics, inner_col, r, &parent, meta_color, max_col,
+                            raster, painter, metrics, inner_col, r, &parent, app_theme.text_muted, max_col,
                         );
                         push_row_hit(
                             hits,
@@ -841,7 +779,7 @@ pub fn draw_right_hud(
                 if local.git == GitState::NoRepo || local.branch.is_empty() {
                     if r < bottom {
                         draw_text(
-                            raster, painter, metrics, inner_col, r, "no repo", meta_color, max_col,
+                            raster, painter, metrics, inner_col, r, "no repo", app_theme.text_muted, max_col,
                         );
                         r += 1;
                     }
@@ -850,7 +788,7 @@ pub fn draw_right_hud(
                     if r < bottom {
                         // U+23B7 SYMBOL FOR COMBINING LONG VERTICAL LINE BELOW
                         // Use U+238B (⎋) or simply the Nerd Font branch glyph 
-                        raster.cell_glyph(painter, metrics, inner_col, r, 0xe0a0, INFO_TEAL);
+                        raster.cell_glyph(painter, metrics, inner_col, r, 0xe0a0, app_theme.info);
                         draw_text(
                             raster,
                             painter,
@@ -858,7 +796,7 @@ pub fn draw_right_hud(
                             inner_col + 2,
                             r,
                             &local.branch,
-                            theme.foreground,
+                            app_theme.foreground,
                             max_col,
                         );
                         // Dirty / ahead / behind indicator after branch name
@@ -869,12 +807,12 @@ pub fn draw_right_hud(
                             if local.git_dirty > 0 {
                                 bits.push((
                                     format!(" *{} modified", local.git_dirty),
-                                    ATTENTION,
+                                    app_theme.attention,
                                 ));
                             }
                             let ab = format_ahead_behind(local.git_ahead, local.git_behind);
                             if !ab.is_empty() {
-                                bits.push((format!(" {ab}"), INFO_TEAL));
+                                bits.push((format!(" {ab}"), app_theme.info));
                             }
                             let mut c = after_branch;
                             for (txt, col) in &bits {
@@ -907,18 +845,18 @@ pub fn draw_right_hud(
                             if c >= max_col {
                                 break;
                             }
-                            raster.cell_glyph(painter, metrics, c, r, ch as u32, INFO_TEAL);
+                            raster.cell_glyph(painter, metrics, c, r, ch as u32, app_theme.info);
                             c += 1;
                         }
                         if !local.head_subject.is_empty() && c + 1 < max_col {
-                            raster.cell_glyph(painter, metrics, c, r, ' ' as u32, meta_color);
+                            raster.cell_glyph(painter, metrics, c, r, ' ' as u32, app_theme.text_muted);
                             c += 1;
                             for ch in local.head_subject.chars() {
                                 if c >= max_col {
                                     break;
                                 }
                                 raster
-                                    .cell_glyph(painter, metrics, c, r, ch as u32, meta_color);
+                                    .cell_glyph(painter, metrics, c, r, ch as u32, app_theme.text_muted);
                                 c += 1;
                             }
                         }
@@ -950,8 +888,10 @@ pub fn draw_right_hud(
                     inner_col,
                     r,
                     "CI",
-                    label_color,
-                    max_col,
+                    app_theme.text_subtle,
+                    start_col,
+                    hud_cols,
+                    app_theme.hairline,
                 );
                 push_section_header_hit(
                     section_hits,
@@ -962,7 +902,7 @@ pub fn draw_right_hud(
                     header_row,
                     hud_cols,
                 );
-                r += 1;
+                r += 2;
 
                 // Row 1: status glyph + label + duration.
                 if r < bottom {
@@ -970,20 +910,20 @@ pub fn draw_right_hud(
                     let (glyph, gcol, label) = match ci.state {
                         CiState::Ok => (
                             "\u{2713}",
-                            VERIFIED,
+                            app_theme.verified,
                             format!("{} \u{00b7} {}s", ci.branch, ci.duration_s),
                         ),
                         CiState::Failed => (
                             "\u{2717}",
-                            FAILURE,
+                            app_theme.failure,
                             format!("{} \u{00b7} {}s", ci.branch, ci.duration_s),
                         ),
                         CiState::Running => (
                             "\u{25CF}",
-                            INFO_TEAL,
+                            app_theme.info,
                             format!("{} running\u{2026}", ci.branch),
                         ),
-                        CiState::Unknown => ("\u{00b7}", ALLOY, "no data".to_string()),
+                        CiState::Unknown => ("\u{00b7}", app_theme.alloy, "no data".to_string()),
                     };
                     raster.cell_glyph(
                         painter,
@@ -1000,7 +940,7 @@ pub fn draw_right_hud(
                         inner_col + 2,
                         r,
                         &label,
-                        theme.foreground,
+                        app_theme.foreground,
                         max_col,
                     );
                     r += 1;
@@ -1016,7 +956,7 @@ pub fn draw_right_hud(
                         inner_col,
                         r,
                         &pr_label,
-                        INFO_TEAL,
+                        app_theme.info,
                         max_col,
                     );
                     if !ci.pr_url.is_empty() {
@@ -1048,8 +988,10 @@ pub fn draw_right_hud(
                         inner_col,
                         r,
                         "PORTS",
-                        label_color,
-                        max_col,
+                        app_theme.text_subtle,
+                        start_col,
+                        hud_cols,
+                        app_theme.hairline,
                     );
                     push_section_header_hit(
                         section_hits,
@@ -1060,7 +1002,7 @@ pub fn draw_right_hud(
                         header_row,
                         hud_cols,
                     );
-                    r += 1;
+                    r += 2;
                 }
                 if r < bottom {
                     let mut c = inner_col;
@@ -1071,7 +1013,7 @@ pub fn draw_right_hud(
                             if c + 1 >= max_col {
                                 break;
                             }
-                            raster.cell_glyph(painter, metrics, c, r, ' ' as u32, meta_color);
+                            raster.cell_glyph(painter, metrics, c, r, ' ' as u32, app_theme.text_muted);
                             c += 1;
                         }
                         let label_start = c;
@@ -1079,7 +1021,7 @@ pub fn draw_right_hud(
                             if c >= max_col {
                                 break;
                             }
-                            raster.cell_glyph(painter, metrics, c, r, ch as u32, INFO_TEAL);
+                            raster.cell_glyph(painter, metrics, c, r, ch as u32, app_theme.info);
                             c += 1;
                         }
                         // Per-port click region: plain → copy URL, Cmd → open URL.
@@ -1112,8 +1054,10 @@ pub fn draw_right_hud(
                         inner_col,
                         r,
                         "RECENT",
-                        label_color,
-                        max_col,
+                        app_theme.text_subtle,
+                        start_col,
+                        hud_cols,
+                        app_theme.hairline,
                     );
                     push_section_header_hit(
                         section_hits,
@@ -1124,7 +1068,7 @@ pub fn draw_right_hud(
                         header_row,
                         hud_cols,
                     );
-                    r += 1;
+                    r += 2;
                 }
                 for (fi, full_path) in local.recent_files.iter().enumerate() {
                     if r >= bottom {
@@ -1136,7 +1080,7 @@ pub fn draw_right_hud(
                         .filter(|s| !s.is_empty())
                         .unwrap_or(full_path.as_str());
                     draw_text(
-                        raster, painter, metrics, inner_col, r, basename, meta_color, max_col,
+                        raster, painter, metrics, inner_col, r, basename, app_theme.text_muted, max_col,
                     );
                     // HudHit: Cmd-click opens the full path in the default editor.
                     let hit_copy = full_path.clone();
@@ -1165,8 +1109,10 @@ pub fn draw_right_hud(
                     inner_col,
                     r,
                     "AGENTS",
-                    label_color,
-                    max_col,
+                    app_theme.text_subtle,
+                    start_col,
+                    hud_cols,
+                    app_theme.hairline,
                 );
                 push_section_header_hit(
                     section_hits,
@@ -1177,9 +1123,9 @@ pub fn draw_right_hud(
                     header_row,
                     hud_cols,
                 );
-                r += 1;
+                r += 2;
                 if r < bottom {
-                    let bullet_color = header_bullet_color(snap);
+                    let bullet_color = header_bullet_color(snap, app_theme);
                     raster.cell_glyph(painter, metrics, inner_col, r, 0x25CF, bullet_color);
                     let summary = build_header_summary(snap);
                     let label = if summary.is_empty() {
@@ -1194,7 +1140,7 @@ pub fn draw_right_hud(
                         inner_col + 2,
                         r,
                         &label,
-                        theme.foreground,
+                        app_theme.foreground,
                         max_col,
                     );
                     r += 1;
@@ -1213,11 +1159,11 @@ pub fn draw_right_hud(
                         metrics,
                         inner_col,
                         r,
-                        "\u{25b8}",
-                        ATTENTION,
+                        "\u{25cf}",
+                        app_theme.attention,
                         &ap.connector,
                         max_col,
-                        theme.foreground,
+                        app_theme.foreground,
                     );
                     r += 1;
                 }
@@ -1234,11 +1180,11 @@ pub fn draw_right_hud(
                         metrics,
                         inner_col,
                         r,
-                        "\u{25c6}",
-                        AGENT_VIOLET,
+                        "\u{25cf}",
+                        app_theme.agent,
                         &run.agent,
                         max_col,
-                        theme.foreground,
+                        app_theme.foreground,
                     );
                     r += 1;
                 }
@@ -1256,10 +1202,10 @@ pub fn draw_right_hud(
                         inner_col,
                         r,
                         "\u{2717}",
-                        FAILURE,
+                        app_theme.failure,
                         &f.summary,
                         max_col,
-                        theme.foreground,
+                        app_theme.foreground,
                     );
                     r += 1;
                 }
@@ -1275,8 +1221,10 @@ pub fn draw_right_hud(
                     inner_col,
                     r,
                     "SYSTEM",
-                    label_color,
-                    max_col,
+                    app_theme.text_subtle,
+                    start_col,
+                    hud_cols,
+                    app_theme.hairline,
                 );
                 push_section_header_hit(
                     section_hits,
@@ -1287,9 +1235,9 @@ pub fn draw_right_hud(
                     header_row,
                     hud_cols,
                 );
-                r += 1;
+                r += 2;
 
-                // Single compact row: "mem ▄▅▆▆▃▁ N/N GB · load X.XX"
+                // Single compact row: "mem ▄▅▆▆▃▁ N/N GB" left, "load X.XX" right-aligned.
                 if r < bottom {
                     let mem_ratio = mem_usage_ratio().unwrap_or(0.0);
                     let mem_bar = gauge_bar(mem_ratio, 6);
@@ -1298,33 +1246,23 @@ pub fn draw_right_hud(
 
                     let load_val = format_load_1m();
                     let load_str = load_val.as_deref().unwrap_or("—");
+                    let load_label = format!("load {load_str}");
 
-                    let line = if total_gb > 0.0 {
-                        format!(
-                            "mem {mem_bar} {:.0}/{:.0} GB \u{00b7} load {load_str}",
-                            used_gb, total_gb
-                        )
+                    // "mem" label in text_muted, gauge + numbers in foreground.
+                    draw_text(raster, painter, metrics, inner_col, r, "mem", app_theme.text_muted, max_col);
+                    let gauge_start = inner_col + 4; // "mem "
+                    let gauge_text = if total_gb > 0.0 {
+                        format!("{mem_bar} {:.0}/{:.0} GB", used_gb, total_gb)
                     } else {
-                        format!("mem {mem_bar} \u{00b7} load {load_str}")
+                        mem_bar
                     };
-                    draw_text(
-                        raster,
-                        painter,
-                        metrics,
-                        inner_col,
-                        r,
-                        &line,
-                        theme.foreground,
-                        max_col,
-                    );
+                    draw_text(raster, painter, metrics, gauge_start, r, &gauge_text, app_theme.foreground, max_col);
+                    // Right-align "load X.XX".
+                    draw_text_right(raster, painter, metrics, max_col, r, &load_label, app_theme.foreground);
                     r += 1;
                 }
             }
         }
-        // Inter-section break — a faint hairline + blank row. Skip after
-        // the last visited section so we don't trail a divider into the
-        // empty bottom of the HUD.
-        r = section_break(raster, metrics, start_col, hud_cols, r, bottom, tones.edge);
     }
 }
 
@@ -1353,7 +1291,7 @@ fn push_section_header_hit(
 /// Section break: draws a faint hairline at `r` (the gap row) and advances
 /// to the next row. Use between adjacent sections to give them stronger
 /// visual separation than a blank row alone.
-#[allow(clippy::too_many_arguments)]
+#[allow(dead_code, clippy::too_many_arguments)]
 fn section_break(
     raster: &mut Raster,
     metrics: FontMetrics,
@@ -1401,11 +1339,11 @@ fn push_row_hit(
     });
 }
 
-/// "REPO", "GIT" etc. drawn in the supplied label color (theme-dependent,
-/// quieter than body text so headers recede on the glass surface). The
-/// label is rendered LETTERSPACED — one blank cell inserted between each
-/// glyph — to give the headers a "small-caps display" cadence against the
-/// dense body text below them.
+/// Draw a plain section header label (no `─` fill) in `text_subtle` color,
+/// then a 1px hairline immediately below the header row.
+///
+/// Returns the row index AFTER the hairline row (i.e. `row + 2`) so callers
+/// can advance their row counter past both the label and the hairline gap.
 #[allow(clippy::too_many_arguments)]
 fn draw_section_header(
     raster: &mut Raster,
@@ -1415,36 +1353,21 @@ fn draw_section_header(
     row: usize,
     label: &str,
     color: [u8; 3],
-    max_col: usize,
+    start_col: usize,
+    hud_cols: usize,
+    hairline_color: [u8; 3],
 ) {
-    // Format: `─ LABEL ────────`. Industrial register-label feel; replaces
-    // the older letterspaced `L A B E L` form which read as banner-like at
-    // HUD widths and visually dominated short-label sections.
-    let mut c = col;
-    if c >= max_col {
-        return;
-    }
-    raster.cell_glyph(painter, metrics, c, row, '─' as u32, color);
-    c += 1;
-    if c >= max_col {
-        return;
-    }
-    c += 1; // gap before label
-    for ch in label.chars() {
+    // Plain label — no leading dash, no trailing fill.
+    let max_col = start_col + hud_cols - 1;
+    for (i, ch) in label.chars().enumerate() {
+        let c = col + i;
         if c >= max_col {
-            return;
+            break;
         }
         raster.cell_glyph(painter, metrics, c, row, ch as u32, color);
-        c += 1;
     }
-    if c >= max_col {
-        return;
-    }
-    c += 1; // gap after label
-    while c < max_col {
-        raster.cell_glyph(painter, metrics, c, row, '─' as u32, color);
-        c += 1;
-    }
+    // 1px hairline on the row below the header.
+    draw_section_rule(raster, metrics, start_col, row + 1, hud_cols, hairline_color);
 }
 
 /// A faint horizontal hairline used as a section separator inside the HUD.
@@ -1568,7 +1491,7 @@ fn draw_agent_header(
         start_col + 3,
         row,
         "agents",
-        ALLOY,
+        theme.alloy,
         max_col,
     );
     // Col+10: summary (3 spaces gap after "agents" which is 6 chars = col+3+6 = col+9, then gap)
@@ -1590,6 +1513,7 @@ fn draw_priority_row(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
     metrics: FontMetrics,
+    theme: &Theme,
     start_col: usize,
     row: usize,
     glyph_str: &str,
@@ -1609,7 +1533,7 @@ fn draw_priority_row(
         glyph_color,
         start_col + 4,
     );
-    // Col+4: label in alloy
+    // Col+4: label in text_muted
     draw_text(
         raster,
         painter,
@@ -1617,7 +1541,7 @@ fn draw_priority_row(
         start_col + 4,
         row,
         label,
-        ALLOY,
+        theme.text_muted,
         max_col,
     );
 }
@@ -1641,10 +1565,12 @@ fn draw_hairline(
 
 /// Compact local-context footer packed with useful state.
 /// Format: `cwd · branch *N ↑A ↓B · run · HH:MM`
+#[allow(clippy::too_many_arguments)]
 fn draw_local_footer(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
     metrics: FontMetrics,
+    theme: &Theme,
     start_col: usize,
     row: usize,
     local: &LocalContext,
@@ -1696,7 +1622,7 @@ fn draw_local_footer(
         start_col + 2,
         row,
         &buf,
-        ALLOY,
+        theme.alloy,
         max_col,
     );
 }
@@ -1854,6 +1780,21 @@ fn total_mem_gb() -> f64 {
 }
 
 // --- Shared draw utilities --------------------------------------------------
+
+/// Draw a UTF-8 string right-aligned so its last glyph ends at `col_right`.
+fn draw_text_right(
+    raster: &mut Raster,
+    painter: &mut dyn GlyphPainter,
+    metrics: FontMetrics,
+    col_right: usize,
+    row: usize,
+    text: &str,
+    color: [u8; 3],
+) {
+    let len = text.chars().count();
+    let start = col_right.saturating_sub(len);
+    draw_text(raster, painter, metrics, start, row, text, color, col_right);
+}
 
 /// Draw a UTF-8 string from cell `col`, one codepoint per cell, stopping at `max_col`.
 #[allow(clippy::too_many_arguments)]
@@ -2017,46 +1958,50 @@ mod tests {
 
     // --- headerBulletColor ---
 
-    /// headerBulletColor: not_installed is alloy
+    /// headerBulletColor: not_installed returns theme.alloy
     #[test]
     fn header_bullet_color_not_installed_is_alloy() {
+        let theme = anvil_theme::MINERAL_DARK;
         let snap = Snapshot {
             connection: Connection::NotInstalled,
             ..Default::default()
         };
-        assert_eq!(header_bullet_color(&snap), ALLOY);
+        assert_eq!(header_bullet_color(&snap, &theme), theme.alloy);
     }
 
-    /// headerBulletColor: live with no activity is verified
+    /// headerBulletColor: live with no activity returns theme.verified
     #[test]
     fn header_bullet_color_live_no_activity_is_verified() {
+        let theme = anvil_theme::MINERAL_DARK;
         let snap = Snapshot {
             connection: Connection::Live,
             ..Default::default()
         };
-        assert_eq!(header_bullet_color(&snap), VERIFIED);
+        assert_eq!(header_bullet_color(&snap, &theme), theme.verified);
     }
 
-    /// headerBulletColor: live with pending approval is attention
+    /// headerBulletColor: live with pending approval returns theme.attention
     #[test]
     fn header_bullet_color_live_pending_approval_is_attention() {
+        let theme = anvil_theme::MINERAL_DARK;
         let snap = Snapshot {
             connection: Connection::Live,
             pending_approvals_count: 1,
             ..Default::default()
         };
-        assert_eq!(header_bullet_color(&snap), ATTENTION);
+        assert_eq!(header_bullet_color(&snap, &theme), theme.attention);
     }
 
-    /// headerBulletColor: live with running count is agent_violet
+    /// headerBulletColor: live with running count returns theme.agent
     #[test]
     fn header_bullet_color_live_running_is_agent_violet() {
+        let theme = anvil_theme::MINERAL_DARK;
         let snap = Snapshot {
             connection: Connection::Live,
             running_count: 2,
             ..Default::default()
         };
-        assert_eq!(header_bullet_color(&snap), AGENT_VIOLET);
+        assert_eq!(header_bullet_color(&snap, &theme), theme.agent);
     }
 
     // --- buildHeaderSummary ---
@@ -2348,54 +2293,6 @@ mod tests {
         };
         // min(3 + 1 + 1, 3) = 3 priority → 7 total
         assert_eq!(card_rows(&snap), 7);
-    }
-
-    // --- glass tones ---------------------------------------------------------
-
-    /// Dark canvas → glass surface is dark, foreground is light.
-    #[test]
-    fn glass_tones_dark_canvas_returns_dark_surface_and_light_ink() {
-        let mut theme = anvil_theme::MINERAL_DARK;
-        theme.background = [0x10, 0x12, 0x18]; // explicit dark
-        let t = glass_tones_for(&theme);
-        let l_surface = 0.2126 * t.surface[0] as f64
-            + 0.7152 * t.surface[1] as f64
-            + 0.0722 * t.surface[2] as f64;
-        let l_fg = 0.2126 * t.foreground[0] as f64
-            + 0.7152 * t.foreground[1] as f64
-            + 0.0722 * t.foreground[2] as f64;
-        assert!(l_surface < 64.0, "expected dark surface, got {l_surface}");
-        assert!(l_fg > 180.0, "expected light foreground, got {l_fg}");
-    }
-
-    /// Light canvas → glass surface is light, foreground is dark.
-    #[test]
-    fn glass_tones_light_canvas_returns_light_surface_and_dark_ink() {
-        let mut theme = anvil_theme::MINERAL_LIGHT;
-        theme.background = [0xee, 0xf1, 0xf2]; // explicit light
-        let t = glass_tones_for(&theme);
-        let l_surface = 0.2126 * t.surface[0] as f64
-            + 0.7152 * t.surface[1] as f64
-            + 0.0722 * t.surface[2] as f64;
-        let l_fg = 0.2126 * t.foreground[0] as f64
-            + 0.7152 * t.foreground[1] as f64
-            + 0.0722 * t.foreground[2] as f64;
-        assert!(l_surface > 200.0, "expected light surface, got {l_surface}");
-        assert!(l_fg < 80.0, "expected dark foreground, got {l_fg}");
-    }
-
-    /// Surface alpha is strictly between 0 and 1 for both palettes — the panel
-    /// is *frosted*, not opaque and not invisible.
-    #[test]
-    fn glass_tones_surface_alpha_is_partially_transparent() {
-        for theme in [anvil_theme::MINERAL_DARK, anvil_theme::MINERAL_LIGHT] {
-            let t = glass_tones_for(&theme);
-            assert!(
-                t.surface_alpha > 0.5 && t.surface_alpha < 1.0,
-                "expected 0.5 < alpha < 1.0, got {}",
-                t.surface_alpha
-            );
-        }
     }
 
     // --- draw_right_hud smoke -----------------------------------------------

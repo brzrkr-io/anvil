@@ -38,6 +38,9 @@ use anvil_render::agent_panel::{
     SectionId, draw_right_hud,
 };
 
+/// How many logical points the window grows (or shrinks) when the HUD toggles.
+const HUD_WIDTH_PT: f64 = 280.0;
+
 /// Minimum and maximum HUD width in terminal columns. The drag handler
 /// clamps the user's value to this range so they can't crush the terminal
 /// or eat the whole window.
@@ -67,7 +70,9 @@ use anvil_control::bridge::{
     encode as bridge_encode,
 };
 
-use objc2_foundation::MainThreadMarker;
+use objc2::rc::Retained;
+use objc2_app_kit::NSWindow;
+use objc2_foundation::{MainThreadMarker, NSSize};
 
 // ── Embedded assets ──────────────────────────────────────────────────────────
 
@@ -1755,9 +1760,9 @@ impl App {
                 return;
             }
             Action::HudToggle => {
+                // Intercepted at AppShell level (needs window access).
+                // Unreachable via normal dispatch; guard against direct calls.
                 self.hud_visible = !self.hud_visible;
-                // Grid width changes when the HUD toggles — reflow the panes
-                // and PTYs to the new inner rect.
                 self.resize_all_tabs();
                 self.dirty = true;
             }
@@ -1897,12 +1902,8 @@ impl App {
             }
             return true;
         });
-        test!(kb.hud_toggle, {
-            self.hud_visible = !self.hud_visible;
-            self.resize_all_tabs();
-            self.dirty = true;
-            return true;
-        });
+        // hud_toggle is intercepted in AppShell::perform_key_equivalent
+        // (needs &mut self.window) — not handled here.
         test!(kb.cheatsheet, {
             self.cheatsheet_visible = !self.cheatsheet_visible;
             self.dirty = true;
@@ -2006,6 +2007,8 @@ impl App {
 pub struct AppShell {
     app: App,
     webview: Webview,
+    /// The NSWindow — held so `toggle_hud` can call `setContentSize`.
+    window: Retained<NSWindow>,
     /// Terminal grid glyph painter (user font size).
     painter: anvil_platform::font::CoreTextPainter<'static>,
     /// Chrome glyph painter (11 pt × scale — tab bar, status bar, etc.).
@@ -2073,7 +2076,7 @@ impl AppShell {
         self.app.dirty = true;
     }
 
-    fn new(app: App, webview: Webview) -> Self {
+    fn new(app: App, webview: Webview, window: Retained<NSWindow>) -> Self {
         // SAFETY: `app.font` and `app.chrome_font` are `Box<Font>` — the heap
         // allocations are stable.  The painters borrow the Fonts inside the
         // boxes; the boxes live inside `app` which lives inside `AppShell`.
@@ -2090,9 +2093,25 @@ impl AppShell {
         Self {
             app,
             webview,
+            window,
             painter,
             chrome_painter,
         }
+    }
+
+    /// Toggle the HUD: flip `hud_visible` and grow or shrink the window by
+    /// `HUD_WIDTH_PT`. AppKit fires `AppShell::resize` after `setContentSize`,
+    /// which calls `resize_all_tabs` — so we do NOT call it here.
+    fn toggle_hud(&mut self) {
+        self.app.hud_visible = !self.app.hud_visible;
+        let new_w = if self.app.hud_visible {
+            self.app.view_width_pt + HUD_WIDTH_PT
+        } else {
+            (self.app.view_width_pt - HUD_WIDTH_PT).max(400.0)
+        };
+        self.window
+            .setContentSize(NSSize::new(new_w, self.app.view_height_pt));
+        self.app.dirty = true;
     }
 }
 
@@ -2305,11 +2324,9 @@ impl AppHandler for AppShell {
             return;
         }
 
-        // HUD: Esc closes it (Cmd+J still toggles).
+        // HUD: Esc closes it — use toggle_hud so the window shrinks.
         if self.app.hud_visible && event.key == KeyInput::Escape && !event.mods.command {
-            self.app.hud_visible = false;
-            self.app.resize_all_tabs();
-            self.app.dirty = true;
+            self.toggle_hud();
             return;
         }
 
@@ -2423,6 +2440,18 @@ impl AppHandler for AppShell {
                         && !event.mods.option =>
                 {
                     self.handle_zoom_chord(ch);
+                    return true;
+                }
+                // HUD toggle: intercept here so we can call toggle_hud()
+                // (which needs &mut self to access self.window).
+                KeyInput::Char(ch)
+                    if self
+                        .app
+                        .keybindings
+                        .hud_toggle
+                        .is_some_and(|c| App::chord_matches(c, event.mods, ch)) =>
+                {
+                    self.toggle_hud();
                     return true;
                 }
                 KeyInput::Char(ch) if self.app.handle_cmd_chord(event.mods, ch, &self.webview) => {
@@ -2892,7 +2921,13 @@ impl AppHandler for AppShell {
             }
             Ok(Inbound::Invoke(id)) => {
                 if let Some(action) = action_for_id(&id) {
-                    self.app.handle_palette_action(action, &self.webview);
+                    // HudToggle needs window access — handle at AppShell level.
+                    if action == Action::HudToggle {
+                        self.app.dismiss_palette(&self.webview);
+                        self.toggle_hud();
+                    } else {
+                        self.app.handle_palette_action(action, &self.webview);
+                    }
                 } else {
                     eprintln!("anvil: unknown command id: {id}");
                 }
@@ -3499,7 +3534,7 @@ fn main() -> Result<()> {
     }
 
     // Build the AppShell and stash it in the shared slot.
-    let mut shell = AppShell::new(real_app, webview);
+    let mut shell = AppShell::new(real_app, webview, appkit.window.clone());
     shell.app.snap_anim();
     shell.app.render_frame(&mut shell.painter, &mut shell.chrome_painter);
     shell.app.dirty = false;
