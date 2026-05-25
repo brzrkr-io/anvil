@@ -12,8 +12,8 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 
 use anvil_render::{
-    CursorConfig, CursorParams, CursorStyle, FoldedBlocks, FontMetrics, GlyphPainter, PixelRect,
-    Raster, draw_viewport,
+    CursorConfig, CursorParams, CursorStyle, FoldedBlocks, FontMetrics, GlyphPainter, GridPainters,
+    PixelRect, Raster, draw_viewport,
 };
 use anvil_term::{DirtySet, Terminal};
 use anvil_theme::MINERAL_DARK;
@@ -84,15 +84,24 @@ fn bench_draw_viewport(c: &mut Criterion) {
     group.bench_function(BenchmarkId::new("scenario", "full_redraw"), |b| {
         let mut terminal = make_terminal();
         let (mut raster, metrics) = make_raster_and_metrics();
-        let mut painter = NullPainter;
+        let mut p0 = NullPainter;
+        let mut p1 = NullPainter;
+        let mut p2 = NullPainter;
+        let mut p3 = NullPainter;
         let theme = MINERAL_DARK;
         let selection = Selection::default();
 
         b.iter(|| {
             let dirty = DirtySet::all(ROWS);
+            let mut grid_painters = GridPainters {
+                regular: &mut p0,
+                bold: &mut p1,
+                italic: &mut p2,
+                bold_italic: &mut p3,
+            };
             draw_viewport(
                 &mut raster,
-                &mut painter,
+                &mut grid_painters,
                 &mut terminal,
                 metrics,
                 &theme,
@@ -120,16 +129,25 @@ fn bench_draw_viewport(c: &mut Criterion) {
     group.bench_function(BenchmarkId::new("scenario", "damaged_row_12"), |b| {
         let mut terminal = make_terminal();
         let (mut raster, metrics) = make_raster_and_metrics();
-        let mut painter = NullPainter;
+        let mut p0 = NullPainter;
+        let mut p1 = NullPainter;
+        let mut p2 = NullPainter;
+        let mut p3 = NullPainter;
         let theme = MINERAL_DARK;
         let selection = Selection::default();
 
         b.iter(|| {
             let mut dirty = DirtySet::none(ROWS);
             dirty.mark(12);
+            let mut grid_painters = GridPainters {
+                regular: &mut p0,
+                bold: &mut p1,
+                italic: &mut p2,
+                bold_italic: &mut p3,
+            };
             draw_viewport(
                 &mut raster,
-                &mut painter,
+                &mut grid_painters,
                 &mut terminal,
                 metrics,
                 &theme,

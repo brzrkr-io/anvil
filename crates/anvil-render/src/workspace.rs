@@ -18,8 +18,8 @@ use anvil_workspace::{
 };
 
 use crate::{
-    draw::{CursorConfig, CursorParams, FoldedBlocks, draw_viewport},
-    raster::{FontMetrics, GlyphPainter, Raster},
+    draw::{CursorConfig, CursorParams, FoldedBlocks, GridPainters, draw_viewport},
+    raster::{FontMetrics, Raster},
 };
 
 /// Pane-divider width in device pixels. 2 device px (= 1 logical pt at 2×
@@ -50,7 +50,7 @@ pub const DIVIDER_PX: f64 = 2.0;
 #[allow(clippy::too_many_arguments)]
 pub fn draw_workspace(
     raster: &mut Raster,
-    painter: &mut dyn GlyphPainter,
+    painters: &mut GridPainters<'_>,
     tree: &PaneTree,
     registry: &mut PaneRegistry,
     inner: Rect,
@@ -99,7 +99,7 @@ pub fn draw_workspace(
 
         draw_viewport(
             raster,
-            painter,
+            painters,
             &mut pane.terminal,
             metrics,
             theme,
@@ -224,7 +224,7 @@ fn draw_dividers(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::raster::{PixelRect, pixel_at};
+    use crate::raster::{FontMetrics, GlyphPainter, PixelRect, pixel_at};
     use anvil_workspace::{layout::SplitDir, pane::PaneRegistry};
 
     // Stub painter.
@@ -292,6 +292,9 @@ mod tests {
         // Full draw_workspace call must not panic and must reset origin.
         let mut r = Raster::new(w, h);
         let mut painter = StubPainter::default();
+        let mut bold_p = StubPainter::default();
+        let mut italic_p = StubPainter::default();
+        let mut bold_italic_p = StubPainter::default();
         let (mut reg, first_id) = make_registry_single(20, 6);
         let theme = anvil_theme::MINERAL_DARK;
         let cursor_cfg = CursorConfig::default();
@@ -303,7 +306,12 @@ mod tests {
         let tree = PaneTree::init_single(first_id);
         draw_workspace(
             &mut r,
-            &mut painter,
+            &mut GridPainters {
+                regular: &mut painter,
+                bold: &mut bold_p,
+                italic: &mut italic_p,
+                bold_italic: &mut bold_italic_p,
+            },
             &tree,
             &mut reg,
             inner,
@@ -358,12 +366,20 @@ mod tests {
 
         let mut r = Raster::new(w, h);
         let mut painter = StubPainter::default();
+        let mut bold_p = StubPainter::default();
+        let mut italic_p = StubPainter::default();
+        let mut bold_italic_p = StubPainter::default();
         let theme = anvil_theme::MINERAL_DARK;
         r.clear(theme.background);
 
         draw_workspace(
             &mut r,
-            &mut painter,
+            &mut GridPainters {
+                regular: &mut painter,
+                bold: &mut bold_p,
+                italic: &mut italic_p,
+                bold_italic: &mut bold_italic_p,
+            },
             &tree,
             &mut reg,
             inner,
@@ -417,10 +433,18 @@ mod tests {
 
         let mut r = Raster::new(w, h);
         let mut painter = StubPainter::default();
+        let mut bold_p = StubPainter::default();
+        let mut italic_p = StubPainter::default();
+        let mut bold_italic_p = StubPainter::default();
         r.clear(theme.background);
         draw_workspace(
             &mut r,
-            &mut painter,
+            &mut GridPainters {
+                regular: &mut painter,
+                bold: &mut bold_p,
+                italic: &mut italic_p,
+                bold_italic: &mut bold_italic_p,
+            },
             &tree,
             &mut reg,
             inner,
@@ -470,6 +494,9 @@ mod tests {
         let m = metrics();
         let mut r = Raster::new(400, 300);
         let mut painter = StubPainter::default();
+        let mut bold_p = StubPainter::default();
+        let mut italic_p = StubPainter::default();
+        let mut bold_italic_p = StubPainter::default();
         let (mut reg, id) = make_registry_single(20, 6);
         if let Some(pane) = reg.get_mut(id) {
             pane.terminal.feed(b"hello world\r\n");
@@ -485,7 +512,12 @@ mod tests {
         r.clear(theme.background);
         draw_workspace(
             &mut r,
-            &mut painter,
+            &mut GridPainters {
+                regular: &mut painter,
+                bold: &mut bold_p,
+                italic: &mut italic_p,
+                bold_italic: &mut bold_italic_p,
+            },
             &tree,
             &mut reg,
             inner,

@@ -20,7 +20,7 @@ pub mod workspace;
 pub use atlas::{GlyphRasterizer, GlyphSlot, ShelfPacker};
 pub use batch::{CellBatch, CellInstance};
 pub use draw::{
-    CursorConfig, CursorParams, CursorStyle, FoldedBlocks, cursor_opacity, draw_cell, draw_cursor,
-    draw_viewport, draw_viewport_gpu, resolve_color, rule_row,
+    CursorConfig, CursorParams, CursorStyle, FoldedBlocks, GridPainters, cursor_opacity,
+    draw_cell, draw_cursor, draw_viewport, draw_viewport_gpu, resolve_color, rule_row,
 };
 pub use raster::{FontMetrics, GlyphPainter, PixelRect, Raster};

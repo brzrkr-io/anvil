@@ -460,6 +460,9 @@ trait ViewportSink {
     fn clear_row_bg(&mut self, ry: usize, m: FontMetrics, bg: [u8; 3]);
     /// Paint a selection wash over a full row (CPU only; GPU no-op).
     fn fill_selection_row(&mut self, ry: usize, cols: usize, m: FontMetrics, rgb: [u8; 3], alpha: f64);
+    /// Paint the 2–3px left-gutter accent stripe for a block row at alpha 0.65
+    /// (CPU only; GPU no-op — stripe lives in the pad_x band outside the cell grid).
+    fn draw_block_accent_stripe(&mut self, ry: usize, m: FontMetrics, rgb: [u8; 3]);
     /// Draw one terminal cell.
     #[allow(clippy::too_many_arguments)]
     fn draw_cell(
@@ -513,16 +516,52 @@ trait ViewportSink {
     );
 }
 
+// ── GridPainters ──────────────────────────────────────────────────────────────
+
+/// The four CoreText painters for the terminal grid: Regular, Bold, Italic, and
+/// BoldItalic.  Passed into `draw_viewport` so `CpuSink` can select the correct
+/// face per cell based on SGR bold/italic attribute bits.
+pub struct GridPainters<'a> {
+    pub regular: &'a mut dyn GlyphPainter,
+    pub bold: &'a mut dyn GlyphPainter,
+    pub italic: &'a mut dyn GlyphPainter,
+    pub bold_italic: &'a mut dyn GlyphPainter,
+}
+
 // ── CpuSink ───────────────────────────────────────────────────────────────────
 
 struct CpuSink<'a> {
     raster: &'a mut Raster,
-    painter: &'a mut dyn GlyphPainter,
+    regular: &'a mut dyn GlyphPainter,
+    bold: &'a mut dyn GlyphPainter,
+    italic: &'a mut dyn GlyphPainter,
+    bold_italic: &'a mut dyn GlyphPainter,
 }
 
 impl<'a> CpuSink<'a> {
-    fn new(raster: &'a mut Raster, painter: &'a mut dyn GlyphPainter) -> Self {
-        Self { raster, painter }
+    /// Construct a `CpuSink` from a raster and a set of grid painters.
+    ///
+    /// The painters are re-borrowed via raw pointers so that `raster` and the
+    /// four painter refs can coexist in the same struct with a single lifetime
+    /// `'a`.  This is sound because:
+    /// - Each painter ref points to a distinct object (enforced by the caller's
+    ///   `GridPainters` struct, which requires 4 separate `&mut dyn` refs).
+    /// - `raster` is a separate, distinct object from all painters.
+    /// - No two mutable pointers alias; only one is accessed at a time per call.
+    fn new(raster: &'a mut Raster, painters: &'a mut GridPainters<'_>) -> Self {
+        // SAFETY: each raw pointer is derived from a valid, non-aliasing
+        // `&'a mut dyn GlyphPainter` that outlives `CpuSink<'a>`.
+        let reg = painters.regular as *mut dyn GlyphPainter;
+        let bld = painters.bold as *mut dyn GlyphPainter;
+        let itl = painters.italic as *mut dyn GlyphPainter;
+        let bi = painters.bold_italic as *mut dyn GlyphPainter;
+        Self {
+            raster,
+            regular: unsafe { &mut *reg },
+            bold: unsafe { &mut *bld },
+            italic: unsafe { &mut *itl },
+            bold_italic: unsafe { &mut *bi },
+        }
     }
 }
 
@@ -539,6 +578,13 @@ impl ViewportSink for CpuSink<'_> {
         self.raster.fill_pixel_rect_alpha(px, py, cols as f64 * m.cell_w, m.cell_h, rgb, alpha);
     }
 
+    fn draw_block_accent_stripe(&mut self, ry: usize, m: FontMetrics, rgb: [u8; 3]) {
+        let bar_w = 3.0_f64.max(m.cell_w * 0.22);
+        let px = (self.raster.origin_x - bar_w - 2.0).max(0.0);
+        let py = self.raster.origin_y + ry as f64 * m.cell_h - self.raster.y_shift_px;
+        self.raster.fill_pixel_rect_alpha(px, py, bar_w, m.cell_h, rgb, 0.65);
+    }
+
     fn draw_cell(
         &mut self,
         x: usize,
@@ -550,9 +596,19 @@ impl ViewportSink for CpuSink<'_> {
         sel: Selection,
         search: Option<&Search>,
     ) {
+        use anvil_term::Attrs;
+        let painter: &mut dyn GlyphPainter = match (
+            cell.attrs.contains(Attrs::BOLD),
+            cell.attrs.contains(Attrs::ITALIC),
+        ) {
+            (false, false) => self.regular,
+            (true, false) => self.bold,
+            (false, true) => self.italic,
+            (true, true) => self.bold_italic,
+        };
         draw_cell(
             self.raster,
-            self.painter,
+            painter,
             m,
             theme,
             x,
@@ -573,7 +629,7 @@ impl ViewportSink for CpuSink<'_> {
         theme: &Theme,
     ) {
         let summary = format!(" \u{2304} {hidden} hidden");
-        draw_text_row(self.raster, self.painter, m, 0, ry, &summary, theme.alloy, cols);
+        draw_text_row(self.raster, self.regular, m, 0, ry, &summary, theme.alloy, cols);
     }
 
     fn draw_block_header(
@@ -585,7 +641,7 @@ impl ViewportSink for CpuSink<'_> {
         m: FontMetrics,
         theme: &Theme,
     ) {
-        draw_block_header_cpu(self.raster, self.painter, m, theme, block, cmd_text, ry, cols);
+        draw_block_header_cpu(self.raster, self.regular, m, theme, block, cmd_text, ry, cols);
 
         // Block-header pulse: 200ms ember flash on command completion.
         if let Some(t) = block.completed_at {
@@ -655,8 +711,18 @@ impl ViewportSink for CpuSink<'_> {
                         if cell.cp != ' ' && cell.cp != '\0' {
                             let base_fg = resolve_color(cell.fg, theme.foreground, theme);
                             let glyph_fg = mix(base_fg, theme.background, opacity);
+                            use anvil_term::Attrs;
+                            let painter: &mut dyn GlyphPainter = match (
+                                cell.attrs.contains(Attrs::BOLD),
+                                cell.attrs.contains(Attrs::ITALIC),
+                            ) {
+                                (false, false) => self.regular,
+                                (true, false) => self.bold,
+                                (false, true) => self.italic,
+                                (true, true) => self.bold_italic,
+                            };
                             self.raster
-                                .cell_glyph(self.painter, m, ic, ir, cell.cp as u32, glyph_fg);
+                                .cell_glyph(painter, m, ic, ir, cell.cp as u32, glyph_fg);
                         }
                     }
                 }
@@ -718,6 +784,10 @@ impl ViewportSink for GpuSink<'_> {
 
     fn fill_selection_row(&mut self, _ry: usize, _cols: usize, _m: FontMetrics, _rgb: [u8; 3], _alpha: f64) {
         // GPU path: selection wash is not composited in the CPU pixel buffer.
+    }
+
+    fn draw_block_accent_stripe(&mut self, _ry: usize, _m: FontMetrics, _rgb: [u8; 3]) {
+        // GPU path: accent stripe is a pixel-buffer operation; no-op here.
     }
 
     fn draw_cell(
@@ -974,6 +1044,12 @@ fn draw_viewport_into(
             }
         }
 
+        // Block accent stripe: semi-transparent left-gutter bar showing block state.
+        if let Some(ref block) = block_opt {
+            let rgb = block_accent_color(block, theme);
+            sink.draw_block_accent_stripe(y, metrics, rgb);
+        }
+
         // Fold summary.
         if let Some(ref block) = block_opt {
             if folded.contains(block.command_line) && abs == block.command_line {
@@ -1025,13 +1101,16 @@ fn draw_viewport_into(
 /// `dirty` restricts drawing to only the rows that have changed.  In the
 /// smooth-scroll path all rows are always redrawn (content shifts).
 ///
+/// `painters` supplies one `GlyphPainter` per SGR face (Regular, Bold, Italic,
+/// BoldItalic).  The correct painter is selected per cell based on its attrs.
+///
 /// # Zero-allocation guarantee
 /// The draw loop writes into the pre-allocated `Raster` pixel buffer.  No
 /// `Vec` growth or heap allocation occurs per frame by construction.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_viewport(
     raster: &mut Raster,
-    painter: &mut dyn GlyphPainter,
+    painters: &mut GridPainters<'_>,
     terminal: &mut Terminal,
     metrics: FontMetrics,
     theme: &Theme,
@@ -1046,7 +1125,7 @@ pub fn draw_viewport(
 ) {
     let rows = terminal.rows();
     let cols = terminal.cols();
-    let mut sink = CpuSink::new(raster, painter);
+    let mut sink = CpuSink::new(raster, painters);
 
     if scroll_pos == 0.0 {
         draw_viewport_into(
@@ -1310,6 +1389,9 @@ mod tests {
         let m = metrics();
         let mut r = Raster::new(200, 120);
         let mut painter = StubPainter::default();
+        let mut bold_p = StubPainter::default();
+        let mut italic_p = StubPainter::default();
+        let mut bold_italic_p = StubPainter::default();
         let mut t = make_terminal(10, 4);
         t.feed(b"\x1b]133;A\x07");
         t.feed(b"hello\r\n");
@@ -1320,7 +1402,12 @@ mod tests {
         r.clear(theme.background);
         draw_viewport(
             &mut r,
-            &mut painter,
+            &mut GridPainters {
+                regular: &mut painter,
+                bold: &mut bold_p,
+                italic: &mut italic_p,
+                bold_italic: &mut bold_italic_p,
+            },
             &mut t,
             m,
             &theme,
@@ -1342,6 +1429,9 @@ mod tests {
         let m = metrics();
         let mut r = Raster::new(200, 120);
         let mut painter = StubPainter::default();
+        let mut bold_p = StubPainter::default();
+        let mut italic_p = StubPainter::default();
+        let mut bold_italic_p = StubPainter::default();
         let mut t = make_terminal(10, 4);
         // Push lines into scrollback.
         for _ in 0..10 {
@@ -1353,7 +1443,12 @@ mod tests {
         r.clear(theme.background);
         draw_viewport(
             &mut r,
-            &mut painter,
+            &mut GridPainters {
+                regular: &mut painter,
+                bold: &mut bold_p,
+                italic: &mut italic_p,
+                bold_italic: &mut bold_italic_p,
+            },
             &mut t,
             m,
             &theme,
@@ -1559,6 +1654,9 @@ mod tests {
         let m = metrics();
         let mut r = Raster::new(200, 120);
         let mut painter = StubPainter::default();
+        let mut bold_p = StubPainter::default();
+        let mut italic_p = StubPainter::default();
+        let mut bold_italic_p = StubPainter::default();
         let mut t = make_terminal(10, 4);
         t.feed(b"hello");
         let theme = MINERAL_DARK;
@@ -1575,7 +1673,12 @@ mod tests {
         };
         draw_viewport(
             &mut r,
-            &mut painter,
+            &mut GridPainters {
+                regular: &mut painter,
+                bold: &mut bold_p,
+                italic: &mut italic_p,
+                bold_italic: &mut bold_italic_p,
+            },
             &mut t,
             m,
             &theme,
@@ -1595,6 +1698,9 @@ mod tests {
         let m = metrics();
         let mut r = Raster::new(200, 120);
         let mut painter = StubPainter::default();
+        let mut bold_p = StubPainter::default();
+        let mut italic_p = StubPainter::default();
+        let mut bold_italic_p = StubPainter::default();
         let mut t = make_terminal(10, 4);
         t.feed(b"hello");
         let theme = MINERAL_DARK;
@@ -1611,7 +1717,12 @@ mod tests {
         };
         draw_viewport(
             &mut r,
-            &mut painter,
+            &mut GridPainters {
+                regular: &mut painter,
+                bold: &mut bold_p,
+                italic: &mut italic_p,
+                bold_italic: &mut bold_italic_p,
+            },
             &mut t,
             m,
             &theme,
@@ -1631,6 +1742,9 @@ mod tests {
         let m = metrics();
         let mut r = Raster::new(200, 120);
         let mut painter = StubPainter::default();
+        let mut bold_p = StubPainter::default();
+        let mut italic_p = StubPainter::default();
+        let mut bold_italic_p = StubPainter::default();
         let mut t = make_terminal(10, 4);
         t.feed(b"hello");
         let theme = MINERAL_DARK;
@@ -1647,7 +1761,12 @@ mod tests {
         };
         draw_viewport(
             &mut r,
-            &mut painter,
+            &mut GridPainters {
+                regular: &mut painter,
+                bold: &mut bold_p,
+                italic: &mut italic_p,
+                bold_italic: &mut bold_italic_p,
+            },
             &mut t,
             m,
             &theme,
@@ -1669,6 +1788,9 @@ mod tests {
         let m = metrics();
         let mut r = Raster::new(200, 120);
         let mut painter = StubPainter::default();
+        let mut bold_p = StubPainter::default();
+        let mut italic_p = StubPainter::default();
+        let mut bold_italic_p = StubPainter::default();
         let mut t = make_terminal(10, 4);
         t.feed(b"hello world");
         let theme = MINERAL_DARK;
@@ -1679,7 +1801,12 @@ mod tests {
 
         draw_viewport(
             &mut r,
-            &mut painter,
+            &mut GridPainters {
+                regular: &mut painter,
+                bold: &mut bold_p,
+                italic: &mut italic_p,
+                bold_italic: &mut bold_italic_p,
+            },
             &mut t,
             m,
             &theme,
@@ -1701,6 +1828,9 @@ mod tests {
         let m = metrics();
         let mut r = Raster::new(200, 120);
         let mut painter = StubPainter::default();
+        let mut bold_p = StubPainter::default();
+        let mut italic_p = StubPainter::default();
+        let mut bold_italic_p = StubPainter::default();
         let mut t = make_terminal(10, 4);
         t.feed(b"X");
         let theme = MINERAL_DARK;
@@ -1718,7 +1848,12 @@ mod tests {
         };
         draw_viewport(
             &mut r,
-            &mut painter,
+            &mut GridPainters {
+                regular: &mut painter,
+                bold: &mut bold_p,
+                italic: &mut italic_p,
+                bold_italic: &mut bold_italic_p,
+            },
             &mut t,
             m,
             &theme,
@@ -1775,10 +1910,18 @@ mod tests {
         let calls_unfolded = {
             let mut r = Raster::new(400, 200);
             let mut painter = StubPainter::default();
+            let mut bp = StubPainter::default();
+            let mut ip = StubPainter::default();
+            let mut bip = StubPainter::default();
             r.clear(theme.background);
             draw_viewport(
                 &mut r,
-                &mut painter,
+                &mut GridPainters {
+                    regular: &mut painter,
+                    bold: &mut bp,
+                    italic: &mut ip,
+                    bold_italic: &mut bip,
+                },
                 &mut t,
                 m,
                 &theme,
@@ -1791,7 +1934,7 @@ mod tests {
                 FoldedBlocks::empty(),
                 None,
             );
-            painter.calls.len()
+            painter.calls.len() + bp.calls.len() + ip.calls.len() + bip.calls.len()
         };
 
         // Determine the command_line abs value (it's 0 since no prior scrollback).
@@ -1803,11 +1946,19 @@ mod tests {
         let calls_folded = {
             let mut r = Raster::new(400, 200);
             let mut painter = StubPainter::default();
+            let mut bp = StubPainter::default();
+            let mut ip = StubPainter::default();
+            let mut bip = StubPainter::default();
             r.clear(theme.background);
             let folded_arr = [cmd_line];
             draw_viewport(
                 &mut r,
-                &mut painter,
+                &mut GridPainters {
+                    regular: &mut painter,
+                    bold: &mut bp,
+                    italic: &mut ip,
+                    bold_italic: &mut bip,
+                },
                 &mut t,
                 m,
                 &theme,
@@ -1820,7 +1971,7 @@ mod tests {
                 FoldedBlocks::new(&folded_arr),
                 None,
             );
-            painter.calls.len()
+            painter.calls.len() + bp.calls.len() + ip.calls.len() + bip.calls.len()
         };
 
         assert!(
@@ -2015,10 +2166,18 @@ mod tests {
         dirty.mark(0);
 
         let mut painter = StubPainter::default();
+        let mut bold_p = StubPainter::default();
+        let mut italic_p = StubPainter::default();
+        let mut bold_italic_p = StubPainter::default();
         let sel = Selection::default();
         draw_viewport(
             &mut r,
-            &mut painter,
+            &mut GridPainters {
+                regular: &mut painter,
+                bold: &mut bold_p,
+                italic: &mut italic_p,
+                bold_italic: &mut bold_italic_p,
+            },
             &mut t,
             m,
             &theme,
@@ -2046,6 +2205,9 @@ mod tests {
         // Concrete check: the partial-dirty pass must emit fewer glyph calls than
         // a full redraw of all three rows, because rows 1 and 2 are both skipped.
         let mut painter_full = StubPainter::default();
+        let mut bold_full = StubPainter::default();
+        let mut italic_full = StubPainter::default();
+        let mut bold_italic_full = StubPainter::default();
         r.clear(theme.background);
         let mut t2 = make_terminal(10, 4);
         t2.feed(b"hello\r\n");
@@ -2053,7 +2215,12 @@ mod tests {
         t2.feed(b"xxxxx");
         draw_viewport(
             &mut r,
-            &mut painter_full,
+            &mut GridPainters {
+                regular: &mut painter_full,
+                bold: &mut bold_full,
+                italic: &mut italic_full,
+                bold_italic: &mut bold_italic_full,
+            },
             &mut t2,
             m,
             &theme,
@@ -2067,11 +2234,11 @@ mod tests {
             None, // full redraw
         );
 
+        let partial_calls = painter.calls.len() + bold_p.calls.len() + italic_p.calls.len() + bold_italic_p.calls.len();
+        let full_calls = painter_full.calls.len() + bold_full.calls.len() + italic_full.calls.len() + bold_italic_full.calls.len();
         assert!(
-            painter.calls.len() < painter_full.calls.len(),
-            "partial draw ({} calls) should be less than full draw ({} calls)",
-            painter.calls.len(),
-            painter_full.calls.len()
+            partial_calls < full_calls,
+            "partial draw ({partial_calls} calls) should be less than full draw ({full_calls} calls)",
         );
     }
 
@@ -2106,6 +2273,121 @@ mod tests {
         // No panic; scroll path exercised. Instance count may be 0 (cells
         // happen to be spaces) but must not exceed rows+1 * cols.
         assert!(batch.instance_count() <= (t.rows() + 1) * t.cols());
+    }
+
+    // ── SGR bold/italic face selection ────────────────────────────────────────
+
+    /// A bold cell must route to the bold painter, not the regular painter.
+    #[test]
+    fn draw_cell_bold_attr_routes_to_bold_painter() {
+        use anvil_term::{Attrs, Cell, Color};
+        let m = metrics();
+        let mut r = Raster::new(200, 120);
+        let mut regular_p = StubPainter::default();
+        let mut bold_p = StubPainter::default();
+        let mut italic_p = StubPainter::default();
+        let mut bold_italic_p = StubPainter::default();
+        let theme = MINERAL_DARK;
+        r.clear(theme.background);
+
+        let cell = Cell {
+            cp: 'B',
+            fg: Color::Default,
+            bg: Color::Default,
+            attrs: Attrs::BOLD,
+        };
+        draw_cell(
+            &mut r,
+            &mut bold_p,
+            m,
+            &theme,
+            0,
+            0,
+            0,
+            cell,
+            Selection::default(),
+            None,
+        );
+        assert!(!bold_p.calls.is_empty(), "bold painter must receive a call for BOLD cell");
+        assert!(regular_p.calls.is_empty(), "regular painter must not receive BOLD cell calls");
+        assert!(italic_p.calls.is_empty());
+        assert!(bold_italic_p.calls.is_empty());
+    }
+
+    /// An italic cell must route to the italic painter.
+    #[test]
+    fn draw_cell_italic_attr_routes_to_italic_painter() {
+        use anvil_term::{Attrs, Cell, Color};
+        let m = metrics();
+        let mut r = Raster::new(200, 120);
+        let mut regular_p = StubPainter::default();
+        let mut bold_p = StubPainter::default();
+        let mut italic_p = StubPainter::default();
+        let mut bold_italic_p = StubPainter::default();
+        let theme = MINERAL_DARK;
+        r.clear(theme.background);
+
+        let cell = Cell {
+            cp: 'I',
+            fg: Color::Default,
+            bg: Color::Default,
+            attrs: Attrs::ITALIC,
+        };
+        draw_cell(
+            &mut r,
+            &mut italic_p,
+            m,
+            &theme,
+            0,
+            0,
+            0,
+            cell,
+            Selection::default(),
+            None,
+        );
+        assert!(!italic_p.calls.is_empty(), "italic painter must receive a call for ITALIC cell");
+        assert!(regular_p.calls.is_empty());
+        assert!(bold_p.calls.is_empty());
+        assert!(bold_italic_p.calls.is_empty());
+    }
+
+    /// draw_viewport routes bold SGR cells to the bold painter, not regular.
+    #[test]
+    fn draw_viewport_bold_cell_routes_to_bold_painter() {
+        let m = metrics();
+        let mut r = Raster::new(200, 120);
+        let mut regular_p = StubPainter::default();
+        let mut bold_p = StubPainter::default();
+        let mut italic_p = StubPainter::default();
+        let mut bold_italic_p = StubPainter::default();
+        let mut t = make_terminal(10, 4);
+        // Feed an ESC[1m (bold) sequence followed by a visible character.
+        t.feed(b"\x1b[1mX\x1b[m");
+        let theme = MINERAL_DARK;
+        r.clear(theme.background);
+
+        draw_viewport(
+            &mut r,
+            &mut GridPainters {
+                regular: &mut regular_p,
+                bold: &mut bold_p,
+                italic: &mut italic_p,
+                bold_italic: &mut bold_italic_p,
+            },
+            &mut t,
+            m,
+            &theme,
+            0.0,
+            Selection::default(),
+            None,
+            None,
+            0.0,
+            200.0,
+            FoldedBlocks::empty(),
+            None,
+        );
+        // The bold 'X' must have routed to bold_p.
+        assert!(!bold_p.calls.is_empty(), "bold painter must receive bold cell");
     }
 
 }

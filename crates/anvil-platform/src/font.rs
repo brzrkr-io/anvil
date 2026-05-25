@@ -429,6 +429,35 @@ impl FontBundle {
             chrome,
         })
     }
+
+    /// Return the grid `Font` for the given bold/italic combination.
+    ///
+    /// Index mapping: `[Regular=0, Bold=1, Italic=2, BoldItalic=3]`.
+    pub fn face(&self, bold: bool, italic: bool) -> &Font {
+        let idx = match (bold, italic) {
+            (false, false) => 0,
+            (true, false) => 1,
+            (false, true) => 2,
+            (true, true) => 3,
+        };
+        &self.grid[idx]
+    }
+
+    /// Pre-rasterize printable ASCII (U+0020–U+007E) for all four grid faces
+    /// and return the warmed painters.
+    ///
+    /// 4 faces × 95 glyphs = 380 cache entries — well within the 2048-entry
+    /// LRU cap.  The chrome face is intentionally excluded (few distinct glyphs).
+    ///
+    /// Returns `[Regular, Bold, Italic, BoldItalic]` painters with their
+    /// caches pre-filled so the first rendered frame skips CoreText for ASCII.
+    pub fn warm_ascii_atlas(&self) -> [CoreTextPainter<'_>; 4] {
+        std::array::from_fn(|i| {
+            let mut painter = CoreTextPainter::new(&self.grid[i]);
+            painter.warm_ascii();
+            painter
+        })
+    }
 }
 
 /// Chrome font size in logical points (rendered at CHROME_PT × scale device px).
@@ -520,6 +549,42 @@ impl<'a> CoreTextPainter<'a> {
             font,
             rasterizer: None,
             cache: GlyphCache::new(GLYPH_CACHE_CAP),
+        }
+    }
+
+    /// Pre-rasterize printable ASCII (U+0020–U+007E) into the glyph cache.
+    ///
+    /// Uses the font's own cell metrics to build the rasterizer, then inserts
+    /// each glyph mask without compositing into a pixel buffer.  Should be
+    /// called once after construction so that the first rendered frame hits
+    /// only cache lookups for common ASCII glyphs.
+    ///
+    /// Silent in release builds (no output).
+    pub fn warm_ascii(&mut self) {
+        let metrics = self.font.metrics;
+        let cell_w = metrics.cell_w.round() as usize;
+        let cell_h = metrics.cell_h.round() as usize;
+        if cell_w == 0 || cell_h == 0 {
+            return;
+        }
+        // Build the rasterizer once for this cell size.
+        self.rasterizer = Rasterizer::new(cell_w, cell_h, metrics.descent);
+        if self.rasterizer.is_none() {
+            return;
+        }
+        for cp in 0x20u32..=0x7E {
+            let glyph = self.font.glyph(cp);
+            if glyph == 0 {
+                continue;
+            }
+            if self.cache.get(glyph).is_none() {
+                let mask = self
+                    .rasterizer
+                    .as_mut()
+                    .unwrap()
+                    .rasterize(&self.font.ct, glyph);
+                self.cache.insert(glyph, mask);
+            }
         }
     }
 }

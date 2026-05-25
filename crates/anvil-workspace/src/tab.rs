@@ -272,6 +272,30 @@ impl TabManager {
             tab.clear_unread();
         }
     }
+
+    /// Move the tab at `from` to position `to`, preserving the active tab by
+    /// identity.  If `from == to` or either index is out of bounds, this is a
+    /// no-op.
+    pub fn move_tab(&mut self, from: usize, to: usize) {
+        let n = self.tabs.len();
+        if from == to || from >= n || to >= n {
+            return;
+        }
+        // Remember which index is currently active before we shuffle.
+        let active_idx = self.active;
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, tab);
+        // Fix up active: the moved element lands at `to`; other elements shift.
+        self.active = if active_idx == from {
+            to
+        } else if from < active_idx && to >= active_idx {
+            active_idx - 1
+        } else if from > active_idx && to <= active_idx {
+            active_idx + 1
+        } else {
+            active_idx
+        };
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -570,6 +594,74 @@ mod tests {
         mgr.tabs[0].anim_phase = 1.0;
         let remains = mgr.begin_close_at(0);
         assert!(!remains, "last live tab should return false");
+    }
+
+    // ── TabManager::move_tab ──────────────────────────────────────────────────
+
+    #[test]
+    fn move_tab_forward() {
+        // tabs: [0, 1, 2, 3], active=1 → move tab 1 to 3 → [0, 2, 3, 1], active=3
+        let mut mgr = TabManager::default();
+        for _ in 0..4 {
+            mgr.push(Tab::new_single_pane(1, 1, 0));
+        }
+        mgr.active = 1;
+        mgr.move_tab(1, 3);
+        assert_eq!(mgr.active, 3, "active must follow the moved tab");
+        assert_eq!(mgr.count(), 4);
+    }
+
+    #[test]
+    fn move_tab_backward() {
+        // tabs: [0, 1, 2, 3], active=3 → move tab 3 to 1 → [0, 3, 1, 2], active=1
+        let mut mgr = TabManager::default();
+        for _ in 0..4 {
+            mgr.push(Tab::new_single_pane(1, 1, 0));
+        }
+        mgr.active = 3;
+        mgr.move_tab(3, 1);
+        assert_eq!(mgr.active, 1, "active must follow the moved tab");
+        assert_eq!(mgr.count(), 4);
+    }
+
+    #[test]
+    fn move_tab_noop_same_index() {
+        let mut mgr = TabManager::default();
+        for _ in 0..3 {
+            mgr.push(Tab::new_single_pane(1, 1, 0));
+        }
+        mgr.active = 1;
+        mgr.move_tab(1, 1);
+        assert_eq!(mgr.active, 1);
+        assert_eq!(mgr.count(), 3);
+    }
+
+    #[test]
+    fn move_tab_non_active_follows_active() {
+        // tabs: [0, 1, 2], active=1. Move tab 0 past active (0→2).
+        // Active was at index 1; after remove(0) it shifts to 0; after insert(2) it stays 0.
+        // expected active = 1 - 1 = 0 (from < active && to >= active branch).
+        let mut mgr = TabManager::default();
+        for _ in 0..3 {
+            mgr.push(Tab::new_single_pane(1, 1, 0));
+        }
+        mgr.active = 1;
+        mgr.move_tab(0, 2);
+        assert_eq!(mgr.active, 0, "active index adjusts when a tab before it moves past it");
+    }
+
+    #[test]
+    fn move_tab_out_of_bounds_is_noop() {
+        let mut mgr = TabManager::default();
+        for _ in 0..2 {
+            mgr.push(Tab::new_single_pane(1, 1, 0));
+        }
+        mgr.active = 0;
+        mgr.move_tab(0, 5); // to out of bounds
+        assert_eq!(mgr.active, 0);
+        assert_eq!(mgr.count(), 2);
+        mgr.move_tab(5, 0); // from out of bounds
+        assert_eq!(mgr.active, 0);
     }
 
     #[test]

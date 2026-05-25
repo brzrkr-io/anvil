@@ -65,6 +65,9 @@ pub struct LocalContext {
     // RECENT section (task #8): recently-modified files (basenames), max 5.
     pub recent_files: Vec<String>,
 
+    // PROMPTS section (item 16): recent prompt command lines, newest first, max 5.
+    pub recent_prompts: Vec<String>,
+
     // KUBE section (task #20): current kubectl context.
     pub kube_context: Option<anvil_prompt_core::KubeCtx>,
 
@@ -90,6 +93,7 @@ impl Default for LocalContext {
             project_kind: None,
             ports: Vec::new(),
             recent_files: Vec::new(),
+            recent_prompts: Vec::new(),
             kube_context: None,
             ci_status: None,
         }
@@ -506,18 +510,20 @@ pub enum SectionId {
     Ports,
     Recent,
     Agents,
+    Prompts,
     System,
 }
 
 impl SectionId {
-    /// Default top-to-bottom order: CONTEXT → REPO+GIT → CI → AGENTS → RECENT → PORTS → SYSTEM.
-    pub const DEFAULT_ORDER: [SectionId; 7] = [
+    /// Default top-to-bottom order: CONTEXT → REPO+GIT → CI → AGENTS → RECENT → PORTS → PROMPTS → SYSTEM.
+    pub const DEFAULT_ORDER: [SectionId; 8] = [
         SectionId::Context,
         SectionId::RepoGit,
         SectionId::Ci,
         SectionId::Agents,
         SectionId::Recent,
         SectionId::Ports,
+        SectionId::Prompts,
         SectionId::System,
     ];
 
@@ -530,6 +536,7 @@ impl SectionId {
             SectionId::Ports => "ports",
             SectionId::Recent => "recent",
             SectionId::Agents => "agents",
+            SectionId::Prompts => "prompts",
             SectionId::System => "system",
         }
     }
@@ -543,6 +550,7 @@ impl SectionId {
             "ports" => Some(SectionId::Ports),
             "recent" => Some(SectionId::Recent),
             "agents" => Some(SectionId::Agents),
+            "prompts" => Some(SectionId::Prompts),
             "system" => Some(SectionId::System),
             _ => None,
         }
@@ -633,7 +641,7 @@ pub fn draw_right_hud(
     // the default order for any sections not listed. This is the entry
     // point for drag-to-reorder: the App persists the order to disk and
     // hands it back here every frame.
-    let mut visited = [false; 7];
+    let mut visited = [false; 8];
     let resolved_order: Vec<SectionId> = order
         .iter()
         .copied()
@@ -1248,6 +1256,80 @@ pub fn draw_right_hud(
                         &f.summary,
                         max_col,
                         app_theme.foreground,
+                    );
+                    r += 1;
+                }
+            }
+            SectionId::Prompts => {
+                // --- PROMPTS -------------------------------------------
+                if local.recent_prompts.is_empty() {
+                    continue;
+                }
+                if r < bottom {
+                    r += 1;
+                }
+                let header_row = r;
+                if r < bottom {
+                    draw_section_accent_bar(
+                        raster,
+                        metrics,
+                        start_col,
+                        r,
+                        app_theme.accent_primary,
+                    );
+                    draw_section_header(
+                        raster,
+                        painter,
+                        metrics,
+                        inner_col,
+                        r,
+                        "PROMPTS",
+                        app_theme.text_muted,
+                        start_col,
+                        hud_cols,
+                        app_theme.hairline,
+                    );
+                    push_section_header_hit(
+                        section_hits,
+                        raster,
+                        metrics,
+                        sid,
+                        inner_col,
+                        header_row,
+                        hud_cols,
+                    );
+                    r += 2;
+                }
+                // Max visible chars per row: hud_cols - 3 (inner_col pad + right pad)
+                // minus 2 for the "N " index prefix.
+                let max_cmd_chars = hud_cols.saturating_sub(5);
+                for (pi, cmd) in local.recent_prompts.iter().enumerate() {
+                    if r >= bottom {
+                        break;
+                    }
+                    // Index dot "N " (1-based, single digit).
+                    let idx_label = format!("{} ", pi + 1);
+                    draw_text(
+                        raster,
+                        painter,
+                        metrics,
+                        inner_col,
+                        r,
+                        &idx_label,
+                        app_theme.text_muted,
+                        max_col,
+                    );
+                    // Command text, truncated.
+                    let truncated: String = cmd.chars().take(max_cmd_chars).collect();
+                    draw_text(
+                        raster,
+                        painter,
+                        metrics,
+                        inner_col + 2,
+                        r,
+                        &truncated,
+                        app_theme.foreground,
+                        max_col,
                     );
                     r += 1;
                 }

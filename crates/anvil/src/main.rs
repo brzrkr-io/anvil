@@ -52,7 +52,7 @@ use anvil_render::raster::Raster;
 use anvil_render::searchbar::draw_search_bar;
 use anvil_render::tabbar::{TabBarHitKind, TabBarHits, draw_tab_bar};
 use anvil_render::workspace::{DIVIDER_PX, draw_workspace, draw_workspace_chrome};
-use anvil_render::{CellBatch, FoldedBlocks, draw_viewport_gpu};
+use anvil_render::{CellBatch, FoldedBlocks, GridPainters, draw_viewport_gpu};
 use anvil_term::DirtySet;
 use anvil_theme::{Theme, resolve as resolve_theme};
 use anvil_workspace::interact;
@@ -403,6 +403,12 @@ pub struct App {
     raster: Raster,
     /// Heap-allocated so its address is stable; `AppShell.painter` borrows it.
     font: Box<Font>,
+    /// Bold variant of `font`. Heap-stable; `AppShell.bold_painter` borrows it.
+    bold_font: Box<Font>,
+    /// Italic variant of `font`. Heap-stable; `AppShell.italic_painter` borrows it.
+    italic_font: Box<Font>,
+    /// BoldItalic variant of `font`. Heap-stable; `AppShell.bold_italic_painter` borrows it.
+    bold_italic_font: Box<Font>,
     /// Fixed-size chrome font (11 pt × scale) for tab bar, status bar, etc.
     /// Heap-allocated for the same lifetime-stability reason as `font`.
     chrome_font: Box<Font>,
@@ -478,6 +484,10 @@ pub struct App {
     /// When set, the section the user grabbed on mouse-down for reorder.
     /// On mouse-up, the section under the cursor becomes the drop target.
     hud_section_drag: Option<SectionId>,
+    /// Tab drag state: (current tab index being dragged, mouse-down raster x).
+    /// Set on mouse-down over a tab; cleared on mouse-up.  While set and the
+    /// cursor has moved past the threshold, `mouse_dragged` calls `move_tab`.
+    tab_drag: Option<(usize, f64)>,
     /// Current font point size (logical points, not device pixels). Adjusted
     /// at runtime by Cmd+/Cmd- and re-baked into a fresh `Font` + painter.
     font_size_pt: f64,
@@ -1243,7 +1253,7 @@ impl App {
             self.local_ctx.kube_context = Some(ctx);
         }
 
-        // last-run from focused pane
+        // last-run and recent prompts from focused pane
         if let Some(tab) = self.tabs.current() {
             let id = tab.focused_id();
             if let Some(pane) = tab.registry.get(id) {
@@ -1259,6 +1269,54 @@ impl App {
                     self.local_ctx.run_exit = lr.exit_code;
                     self.local_ctx.run_duration_ms = lr.duration_ms;
                 }
+
+                // Item 16: collect up to 5 recent prompt command lines,
+                // newest first. For each PromptStart (A-mark) look forward
+                // for the next OutputStart (B-mark) to find command_start_col,
+                // then read the text from that line.
+                let t = &pane.terminal;
+                let marks = t.prompt_marks();
+                let ev = t.evicted_lines;
+                let mut prompts: Vec<String> = Vec::new();
+                let mut i = marks.len();
+                while i > 0 && prompts.len() < 5 {
+                    i -= 1;
+                    if marks[i].kind != anvil_term::PromptMarkKind::PromptStart {
+                        continue;
+                    }
+                    // Find the immediately following OutputStart (B-mark) for
+                    // command_start_col; fall back to the A-mark line/col.
+                    let (cmd_abs_line, cmd_col) = {
+                        let mut found = (marks[i].line, 0usize);
+                        for m in marks.iter().skip(i + 1) {
+                            match m.kind {
+                                anvil_term::PromptMarkKind::OutputStart => {
+                                    found = (m.line, m.col as usize);
+                                    break;
+                                }
+                                anvil_term::PromptMarkKind::PromptStart => break,
+                                _ => {}
+                            }
+                        }
+                        found
+                    };
+                    if cmd_abs_line < ev {
+                        continue;
+                    }
+                    let crow = cmd_abs_line - ev;
+                    let cells = t.line(crow);
+                    let cmd: String = cells
+                        .iter()
+                        .skip(cmd_col)
+                        .filter(|c| c.cp != '\0')
+                        .map(|c| c.cp)
+                        .collect();
+                    let cmd = cmd.trim_end().to_string();
+                    if !cmd.is_empty() {
+                        prompts.push(cmd);
+                    }
+                }
+                self.local_ctx.recent_prompts = prompts;
             }
         }
 
@@ -1271,7 +1329,7 @@ impl App {
     // live — partial dirty-row paints are safe when nothing's animating.
     fn render_frame(
         &mut self,
-        painter: &mut dyn anvil_render::GlyphPainter,
+        grid_painters: &mut GridPainters<'_>,
         chrome_painter: &mut dyn anvil_render::GlyphPainter,
     ) {
         // ANVIL_PERF=1 emits per-frame timing to stderr so we can diagnose
@@ -1441,7 +1499,7 @@ impl App {
                 let focused_id = tab.focused_id();
                 draw_workspace(
                     &mut self.raster,
-                    painter,
+                    grid_painters,
                     &tab.tree,
                     &mut tab.registry,
                     inner,
@@ -1555,7 +1613,7 @@ impl App {
 
             draw_right_hud(
                 &mut self.raster,
-                painter,
+                grid_painters.regular,
                 metrics,
                 &self.theme,
                 &self.agent_snap,
@@ -1581,7 +1639,7 @@ impl App {
             let total_cols = (((dw.saturating_sub(2 * GRID_PAD)) as f64 / cw) as usize).max(1);
             draw_cheatsheet(
                 &mut self.raster,
-                painter,
+                grid_painters.regular,
                 metrics,
                 &self.theme,
                 total_cols,
@@ -2013,10 +2071,18 @@ pub struct AppShell {
     /// The NSWindow — retained for future use (e.g. setContentSize).
     #[allow(dead_code)]
     window: Retained<NSWindow>,
-    /// Terminal grid glyph painter (user font size).
+    /// Terminal grid glyph painter — Regular face (user font size).
     painter: anvil_platform::font::CoreTextPainter<'static>,
+    /// Bold face painter.
+    bold_painter: anvil_platform::font::CoreTextPainter<'static>,
+    /// Italic face painter.
+    italic_painter: anvil_platform::font::CoreTextPainter<'static>,
+    /// BoldItalic face painter.
+    bold_italic_painter: anvil_platform::font::CoreTextPainter<'static>,
     /// Chrome glyph painter (11 pt × scale — tab bar, status bar, etc.).
     chrome_painter: anvil_platform::font::CoreTextPainter<'static>,
+    /// Reusable PTY read buffer — allocated once, reused across every tick.
+    pty_read_buf: Box<[u8; 64 * 1024]>,
 }
 
 impl AppShell {
@@ -2057,23 +2123,51 @@ impl AppShell {
             eprintln!("anvil: font reinit failed at {new_pt} pt; keeping current");
             return;
         };
-        // Replace the heap-stable font allocation. `std::mem::replace`
-        // returns the old Box — KEEP IT ALIVE until *after* we've
-        // rebuilt the painter, because the current painter borrows the
-        // old heap allocation. Dropping the painter (when we overwrite
-        // it below) re-reads from that pointer.
+        let new_bold = Font::init_face(&names, pixel_size, FontFace::Bold, true)
+            .unwrap_or_else(|_| Font::init_first_available(&names, pixel_size)
+                .or_else(|_| Font::init("Menlo", pixel_size))
+                .expect("fallback must be available"));
+        let new_italic = Font::init_face(&names, pixel_size, FontFace::Italic, true)
+            .unwrap_or_else(|_| Font::init_first_available(&names, pixel_size)
+                .or_else(|_| Font::init("Menlo", pixel_size))
+                .expect("fallback must be available"));
+        let new_bold_italic = Font::init_face(&names, pixel_size, FontFace::BoldItalic, true)
+            .unwrap_or_else(|_| Font::init_first_available(&names, pixel_size)
+                .or_else(|_| Font::init("Menlo", pixel_size))
+                .expect("fallback must be available"));
+
+        // Replace heap-stable font allocations. Keep old Boxes alive until
+        // *after* the corresponding painter is overwritten (the painter drop
+        // runs against the still-live allocation).
         let old_font = std::mem::replace(&mut self.app.font, Box::new(new_font));
+        let old_bold = std::mem::replace(&mut self.app.bold_font, Box::new(new_bold));
+        let old_italic = std::mem::replace(&mut self.app.italic_font, Box::new(new_italic));
+        let old_bold_italic = std::mem::replace(&mut self.app.bold_italic_font, Box::new(new_bold_italic));
         self.app.font_size_pt = new_pt;
+
         // SAFETY: same lifetime-extension pattern as `AppShell::new` —
-        // `app.font` is a Box and its heap allocation outlives the painter.
+        // each `app.*_font` is a Box and its heap allocation outlives the painter.
         self.painter = unsafe {
             let font_ref: &'static Font = &*(self.app.font.as_ref() as *const Font);
             anvil_platform::font::CoreTextPainter::new(font_ref)
         };
-        // Now the old painter has been dropped (it was overwritten just
-        // above, with its destructor running against the still-live
-        // `old_font` allocation). Release the old heap.
+        self.bold_painter = unsafe {
+            let font_ref: &'static Font = &*(self.app.bold_font.as_ref() as *const Font);
+            anvil_platform::font::CoreTextPainter::new(font_ref)
+        };
+        self.italic_painter = unsafe {
+            let font_ref: &'static Font = &*(self.app.italic_font.as_ref() as *const Font);
+            anvil_platform::font::CoreTextPainter::new(font_ref)
+        };
+        self.bold_italic_painter = unsafe {
+            let font_ref: &'static Font = &*(self.app.bold_italic_font.as_ref() as *const Font);
+            anvil_platform::font::CoreTextPainter::new(font_ref)
+        };
+        // Old painters have been dropped (overwritten above). Release old heaps.
         drop(old_font);
+        drop(old_bold);
+        drop(old_italic);
+        drop(old_bold_italic);
         // Reflow panes + force a full redraw so the new metrics propagate.
         self.app.resize_all_tabs();
         self.app.force_full_redraw = true;
@@ -2081,13 +2175,26 @@ impl AppShell {
     }
 
     fn new(app: App, webview: Webview, window: Retained<NSWindow>) -> Self {
-        // SAFETY: `app.font` and `app.chrome_font` are `Box<Font>` — the heap
-        // allocations are stable.  The painters borrow the Fonts inside the
-        // boxes; the boxes live inside `app` which lives inside `AppShell`.
-        // Drop order is painters first (declared last), then `webview`, then
+        // SAFETY: `app.font`, `app.bold_font`, `app.italic_font`,
+        // `app.bold_italic_font`, and `app.chrome_font` are `Box<Font>` — heap
+        // allocations that are stable for the lifetime of `app` inside
+        // `AppShell`.  The painters borrow those stable addresses.
+        // Drop order: painters first (declared last), then `webview`, then
         // `app` (with the Boxes).  So the allocations outlive the painters.
         let painter = unsafe {
             let font_ref: &'static Font = &*(app.font.as_ref() as *const Font);
+            anvil_platform::font::CoreTextPainter::new(font_ref)
+        };
+        let bold_painter = unsafe {
+            let font_ref: &'static Font = &*(app.bold_font.as_ref() as *const Font);
+            anvil_platform::font::CoreTextPainter::new(font_ref)
+        };
+        let italic_painter = unsafe {
+            let font_ref: &'static Font = &*(app.italic_font.as_ref() as *const Font);
+            anvil_platform::font::CoreTextPainter::new(font_ref)
+        };
+        let bold_italic_painter = unsafe {
+            let font_ref: &'static Font = &*(app.bold_italic_font.as_ref() as *const Font);
             anvil_platform::font::CoreTextPainter::new(font_ref)
         };
         let chrome_painter = unsafe {
@@ -2099,7 +2206,11 @@ impl AppShell {
             webview,
             window,
             painter,
+            bold_painter,
+            italic_painter,
+            bold_italic_painter,
             chrome_painter,
+            pty_read_buf: Box::new([0u8; 64 * 1024]),
         }
     }
 
@@ -2148,7 +2259,7 @@ impl AppHandler for AppShell {
         // behind the tick rate — the previous one-read-per-tick cap made
         // chatty commands feel laggy on top of being slow.
         let mut any_dead = false;
-        let mut feed_buf = vec![0u8; 64 * 1024];
+        let feed_buf = &mut *self.pty_read_buf;
         // Per-tick cap so one extremely chatty pane can't starve the rest
         // of the work in this tick. 4 MiB per pane per tick is plenty for
         // any realistic workload (`cat` of a binary, etc).
@@ -2163,7 +2274,7 @@ impl AppHandler for AppShell {
                 let mut pane_got_data = false;
                 let mut pane_dead = false;
                 loop {
-                    let result = app.ptys.get(&pid).map(|pty| pty.read(&mut feed_buf));
+                    let result = app.ptys.get(&pid).map(|pty| pty.read(feed_buf));
                     match result {
                         Some(Ok(n)) if n > 0 => {
                             if let Some(pane) = app.tabs.tabs[ti].registry.get_mut(pid) {
@@ -2313,7 +2424,13 @@ impl AppHandler for AppShell {
         }
 
         if app.dirty {
-            app.render_frame(&mut self.painter, &mut self.chrome_painter);
+            let mut grid_painters = GridPainters {
+                regular: &mut self.painter,
+                bold: &mut self.bold_painter,
+                italic: &mut self.italic_painter,
+                bold_italic: &mut self.bold_italic_painter,
+            };
+            app.render_frame(&mut grid_painters, &mut self.chrome_painter);
             app.dirty = false;
         }
 
@@ -2571,6 +2688,8 @@ impl AppHandler for AppShell {
                         app.snap_anim();
                         app.force_full_redraw = true;
                         app.dirty = true;
+                        // Record drag start so mouse_dragged can reorder tabs.
+                        app.tab_drag = Some((idx, rx));
                     }
                     TabBarHitKind::CloseTab(idx) => {
                         app.tabs.switch_to(idx);
@@ -2636,9 +2755,26 @@ impl AppHandler for AppShell {
             }
         }
 
-        // ⌘-click: open file/url under cursor.
+        // ⌘-click: fold/unfold block header, or open file/url under cursor.
         if mods.command {
             if let Some((row, col)) = app.event_cell(loc, false) {
+                // If the click landed exactly on a block header row, toggle its
+                // fold and skip the URL/path open logic entirely.
+                {
+                    let tab = app.tabs.current_mut().unwrap();
+                    let id = tab.focused_id();
+                    let pane = tab.registry.get_mut(id).unwrap();
+                    let cr = pane.terminal.content_row_of_viewport(row);
+                    let abs = pane.terminal.absolute_line_of_content(cr);
+                    if let Some(block) = pane.terminal.block_at(abs) {
+                        if block.command_line == abs {
+                            pane.toggle_fold(block.command_line);
+                            app.dirty = true;
+                            return;
+                        }
+                    }
+                }
+
                 let (content_row, cells): (usize, Vec<anvil_term::Cell>) = {
                     let tab = app.tabs.current_mut().unwrap();
                     let id = tab.focused_id();
@@ -2747,6 +2883,11 @@ impl AppHandler for AppShell {
     fn mouse_up(&mut self, loc: MouseLocation, _mods: Modifiers) {
         let app = &mut self.app;
 
+        // Tab reorder drag: release — just clear the state.
+        if app.tab_drag.take().is_some() {
+            app.dirty = true;
+        }
+
         // Pane divider drag: release.
         if app.divider_drag.is_some() {
             app.divider_drag = None;
@@ -2837,6 +2978,41 @@ impl AppHandler for AppShell {
 
     fn mouse_dragged(&mut self, loc: MouseLocation) {
         let app = &mut self.app;
+
+        // Tab reorder drag: if the cursor has moved past the threshold into a
+        // different tab's hit zone, move the dragged tab there.
+        if let Some((drag_idx, down_x)) = app.tab_drag {
+            let (rx, _ry) = app.view_pt_to_raster_px(loc);
+            let threshold = app.font.metrics.cell_w * 0.5;
+            if (rx - down_x).abs() >= threshold {
+                // Find the tab hit zone the cursor is currently over.
+                let target = app
+                    .tab_bar_hits
+                    .hits
+                    .iter()
+                    .find(|h| {
+                        matches!(h.kind, TabBarHitKind::Tab(_))
+                            && rx >= h.rect.x
+                            && rx < h.rect.x + h.rect.w
+                    })
+                    .and_then(|h| {
+                        if let TabBarHitKind::Tab(t) = h.kind {
+                            Some(t)
+                        } else {
+                            None
+                        }
+                    });
+                if let Some(to) = target {
+                    if drag_idx != to {
+                        app.tabs.move_tab(drag_idx, to);
+                        app.tab_drag = Some((to, down_x));
+                        app.force_full_redraw = true;
+                        app.dirty = true;
+                    }
+                }
+            }
+            return;
+        }
 
         // Pane divider drag: adjust the split ratio based on mouse position.
         if app.divider_drag.is_some() {
@@ -2991,12 +3167,24 @@ impl AppHandler for AppShell {
         if !in_live_resize {
             self.app.resize_all_tabs();
         }
-        self.app.render_frame(&mut self.painter, &mut self.chrome_painter);
+        let mut grid_painters = GridPainters {
+            regular: &mut self.painter,
+            bold: &mut self.bold_painter,
+            italic: &mut self.italic_painter,
+            bold_italic: &mut self.bold_italic_painter,
+        };
+        self.app.render_frame(&mut grid_painters, &mut self.chrome_painter);
     }
 
     fn live_resize_ended(&mut self) {
         self.app.resize_all_tabs();
-        self.app.render_frame(&mut self.painter, &mut self.chrome_painter);
+        let mut grid_painters = GridPainters {
+            regular: &mut self.painter,
+            bold: &mut self.bold_painter,
+            italic: &mut self.italic_painter,
+            bold_italic: &mut self.bold_italic_painter,
+        };
+        self.app.render_frame(&mut grid_painters, &mut self.chrome_painter);
     }
 
     fn focus_gained(&mut self) {
@@ -3270,6 +3458,24 @@ fn main() -> Result<()> {
             .or_else(|_| Font::init("Menlo", pixel_size))
             .expect("at least Menlo must be available as a system font"),
     );
+    let bold_font: Box<Font> = Box::new(
+        Font::init_face(&font_names, pixel_size, FontFace::Bold, true)
+            .unwrap_or_else(|_| Font::init_first_available(&font_names, pixel_size)
+                .or_else(|_| Font::init("Menlo", pixel_size))
+                .expect("fallback must be available")),
+    );
+    let italic_font: Box<Font> = Box::new(
+        Font::init_face(&font_names, pixel_size, FontFace::Italic, true)
+            .unwrap_or_else(|_| Font::init_first_available(&font_names, pixel_size)
+                .or_else(|_| Font::init("Menlo", pixel_size))
+                .expect("fallback must be available")),
+    );
+    let bold_italic_font: Box<Font> = Box::new(
+        Font::init_face(&font_names, pixel_size, FontFace::BoldItalic, true)
+            .unwrap_or_else(|_| Font::init_first_available(&font_names, pixel_size)
+                .or_else(|_| Font::init("Menlo", pixel_size))
+                .expect("fallback must be available")),
+    );
     // Chrome font: fixed CHROME_PT pt regardless of user terminal size.
     let chrome_pixel_size = CHROME_PT * window_scale;
     let chrome_font: Box<Font> = Box::new(
@@ -3416,7 +3622,10 @@ fn main() -> Result<()> {
         ptys,
         renderer: None, // filled after the Metal layer is available
         raster,
-        font, // Box<Font> — heap-stable
+        font, // Box<Font> — heap-stable (Regular)
+        bold_font,
+        italic_font,
+        bold_italic_font,
         chrome_font, // Box<Font> — fixed 11 pt chrome face
         dirty: true,
         force_full_redraw: true,
@@ -3454,6 +3663,7 @@ fn main() -> Result<()> {
             .unwrap_or_else(|| SectionId::DEFAULT_ORDER.to_vec()),
         hud_section_hits: Vec::new(),
         hud_section_drag: None,
+        tab_drag: None,
         font_size_pt: font_size_pt_init,
         font_family: font_family.clone(),
         cheatsheet_visible: false,
@@ -3637,8 +3847,15 @@ fn main() -> Result<()> {
 
     // Build the AppShell and stash it in the shared slot.
     let mut shell = AppShell::new(real_app, webview, appkit.window.clone());
+    shell.painter.warm_ascii();
     shell.app.snap_anim();
-    shell.app.render_frame(&mut shell.painter, &mut shell.chrome_painter);
+    let mut grid_painters = GridPainters {
+        regular: &mut shell.painter,
+        bold: &mut shell.bold_painter,
+        italic: &mut shell.italic_painter,
+        bold_italic: &mut shell.bold_italic_painter,
+    };
+    shell.app.render_frame(&mut grid_painters, &mut shell.chrome_painter);
     shell.app.dirty = false;
     *shell_slot.borrow_mut() = Some(shell);
 
