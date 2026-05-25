@@ -16,8 +16,8 @@ pub enum Shell {
 }
 
 const RESET: &str = "\x1b[0m";
-const PROMPT_ARROW: char = '\u{2192}'; // → — present in bundled Blex Mono Nerd Font
-const FAILURE_MARK: char = '\u{00d7}'; // × — present in bundled Blex Mono Nerd Font
+const PROMPT_ARROW: char = '\u{279c}'; // ➜ — agreed shell prompt arrow
+const FAILURE_MARK: char = '\u{2717}'; // ✗ — semantic failure mark
 
 // Indexed ANSI colors — resolved through the active theme each frame so a
 // theme switch recolors all prompts in scrollback automatically.
@@ -72,15 +72,15 @@ fn esc(buf: &mut String, shell: Shell, seq: &str) {
 
 /// The full single-line prompt.
 ///
-/// Layout (column 0 →):  `→ `
-///   - `→` (U+2192) is the input glyph. It uses the palette ember/attention slot
+/// Layout (column 0 →):  `➜ `
+///   - `➜` (U+279C) is the input glyph. It uses the palette ember/attention slot
 ///     while active and flips to error red when the previous command exited non-zero, so command
 ///     entry and failure state read at a glance from the prompt alone.
 ///
 /// When `opts.width > 0` and there is an exit code or a duration, a
 /// right-aligned secondary segment is emitted on the same line, padded with
 /// spaces so it lands flush at column `opts.width`:
-///   - failure: ` × <code>  <duration>` (or ` × <code>` when no duration)
+///   - failure: ` ✗ <code>  <duration>` (or ` ✗ <code>` when no duration)
 ///   - success: ` ✓ <duration>` (only when duration is present)
 ///
 pub fn full(opts: Options) -> String {
@@ -88,7 +88,7 @@ pub fn full(opts: Options) -> String {
     let sh = opts.shell;
 
     // Anvil's chrome row already carries cwd + branch + dirty count. The
-    // prompt line itself is the bare `→` with a trailing space. The
+    // prompt line itself is the bare `➜` with a trailing space. The
     // right-aligned exit/duration segment still emits after the arrow.
 
     let arrow_color = if opts.failed {
@@ -158,10 +158,10 @@ fn build_right_segment(opts: Options) -> Option<RightSegment> {
         return None;
     }
 
-    // Measure visible length: ` × 127  0.4s` or ` ✓ 0.4s`
-    // U+00D7 (×) and U+2713 (✓) are single-column glyphs.
+    // Measure visible length: ` ✗ 127  0.4s` or ` ✓ 0.4s`
+    // U+2717 (✗) and U+2713 (✓) are single-column glyphs.
     let visible_len = if has_exit {
-        // ` × <code>` — space + glyph + space + digits
+        // ` ✗ <code>` — space + glyph + space + digits
         let base = 1 + 1 + 1 + format!("{}", opts.exit_code).len();
         if let Some(d) = &duration {
             // `  <duration>` — two spaces + duration
@@ -185,7 +185,7 @@ fn build_right_segment(opts: Options) -> Option<RightSegment> {
 /// Write the right-aligned segment into `buf` using `esc()` for zero-width wrapping.
 fn emit_right_segment(buf: &mut String, sh: Shell, opts: Options, seg: &RightSegment) {
     if seg.failed {
-        // ` × <code>` in error red
+        // ` ✗ <code>` in error red
         buf.push(' ');
         esc(buf, sh, ACCENT_ERR);
         buf.push(FAILURE_MARK);
@@ -213,7 +213,7 @@ fn emit_right_segment(buf: &mut String, sh: Shell, opts: Options, seg: &RightSeg
     let _ = opts; // suppress unused warning (opts.shell used via sh)
 }
 
-/// The collapsed transient prompt — a quiet `→` echo in dim grey.
+/// The collapsed transient prompt — a quiet `➜` echo in dim grey.
 ///
 /// Same arrow shape as the live prompt, but flattened to one tone so scrollback
 /// reads as a quiet echo of the active line, not a louder peer.
@@ -289,10 +289,10 @@ mod tests {
 
     #[test]
     fn full_is_single_line_arrow_only() {
-        // Single-line `→  ` — no basin, no middot, no newline.
+        // Single-line `➜  ` — no basin, no middot, no newline.
         let out = full(base_opts(Shell::Plain));
         assert!(!out.contains('\n'));
-        assert!(out.contains(PROMPT_ARROW)); // →
+        assert!(out.contains(PROMPT_ARROW)); // ➜
         assert!(!out.contains('\u{276f}')); // no old chevron
         assert!(!out.contains('\u{25d2}')); // no basin
         assert!(!out.contains('\u{00b7}')); // no middot
@@ -317,7 +317,7 @@ mod tests {
     }
 
     #[test]
-    fn shell_prompt_avoids_prompt_glyphs_missing_from_bundled_font() {
+    fn shell_prompt_preserves_agreed_glyphs() {
         let out = full(Options {
             failed: true,
             exit_code: 127,
@@ -326,8 +326,6 @@ mod tests {
         });
         assert!(out.contains(PROMPT_ARROW));
         assert!(out.contains(FAILURE_MARK));
-        assert!(!out.contains('\u{279c}')); // U+279C ➜ is missing from BlexMonoNerdFontMono-Regular.ttf
-        assert!(!out.contains('\u{2717}')); // U+2717 ✗ is missing from BlexMonoNerdFontMono-Regular.ttf
     }
 
     #[test]
@@ -401,7 +399,7 @@ mod tests {
     #[test]
     fn full_does_not_embed_dirty_count_or_branch_pills() {
         // The chrome row carries cwd/branch/dirty count now; the shell prompt
-        // is just `→ ` + optional right-aligned exit/duration. Matches D's
+        // is just `➜ ` + optional right-aligned exit/duration. Matches D's
         // `.prompt-line` which is bare.
         let out = full(base_opts(Shell::Plain));
         assert!(
@@ -417,7 +415,7 @@ mod tests {
 
     #[test]
     fn full_with_exit_code_right_aligns_failure_indicator() {
-        // ` × 127` appears on the same line as the prompt when exit != 0.
+        // ` ✗ 127` appears on the same line as the prompt when exit != 0.
         let out = full(Options {
             failed: true,
             exit_code: 127,
@@ -425,7 +423,7 @@ mod tests {
             ..base_opts(Shell::Plain)
         });
         // Failure glyph present.
-        assert!(out.contains(FAILURE_MARK)); // ×
+        assert!(out.contains(FAILURE_MARK)); // ✗
         // Exit code present.
         assert!(out.contains("127"));
         // Error red color used for the right segment.
@@ -449,7 +447,7 @@ mod tests {
         // Verified green color used.
         assert!(out.contains(VERIFIED));
         // No failure glyph.
-        assert!(!out.contains('\u{00d7}'));
+        assert!(!out.contains(FAILURE_MARK));
     }
 
     #[test]
@@ -458,7 +456,7 @@ mod tests {
         let out = full(base_opts(Shell::Plain));
         // Neither success nor failure glyph.
         assert!(!out.contains('\u{2713}')); // ✓
-        assert!(!out.contains(FAILURE_MARK)); // ×
+        assert!(!out.contains(FAILURE_MARK)); // ✗
     }
 
     #[test]
@@ -470,7 +468,7 @@ mod tests {
         });
 
         assert!(out.contains('\u{2301}')); // ⌁
-        assert!(!out.contains('\u{2192}')); // no shell arrow
+        assert!(!out.contains(PROMPT_ARROW)); // no shell arrow
         assert!(!out.contains('\u{26a1}')); // no normal lightning bolt
         assert!(out.contains("│ ctx "));
         assert!(out.contains(" │ tok "));

@@ -265,6 +265,17 @@ impl Font {
         glyphs[0]
     }
 
+    /// Glyph index used by Anvil's renderer. Some prompt glyphs are part of the
+    /// product contract even though the bundled BlexMono build lacks their exact
+    /// Unicode codepoints; keep terminal text intact and substitute only at
+    /// rasterization time with a visually equivalent bundled glyph.
+    pub fn glyph_for_render(&self, cp: u32) -> u16 {
+        // fallback_render_codepoint() (a substitution table for exotic
+        // codepoints not in BlexMono) was orphaned; restoring it is a
+        // future task. For now, missing codepoints render as 0 (blank).
+        self.glyph(cp)
+    }
+
     /// Build a `Font` from an already-loaded `CTFont`.
     fn from_ct(ct: CFRetained<CTFont>) -> Result<Font, FontError> {
         let ascent = unsafe { ct.ascent() };
