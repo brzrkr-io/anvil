@@ -14,7 +14,7 @@ use std::{
 
 use thiserror::Error;
 
-use crate::codec::{self, CodecError, Value};
+use super::codec::{self, CodecError, Value};
 
 // ---------------------------------------------------------------------------
 // Public types

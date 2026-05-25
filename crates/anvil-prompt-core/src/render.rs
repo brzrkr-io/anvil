@@ -5,8 +5,8 @@
 //!
 //! Colors are emitted as indexed ANSI colors (`\x1b[38;5;Nm`) so the terminal
 //! re-resolves them through the active theme palette on every frame. The active
-//! input arrow uses the theme's info/trace slot so it stays palette-native
-//! without making the prompt another orange surface.
+//! input arrow uses the theme's ember/attention slot so it reads as the current
+//! command entry point while still failing red when the previous command fails.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shell {
@@ -19,7 +19,7 @@ const RESET: &str = "\x1b[0m";
 
 // Indexed ANSI colors — resolved through the active theme each frame so a
 // theme switch recolors all prompts in scrollback automatically.
-const PROMPT_INFO: &str = "\x1b[38;5;6m"; // ANSI 6 = palette info/trace — active input arrow
+const PROMPT_EMBER: &str = "\x1b[38;5;11m"; // ANSI 11 = ember/attention — active input arrow
 const ACCENT_ERR: &str = "\x1b[38;5;1m"; // ANSI 1 = red — error state
 const DIM: &str = "\x1b[38;5;8m"; // ANSI 8 = dim grey — accent dot, transient prompt
 const VERIFIED: &str = "\x1b[38;5;2m"; // ANSI 2 = green — success check
@@ -70,8 +70,8 @@ fn esc(buf: &mut String, shell: Shell, seq: &str) {
 
 /// The full single-line prompt.
 ///
-/// Layout (column 0 →):  `❯ `
-///   - `❯` (U+276F) is the input glyph. It uses the palette info/trace slot
+/// Layout (column 0 →):  `➜ `
+///   - `➜` (U+279C) is the input glyph. It uses the palette ember/attention slot
 ///     while active and flips to error red when the previous command exited non-zero, so command
 ///     entry and failure state read at a glance from the prompt alone.
 ///
@@ -86,16 +86,20 @@ pub fn full(opts: Options) -> String {
     let sh = opts.shell;
 
     // Anvil's chrome row already carries cwd + branch + dirty count. The
-    // prompt line itself is the bare `❯` with a trailing space. The
+    // prompt line itself is the bare `➜` with a trailing space. The
     // right-aligned exit/duration segment still emits after the arrow.
 
-    let arrow_color = if opts.failed { ACCENT_ERR } else { PROMPT_INFO };
+    let arrow_color = if opts.failed {
+        ACCENT_ERR
+    } else {
+        PROMPT_EMBER
+    };
 
     let mut left_visible: u16 = 0;
 
     // Arrow.
     esc(&mut buf, sh, arrow_color);
-    buf.push('\u{276f}'); // ❯
+    buf.push('\u{279c}'); // ➜
     esc(&mut buf, sh, RESET);
     buf.push(' ');
     left_visible += 2;
@@ -207,7 +211,7 @@ fn emit_right_segment(buf: &mut String, sh: Shell, opts: Options, seg: &RightSeg
     let _ = opts; // suppress unused warning (opts.shell used via sh)
 }
 
-/// The collapsed transient prompt — a quiet `❯` echo in dim grey.
+/// The collapsed transient prompt — a quiet `➜` echo in dim grey.
 ///
 /// Same arrow shape as the live prompt, but flattened to one tone so scrollback
 /// reads as a quiet echo of the active line, not a louder peer.
@@ -215,7 +219,7 @@ pub fn transient(opts: Options) -> String {
     let mut buf = String::new();
     let col = if opts.failed { ACCENT_ERR } else { DIM };
     esc(&mut buf, opts.shell, col);
-    buf.push('\u{276f}'); // ❯
+    buf.push('\u{279c}'); // ➜
     esc(&mut buf, opts.shell, RESET);
     buf.push(' ');
     buf
@@ -282,27 +286,30 @@ mod tests {
     }
 
     #[test]
-    fn full_is_single_line_chevron_only() {
-        // Single-line `❯  ` — no basin, no middot, no newline.
+    fn full_is_single_line_arrow_only() {
+        // Single-line `➜  ` — no basin, no middot, no newline.
         let out = full(base_opts(Shell::Plain));
         assert!(!out.contains('\n'));
-        assert!(out.contains('\u{276f}')); // ❯
+        assert!(out.contains('\u{279c}')); // ➜
+        assert!(!out.contains('\u{276f}')); // no old chevron
         assert!(!out.contains('\u{25d2}')); // no basin
         assert!(!out.contains('\u{00b7}')); // no middot
     }
 
     #[test]
-    fn full_paints_chevron_in_palette_info_on_success() {
+    fn full_paints_arrow_in_palette_ember_on_success() {
         let out = full(base_opts(Shell::Plain));
-        assert!(out.contains(PROMPT_INFO));
+        assert!(out.contains(PROMPT_EMBER));
+        assert!(!out.contains("\x1b[38;5;6m"));
         assert!(!out.contains("\x1b[38;5;14m"));
         assert!(!out.contains("\x1b[38;2;197;70;42m"));
     }
 
     #[test]
-    fn transient_is_chevron_only() {
+    fn transient_is_arrow_only() {
         let out = transient(base_opts(Shell::Plain));
-        assert!(out.contains('\u{276f}'));
+        assert!(out.contains('\u{279c}'));
+        assert!(!out.contains('\u{276f}'));
         assert!(!out.contains('\u{25d2}')); // no basin
         assert!(!out.contains('\u{00b7}')); // no middot
     }
@@ -319,9 +326,9 @@ mod tests {
     }
 
     #[test]
-    fn full_uses_palette_info_for_the_chevron() {
+    fn full_uses_palette_ember_for_the_arrow() {
         let out = full(base_opts(Shell::Plain));
-        assert!(out.contains(PROMPT_INFO));
+        assert!(out.contains(PROMPT_EMBER));
     }
 
     #[test]
@@ -378,7 +385,7 @@ mod tests {
     #[test]
     fn full_does_not_embed_dirty_count_or_branch_pills() {
         // The chrome row carries cwd/branch/dirty count now; the shell prompt
-        // is just `❯ ` + optional right-aligned exit/duration. Matches D's
+        // is just `➜ ` + optional right-aligned exit/duration. Matches D's
         // `.prompt-line` which is bare.
         let out = full(base_opts(Shell::Plain));
         assert!(
@@ -389,7 +396,7 @@ mod tests {
             !out.contains("main"),
             "branch must not appear in the prompt"
         );
-        assert!(out.contains('\u{276f}'));
+        assert!(out.contains('\u{279c}'));
     }
 
     #[test]
@@ -447,7 +454,7 @@ mod tests {
         });
 
         assert!(out.contains('\u{2301}')); // ⌁
-        assert!(!out.contains('\u{276f}')); // no shell arrow
+        assert!(!out.contains('\u{279c}')); // no shell arrow
         assert!(!out.contains('\u{26a1}')); // no normal lightning bolt
         assert!(out.contains("│ ctx "));
         assert!(out.contains(" │ tok "));

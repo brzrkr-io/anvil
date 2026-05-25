@@ -1,14 +1,21 @@
-//! `anvil-editor` — msgpack codec and Unix-socket transport for nvim RPC.
+//! `anvil-editor` — rope-backed text buffer and nvim RPC bridge.
 //!
-//! Phase 1 public surface: codec types and a synchronous Transport.
-//! Phase 2 (BR3): `EditorBridge` background polling thread.
+//! `nvim` submodule: msgpack codec, Unix-socket transport, background polling
+//! bridge. Stays as the default editor pane until NE6 ships.
+//!
+//! `buffer` module: native `Buffer` type built on `ropey`.
 
-pub mod bridge;
-pub mod codec;
-pub mod transport;
+pub mod buffer;
+pub mod nvim;
 
-pub use bridge::{
+// Re-export nvim bridge types for existing call sites in main.rs.
+pub use nvim::bridge::{
     ConnectionState, EditorBridge, EditorSnapshot, OutlineState, OutlineSymbol, SymbolKind,
 };
-pub use codec::{CodecError, Value, decode_value, encode_request};
-pub use transport::{Endpoint, Transport, TransportError};
+pub use nvim::codec::{CodecError, Value, decode_value, encode_request};
+pub use nvim::transport::{Endpoint, Transport, TransportError};
+
+// Re-export buffer types.
+pub use buffer::{
+    Buffer, BufferId, Cursor, Edit, EditProposal, GhostTextSpan, Position, Range, RevisionTag,
+};

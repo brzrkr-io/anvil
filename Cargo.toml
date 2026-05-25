@@ -40,6 +40,8 @@ anyhow = "1.0"
 bitflags = "2.11"
 regex = "1"
 which = "7"
+ropey = "1.6"
+unicode-segmentation = "1"
 
 # PTY / POSIX
 nix = { version = "0.31", features = ["fs", "ioctl", "process", "signal", "term"] }

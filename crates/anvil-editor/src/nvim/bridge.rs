@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::codec::Value;
-use crate::transport::{Endpoint, Transport, TransportError};
+use super::codec::Value;
+use super::transport::{Endpoint, Transport, TransportError};
 
 // ---------------------------------------------------------------------------
 // Public types
