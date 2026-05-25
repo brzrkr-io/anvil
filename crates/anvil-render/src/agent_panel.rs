@@ -85,6 +85,10 @@ pub struct LocalContext {
 
     // KUBE section (task #20): current kubectl context.
     pub kube_context: Option<anvil_prompt_core::KubeCtx>,
+
+    // CI section: last CI run state on the active branch.
+    // None until a gh-ci poller is wired; section is hidden when None.
+    pub ci_status: Option<anvil_prompt_core::CiStatus>,
 }
 
 impl Default for LocalContext {
@@ -105,6 +109,7 @@ impl Default for LocalContext {
             ports: Vec::new(),
             recent_files: Vec::new(),
             kube_context: None,
+            ci_status: None,
         }
     }
 }
@@ -527,10 +532,9 @@ pub struct HudHit {
 /// order and route drag-to-reorder gestures.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SectionId {
-    Repo,
-    Git,
-    LastRun,
-    Build,
+    Context,
+    RepoGit,
+    Ci,
     Ports,
     Recent,
     Agents,
@@ -538,26 +542,23 @@ pub enum SectionId {
 }
 
 impl SectionId {
-    /// Default top-to-bottom order; mirrors the layout described in
-    /// `draw_right_hud`'s doc comment.
-    pub const DEFAULT_ORDER: [SectionId; 8] = [
-        SectionId::Repo,
-        SectionId::Git,
-        SectionId::LastRun,
-        SectionId::Build,
-        SectionId::Ports,
-        SectionId::Recent,
+    /// Default top-to-bottom order: CONTEXT → REPO+GIT → CI → AGENTS → RECENT → PORTS → SYSTEM.
+    pub const DEFAULT_ORDER: [SectionId; 7] = [
+        SectionId::Context,
+        SectionId::RepoGit,
+        SectionId::Ci,
         SectionId::Agents,
+        SectionId::Recent,
+        SectionId::Ports,
         SectionId::System,
     ];
 
     /// Stable string token used when persisting the order to disk.
     pub fn token(self) -> &'static str {
         match self {
-            SectionId::Repo => "repo",
-            SectionId::Git => "git",
-            SectionId::LastRun => "last_run",
-            SectionId::Build => "build",
+            SectionId::Context => "context",
+            SectionId::RepoGit => "repo_git",
+            SectionId::Ci => "ci",
             SectionId::Ports => "ports",
             SectionId::Recent => "recent",
             SectionId::Agents => "agents",
@@ -568,10 +569,9 @@ impl SectionId {
     /// Inverse of `token` — parse the persisted name back to an id.
     pub fn from_token(s: &str) -> Option<SectionId> {
         match s.trim() {
-            "repo" => Some(SectionId::Repo),
-            "git" => Some(SectionId::Git),
-            "last_run" => Some(SectionId::LastRun),
-            "build" => Some(SectionId::Build),
+            "context" => Some(SectionId::Context),
+            "repo_git" => Some(SectionId::RepoGit),
+            "ci" => Some(SectionId::Ci),
             "ports" => Some(SectionId::Ports),
             "recent" => Some(SectionId::Recent),
             "agents" => Some(SectionId::Agents),
@@ -669,7 +669,7 @@ pub fn draw_right_hud(
     // the default order for any sections not listed. This is the entry
     // point for drag-to-reorder: the App persists the order to disk and
     // hands it back here every frame.
-    let mut visited = [false; 8];
+    let mut visited = [false; 7];
     let resolved_order: Vec<SectionId> = order
         .iter()
         .copied()
@@ -693,8 +693,12 @@ pub fn draw_right_hud(
             break;
         }
         match sid {
-            SectionId::Repo => {
-                // --- REPO ------------------------------------------------
+            SectionId::Context => {
+                // --- CONTEXT ------------------------------------------
+                // Hidden when no kubectl context is available.
+                let Some(ref kube) = local.kube_context else {
+                    continue;
+                };
                 let header_row = r;
                 draw_section_header(
                     raster,
@@ -702,7 +706,7 @@ pub fn draw_right_hud(
                     metrics,
                     inner_col,
                     r,
-                    "REPO",
+                    "CONTEXT",
                     label_color,
                     max_col,
                 );
@@ -717,8 +721,79 @@ pub fn draw_right_hud(
                 );
                 r += 1;
 
-                // Repo name in foreground (the cwd basename for now). Click → copy
-                // full cwd; Cmd-click → reveal in Finder.
+                // Row: env-tint dot · cluster · · · namespace
+                if r < bottom {
+                    let dot_color = match kube.env_kind {
+                        anvil_prompt_core::EnvKind::Prod => ATTENTION,
+                        anvil_prompt_core::EnvKind::Staging => INFO_TEAL,
+                        anvil_prompt_core::EnvKind::Dev => ALLOY,
+                    };
+                    let mut c = inner_col;
+                    // U+25CF BLACK CIRCLE dot
+                    raster.cell_glyph(painter, metrics, c, r, 0x25CF, dot_color);
+                    c += 2; // dot + space
+                    for ch in kube.cluster.chars() {
+                        if c >= max_col {
+                            break;
+                        }
+                        raster.cell_glyph(painter, metrics, c, r, ch as u32, theme.foreground);
+                        c += 1;
+                    }
+                    // · separator
+                    if c + 2 < max_col {
+                        raster.cell_glyph(painter, metrics, c, r, ' ' as u32, meta_color);
+                        c += 1;
+                        raster.cell_glyph(painter, metrics, c, r, 0x00b7, meta_color);
+                        c += 1;
+                        raster.cell_glyph(painter, metrics, c, r, ' ' as u32, meta_color);
+                        c += 1;
+                    }
+                    for ch in kube.namespace.chars() {
+                        if c >= max_col {
+                            break;
+                        }
+                        raster.cell_glyph(painter, metrics, c, r, ch as u32, meta_color);
+                        c += 1;
+                    }
+                    let ctx_copy = format!("{}/{}", kube.cluster, kube.namespace);
+                    push_row_hit(
+                        hits,
+                        raster,
+                        metrics,
+                        inner_col,
+                        r,
+                        hud_cols - 3,
+                        &ctx_copy,
+                        "",
+                    );
+                    r += 1;
+                }
+            }
+            SectionId::RepoGit => {
+                // --- REPO + GIT (merged) ---------------------------------
+                let header_row = r;
+                draw_section_header(
+                    raster,
+                    painter,
+                    metrics,
+                    inner_col,
+                    r,
+                    "REPO + GIT",
+                    label_color,
+                    max_col,
+                );
+                push_section_header_hit(
+                    section_hits,
+                    raster,
+                    metrics,
+                    sid,
+                    inner_col,
+                    header_row,
+                    hud_cols,
+                );
+                r += 1;
+
+                // Row 1: repo basename in foreground. Click → copy full cwd.
                 if r < bottom {
                     let name = repo_display_name(local);
                     draw_text(
@@ -743,7 +818,7 @@ pub fn draw_right_hud(
                     );
                     r += 1;
                 }
-                // Parent path, dim. Same actions as the repo row.
+                // Row 2: parent path, dim.
                 if r < bottom {
                     if let Some(parent) = parent_path_compact(&local.cwd, hud_cols - 4) {
                         draw_text(
@@ -762,48 +837,20 @@ pub fn draw_right_hud(
                         r += 1;
                     }
                 }
-            }
-            SectionId::Git => {
-                // --- GIT ------------------------------------------------
-                let header_row = r;
-                draw_section_header(
-                    raster,
-                    painter,
-                    metrics,
-                    inner_col,
-                    r,
-                    "GIT",
-                    label_color,
-                    max_col,
-                );
-                push_section_header_hit(
-                    section_hits,
-                    raster,
-                    metrics,
-                    sid,
-                    inner_col,
-                    header_row,
-                    hud_cols,
-                );
-                r += 1;
 
-                if r < bottom {
-                    if local.git == GitState::NoRepo || local.branch.is_empty() {
+                if local.git == GitState::NoRepo || local.branch.is_empty() {
+                    if r < bottom {
                         draw_text(
                             raster, painter, metrics, inner_col, r, "no repo", meta_color, max_col,
                         );
                         r += 1;
-                    } else {
-                        // Branch line: nf-pl-branch + name, in INFO_TEAL.
-                        let glyph = "\u{e0a0}";
-                        raster.cell_glyph(
-                            painter,
-                            metrics,
-                            inner_col,
-                            r,
-                            glyph.chars().next().unwrap() as u32,
-                            INFO_TEAL,
-                        );
+                    }
+                } else {
+                    // Row 3: branch line — U+23B7 ⎇ glyph + branch + dirty/ahead-behind
+                    if r < bottom {
+                        // U+23B7 SYMBOL FOR COMBINING LONG VERTICAL LINE BELOW
+                        // Use U+238B (⎋) or simply the Nerd Font branch glyph 
+                        raster.cell_glyph(painter, metrics, inner_col, r, 0xe0a0, INFO_TEAL);
                         draw_text(
                             raster,
                             painter,
@@ -814,7 +861,32 @@ pub fn draw_right_hud(
                             theme.foreground,
                             max_col,
                         );
-                        // Click anywhere on the branch row → copy the branch name.
+                        // Dirty / ahead / behind indicator after branch name
+                        let branch_len = local.branch.chars().count();
+                        let after_branch = inner_col + 2 + branch_len;
+                        if after_branch + 1 < max_col {
+                            let mut bits: Vec<(String, [u8; 3])> = Vec::new();
+                            if local.git_dirty > 0 {
+                                bits.push((
+                                    format!(" *{} modified", local.git_dirty),
+                                    ATTENTION,
+                                ));
+                            }
+                            let ab = format_ahead_behind(local.git_ahead, local.git_behind);
+                            if !ab.is_empty() {
+                                bits.push((format!(" {ab}"), INFO_TEAL));
+                            }
+                            let mut c = after_branch;
+                            for (txt, col) in &bits {
+                                for ch in txt.chars() {
+                                    if c >= max_col {
+                                        break;
+                                    }
+                                    raster.cell_glyph(painter, metrics, c, r, ch as u32, *col);
+                                    c += 1;
+                                }
+                            }
+                        }
                         push_row_hit(
                             hits,
                             raster,
@@ -826,93 +898,50 @@ pub fn draw_right_hud(
                             "",
                         );
                         r += 1;
+                    }
 
-                        // Dirty / ahead / behind on the next line, condensed.
-                        if r < bottom {
-                            let mut bits: Vec<(String, [u8; 3])> = Vec::new();
-                            if local.git_dirty > 0 {
-                                bits.push((format!("*{} modified", local.git_dirty), ATTENTION));
+                    // Row 4: HEAD short SHA + commit subject.
+                    if r < bottom && !local.head_short.is_empty() {
+                        let mut c = inner_col;
+                        for ch in local.head_short.chars() {
+                            if c >= max_col {
+                                break;
                             }
-                            let ab = format_ahead_behind(local.git_ahead, local.git_behind);
-                            if !ab.is_empty() {
-                                bits.push((ab, INFO_TEAL));
-                            }
-                            if bits.is_empty() {
-                                bits.push(("clean".to_string(), VERIFIED));
-                            }
-                            let mut c = inner_col;
-                            for (i, (txt, col)) in bits.iter().enumerate() {
-                                if i > 0 {
-                                    if c >= max_col {
-                                        break;
-                                    }
-                                    raster
-                                        .cell_glyph(painter, metrics, c, r, ' ' as u32, meta_color);
-                                    c += 1;
-                                    if c >= max_col {
-                                        break;
-                                    }
-                                    raster.cell_glyph(painter, metrics, c, r, 0x00b7, meta_color);
-                                    c += 1;
-                                    if c >= max_col {
-                                        break;
-                                    }
-                                    raster
-                                        .cell_glyph(painter, metrics, c, r, ' ' as u32, meta_color);
-                                    c += 1;
-                                }
-                                for ch in txt.chars() {
-                                    if c >= max_col {
-                                        break;
-                                    }
-                                    raster.cell_glyph(painter, metrics, c, r, ch as u32, *col);
-                                    c += 1;
-                                }
-                            }
-                            r += 1;
+                            raster.cell_glyph(painter, metrics, c, r, ch as u32, INFO_TEAL);
+                            c += 1;
                         }
-
-                        // HEAD commit, when known: short SHA in INFO_TEAL + subject in
-                        // meta tone. Subject truncates on cell-width — no wrapping.
-                        if r < bottom && !local.head_short.is_empty() {
-                            let mut c = inner_col;
-                            for ch in local.head_short.chars() {
+                        if !local.head_subject.is_empty() && c + 1 < max_col {
+                            raster.cell_glyph(painter, metrics, c, r, ' ' as u32, meta_color);
+                            c += 1;
+                            for ch in local.head_subject.chars() {
                                 if c >= max_col {
                                     break;
                                 }
-                                raster.cell_glyph(painter, metrics, c, r, ch as u32, INFO_TEAL);
+                                raster
+                                    .cell_glyph(painter, metrics, c, r, ch as u32, meta_color);
                                 c += 1;
                             }
-                            if !local.head_subject.is_empty() && c + 1 < max_col {
-                                raster.cell_glyph(painter, metrics, c, r, ' ' as u32, meta_color);
-                                c += 1;
-                                for ch in local.head_subject.chars() {
-                                    if c >= max_col {
-                                        break;
-                                    }
-                                    raster
-                                        .cell_glyph(painter, metrics, c, r, ch as u32, meta_color);
-                                    c += 1;
-                                }
-                            }
-                            // Click anywhere on the SHA row → copy the short sha.
-                            push_row_hit(
-                                hits,
-                                raster,
-                                metrics,
-                                inner_col,
-                                r,
-                                hud_cols - 3,
-                                &local.head_short,
-                                "",
-                            );
-                            r += 1;
                         }
+                        push_row_hit(
+                            hits,
+                            raster,
+                            metrics,
+                            inner_col,
+                            r,
+                            hud_cols - 3,
+                            &local.head_short,
+                            "",
+                        );
+                        r += 1;
                     }
                 }
             }
-            SectionId::LastRun => {
-                // --- LAST RUN ------------------------------------------
+            SectionId::Ci => {
+                // --- CI -----------------------------------------------
+                // Hidden when ci_status is None (poller not wired yet).
+                let Some(ref ci) = local.ci_status else {
+                    continue;
+                };
                 let header_row = r;
                 draw_section_header(
                     raster,
@@ -920,7 +949,7 @@ pub fn draw_right_hud(
                     metrics,
                     inner_col,
                     r,
-                    "LAST RUN",
+                    "CI",
                     label_color,
                     max_col,
                 );
@@ -934,11 +963,27 @@ pub fn draw_right_hud(
                     hud_cols,
                 );
                 r += 1;
+
+                // Row 1: status glyph + label + duration.
                 if r < bottom {
-                    let (glyph, gcol) = match local.run {
-                        RunState::Idle => ("\u{00b7}", meta_color),
-                        RunState::Ok => ("\u{2713}", VERIFIED), // ✓
-                        RunState::Failed => ("\u{2717}", FAILURE), // ✗
+                    use anvil_prompt_core::CiState;
+                    let (glyph, gcol, label) = match ci.state {
+                        CiState::Ok => (
+                            "\u{2713}",
+                            VERIFIED,
+                            format!("{} \u{00b7} {}s", ci.branch, ci.duration_s),
+                        ),
+                        CiState::Failed => (
+                            "\u{2717}",
+                            FAILURE,
+                            format!("{} \u{00b7} {}s", ci.branch, ci.duration_s),
+                        ),
+                        CiState::Running => (
+                            "\u{25CF}",
+                            INFO_TEAL,
+                            format!("{} running\u{2026}", ci.branch),
+                        ),
+                        CiState::Unknown => ("\u{00b7}", ALLOY, "no data".to_string()),
                     };
                     raster.cell_glyph(
                         painter,
@@ -948,97 +993,43 @@ pub fn draw_right_hud(
                         glyph.chars().next().unwrap() as u32,
                         gcol,
                     );
-                    let text = match local.run {
-                        RunState::Idle => "idle".to_string(),
-                        RunState::Ok => format!("ok  {}", format_duration(local.run_duration_ms)),
-                        RunState::Failed => format!(
-                            "exit {}  {}",
-                            local.run_exit,
-                            format_duration(local.run_duration_ms)
-                        ),
-                    };
                     draw_text(
                         raster,
                         painter,
                         metrics,
                         inner_col + 2,
                         r,
-                        &text,
+                        &label,
                         theme.foreground,
                         max_col,
                     );
                     r += 1;
                 }
-            }
-            SectionId::Build => {
-                // --- BUILD ---------------------------------------------
-                let Some(ref kind) = local.project_kind else {
-                    continue;
-                };
-                let header_row = r;
-                if r < bottom {
-                    draw_section_header(
+
+                // Row 2: open PRs count (when > 0).
+                if r < bottom && ci.open_prs > 0 {
+                    let pr_label = format!("{} open PR{}", ci.open_prs, if ci.open_prs == 1 { "" } else { "s" });
+                    draw_text(
                         raster,
                         painter,
                         metrics,
                         inner_col,
                         r,
-                        "BUILD",
-                        label_color,
+                        &pr_label,
+                        INFO_TEAL,
                         max_col,
                     );
-                    push_section_header_hit(
-                        section_hits,
-                        raster,
-                        metrics,
-                        sid,
-                        inner_col,
-                        header_row,
-                        hud_cols,
-                    );
-                    r += 1;
-                }
-                if r < bottom {
-                    // Project kind label (e.g. "cargo", "node", "make").
-                    let kind_label = match kind.as_str() {
-                        "rust" => "cargo",
-                        "node" => "node",
-                        "make" => "make",
-                        other => other,
-                    };
-                    let (status_str, status_col) = match local.run {
-                        RunState::Idle => ("—".to_string(), meta_color),
-                        RunState::Ok => (
-                            format!("ok  {}", format_duration(local.run_duration_ms)),
-                            VERIFIED,
-                        ),
-                        RunState::Failed => (
-                            format!(
-                                "exit {}  {}",
-                                local.run_exit,
-                                format_duration(local.run_duration_ms)
-                            ),
-                            FAILURE,
-                        ),
-                    };
-                    let mut c = inner_col;
-                    for ch in kind_label.chars() {
-                        if c >= max_col {
-                            break;
-                        }
-                        raster.cell_glyph(painter, metrics, c, r, ch as u32, theme.foreground);
-                        c += 1;
-                    }
-                    if c + 1 < max_col {
-                        raster.cell_glyph(painter, metrics, c, r, ' ' as u32, meta_color);
-                        c += 1;
-                    }
-                    for ch in status_str.chars() {
-                        if c >= max_col {
-                            break;
-                        }
-                        raster.cell_glyph(painter, metrics, c, r, ch as u32, status_col);
-                        c += 1;
+                    if !ci.pr_url.is_empty() {
+                        push_row_hit(
+                            hits,
+                            raster,
+                            metrics,
+                            inner_col,
+                            r,
+                            hud_cols - 3,
+                            &ci.pr_url,
+                            &ci.pr_url,
+                        );
                     }
                     r += 1;
                 }
@@ -1274,7 +1265,8 @@ pub fn draw_right_hud(
                 }
             }
             SectionId::System => {
-                // --- SYSTEM --------------------------------------------
+                // --- SYSTEM (compact) ----------------------------------
+                // Single row: "mem ▄▅▆▆▃▁ N/N GB · load X.XX"
                 let header_row = r;
                 draw_section_header(
                     raster,
@@ -1297,68 +1289,24 @@ pub fn draw_right_hud(
                 );
                 r += 1;
 
-                // mem line: "mem  ▆▆▆▅▃▁  6.2 / 16 GB"
+                // Single compact row: "mem ▄▅▆▆▃▁ N/N GB · load X.XX"
                 if r < bottom {
-                    let ratio = mem_usage_ratio().unwrap_or(0.0);
-                    let bar = gauge_bar(ratio, 6);
+                    let mem_ratio = mem_usage_ratio().unwrap_or(0.0);
+                    let mem_bar = gauge_bar(mem_ratio, 6);
                     let total_gb = total_mem_gb();
-                    let used_gb = ratio * total_gb;
-                    let mem_line = if total_gb > 0.0 {
-                        format!("mem  {bar}  {:.1} / {:.0} GB", used_gb, total_gb)
-                    } else {
-                        format!("mem  {bar}")
-                    };
-                    draw_text(
-                        raster,
-                        painter,
-                        metrics,
-                        inner_col,
-                        r,
-                        &mem_line,
-                        theme.foreground,
-                        max_col,
-                    );
-                    r += 1;
-                }
+                    let used_gb = mem_ratio * total_gb;
 
-                // disk line: "disk ▇▇▇▇▆▁  72 / 512 GB"
-                if r < bottom {
-                    let ratio = disk_usage_ratio().unwrap_or(0.0);
-                    let bar = gauge_bar(ratio, 6);
-                    let total_gb = total_disk_gb();
-                    let used_gb = ratio * total_gb;
-                    let disk_line = if total_gb > 0.0 {
-                        format!("disk {bar}  {:.0} / {:.0} GB", used_gb, total_gb)
-                    } else {
-                        format!("disk {bar}")
-                    };
-                    draw_text(
-                        raster,
-                        painter,
-                        metrics,
-                        inner_col,
-                        r,
-                        &disk_line,
-                        theme.foreground,
-                        max_col,
-                    );
-                    r += 1;
-                }
-
-                // load line: "load ▂▂▂▃▂▁  1.42"
-                if r < bottom {
                     let load_val = format_load_1m();
                     let load_str = load_val.as_deref().unwrap_or("—");
-                    // Normalize load against CPU count for the gauge (load/ncpu, capped at 1).
-                    let ncpu = num_cpus() as f64;
-                    let load_num: f64 = load_str.parse().unwrap_or(0.0);
-                    let load_ratio = if ncpu > 0.0 {
-                        (load_num / ncpu).clamp(0.0, 1.0)
+
+                    let line = if total_gb > 0.0 {
+                        format!(
+                            "mem {mem_bar} {:.0}/{:.0} GB \u{00b7} load {load_str}",
+                            used_gb, total_gb
+                        )
                     } else {
-                        0.0
+                        format!("mem {mem_bar} \u{00b7} load {load_str}")
                     };
-                    let bar = gauge_bar(load_ratio, 6);
-                    let line = format!("load {bar}  {load_str}");
                     draw_text(
                         raster,
                         painter,
@@ -1370,15 +1318,6 @@ pub fn draw_right_hud(
                         max_col,
                     );
                     r += 1;
-                }
-
-                if r < bottom {
-                    if let Some(hm) = format_local_hm() {
-                        draw_text(
-                            raster, painter, metrics, inner_col, r, &hm, meta_color, max_col,
-                        );
-                        // Nothing increments r — it's the last line we draw.
-                    }
                 }
             }
         }
@@ -1837,8 +1776,6 @@ pub fn gauge_bar(ratio: f64, cells: usize) -> String {
 
 /// ~1-second cache for the memory usage ratio (0.0–1.0).
 static MEM_CACHE: Mutex<Option<(Instant, f64)>> = Mutex::new(None);
-/// ~1-second cache for the disk usage ratio (0.0–1.0).
-static DISK_CACHE: Mutex<Option<(Instant, f64)>> = Mutex::new(None);
 
 const CACHE_TTL: Duration = Duration::from_secs(1);
 
@@ -1894,39 +1831,6 @@ fn mem_usage_ratio_uncached() -> Option<f64> {
     }
 }
 
-/// Disk usage ratio for the root volume via `statfs`. Returns None on failure.
-fn disk_usage_ratio() -> Option<f64> {
-    if let Ok(guard) = DISK_CACHE.lock() {
-        if let Some((ts, val)) = *guard {
-            if ts.elapsed() < CACHE_TTL {
-                return Some(val);
-            }
-        }
-    }
-    let ratio = disk_usage_ratio_uncached()?;
-    if let Ok(mut guard) = DISK_CACHE.lock() {
-        *guard = Some((Instant::now(), ratio));
-    }
-    Some(ratio)
-}
-
-fn disk_usage_ratio_uncached() -> Option<f64> {
-    // SAFETY: statfs is a POSIX read-only syscall; path is a valid C string.
-    unsafe {
-        let path = b"/\0";
-        let mut st: libc::statfs = std::mem::zeroed();
-        let ret = libc::statfs(path.as_ptr() as *const libc::c_char, &mut st);
-        if ret != 0 {
-            return None;
-        }
-        if st.f_blocks == 0 {
-            return None;
-        }
-        let used = st.f_blocks - st.f_bfree;
-        Some((used as f64 / st.f_blocks as f64).clamp(0.0, 1.0))
-    }
-}
-
 /// Total physical memory in GB via `sysctlbyname("hw.memsize")`. Returns 0.0 on failure.
 fn total_mem_gb() -> f64 {
     // SAFETY: sysctlbyname reads a kernel variable; no mutation of process state.
@@ -1946,37 +1850,6 @@ fn total_mem_gb() -> f64 {
         } else {
             size as f64 / 1_073_741_824.0
         }
-    }
-}
-
-/// Total disk size in GB for `/`. Returns 0.0 on failure.
-fn total_disk_gb() -> f64 {
-    // SAFETY: statfs read-only syscall.
-    unsafe {
-        let path = b"/\0";
-        let mut st: libc::statfs = std::mem::zeroed();
-        if libc::statfs(path.as_ptr() as *const libc::c_char, &mut st) != 0 {
-            return 0.0;
-        }
-        st.f_blocks as f64 * st.f_bsize as f64 / 1_073_741_824.0
-    }
-}
-
-/// Number of logical CPUs via `sysctl hw.logicalcpu`. Falls back to 1.
-fn num_cpus() -> usize {
-    // SAFETY: sysctlbyname reads a kernel variable; no process-state mutation.
-    unsafe {
-        let name = b"hw.logicalcpu\0";
-        let mut val: libc::c_int = 1;
-        let mut len: libc::size_t = std::mem::size_of::<libc::c_int>();
-        libc::sysctlbyname(
-            name.as_ptr() as *const libc::c_char,
-            &mut val as *mut libc::c_int as *mut libc::c_void,
-            &mut len,
-            std::ptr::null_mut(),
-            0,
-        );
-        val.max(1) as usize
     }
 }
 
@@ -2664,11 +2537,12 @@ mod tests {
         );
     }
 
-    // --- BUILD section -------------------------------------------------------
+    // --- CONTEXT section -------------------------------------------------------
 
-    /// BUILD section emits kind label and status when project_kind is Some.
+    /// CONTEXT section emits cluster and namespace when kube_context is Some.
     #[test]
-    fn build_section_emits_glyphs_when_project_kind_set() {
+    fn context_section_emits_glyphs_when_kube_present() {
+        use anvil_prompt_core::{EnvKind, KubeCtx};
         let m = metrics();
         let mut r = Raster::new(1200, 800);
         r.pad_x = 24.0;
@@ -2680,9 +2554,11 @@ mod tests {
         };
         let local = LocalContext {
             cwd: "/Users/p/anvil".to_string(),
-            project_kind: Some("rust".to_string()),
-            run: RunState::Ok,
-            run_duration_ms: 1200,
+            kube_context: Some(KubeCtx {
+                cluster: "gke-dev".to_string(),
+                namespace: "default".to_string(),
+                env_kind: EnvKind::Dev,
+            }),
             ..LocalContext::default()
         };
         let surface_rect = PixelRect {
@@ -2714,26 +2590,27 @@ mod tests {
             .iter()
             .filter_map(|(cp, _)| char::from_u32(*cp))
             .collect();
-        // "cargo" label and "ok" status must appear.
-        assert!(chars.contains(&'c') && chars.contains(&'a') && chars.contains(&'r'));
-        assert!(chars.contains(&'o') && chars.contains(&'k'));
+        // "gke-dev" cluster and "default" namespace chars must appear.
+        assert!(chars.contains(&'g'), "expected 'g' from cluster name");
+        assert!(chars.contains(&'k'), "expected 'k' from cluster name");
+        assert!(chars.contains(&'e'), "expected 'e' from cluster name");
     }
 
-    /// BUILD section is omitted when project_kind is None.
+    /// CONTEXT section is omitted when kube_context is None.
     #[test]
-    fn build_section_omitted_when_no_project_kind() {
+    fn context_section_omitted_when_no_kube() {
         let m = metrics();
-        let mut r_full = Raster::new(1200, 800);
-        r_full.pad_x = 24.0;
-        r_full.pad_y = 24.0;
-        let mut painter_no_kind = StubPainter::default();
+        let mut r = Raster::new(1200, 800);
+        r.pad_x = 24.0;
+        r.pad_y = 24.0;
+        let mut painter = StubPainter::default();
         let snap = Snapshot {
             connection: Connection::Live,
             ..Default::default()
         };
-        let local_no_kind = LocalContext {
+        let local = LocalContext {
             cwd: "/Users/p/anvil".to_string(),
-            project_kind: None,
+            kube_context: None,
             ..LocalContext::default()
         };
         let surface_rect = PixelRect {
@@ -2745,12 +2622,12 @@ mod tests {
         let mut hits = Vec::new();
         let mut section_hits: Vec<SectionHeaderHit> = Vec::new();
         draw_right_hud(
-            &mut r_full,
-            &mut painter_no_kind,
+            &mut r,
+            &mut painter,
             m,
             &anvil_theme::MINERAL_DARK,
             &snap,
-            &local_no_kind,
+            &local,
             surface_rect,
             80,
             34,
@@ -2760,22 +2637,19 @@ mod tests {
             &SectionId::DEFAULT_ORDER,
             &mut section_hits,
         );
-        // "BUILD" section header chars: B, U, I, L, D
-        // We check that 'B','U','I','L','D' don't appear as the section
-        // header sequence — simpler: verify "cargo" doesn't appear.
-        let chars: Vec<char> = painter_no_kind
+        // "CONTEXT" header should not appear.
+        let chars: Vec<char> = painter
             .calls
             .iter()
             .filter_map(|(cp, _)| char::from_u32(*cp))
             .collect();
-        // "cargo" (lowercase) should not be in the output.
-        let cargo_str: Vec<char> = "cargo".chars().collect();
-        let has_cargo = chars
-            .windows(cargo_str.len())
-            .any(|w| w == cargo_str.as_slice());
+        let context_label: Vec<char> = "CONTEXT".chars().collect();
+        let has_context = chars
+            .windows(context_label.len())
+            .any(|w| w == context_label.as_slice());
         assert!(
-            !has_cargo,
-            "expected no 'cargo' label when project_kind=None"
+            !has_context,
+            "expected no CONTEXT header when kube_context is None"
         );
     }
 
@@ -3004,13 +2878,12 @@ mod tests {
         );
     }
 
-    // --- system_section_includes_mem_and_disk_lines -------------------------
+    // --- system_section_compact_row -----------------------------------------
 
-    /// Smoke test: draw_right_hud emits mem and disk line characters.
-    /// The SYSTEM section must include 'm', 'e' (from "mem") and 'd', 'i'
-    /// (from "disk") in its glyph output.
+    /// Smoke test: SYSTEM section emits a single compact row with "mem" and
+    /// "load" on one line. No "disk" row in the new design.
     #[test]
-    fn system_section_includes_mem_and_disk_lines() {
+    fn system_section_compact_row_has_mem_and_load() {
         let m = metrics();
         let mut r = Raster::new(1200, 800);
         r.pad_x = 24.0;
@@ -3053,16 +2926,21 @@ mod tests {
             .iter()
             .filter_map(|(cp, _)| char::from_u32(*cp))
             .collect();
-        // "mem" and "disk" labels must appear in the output.
-        // We check for 'm','e','m' sequence by looking for the letters.
+        // "mem" label must appear in the compact system row.
         assert!(chars.contains(&'m'), "expected 'm' (from 'mem') in output");
-        assert!(chars.contains(&'d'), "expected 'd' (from 'disk') in output");
-        assert!(chars.contains(&'k'), "expected 'k' (from 'disk') in output");
-        // At least one block glyph (▁–█) should be present from the gauges.
+        // "load" label must appear.
+        assert!(chars.contains(&'l'), "expected 'l' (from 'load') in output");
+        // At least one block glyph (▁–█) should be present from the mem gauge.
         let has_block = chars.iter().any(|c| GAUGE_BLOCKS.contains(c));
         assert!(
             has_block,
             "expected at least one block glyph in SYSTEM section"
         );
+        // "disk" should NOT appear — it was removed from SYSTEM.
+        let disk_label: Vec<char> = "disk".chars().collect();
+        let has_disk = chars
+            .windows(disk_label.len())
+            .any(|w| w == disk_label.as_slice());
+        assert!(!has_disk, "expected no 'disk' row in compact SYSTEM section");
     }
 }

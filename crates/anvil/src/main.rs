@@ -1522,16 +1522,19 @@ impl App {
         // and the small floating agent card.
         if eff_hud {
             let cw = self.font.metrics.cell_w;
-            let rows = (((dh.saturating_sub(2 * GRID_PAD)) as f64 / ch) as usize).max(1);
+            let hud_top = self.chrome_top_px();
+            let hud_bot = self.chrome_bottom_px();
+            let hud_h = (dh as f64 - hud_top - hud_bot).max(0.0);
+            let rows = ((hud_h / ch) as usize).max(1);
 
-            // Surface: rightmost slab of the window, edge-to-edge.
+            // Surface: rightmost slab of the window, between chrome strips.
             let hud_cols = self.hud_cols;
             let surface_w_px = hud_cols as f64 * cw + GRID_PAD as f64;
             let surface_rect = anvil_render::raster::PixelRect {
                 x: (dw as f64 - surface_w_px).max(0.0),
-                y: 0.0,
+                y: hud_top,
                 w: surface_w_px.min(dw as f64),
-                h: dh as f64,
+                h: hud_h,
             };
 
             // Content column: cell-grid coord whose pixel position sits one
