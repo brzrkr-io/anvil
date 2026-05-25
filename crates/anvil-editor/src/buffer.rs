@@ -1,7 +1,12 @@
-//! Native rope-backed text buffer — NE1 skeleton.
+//! Native rope-backed text buffer — NE1 skeleton, NE2 file IO, NE3 undo/redo.
 //!
 //! `Buffer` is the primary editing model. All positions are grapheme-column
-//! based (not byte offsets). UTF-8 only.
+//! based (not byte offsets). UTF-8 only internally; UTF-16 BOM files are
+//! decoded on read and saved back as UTF-8.
+
+use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
+use std::time::{Instant, SystemTime};
 
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -56,21 +61,125 @@ pub struct EditProposal {}
 #[derive(Debug, Clone)]
 pub struct GhostTextSpan {}
 
-/// A revision tag — empty placeholder, reserved for NE14.
-#[derive(Debug, Clone)]
-pub struct RevisionTag {}
+// ---------------------------------------------------------------------------
+// IO error types (NE2)
+// ---------------------------------------------------------------------------
+
+/// Error returned by [`Buffer::from_path`] and [`Buffer::save`].
+#[derive(Debug)]
+pub enum IoError {
+    /// File exceeds the maximum allowed size (50 MB by default).
+    TooLarge,
+    /// Encoding could not be decoded.
+    Encoding(EncodingError),
+    /// Underlying OS I/O failure.
+    Io(std::io::Error),
+}
+
+impl std::fmt::Display for IoError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IoError::TooLarge => write!(f, "file too large (exceeds the 50 MB limit)"),
+            IoError::Encoding(e) => write!(f, "encoding error: {e}"),
+            IoError::Io(e) => write!(f, "IO error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for IoError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            IoError::Io(e) => Some(e),
+            IoError::Encoding(e) => Some(e),
+            IoError::TooLarge => None,
+        }
+    }
+}
+
+impl From<std::io::Error> for IoError {
+    fn from(e: std::io::Error) -> Self {
+        IoError::Io(e)
+    }
+}
+
+/// Encoding-level decode failure.
+#[derive(Debug)]
+pub enum EncodingError {
+    /// Bytes were not valid UTF-8 and no BOM indicated another encoding.
+    InvalidUtf8,
+    /// A BOM indicated an encoding Anvil does not support (e.g. UTF-32).
+    UnsupportedEncoding,
+}
+
+impl std::fmt::Display for EncodingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EncodingError::InvalidUtf8 => write!(f, "invalid UTF-8 sequence"),
+            EncodingError::UnsupportedEncoding => write!(f, "unsupported encoding"),
+        }
+    }
+}
+
+impl std::error::Error for EncodingError {}
+
+// ---------------------------------------------------------------------------
+// Undo / redo types (NE3)
+// ---------------------------------------------------------------------------
+
+/// One recorded edit plus its pre-computed inverse and a wall-clock timestamp.
+pub struct EditRecord {
+    /// The forward edit (already applied to the rope).
+    pub edit: Edit,
+    /// The inverse edit (restores the rope to the state before `edit`).
+    pub inverse: Edit,
+    /// When this edit was applied.
+    pub at: Instant,
+}
+
+/// Groups of `EditRecord`s forming an undo/redo history.
+///
+/// Each `Vec<EditRecord>` is one undo group (e.g. a burst of typed characters).
+pub struct UndoStack {
+    undo: VecDeque<Vec<EditRecord>>,
+    redo: VecDeque<Vec<EditRecord>>,
+    /// Maximum number of undo groups retained. Oldest groups are evicted first.
+    cap: usize,
+}
+
+impl UndoStack {
+    fn new(cap: usize) -> Self {
+        UndoStack {
+            undo: VecDeque::new(),
+            redo: VecDeque::new(),
+            cap,
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Buffer
 // ---------------------------------------------------------------------------
 
+const DEFAULT_UNDO_CAP: usize = 1000;
+/// Maximum gap between two single-char inserts for them to coalesce (ms).
+const COALESCE_MS: u128 = 500;
+
 /// A rope-backed UTF-8 text buffer.
 pub struct Buffer {
     rope: ropey::Rope,
+    /// Monotonic counter bumped on every applied edit. Used by NE14 proposals.
+    pub revisions: u64,
     /// AI-native proposal slots — allocated empty in NE1 so NE14 doesn't break shapes.
     pub proposals: Vec<EditProposal>,
     pub ghost_text: Vec<GhostTextSpan>,
-    pub revisions: Vec<RevisionTag>,
+    /// Undo/redo history.
+    pub undo_stack: UndoStack,
+    /// When `true`, the next `apply_edit` always starts a new undo group.
+    force_new_group: bool,
+    /// Path this buffer was loaded from or last saved to (NE2).
+    tracked_path: Option<PathBuf>,
+    /// mtime recorded at last open or save (NE2).
+    tracked_mtime: Option<SystemTime>,
 }
 
 impl Buffer {
@@ -78,9 +187,13 @@ impl Buffer {
     pub fn new() -> Buffer {
         Buffer {
             rope: ropey::Rope::new(),
+            revisions: 0,
             proposals: Vec::new(),
             ghost_text: Vec::new(),
-            revisions: Vec::new(),
+            undo_stack: UndoStack::new(DEFAULT_UNDO_CAP),
+            force_new_group: false,
+            tracked_path: None,
+            tracked_mtime: None,
         }
     }
 
@@ -88,10 +201,85 @@ impl Buffer {
     pub fn from_text(text: &str) -> Buffer {
         Buffer {
             rope: ropey::Rope::from_str(text),
+            revisions: 0,
             proposals: Vec::new(),
             ghost_text: Vec::new(),
-            revisions: Vec::new(),
+            undo_stack: UndoStack::new(DEFAULT_UNDO_CAP),
+            force_new_group: false,
+            tracked_path: None,
+            tracked_mtime: None,
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // File IO (NE2)
+    // -----------------------------------------------------------------------
+
+    /// Load a buffer from `path`.
+    ///
+    /// Refuses files larger than 50 MB. Detects encoding from BOM:
+    /// - UTF-8 BOM (`EF BB BF`): strip BOM, parse as UTF-8.
+    /// - UTF-16 LE BOM (`FF FE`): decode as UTF-16 LE.
+    /// - UTF-16 BE BOM (`FE FF`): decode as UTF-16 BE.
+    /// - No BOM: attempt UTF-8; invalid bytes → `IoError::Encoding(EncodingError::InvalidUtf8)`.
+    ///
+    /// On success, records the file path and its mtime for change detection.
+    pub fn from_path(path: &Path) -> Result<Buffer, IoError> {
+        Buffer::from_path_with_limit(path, 50 * 1024 * 1024)
+    }
+
+    /// Like [`from_path`] but with a custom byte limit — used by tests to
+    /// exercise the size cap without 50 MB temp files.
+    pub(crate) fn from_path_with_limit(path: &Path, max_bytes: u64) -> Result<Buffer, IoError> {
+        let meta = std::fs::metadata(path)?;
+        if meta.len() > max_bytes {
+            return Err(IoError::TooLarge);
+        }
+        let bytes = std::fs::read(path)?;
+        let mtime = meta.modified().ok();
+        let text = decode_bytes(&bytes)?;
+        let mut buf = Buffer::from_text(&text);
+        buf.tracked_path = Some(path.to_path_buf());
+        buf.tracked_mtime = mtime;
+        Ok(buf)
+    }
+
+    /// Serialize the buffer content to a UTF-8 `String`.
+    pub fn to_text(&self) -> String {
+        self.rope.to_string()
+    }
+
+    /// Save the buffer to `path` atomically (write `<path>.tmp`, then rename).
+    ///
+    /// On success, records the path and new on-disk mtime.
+    pub fn save(&mut self, path: &Path) -> Result<(), IoError> {
+        let tmp = path.with_extension("tmp");
+        let text = self.to_text();
+        std::fs::write(&tmp, text.as_bytes())?;
+        std::fs::rename(&tmp, path)?;
+        let mtime = std::fs::metadata(path)?.modified().ok();
+        self.tracked_path = Some(path.to_path_buf());
+        self.tracked_mtime = mtime;
+        self.flush_undo_group();
+        Ok(())
+    }
+
+    /// Returns `true` if the file on disk has been modified since the buffer
+    /// was last opened or saved.
+    ///
+    /// Returns `false` when no path has ever been tracked or the mtime cannot
+    /// be read.
+    pub fn is_externally_modified(&self) -> bool {
+        let (Some(path), Some(tracked)) = (&self.tracked_path, &self.tracked_mtime) else {
+            return false;
+        };
+        let Ok(meta) = std::fs::metadata(path) else {
+            return false;
+        };
+        let Ok(disk_mtime) = meta.modified() else {
+            return false;
+        };
+        disk_mtime != *tracked
     }
 
     // -----------------------------------------------------------------------
@@ -138,38 +326,262 @@ impl Buffer {
     }
 
     // -----------------------------------------------------------------------
-    // Edit operations
+    // Edit operations (all route through apply_edit)
     // -----------------------------------------------------------------------
 
     /// Insert a single char at `pos`.
     pub fn insert_char(&mut self, pos: Position, ch: char) {
-        let idx = self.pos_to_char_idx(pos);
-        self.rope.insert_char(idx, ch);
+        self.apply_edit(Edit {
+            range: Range {
+                start: pos,
+                end: pos,
+            },
+            replacement: ch.to_string(),
+        });
     }
 
     /// Insert `text` at `pos`.
     pub fn insert_str(&mut self, pos: Position, text: &str) {
-        let idx = self.pos_to_char_idx(pos);
-        self.rope.insert(idx, text);
+        self.apply_edit(Edit {
+            range: Range {
+                start: pos,
+                end: pos,
+            },
+            replacement: text.to_string(),
+        });
     }
 
     /// Delete the text covered by `range`.
     pub fn delete_range(&mut self, range: Range) {
-        let start = self.pos_to_char_idx(range.start);
-        let end = self.pos_to_char_idx(range.end);
-        if start < end {
-            self.rope.remove(start..end);
-        }
+        self.apply_edit(Edit {
+            range,
+            replacement: String::new(),
+        });
     }
 
     /// Replace the text covered by `range` with `replacement`.
     pub fn replace_range(&mut self, range: Range, replacement: &str) {
-        let start = self.pos_to_char_idx(range.start);
-        let end = self.pos_to_char_idx(range.end);
-        if start < end {
-            self.rope.remove(start..end);
+        self.apply_edit(Edit {
+            range,
+            replacement: replacement.to_string(),
+        });
+    }
+
+    // -----------------------------------------------------------------------
+    // Undo / redo
+    // -----------------------------------------------------------------------
+
+    /// Apply an edit, record its inverse on the undo stack, and clear redo.
+    ///
+    /// Coalesces with the previous group when:
+    /// - the new edit is a single-char true insert (start == end, 1 char)
+    /// - the prior group's last edit was also a single-char true insert
+    /// - within `COALESCE_MS` ms of the prior group's last edit
+    /// - adjacent in buffer (new start == position after prior insert)
+    /// - `force_new_group` is not set
+    pub fn apply_edit(&mut self, edit: Edit) {
+        self.apply_edit_at(edit, Instant::now());
+    }
+
+    /// Force a new undo group boundary on the next `apply_edit`.
+    ///
+    /// Call this on cursor jumps, selection changes, and save() so subsequent
+    /// edits do not coalesce into the prior group.
+    pub fn flush_undo_group(&mut self) {
+        self.force_new_group = true;
+    }
+
+    /// Undo the top group on the undo stack. No-op if the stack is empty.
+    ///
+    /// Applies each record's `inverse` in reverse group order, then pushes
+    /// the group onto the redo stack (unchanged — redo re-applies `.edit`).
+    pub fn undo(&mut self) {
+        if let Some(group) = self.undo_stack.undo.pop_back() {
+            // Apply inverses in reverse order.
+            for record in group.iter().rev() {
+                self.apply_edit_internal(&record.inverse);
+            }
+            // The group, with edit/inverse intact, becomes the redo group.
+            self.undo_stack.redo.push_back(group);
+            self.revisions += 1;
         }
-        self.rope.insert(start, replacement);
+    }
+
+    /// Redo the top group on the redo stack. No-op if the stack is empty.
+    ///
+    /// Applies each record's `edit` in forward order, then pushes the group
+    /// back onto the undo stack.
+    pub fn redo(&mut self) {
+        if let Some(group) = self.undo_stack.redo.pop_back() {
+            // Apply forward edits in forward order.
+            for record in group.iter() {
+                self.apply_edit_internal(&record.edit);
+            }
+            self.undo_stack.undo.push_back(group);
+            self.revisions += 1;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Internal helpers
+    // -----------------------------------------------------------------------
+
+    /// Core of `apply_edit`; also used internally by `undo`/`redo`.
+    /// Handles undo recording, coalescing, and rope mutation.
+    fn apply_edit_at(&mut self, edit: Edit, at: Instant) {
+        // Capture the text that will be overwritten BEFORE mutating the rope.
+        let start_char = self.pos_to_char_idx(edit.range.start);
+        let end_char = self.pos_to_char_idx(edit.range.end);
+        let overwritten: String = self.rope.slice(start_char..end_char).chars().collect();
+
+        // Check coalesce eligibility BEFORE mutating (needs current rope state).
+        let should_coalesce = !self.force_new_group && self.can_coalesce(&edit, at);
+        self.force_new_group = false;
+
+        // Mutate the rope.
+        self.apply_edit_internal(&edit);
+        self.revisions += 1;
+
+        // Clear redo — any new edit invalidates the redo path.
+        self.undo_stack.redo.clear();
+
+        // Build the inverse AFTER applying: the inverse range end is now the
+        // position after the replacement text in the new rope.
+        let n_replacement_chars = edit.replacement.chars().count();
+        let inverse_end = self.position_after(edit.range.start, n_replacement_chars);
+        let inverse = Edit {
+            range: Range {
+                start: edit.range.start,
+                end: inverse_end,
+            },
+            replacement: overwritten,
+        };
+
+        let record = EditRecord { edit, inverse, at };
+
+        if should_coalesce {
+            // Safety: can_coalesce only returns true when undo is non-empty.
+            self.undo_stack.undo.back_mut().unwrap().push(record);
+        } else {
+            self.undo_stack.undo.push_back(vec![record]);
+            // Evict oldest group if over cap.
+            while self.undo_stack.undo.len() > self.undo_stack.cap {
+                self.undo_stack.undo.pop_front();
+            }
+        }
+    }
+
+    /// Apply the rope mutation for `edit` (no undo recording).
+    fn apply_edit_internal(&mut self, edit: &Edit) {
+        let start_char = self.pos_to_char_idx(edit.range.start);
+        let end_char = self.pos_to_char_idx(edit.range.end);
+        if start_char < end_char {
+            self.rope.remove(start_char..end_char);
+        }
+        if !edit.replacement.is_empty() {
+            self.rope.insert(start_char, &edit.replacement);
+        }
+    }
+
+    /// Check whether `edit` can coalesce into the current top undo group.
+    fn can_coalesce(&self, edit: &Edit, at: Instant) -> bool {
+        // Must be a single-char true insert (no deletion).
+        if edit.range.start != edit.range.end {
+            return false;
+        }
+        if edit.replacement.chars().count() != 1 {
+            return false;
+        }
+        let group = match self.undo_stack.undo.back() {
+            Some(g) => g,
+            None => return false,
+        };
+        let prior = match group.last() {
+            Some(r) => r,
+            None => return false,
+        };
+        // Prior must also be a single-char true insert.
+        if prior.edit.range.start != prior.edit.range.end {
+            return false;
+        }
+        if prior.edit.replacement.chars().count() != 1 {
+            return false;
+        }
+        // Within 500ms.
+        if at.duration_since(prior.at).as_millis() >= COALESCE_MS {
+            return false;
+        }
+        // Adjacency: new edit's start must equal the position right after the
+        // prior insert (prior.range.start advanced by 1 char).
+        let expected_next = self.position_after_applied(prior.edit.range.start, 1);
+        edit.range.start == expected_next
+    }
+
+    /// Walk `n` Unicode scalar values forward from `start` through the rope.
+    ///
+    /// Used to compute the inverse range end (where the replacement ends up).
+    /// This is called BEFORE applying the edit, so the rope is in the pre-edit
+    /// state — but `start` is already a valid position in that state.
+    fn position_after(&self, start: Position, n_chars: usize) -> Position {
+        if n_chars == 0 {
+            return start;
+        }
+        let start_idx = self.pos_to_char_idx(start);
+        // Walk forward n_chars through the rope chars, counting newlines.
+        let total_chars = self.rope.len_chars();
+        let mut line = start.line;
+        let mut remaining = n_chars;
+
+        // Recompute col_chars from line start to start_idx so we can track col.
+        let line_start_idx = self.rope.line_to_char(line);
+        let already_walked = start_idx - line_start_idx;
+        let mut col_chars = already_walked;
+
+        let mut idx = start_idx;
+        while remaining > 0 && idx < total_chars {
+            let ch = self.rope.char(idx);
+            idx += 1;
+            remaining -= 1;
+            if ch == '\n' {
+                line += 1;
+                col_chars = 0;
+            } else {
+                col_chars += 1;
+            }
+        }
+        // col_chars is a raw scalar count; convert to grapheme column by re-reading
+        // the line up to col_chars scalars.
+        let grapheme_col = self.scalar_offset_to_grapheme_col(line, col_chars);
+        Position {
+            line,
+            col: grapheme_col,
+        }
+    }
+
+    /// Like `position_after` but operates on the rope's *current* state after
+    /// edits have been applied (used by coalesce adjacency check).
+    fn position_after_applied(&self, start: Position, n_chars: usize) -> Position {
+        // Identical implementation — delegates to the same rope.
+        self.position_after(start, n_chars)
+    }
+
+    /// Convert a scalar offset `n` from the start of `line` to a grapheme column.
+    fn scalar_offset_to_grapheme_col(&self, line: usize, scalar_offset: usize) -> usize {
+        if line >= self.rope.len_lines() {
+            return 0;
+        }
+        let line_slice = self.rope.line(line);
+        let line_str: String = line_slice.chars().collect();
+        let mut col = 0usize;
+        let mut scalars_seen = 0usize;
+        for grapheme in line_str.graphemes(true) {
+            if scalars_seen >= scalar_offset {
+                break;
+            }
+            scalars_seen += grapheme.chars().count();
+            col += 1;
+        }
+        col
     }
 
     // -----------------------------------------------------------------------
@@ -219,8 +631,96 @@ impl Default for Buffer {
 }
 
 // ---------------------------------------------------------------------------
+// Encoding helpers (NE2) — std only, no new crates
+// ---------------------------------------------------------------------------
+
+/// Detect BOM, strip it, and return the file text as UTF-8.
+fn decode_bytes(bytes: &[u8]) -> Result<String, IoError> {
+    // UTF-8 BOM: EF BB BF
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        let without_bom = &bytes[3..];
+        return std::str::from_utf8(without_bom)
+            .map(|s| s.to_owned())
+            .map_err(|_| IoError::Encoding(EncodingError::InvalidUtf8));
+    }
+    // UTF-16 LE BOM: FF FE
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        return decode_utf16_le(&bytes[2..]);
+    }
+    // UTF-16 BE BOM: FE FF
+    if bytes.starts_with(&[0xFE, 0xFF]) {
+        return decode_utf16_be(&bytes[2..]);
+    }
+    // No BOM: attempt UTF-8.
+    std::str::from_utf8(bytes)
+        .map(|s| s.to_owned())
+        .map_err(|_| IoError::Encoding(EncodingError::InvalidUtf8))
+}
+
+/// Decode UTF-16 LE bytes (BOM already stripped) to a UTF-8 `String`.
+fn decode_utf16_le(bytes: &[u8]) -> Result<String, IoError> {
+    if bytes.len() % 2 != 0 {
+        return Err(IoError::Encoding(EncodingError::InvalidUtf8));
+    }
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    char::decode_utf16(units)
+        .collect::<Result<String, _>>()
+        .map_err(|_| IoError::Encoding(EncodingError::InvalidUtf8))
+}
+
+/// Decode UTF-16 BE bytes (BOM already stripped) to a UTF-8 `String`.
+fn decode_utf16_be(bytes: &[u8]) -> Result<String, IoError> {
+    if bytes.len() % 2 != 0 {
+        return Err(IoError::Encoding(EncodingError::InvalidUtf8));
+    }
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|c| u16::from_be_bytes([c[0], c[1]]))
+        .collect();
+    char::decode_utf16(units)
+        .collect::<Result<String, _>>()
+        .map_err(|_| IoError::Encoding(EncodingError::InvalidUtf8))
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+impl Buffer {
+    /// Like `apply_edit` but with an injected timestamp — for testing the
+    /// 500ms coalesce boundary without sleeping.
+    pub fn apply_edit_at_ts(&mut self, edit: Edit, at: Instant) {
+        self.apply_edit_at(edit, at);
+    }
+
+    /// Create a buffer with a custom undo cap (for cap-eviction tests).
+    pub fn with_undo_cap(cap: usize) -> Buffer {
+        Buffer {
+            rope: ropey::Rope::new(),
+            revisions: 0,
+            proposals: Vec::new(),
+            ghost_text: Vec::new(),
+            undo_stack: UndoStack::new(cap),
+            force_new_group: false,
+            tracked_path: None,
+            tracked_mtime: None,
+        }
+    }
+
+    /// Return the current undo group depth.
+    pub fn undo_depth(&self) -> usize {
+        self.undo_stack.undo.len()
+    }
+
+    /// Return the current redo group depth.
+    pub fn redo_depth(&self) -> usize {
+        self.undo_stack.redo.len()
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -237,6 +737,10 @@ mod tests {
         }
     }
 
+    fn text(b: &Buffer) -> String {
+        b.rope.chars().collect()
+    }
+
     // ── Construction ─────────────────────────────────────────────────────────
 
     #[test]
@@ -247,16 +751,16 @@ mod tests {
         assert_eq!(b.line_count(), 1); // ropey: empty rope has 1 "line"
         assert!(b.proposals.is_empty());
         assert!(b.ghost_text.is_empty());
-        assert!(b.revisions.is_empty());
+        assert_eq!(b.revisions, 0);
     }
 
     #[test]
     fn buffer_from_text_round_trip() {
-        let text = "hello\nworld\n";
-        let b = Buffer::from_text(text);
+        let t = "hello\nworld\n";
+        let b = Buffer::from_text(t);
         let collected: String = b.rope.chars().collect();
-        assert_eq!(collected, text);
-        assert_eq!(b.byte_len(), text.len());
+        assert_eq!(collected, t);
+        assert_eq!(b.byte_len(), t.len());
     }
 
     // ── Line access ──────────────────────────────────────────────────────────
@@ -402,5 +906,395 @@ mod tests {
         let b3 = Buffer::new();
         let s: String = b3.line(0).chars().collect();
         assert_eq!(s, "");
+    }
+
+    // ── NE3: Undo / redo ─────────────────────────────────────────────────────
+
+    #[test]
+    fn undo_single_char_insert() {
+        let mut b = Buffer::new();
+        b.insert_char(pos(0, 0), 'h');
+        assert_eq!(text(&b), "h");
+        b.undo();
+        assert_eq!(text(&b), "");
+        assert_eq!(b.undo_depth(), 0);
+    }
+
+    #[test]
+    fn undo_coalesces_consecutive_typing() {
+        // Type "hello" letter by letter — should form one undo group.
+        let mut b = Buffer::new();
+        let t0 = Instant::now();
+        b.apply_edit_at_ts(
+            Edit {
+                range: Range {
+                    start: pos(0, 0),
+                    end: pos(0, 0),
+                },
+                replacement: "h".into(),
+            },
+            t0,
+        );
+        b.apply_edit_at_ts(
+            Edit {
+                range: Range {
+                    start: pos(0, 1),
+                    end: pos(0, 1),
+                },
+                replacement: "e".into(),
+            },
+            t0,
+        );
+        b.apply_edit_at_ts(
+            Edit {
+                range: Range {
+                    start: pos(0, 2),
+                    end: pos(0, 2),
+                },
+                replacement: "l".into(),
+            },
+            t0,
+        );
+        b.apply_edit_at_ts(
+            Edit {
+                range: Range {
+                    start: pos(0, 3),
+                    end: pos(0, 3),
+                },
+                replacement: "l".into(),
+            },
+            t0,
+        );
+        b.apply_edit_at_ts(
+            Edit {
+                range: Range {
+                    start: pos(0, 4),
+                    end: pos(0, 4),
+                },
+                replacement: "o".into(),
+            },
+            t0,
+        );
+        assert_eq!(text(&b), "hello");
+        assert_eq!(
+            b.undo_depth(),
+            1,
+            "all 5 chars should coalesce into one group"
+        );
+        b.undo();
+        assert_eq!(text(&b), "");
+    }
+
+    #[test]
+    fn undo_breaks_on_cursor_jump() {
+        let mut b = Buffer::new();
+        let t0 = Instant::now();
+        // Type "hi".
+        b.apply_edit_at_ts(
+            Edit {
+                range: Range {
+                    start: pos(0, 0),
+                    end: pos(0, 0),
+                },
+                replacement: "h".into(),
+            },
+            t0,
+        );
+        b.apply_edit_at_ts(
+            Edit {
+                range: Range {
+                    start: pos(0, 1),
+                    end: pos(0, 1),
+                },
+                replacement: "i".into(),
+            },
+            t0,
+        );
+        // Simulate cursor jump.
+        b.flush_undo_group();
+        // Type "lo" at a non-adjacent position (simulate cursor moved to col 0).
+        b.apply_edit_at_ts(
+            Edit {
+                range: Range {
+                    start: pos(0, 0),
+                    end: pos(0, 0),
+                },
+                replacement: "l".into(),
+            },
+            t0,
+        );
+        b.apply_edit_at_ts(
+            Edit {
+                range: Range {
+                    start: pos(0, 1),
+                    end: pos(0, 1),
+                },
+                replacement: "o".into(),
+            },
+            t0,
+        );
+        assert_eq!(b.undo_depth(), 2, "flush_undo_group must break coalescing");
+        // First undo: removes the "lo" group.
+        b.undo();
+        // Second undo: removes the "hi" group.
+        b.undo();
+        assert_eq!(text(&b), "");
+        assert_eq!(b.undo_depth(), 0);
+    }
+
+    #[test]
+    fn undo_breaks_on_500ms_gap() {
+        let mut b = Buffer::new();
+        let t0 = Instant::now();
+        // Type "h" at t0.
+        b.apply_edit_at_ts(
+            Edit {
+                range: Range {
+                    start: pos(0, 0),
+                    end: pos(0, 0),
+                },
+                replacement: "h".into(),
+            },
+            t0,
+        );
+        // Type "i" at t0 + 600ms — beyond the 500ms window.
+        let t1 = t0 + std::time::Duration::from_millis(600);
+        b.apply_edit_at_ts(
+            Edit {
+                range: Range {
+                    start: pos(0, 1),
+                    end: pos(0, 1),
+                },
+                replacement: "i".into(),
+            },
+            t1,
+        );
+        assert_eq!(b.undo_depth(), 2, "600ms gap must break coalescing");
+        assert_eq!(text(&b), "hi");
+    }
+
+    #[test]
+    fn redo_after_undo_restores() {
+        let mut b = Buffer::new();
+        let t0 = Instant::now();
+        // Type "abc" — one coalesced group.
+        b.apply_edit_at_ts(
+            Edit {
+                range: Range {
+                    start: pos(0, 0),
+                    end: pos(0, 0),
+                },
+                replacement: "a".into(),
+            },
+            t0,
+        );
+        b.apply_edit_at_ts(
+            Edit {
+                range: Range {
+                    start: pos(0, 1),
+                    end: pos(0, 1),
+                },
+                replacement: "b".into(),
+            },
+            t0,
+        );
+        b.apply_edit_at_ts(
+            Edit {
+                range: Range {
+                    start: pos(0, 2),
+                    end: pos(0, 2),
+                },
+                replacement: "c".into(),
+            },
+            t0,
+        );
+        assert_eq!(text(&b), "abc");
+        b.undo();
+        assert_eq!(text(&b), "");
+        b.redo();
+        assert_eq!(text(&b), "abc");
+    }
+
+    #[test]
+    fn new_edit_after_undo_clears_redo() {
+        let mut b = Buffer::new();
+        let t0 = Instant::now();
+        b.apply_edit_at_ts(
+            Edit {
+                range: Range {
+                    start: pos(0, 0),
+                    end: pos(0, 0),
+                },
+                replacement: "a".into(),
+            },
+            t0,
+        );
+        b.apply_edit_at_ts(
+            Edit {
+                range: Range {
+                    start: pos(0, 1),
+                    end: pos(0, 1),
+                },
+                replacement: "b".into(),
+            },
+            t0,
+        );
+        b.apply_edit_at_ts(
+            Edit {
+                range: Range {
+                    start: pos(0, 2),
+                    end: pos(0, 2),
+                },
+                replacement: "c".into(),
+            },
+            t0,
+        );
+        b.undo();
+        assert_eq!(b.redo_depth(), 1);
+        // New edit clears the redo stack.
+        b.insert_char(pos(0, 0), 'x');
+        assert_eq!(
+            b.redo_depth(),
+            0,
+            "redo stack must be cleared after a new edit"
+        );
+        // Redo is a no-op.
+        b.redo();
+        assert_eq!(b.redo_depth(), 0);
+    }
+
+    #[test]
+    fn undo_cap_evicts_oldest() {
+        let mut b = Buffer::with_undo_cap(3);
+        // Create 4 distinct undo groups by flushing between each.
+        for i in 0u8..4 {
+            b.flush_undo_group();
+            b.insert_char(pos(0, i as usize), 'a');
+        }
+        assert_eq!(
+            b.undo_depth(),
+            3,
+            "oldest group evicted when cap == 3 and 4 groups inserted"
+        );
+    }
+
+    // ── NE2: File IO ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn io_round_trip_ascii() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ascii.txt");
+        let content = "hello world\n";
+        std::fs::write(&path, content).unwrap();
+        let buf = Buffer::from_path(&path).unwrap();
+        assert_eq!(buf.to_text(), content);
+    }
+
+    #[test]
+    fn io_round_trip_utf8() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("utf8.txt");
+        let content = "日本語テスト\nこんにちは\n";
+        std::fs::write(&path, content).unwrap();
+        let buf = Buffer::from_path(&path).unwrap();
+        assert_eq!(buf.to_text(), content);
+    }
+
+    #[test]
+    fn io_utf8_bom_stripped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bom_utf8.txt");
+        // UTF-8 BOM (EF BB BF) followed by content.
+        let mut bytes = vec![0xEF_u8, 0xBB, 0xBF];
+        bytes.extend_from_slice(b"hello\n");
+        std::fs::write(&path, &bytes).unwrap();
+        let buf = Buffer::from_path(&path).unwrap();
+        // BOM must be stripped; text starts at "hello".
+        assert_eq!(buf.to_text(), "hello\n");
+    }
+
+    #[test]
+    fn io_utf16_le_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("utf16le.txt");
+        let content = "hi\n";
+        // BOM (FF FE) + code units in little-endian order.
+        let mut bytes: Vec<u8> = vec![0xFF, 0xFE];
+        for unit in content.encode_utf16() {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        std::fs::write(&path, &bytes).unwrap();
+        let buf = Buffer::from_path(&path).unwrap();
+        assert_eq!(buf.to_text(), content);
+    }
+
+    #[test]
+    fn io_utf16_be_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("utf16be.txt");
+        let content = "hi\n";
+        // BOM (FE FF) + code units in big-endian order.
+        let mut bytes: Vec<u8> = vec![0xFE, 0xFF];
+        for unit in content.encode_utf16() {
+            bytes.extend_from_slice(&unit.to_be_bytes());
+        }
+        std::fs::write(&path, &bytes).unwrap();
+        let buf = Buffer::from_path(&path).unwrap();
+        assert_eq!(buf.to_text(), content);
+    }
+
+    #[test]
+    fn io_too_large_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("large.txt");
+        // 3 bytes; limit is 2 bytes.
+        std::fs::write(&path, b"abc").unwrap();
+        let result = Buffer::from_path_with_limit(&path, 2);
+        assert!(
+            matches!(result, Err(IoError::TooLarge)),
+            "expected TooLarge"
+        );
+    }
+
+    #[test]
+    fn io_invalid_utf8_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.txt");
+        // No BOM; bytes are not valid UTF-8.
+        std::fs::write(&path, b"\x80\x81invalid").unwrap();
+        let result = Buffer::from_path(&path);
+        assert!(
+            matches!(result, Err(IoError::Encoding(EncodingError::InvalidUtf8))),
+            "expected InvalidUtf8"
+        );
+    }
+
+    #[test]
+    fn io_atomic_save_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("save_test.txt");
+        let content = "saved content\n";
+        let mut buf = Buffer::from_text(content);
+        buf.save(&path).unwrap();
+        // Verify file on disk contains the expected bytes.
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(on_disk, content);
+        // Reload and confirm round-trip.
+        let buf2 = Buffer::from_path(&path).unwrap();
+        assert_eq!(buf2.to_text(), content);
+    }
+
+    #[test]
+    fn io_external_modification_detected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("watch.txt");
+        std::fs::write(&path, b"original\n").unwrap();
+        let buf = Buffer::from_path(&path).unwrap();
+        // No external modification yet.
+        assert!(!buf.is_externally_modified());
+        // Sleep ≥ 1 second to advance the filesystem mtime resolution.
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        std::fs::write(&path, b"modified\n").unwrap();
+        assert!(buf.is_externally_modified());
     }
 }

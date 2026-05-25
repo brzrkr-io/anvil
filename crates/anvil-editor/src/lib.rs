@@ -17,5 +17,6 @@ pub use nvim::transport::{Endpoint, Transport, TransportError};
 
 // Re-export buffer types.
 pub use buffer::{
-    Buffer, BufferId, Cursor, Edit, EditProposal, GhostTextSpan, Position, Range, RevisionTag,
+    Buffer, BufferId, Cursor, Edit, EditProposal, EditRecord, EncodingError, GhostTextSpan,
+    IoError, Position, Range, UndoStack,
 };
