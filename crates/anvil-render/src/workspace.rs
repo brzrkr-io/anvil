@@ -20,7 +20,7 @@ use anvil_workspace::{
 
 use crate::{
     draw::{CursorConfig, CursorParams, FoldedBlocks, GridPainters, draw_viewport},
-    editor::draw_editor_into,
+    editor::{RenderDiagnostic, draw_editor_into},
     raster::{FontMetrics, Raster},
 };
 
@@ -33,20 +33,23 @@ pub const DIVIDER_PX: f64 = 2.0;
 /// Draw all panes in `tree` into `raster`, then draw divider hairlines over them.
 ///
 /// Parameters:
-///   raster       — full-window raster bitmap.
-///   tree         — the current tab's pane tree (layout and focused id).
-///   registry     — the pane registry for the current tab.
-///   inner        — device-pixel content area (window minus top-bar and panels).
-///                  y=0 is the top of the raster. Layout is done in this space.
-///   div_px       — divider gutter width in device pixels (use `DIVIDER_PX`).
-///   metrics      — font metrics shared by all panes.
-///   theme        — shared theme for all panes.
-///   search       — active search state, or None.
-///   focused_id   — the pane that receives cursor rendering.
-///   blink_phase  — cursor blink phase [0, 1).
-///   cursor_cfg   — cursor style + blink preference from config.
-///   dirty        — per-pane dirty sets from `Terminal::take_dirty_rows`. When
-///                  `None`, every row of every pane is redrawn (full frame).
+///   raster           — full-window raster bitmap.
+///   tree             — the current tab's pane tree (layout and focused id).
+///   registry         — the pane registry for the current tab.
+///   editor_panes     — registry of native editor panes + buffers.
+///   inner            — device-pixel content area (window minus top-bar and panels).
+///                      y=0 is the top of the raster. Layout is done in this space.
+///   div_px           — divider gutter width in device pixels (use `DIVIDER_PX`).
+///   metrics          — font metrics shared by all panes.
+///   theme            — shared theme for all panes.
+///   search           — active search state, or None.
+///   focused_id       — the pane that receives cursor rendering.
+///   blink_phase      — cursor blink phase [0, 1).
+///   cursor_cfg       — cursor style + blink preference from config.
+///   dirty            — per-pane dirty sets from `Terminal::take_dirty_rows`. When
+///                      `None`, every row of every pane is redrawn (full frame).
+///   diag_by_pane     — per-pane render diagnostics (NE10); translated from
+///                      `LspManager::diagnostics_for` by `main.rs`. Empty map is fine.
 ///
 /// After this function returns, raster.origin_x and raster.origin_y are both 0.
 #[allow(clippy::too_many_arguments)]
@@ -66,6 +69,7 @@ pub fn draw_workspace(
     cursor_cfg: CursorConfig,
     dirty: Option<&HashMap<PaneId, DirtySet>>,
     running_pulse_phase: f32,
+    diag_by_pane: &HashMap<PaneId, Vec<RenderDiagnostic>>,
 ) {
     let entries = tree.layout(inner, div_px);
 
@@ -141,6 +145,8 @@ pub fn draw_workspace(
             // ── Native editor pane (NE5) ──────────────────────────────────
             if let Some(ep) = pane.editor_id.and_then(|_| editor_panes.get_pane(e.id)) {
                 if let Some(buf) = editor_panes.get_buffer(ep.buffer_id) {
+                    let empty: Vec<RenderDiagnostic> = Vec::new();
+                    let diags = diag_by_pane.get(&e.id).map(Vec::as_slice).unwrap_or(&empty);
                     draw_editor_into(
                         raster,
                         painters.regular,
@@ -149,10 +155,17 @@ pub fn draw_workspace(
                         metrics,
                         theme,
                         e.rect,
+                        diags,
                     );
                 } else {
                     // Buffer missing — fall back to blank fill.
-                    raster.fill_pixel_rect(e.rect.x, e.rect.y, e.rect.w, e.rect.h, theme.background);
+                    raster.fill_pixel_rect(
+                        e.rect.x,
+                        e.rect.y,
+                        e.rect.w,
+                        e.rect.h,
+                        theme.background,
+                    );
                 }
             } else {
                 // EditorPane not registered yet — blank fill.
@@ -375,6 +388,7 @@ mod tests {
             cursor_cfg,
             None,
             0.0,
+            &HashMap::new(),
         );
 
         assert_eq!(r.origin_x, 0.0, "origin_x must be reset to 0");
@@ -450,6 +464,7 @@ mod tests {
             CursorConfig::default(),
             None,
             0.0,
+            &HashMap::new(),
         );
 
         // Gutter center: pane1_w = (inner.w - TEST_DIV) * 0.5
@@ -518,6 +533,7 @@ mod tests {
             CursorConfig::default(),
             None,
             0.0,
+            &HashMap::new(),
         );
 
         // Focused pane (id1) is the left half of inner.
@@ -596,6 +612,7 @@ mod tests {
             CursorConfig::default(),
             None,
             0.0,
+            &HashMap::new(),
         );
         // "hello world" starts with 'h' — expect glyph calls.
         assert!(!painter.calls.is_empty());

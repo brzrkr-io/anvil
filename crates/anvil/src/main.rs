@@ -49,6 +49,7 @@ const HUD_COLS_MAX: usize = 80;
 /// down on the HUD's 1px hairline. Wide enough that the user doesn't need
 /// pixel-perfect aim to start a resize.
 const HUD_DRAG_HIT_PX: f64 = 6.0;
+use anvil_editor::Position as EditorPosition;
 use anvil_render::cheatsheet::draw as draw_cheatsheet;
 use anvil_render::draw::CursorConfig;
 use anvil_render::raster::Raster;
@@ -61,8 +62,9 @@ use anvil_render::{
 };
 use anvil_term::DirtySet;
 use anvil_theme::{Theme, resolve as resolve_theme};
-use anvil_editor::Position as EditorPosition;
-use anvil_workspace::editor_pane::{EditorAction, FontMetrics as EditorFontMetrics, pixel_to_position};
+use anvil_workspace::editor_pane::{
+    EditorAction, FontMetrics as EditorFontMetrics, pixel_to_position,
+};
 use anvil_workspace::editor_search::EditorSearch;
 use anvil_workspace::interact;
 use anvil_workspace::keys::{Key, Mods, encode as encode_key, encode_mouse};
@@ -347,8 +349,10 @@ struct Keybindings {
     prev_tab: Option<Chord>,
     jump: [Option<Chord>; 9],
     search_open: Option<Chord>,
-    /// Cmd+Shift+F: open search bar scoped to the current block.
+    /// Cmd+Opt+Shift+F: open search bar scoped to the current block (moved from Cmd+Shift+F).
     search_open_block: Option<Chord>,
+    /// Cmd+Shift+F: open the project-wide search overlay.
+    project_search_open: Option<Chord>,
     search_next: Option<Chord>,
     search_prev: Option<Chord>,
     /// Cmd+Opt+R: toggle regex mode while the search bar is open.
@@ -388,7 +392,8 @@ impl Keybindings {
             prev_tab: parse_chord(&kb.prev_tab),
             jump,
             search_open: parse_chord(&kb.search_open),
-            search_open_block: parse_chord("cmd+shift+f"),
+            search_open_block: parse_chord("cmd+opt+shift+f"),
+            project_search_open: parse_chord(&kb.project_search),
             search_next: parse_chord(&kb.search_next),
             search_prev: parse_chord(&kb.search_prev),
             search_regex_toggle: parse_chord("cmd+opt+r"),
@@ -577,6 +582,9 @@ pub struct App {
     // -- command palette ---
     palette: Palette,
 
+    // -- project search (NE12) ---
+    project_search: anvil_workspace::project_search::ProjectSearch,
+
     // -- window geometry (view-point size, updated on resize) ---
     view_width_pt: f64,
     view_height_pt: f64,
@@ -587,6 +595,10 @@ pub struct App {
     /// Per-pane timestamp of the last LSP `didChange` sync. Used for 250 ms
     /// debounce so we don't flood the server on every keystroke.
     lsp_last_sync: HashMap<PaneId, Instant>,
+
+    // -- LSP UI (NE10) ---
+    /// In-flight hover request: `(pane_id, request_id)`. Polled each tick.
+    pending_hover: Option<(PaneId, u64)>,
 }
 
 // ── App helpers ───────────────────────────────────────────────────────────────
@@ -810,6 +822,24 @@ impl App {
             }
         }
         self.resize_all_tabs();
+        self.dirty = true;
+        self.force_full_redraw = true;
+    }
+
+    /// Open the project-wide search overlay (NE12, Cmd+Shift+F).
+    ///
+    /// Seeds the scan root from the focused pane's cwd (falls back to the
+    /// process cwd). The actual pixel rendering of the overlay is a follow-on;
+    /// this wires the state machine and performs the synchronous scan.
+    fn open_project_search(&mut self) {
+        let root = std::path::PathBuf::from(&self.local_ctx.cwd);
+        self.project_search.open();
+        // Re-run scan if the query is non-empty (e.g. re-opening after a
+        // previous search).
+        let q = self.project_search.query.clone();
+        if !q.is_empty() {
+            self.project_search.scan(&q, &root);
+        }
         self.dirty = true;
         self.force_full_redraw = true;
     }
@@ -1389,6 +1419,55 @@ impl App {
         tab.editor_panes.get_pane(id).is_some()
     }
 
+    /// Send a hover request for the cursor position in the focused native editor
+    /// pane (Cmd+K, NE10).  Stores the `(pane_id, request_id)` in
+    /// `self.pending_hover` for polling in the tick loop.
+    fn trigger_hover_request(&mut self) {
+        let Some(tab) = self.tabs.current() else { return };
+        let pane_id = tab.focused_id();
+        let Some(ep) = tab.editor_panes.get_pane(pane_id) else { return };
+        let Some(buf) = tab.editor_panes.get_buffer(ep.buffer_id) else { return };
+        let Some(path) = buf.tracked_path() else { return };
+        let line = ep.cursor.pos.line as u32;
+        let character = ep.cursor.pos.col as u32;
+        let path = path.to_path_buf();
+        // Clear any stale popup.
+        self.apply_editor_action(EditorAction::HoverRequest);
+        if let Some(lsp) = &self.lsp_manager {
+            let req_id = lsp.request_hover(&path, line, character);
+            if req_id != 0 {
+                self.pending_hover = Some((pane_id, req_id));
+            }
+        }
+        self.dirty = true;
+    }
+
+    /// Poll for a hover result and populate the target pane's `hover_popup` if
+    /// one arrived.  Called each tick (NE10).
+    fn poll_hover_result(&mut self) {
+        let Some((pane_id, req_id)) = self.pending_hover else { return };
+        let Some(lsp) = &self.lsp_manager else { return };
+        if let Some(result) = lsp.poll_hover(req_id) {
+            self.pending_hover = None;
+            // Capture the anchor position from the pane's current cursor.
+            let anchor = self
+                .tabs
+                .current()
+                .and_then(|t| t.editor_panes.get_pane(pane_id))
+                .map(|ep| ep.cursor.pos)
+                .unwrap_or(anvil_editor::Position { line: 0, col: 0 });
+            if let Some(tab) = self.tabs.current_mut() {
+                if let Some(ep) = tab.editor_panes.get_pane_mut(pane_id) {
+                    ep.hover_popup = Some(anvil_workspace::editor_pane::HoverPopup {
+                        text: result.text,
+                        anchor,
+                    });
+                }
+            }
+            self.dirty = true;
+        }
+    }
+
     /// Apply `action` to the focused native editor pane.
     ///
     /// Writes any Cut/Copy text to the system clipboard.  Marks the app dirty
@@ -1938,6 +2017,45 @@ impl App {
 
             if let Some(tab) = self.tabs.current_mut() {
                 let focused_id = tab.focused_id();
+
+                // NE10: build per-pane render diagnostics from LspManager.
+                let diag_by_pane: HashMap<PaneId, Vec<anvil_render::RenderDiagnostic>> = {
+                    let mut map = HashMap::new();
+                    if let Some(lsp) = &self.lsp_manager {
+                        for (pid, ep) in tab.editor_panes.panes_iter() {
+                            if let Some(buf) = tab.editor_panes.get_buffer(ep.buffer_id) {
+                                if let Some(path) = buf.tracked_path() {
+                                    let raw = lsp.diagnostics_for(path);
+                                    if !raw.is_empty() {
+                                        let render_diags: Vec<anvil_render::RenderDiagnostic> = raw
+                                            .iter()
+                                            .map(|d| anvil_render::RenderDiagnostic {
+                                                line: d.line,
+                                                severity: match d.severity {
+                                                    anvil_editor::DiagnosticSeverity::Error => {
+                                                        anvil_render::RenderSeverity::Error
+                                                    }
+                                                    anvil_editor::DiagnosticSeverity::Warning => {
+                                                        anvil_render::RenderSeverity::Warning
+                                                    }
+                                                    anvil_editor::DiagnosticSeverity::Info => {
+                                                        anvil_render::RenderSeverity::Info
+                                                    }
+                                                    anvil_editor::DiagnosticSeverity::Hint => {
+                                                        anvil_render::RenderSeverity::Hint
+                                                    }
+                                                },
+                                            })
+                                            .collect();
+                                        map.insert(pid, render_diags);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    map
+                };
+
                 draw_workspace(
                     &mut self.raster,
                     grid_painters,
@@ -1954,6 +2072,7 @@ impl App {
                     self.cursor_cfg,
                     dirty_map.as_ref(),
                     self.running_pulse_phase,
+                    &diag_by_pane,
                 );
             }
         } else {
@@ -2516,6 +2635,11 @@ impl App {
                 // No-op: GoToLine requires an input modal (NE future).
                 return true;
             }
+            // Cmd+K → HoverRequest (NE10)
+            if lch == 'k' && !mods.shift && !mods.control && !mods.option {
+                self.trigger_hover_request();
+                return true;
+            }
         }
 
         macro_rules! test {
@@ -2597,6 +2721,10 @@ impl App {
         });
         test!(kb.search_open_block, {
             self.open_search_block();
+            return true;
+        });
+        test!(kb.project_search_open, {
+            self.open_project_search();
             return true;
         });
         test!(kb.search_next, {
@@ -3063,7 +3191,8 @@ impl AppHandler for AppShell {
             let tab = app.tabs.current();
             let pane = tab.and_then(|t| t.registry.get(t.focused_id()));
             (
-                pane.and_then(|p| p.terminal.as_ref()).and_then(|t| t.app_cursor_blink),
+                pane.and_then(|p| p.terminal.as_ref())
+                    .and_then(|t| t.app_cursor_blink),
                 app.cursor_cfg.blink,
             )
         };
@@ -3103,9 +3232,12 @@ impl AppHandler for AppShell {
         {
             let any_running = app.tabs.current().is_some_and(|t| {
                 all_pane_ids_in_tree(t).into_iter().any(|pid| {
-                    t.registry
-                        .get(pid)
-                        .is_some_and(|p| p.terminal.as_ref().map(|t| t.last_run().running).unwrap_or(false))
+                    t.registry.get(pid).is_some_and(|p| {
+                        p.terminal
+                            .as_ref()
+                            .map(|t| t.last_run().running)
+                            .unwrap_or(false)
+                    })
                 })
             });
             if any_running {
@@ -3125,7 +3257,12 @@ impl AppHandler for AppShell {
                 .tabs
                 .current()
                 .and_then(|t| t.registry.get(t.focused_id()))
-                .is_some_and(|p| p.terminal.as_ref().map(|t| t.any_block_completed_within(within)).unwrap_or(false));
+                .is_some_and(|p| {
+                    p.terminal
+                        .as_ref()
+                        .map(|t| t.any_block_completed_within(within))
+                        .unwrap_or(false)
+                });
             if pulsing {
                 app.dirty = true;
             }
@@ -3197,9 +3334,7 @@ impl AppHandler for AppShell {
         {
             const LSP_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(250);
             let now = Instant::now();
-            if let (Some(lsp), Some(tab)) =
-                (app.lsp_manager.as_mut(), app.tabs.current())
-            {
+            if let (Some(lsp), Some(tab)) = (app.lsp_manager.as_mut(), app.tabs.current()) {
                 // Collect (pane_id, path, lang_id, text) for native editor panes
                 // that have a tracked path with a known language id.
                 let pending: Vec<(PaneId, PathBuf, &'static str, String)> = {
@@ -3231,6 +3366,9 @@ impl AppHandler for AppShell {
                 }
             }
         }
+
+        // NE10: poll for pending hover responses each tick.
+        app.poll_hover_result();
 
         if app.dirty {
             let mut grid_painters = GridPainters {
@@ -3372,7 +3510,8 @@ impl AppHandler for AppShell {
                         }
                         qbytes.pop();
                         let new_q = String::from_utf8_lossy(&qbytes).into_owned();
-                        self.app.apply_editor_action(EditorAction::SearchSetQuery(new_q));
+                        self.app
+                            .apply_editor_action(EditorAction::SearchSetQuery(new_q));
                         self.app.dirty = true;
                     }
                     KeyInput::Char(ch) => {
@@ -3387,7 +3526,8 @@ impl AppHandler for AppShell {
                             })
                             .unwrap_or_default();
                         let new_q = format!("{cur_q}{ch}");
-                        self.app.apply_editor_action(EditorAction::SearchSetQuery(new_q));
+                        self.app
+                            .apply_editor_action(EditorAction::SearchSetQuery(new_q));
                         self.app.dirty = true;
                     }
                     _ => {}
@@ -3676,7 +3816,10 @@ impl AppHandler for AppShell {
                 } else if click_count == 2 {
                     EditorAction::SelectWordAt(pos)
                 } else {
-                    EditorAction::MoveTo { pos, extend: mods.shift }
+                    EditorAction::MoveTo {
+                        pos,
+                        extend: mods.shift,
+                    }
                 };
                 app.apply_editor_action(action);
                 app.editor_mouse_drag_start = Some(pos);
@@ -3808,14 +3951,22 @@ impl AppHandler for AppShell {
                 let id = tab.focused_id();
                 if let Some(pane) = tab.registry.get_mut(id) {
                     use anvil_workspace::selection::{Point, Selection, SelectionMode};
-                    let cr = pane.terminal.as_ref().map(|t| t.content_row_of_viewport(row)).unwrap_or(row);
+                    let cr = pane
+                        .terminal
+                        .as_ref()
+                        .map(|t| t.content_row_of_viewport(row))
+                        .unwrap_or(row);
 
                     if mods.shift && pane.selection.active {
                         // Extend the current selection to the click point.
                         pane.selection.head = Point { row: cr, col };
                     } else if click_count >= 3 {
                         // Whole-line selection.
-                        let line_len = pane.terminal.as_ref().map(|t| t.line(cr).len()).unwrap_or(0);
+                        let line_len = pane
+                            .terminal
+                            .as_ref()
+                            .map(|t| t.line(cr).len())
+                            .unwrap_or(0);
                         pane.selection = Selection {
                             active: true,
                             anchor: Point { row: cr, col: 0 },
@@ -3828,7 +3979,11 @@ impl AppHandler for AppShell {
                     } else if click_count == 2 {
                         // Word selection — extend left/right while the cell
                         // codepoint is not ASCII whitespace.
-                        let line = pane.terminal.as_ref().map(|t| t.line(cr).to_vec()).unwrap_or_default();
+                        let line = pane
+                            .terminal
+                            .as_ref()
+                            .map(|t| t.line(cr).to_vec())
+                            .unwrap_or_default();
                         let is_word = |c: char| !c.is_ascii_whitespace();
                         if col < line.len() && is_word(line[col].cp) {
                             let mut lo = col;
@@ -4108,7 +4263,11 @@ impl AppHandler for AppShell {
             if let Some(tab) = app.tabs.current_mut() {
                 let id = tab.focused_id();
                 if let Some(pane) = tab.registry.get_mut(id) {
-                    let cr = pane.terminal.as_ref().map(|t| t.content_row_of_viewport(row)).unwrap_or(row);
+                    let cr = pane
+                        .terminal
+                        .as_ref()
+                        .map(|t| t.content_row_of_viewport(row))
+                        .unwrap_or(row);
                     pane.selection.head = anvil_workspace::selection::Point { row: cr, col };
                 }
             }
@@ -4810,10 +4969,12 @@ fn main() -> Result<()> {
         last_agent_pulse_opacity: -1.0,
         running_pulse_phase: 0.0,
         palette: Palette::default(),
+        project_search: anvil_workspace::project_search::ProjectSearch::new(),
         view_width_pt: win_w,
         view_height_pt: win_h,
         lsp_manager: anvil_editor::LspManager::new(),
         lsp_last_sync: HashMap::new(),
+        pending_hover: None,
     };
 
     // -- AppKitApp: builds the window, view, timer ----------------------------

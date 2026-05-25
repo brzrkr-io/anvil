@@ -26,8 +26,8 @@ pub use buffer::{
 };
 pub use syntax::{SyntaxLayer, SyntaxRole};
 
-// Re-export LSP types used by App and main.rs (NE9).
+// Re-export LSP types used by App and main.rs (NE9, NE10).
 pub use lsp::{
-    DiagnosticSeverity, DocumentDiagnostic, LspManager, LspState, language_id_for_ext,
+    DiagnosticSeverity, DocumentDiagnostic, HoverResult, LspManager, LspState, language_id_for_ext,
     server_id_for_language,
 };

@@ -22,9 +22,9 @@ use lsp_types::notification::Notification as _;
 use lsp_types::request::Request as _;
 use lsp_types::{
     ClientCapabilities, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, InitializeParams, InitializedParams,
-    PublishDiagnosticsParams, TextDocumentContentChangeEvent, TextDocumentIdentifier,
-    TextDocumentItem, Url, VersionedTextDocumentIdentifier,
+    DidOpenTextDocumentParams, InitializeParams, InitializedParams, PublishDiagnosticsParams,
+    TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem, Url,
+    VersionedTextDocumentIdentifier,
 };
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -82,7 +82,22 @@ enum LspCommand {
     DidClose {
         path: PathBuf,
     },
+    Hover {
+        path: PathBuf,
+        line: u32,
+        character: u32,
+        request_id: u64,
+    },
     Shutdown,
+}
+
+// ── Hover result (NE10) ───────────────────────────────────────────────────────
+
+/// The result of a hover request, ready to be shown in the UI.
+#[derive(Debug, Clone)]
+pub struct HoverResult {
+    /// Markdown or plain text from the LSP hover response.
+    pub text: String,
 }
 
 // ── ServerHandle ─────────────────────────────────────────────────────────────
@@ -91,6 +106,9 @@ struct ServerHandle {
     state: Arc<Mutex<LspState>>,
     tx: mpsc::Sender<LspCommand>,
     diagnostics: Arc<Mutex<HashMap<PathBuf, Vec<DocumentDiagnostic>>>>,
+    /// Latest hover result (request_id, HoverResult). `main.rs` polls this
+    /// each frame and clears after consumption.
+    hover_result: Arc<Mutex<Option<(u64, HoverResult)>>>,
 }
 
 // ── LspManager ────────────────────────────────────────────────────────────────
@@ -172,6 +190,48 @@ impl LspManager {
         Vec::new()
     }
 
+    /// Send a hover request for `path` at `(line, character)` to the server
+    /// that manages the given path.  Returns the `request_id` assigned to this
+    /// request; pass it to `poll_hover` to retrieve the result.
+    ///
+    /// A no-op (returns 0) when no live server is found for the path.
+    pub fn request_hover(&self, path: &Path, line: u32, character: u32) -> u64 {
+        let id = next_request_id();
+        let server_id = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .and_then(|ext| language_id_for_ext(ext))
+            .and_then(|lang| server_id_for_language(lang));
+        if let Some(sid) = server_id {
+            if let Some(handle) = self.servers.get(sid) {
+                let _ = handle.tx.blocking_send(LspCommand::Hover {
+                    path: path.to_path_buf(),
+                    line,
+                    character,
+                    request_id: id,
+                });
+                return id;
+            }
+        }
+        0
+    }
+
+    /// Poll for a hover result matching `request_id`.  Consumes the stored
+    /// result on success (subsequent calls return `None` until a new request
+    /// is issued).
+    pub fn poll_hover(&self, request_id: u64) -> Option<HoverResult> {
+        if request_id == 0 {
+            return None;
+        }
+        for handle in self.servers.values() {
+            let mut slot = handle.hover_result.lock().unwrap();
+            if slot.as_ref().map(|(id, _)| *id) == Some(request_id) {
+                return slot.take().map(|(_, r)| r);
+            }
+        }
+        None
+    }
+
     /// Return the current state of the named server.
     pub fn state_of(&self, server_id: &'static str) -> LspState {
         self.servers
@@ -200,6 +260,12 @@ fn next_version() -> i32 {
     COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
+fn next_request_id() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(100); // start above initialize id=1
+    COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+
 // ── Server binary resolution ──────────────────────────────────────────────────
 
 /// Map a server id to `(binary, args)`.
@@ -224,10 +290,12 @@ fn spawn_server(
     let state = Arc::new(Mutex::new(LspState::Spawning));
     let diagnostics: Arc<Mutex<HashMap<PathBuf, Vec<DocumentDiagnostic>>>> =
         Arc::new(Mutex::new(HashMap::new()));
+    let hover_result: Arc<Mutex<Option<(u64, HoverResult)>>> = Arc::new(Mutex::new(None));
     let (tx, rx) = mpsc::channel::<LspCommand>(64);
 
     let state_task = Arc::clone(&state);
     let diag_task = Arc::clone(&diagnostics);
+    let hover_task = Arc::clone(&hover_result);
 
     // Resolve the binary before entering the async task so we can report the
     // failure synchronously-ish via the shared state.
@@ -240,6 +308,7 @@ fn spawn_server(
             state,
             tx,
             diagnostics,
+            hover_result,
         };
     }
 
@@ -247,25 +316,35 @@ fn spawn_server(
     let args: Vec<&'static str> = args.to_vec();
 
     if binary_path.is_none() {
-        *state.lock().unwrap() =
-            LspState::Failed(format!("server binary '{bin}' not on PATH"));
+        *state.lock().unwrap() = LspState::Failed(format!("server binary '{bin}' not on PATH"));
         return ServerHandle {
             state,
             tx,
             diagnostics,
+            hover_result,
         };
     }
 
     let binary_path = binary_path.unwrap();
 
     runtime.spawn(async move {
-        run_server(server_id, binary_path, args, rx, state_task, diag_task).await;
+        run_server(
+            server_id,
+            binary_path,
+            args,
+            rx,
+            state_task,
+            diag_task,
+            hover_task,
+        )
+        .await;
     });
 
     ServerHandle {
         state,
         tx,
         diagnostics,
+        hover_result,
     }
 }
 
@@ -278,6 +357,7 @@ async fn run_server(
     mut rx: mpsc::Receiver<LspCommand>,
     state: Arc<Mutex<LspState>>,
     diagnostics: Arc<Mutex<HashMap<PathBuf, Vec<DocumentDiagnostic>>>>,
+    hover_result: Arc<Mutex<Option<(u64, HoverResult)>>>,
 ) {
     let mut child: Child = match tokio::process::Command::new(&binary)
         .args(&args)
@@ -353,7 +433,10 @@ async fn run_server(
         lsp_types::notification::Initialized::METHOD,
         serde_json::to_value(InitializedParams {}).unwrap(),
     );
-    if write_message(&mut writer, &initialized_notif).await.is_err() {
+    if write_message(&mut writer, &initialized_notif)
+        .await
+        .is_err()
+    {
         *state.lock().unwrap() = LspState::Failed("write error during initialized".into());
         return;
     }
@@ -362,6 +445,7 @@ async fn run_server(
 
     // Main loop: interleave incoming commands with incoming server messages.
     let diag_clone = Arc::clone(&diagnostics);
+    let hover_clone = Arc::clone(&hover_result);
     loop {
         tokio::select! {
             biased;
@@ -421,12 +505,28 @@ async fn run_server(
                         );
                         let _ = write_message(&mut writer, &notif).await;
                     }
+                    Some(LspCommand::Hover { path, line, character, request_id }) => {
+                        let uri = path_to_uri(&path);
+                        let req = make_request(
+                            request_id,
+                            lsp_types::request::HoverRequest::METHOD,
+                            serde_json::to_value(lsp_types::HoverParams {
+                                text_document_position_params: lsp_types::TextDocumentPositionParams {
+                                    text_document: TextDocumentIdentifier { uri },
+                                    position: lsp_types::Position { line, character },
+                                },
+                                work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+                            })
+                            .unwrap(),
+                        );
+                        let _ = write_message(&mut writer, &req).await;
+                    }
                 }
             }
             // Inbound: message from the server.
             msg = read_message(&mut reader) => {
                 match msg {
-                    Ok(Some(m)) => handle_server_message(m, &diag_clone),
+                    Ok(Some(m)) => handle_server_message(m, &diag_clone, &hover_clone),
                     _ => break,
                 }
             }
@@ -465,9 +565,7 @@ async fn write_message(
     writer.flush().await
 }
 
-async fn read_message(
-    reader: &mut BufReader<ChildStdout>,
-) -> std::io::Result<Option<Value>> {
+async fn read_message(reader: &mut BufReader<ChildStdout>) -> std::io::Result<Option<Value>> {
     // Read headers until blank line.
     let mut content_length: Option<usize> = None;
     loop {
@@ -500,17 +598,35 @@ async fn read_message(
 fn handle_server_message(
     msg: Value,
     diagnostics: &Arc<Mutex<HashMap<PathBuf, Vec<DocumentDiagnostic>>>>,
+    hover_result: &Arc<Mutex<Option<(u64, HoverResult)>>>,
 ) {
+    // Check if this is a response (has "id" but no "method").
+    if msg.get("method").is_none() {
+        // This is a response to a prior request.
+        let id = match msg.get("id").and_then(Value::as_u64) {
+            Some(i) => i,
+            None => return,
+        };
+        // Handle hover response.
+        if let Some(result) = msg.get("result") {
+            if let Ok(hover) = serde_json::from_value::<lsp_types::Hover>(result.clone()) {
+                let text = extract_hover_text(&hover);
+                if !text.is_empty() {
+                    *hover_result.lock().unwrap() = Some((id, HoverResult { text }));
+                }
+            }
+        }
+        return;
+    }
+
     let method = match msg.get("method").and_then(Value::as_str) {
         Some(m) => m,
-        None => return, // response or unknown
+        None => return,
     };
 
     if method == lsp_types::notification::PublishDiagnostics::METHOD {
         if let Some(params) = msg.get("params") {
-            if let Ok(p) =
-                serde_json::from_value::<PublishDiagnosticsParams>(params.clone())
-            {
+            if let Ok(p) = serde_json::from_value::<PublishDiagnosticsParams>(params.clone()) {
                 let path = match p.uri.to_file_path() {
                     Ok(p) => p,
                     Err(_) => return,
@@ -528,9 +644,7 @@ fn handle_server_message(
                             Some(lsp_types::DiagnosticSeverity::INFORMATION) => {
                                 DiagnosticSeverity::Info
                             }
-                            Some(lsp_types::DiagnosticSeverity::HINT) => {
-                                DiagnosticSeverity::Hint
-                            }
+                            Some(lsp_types::DiagnosticSeverity::HINT) => DiagnosticSeverity::Hint,
                             _ => DiagnosticSeverity::Error,
                         },
                         message: d.message.clone(),
@@ -543,12 +657,31 @@ fn handle_server_message(
     // Future: handle window/logMessage, $/progress, etc.
 }
 
+/// Extract plain text from a `Hover` response.
+fn extract_hover_text(hover: &lsp_types::Hover) -> String {
+    match &hover.contents {
+        lsp_types::HoverContents::Scalar(m) => marked_string_text(m),
+        lsp_types::HoverContents::Array(arr) => arr
+            .iter()
+            .map(marked_string_text)
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        lsp_types::HoverContents::Markup(mu) => mu.value.clone(),
+    }
+}
+
+fn marked_string_text(ms: &lsp_types::MarkedString) -> String {
+    match ms {
+        lsp_types::MarkedString::String(s) => s.clone(),
+        lsp_types::MarkedString::LanguageString(ls) => ls.value.clone(),
+    }
+}
+
 // ── Utility ───────────────────────────────────────────────────────────────────
 
 fn path_to_uri(path: &Path) -> Url {
-    Url::from_file_path(path).unwrap_or_else(|_| {
-        Url::parse("file:///dev/null").unwrap()
-    })
+    Url::from_file_path(path).unwrap_or_else(|_| Url::parse("file:///dev/null").unwrap())
 }
 
 // ── Language-id map (used by Buffer::language_id) ────────────────────────────

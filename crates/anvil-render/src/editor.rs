@@ -1,4 +1,4 @@
-//! Native editor pane render path — NE5.
+//! Native editor pane render path — NE5, NE10.
 //!
 //! `draw_editor_into` paints a `Buffer`'s text into a pixel-raster pane area.
 //! It mirrors the structure of `draw_viewport` in `draw.rs` but sources cells
@@ -16,6 +16,8 @@
 //!   using `theme.accent_ember`.
 //! - Per-grapheme syntax color via `SyntaxLayer::highlights_for_range` (NE8). No soft-wrap (long lines clip).
 //! - Scroll is integer-row-aligned: `floor(editor_pane.scroll_pos)`.
+//! - Diagnostics gutter stripe (4 px wide, colored by severity) + row tint α=0.06 (NE10).
+//! - Hover popup: floating panel rendered via `fill_pixel_rect` + `glyph_at` (NE10).
 
 use unicode_segmentation::UnicodeSegmentation as _;
 
@@ -25,11 +27,38 @@ use anvil_workspace::{editor_pane::EditorPane, layout::Rect, selection::Selectio
 
 use crate::raster::{FontMetrics, GlyphPainter, Raster};
 
+// ── Render-side diagnostic type (NE10) ───────────────────────────────────────
+
+/// Severity of a diagnostic, mirroring `anvil_editor::DiagnosticSeverity`.
+///
+/// Kept in `anvil-render` so the render crate does not depend on
+/// `anvil-editor::LspManager`.  `main.rs` translates `DocumentDiagnostic →
+/// RenderDiagnostic` when building the `draw_workspace` call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderSeverity {
+    Error,
+    Warning,
+    Info,
+    Hint,
+}
+
+/// Minimal per-line diagnostic data needed by the render path.
+#[derive(Debug, Clone)]
+pub struct RenderDiagnostic {
+    /// Zero-indexed buffer line this diagnostic applies to.
+    pub line: usize,
+    pub severity: RenderSeverity,
+}
+
 // ── Public entry point ────────────────────────────────────────────────────────
 
 /// Draw the contents of `editor_pane` / `buffer` into `raster`.
 ///
 /// `rect` is the pane area in device pixels (absolute, not relative to origin).
+/// `diagnostics` is a slice of per-line diagnostic data for the current buffer
+/// (translate from `LspManager::diagnostics_for` in `main.rs` before calling).
+/// Pass an empty slice when LSP is unavailable or the buffer has no path.
+///
 /// After this call the raster's `origin_x`/`origin_y` are not changed; callers
 /// are expected to set them before calling (matching the `draw_workspace` pattern).
 #[allow(clippy::too_many_arguments)]
@@ -41,6 +70,7 @@ pub fn draw_editor_into(
     metrics: FontMetrics,
     theme: &Theme,
     rect: Rect,
+    diagnostics: &[RenderDiagnostic],
 ) {
     let cw = metrics.cell_w;
     let ch = metrics.cell_h;
@@ -80,6 +110,27 @@ pub fn draw_editor_into(
 
         let row_y = rect.y + vrow as f64 * ch;
 
+        // ── Diagnostics: row tint + gutter stripe (NE10) ─────────────────────
+        // Find the worst-severity diagnostic on this line (Error > Warning > Info > Hint).
+        let row_diag: Option<RenderSeverity> = diagnostics
+            .iter()
+            .filter(|d| d.line == line_idx)
+            .map(|d| d.severity)
+            .fold(None, |acc, sev| {
+                Some(match acc {
+                    None => sev,
+                    Some(prev) => worst_severity(prev, sev),
+                })
+            });
+
+        if let Some(sev) = row_diag {
+            let stripe_color = severity_color(sev, theme);
+            // Row background tint α=0.06 over the full content area (gutter + text).
+            raster.fill_pixel_rect_alpha(rect.x, row_y, rect.w, ch, stripe_color, 0.06);
+            // 4 px wide stripe at the left edge of the gutter.
+            raster.fill_pixel_rect(rect.x, row_y, 4.0, ch, stripe_color);
+        }
+
         // ── Selection wash for this row ───────────────────────────────────────
         if sel.active {
             paint_selection_row(raster, sel, line_idx, vrow, rect, gutter_w, cw, ch, theme);
@@ -103,11 +154,10 @@ pub fn draw_editor_into(
         let line_byte_end = line_byte_start + line_content.len();
 
         // Per-line syntax highlights (empty when no language is set).
-        let highlights = buffer.syntax().highlights_for_range(
-            line_byte_start,
-            line_byte_end,
-            &full_text,
-        );
+        let highlights =
+            buffer
+                .syntax()
+                .highlights_for_range(line_byte_start, line_byte_end, &full_text);
 
         let graphemes: Vec<&str> = line_content.graphemes(true).collect();
         let mut painted = 0usize;
@@ -132,15 +182,15 @@ pub fn draw_editor_into(
                 .map(|(_, role)| *role)
                 .unwrap_or(SyntaxRole::Plain);
             let fg = match role {
-                SyntaxRole::Plain      => theme.foreground,
-                SyntaxRole::Keyword    => theme.syntax.keyword,
-                SyntaxRole::String     => theme.syntax.string,
-                SyntaxRole::Number     => theme.syntax.number,
-                SyntaxRole::Comment    => theme.syntax.comment,
-                SyntaxRole::Function   => theme.syntax.function,
-                SyntaxRole::Type       => theme.syntax.type_,
-                SyntaxRole::Variable   => theme.syntax.variable,
-                SyntaxRole::Operator   => theme.syntax.operator,
+                SyntaxRole::Plain => theme.foreground,
+                SyntaxRole::Keyword => theme.syntax.keyword,
+                SyntaxRole::String => theme.syntax.string,
+                SyntaxRole::Number => theme.syntax.number,
+                SyntaxRole::Comment => theme.syntax.comment,
+                SyntaxRole::Function => theme.syntax.function,
+                SyntaxRole::Type => theme.syntax.type_,
+                SyntaxRole::Variable => theme.syntax.variable,
+                SyntaxRole::Operator => theme.syntax.operator,
                 SyntaxRole::Punctuation => theme.syntax.punctuation,
             };
 
@@ -173,6 +223,77 @@ pub fn draw_editor_into(
             raster.fill_pixel_rect(cx, cy, 2.0, ch, theme.accent);
         }
     }
+
+    // ── Hover popup (NE10) ────────────────────────────────────────────────────
+    if let Some(popup) = &editor_pane.hover_popup {
+        let anchor = popup.anchor;
+        // Compute pixel anchor: position of the cursor cell that triggered hover.
+        if anchor.line >= scroll_line {
+            let av = anchor.line - scroll_line;
+            // Show popup one row below the anchor line.
+            let popup_y = rect.y + (av + 1) as f64 * ch;
+            let popup_x = rect.x + gutter_w + anchor.col as f64 * cw;
+
+            // Measure popup: wrap text at max 60 chars per line.
+            const MAX_COLS: usize = 60;
+            let lines: Vec<&str> = popup.text.lines().collect();
+            let text_w = lines
+                .iter()
+                .map(|l| l.len().min(MAX_COLS))
+                .max()
+                .unwrap_or(0);
+            let popup_w = (text_w + 2) as f64 * cw;
+            let popup_h = (lines.len() + 1) as f64 * ch;
+
+            // Clamp so popup doesn't overflow the right/bottom edges.
+            let popup_x = popup_x.min(rect.x + rect.w - popup_w).max(rect.x);
+            let popup_y = popup_y.min(rect.y + rect.h - popup_h).max(rect.y);
+
+            // Background panel (surface color).
+            raster.fill_pixel_rect(popup_x, popup_y, popup_w, popup_h, theme.surface);
+            // 1 px border (border color).
+            // Top edge.
+            raster.fill_pixel_rect(popup_x, popup_y, popup_w, 1.0, theme.border);
+            // Bottom edge.
+            raster.fill_pixel_rect(popup_x, popup_y + popup_h - 1.0, popup_w, 1.0, theme.border);
+            // Left edge.
+            raster.fill_pixel_rect(popup_x, popup_y, 1.0, popup_h, theme.border);
+            // Right edge.
+            raster.fill_pixel_rect(popup_x + popup_w - 1.0, popup_y, 1.0, popup_h, theme.border);
+
+            // Text: paint each line of the popup text.
+            for (li, line) in lines.iter().enumerate() {
+                let ty = popup_y + (li as f64 + 0.5) * ch;
+                let chars: Vec<char> = line.chars().take(MAX_COLS).collect();
+                for (ci, &c) in chars.iter().enumerate() {
+                    let tx = popup_x + (ci + 1) as f64 * cw;
+                    raster.glyph_at(painter, metrics, tx, ty, c as u32, theme.foreground);
+                }
+            }
+        }
+    }
+}
+
+// ── Severity helpers (NE10) ───────────────────────────────────────────────────
+
+fn severity_color(sev: RenderSeverity, theme: &Theme) -> [u8; 3] {
+    match sev {
+        RenderSeverity::Error => theme.failure,
+        RenderSeverity::Warning => theme.attention,
+        RenderSeverity::Info => theme.info,
+        RenderSeverity::Hint => theme.alloy,
+    }
+}
+
+/// Return the worse of two severities (Error is worst, Hint is mildest).
+fn worst_severity(a: RenderSeverity, b: RenderSeverity) -> RenderSeverity {
+    let rank = |s: RenderSeverity| match s {
+        RenderSeverity::Error => 3,
+        RenderSeverity::Warning => 2,
+        RenderSeverity::Info => 1,
+        RenderSeverity::Hint => 0,
+    };
+    if rank(a) >= rank(b) { a } else { b }
 }
 
 // ── Selection wash helper ─────────────────────────────────────────────────────
@@ -315,6 +436,7 @@ mod tests {
             scroll_target: 0.0,
             scroll_vel: 0.0,
             search: None,
+            hover_popup: None,
         }
     }
 
@@ -338,6 +460,7 @@ mod tests {
             metrics(),
             &theme,
             rect(),
+            &[],
         );
 
         // The gutter should paint the digit '1' in text_muted.
@@ -383,6 +506,7 @@ mod tests {
             metrics(),
             &theme,
             rect(),
+            &[],
         );
 
         let fg_cps: Vec<u32> = painter
@@ -429,7 +553,7 @@ mod tests {
         let mut painter = CapturePainter::default();
         let theme = MINERAL_DARK;
 
-        draw_editor_into(&mut raster, &mut painter, &pane, &buf, m, &theme, r);
+        draw_editor_into(&mut raster, &mut painter, &pane, &buf, m, &theme, r, &[]);
 
         // Cursor pixel: x = gutter_w + col * cw, y = row * ch (row 5, col 3).
         let cx = (r.x + gutter_w + 3.0 * m.cell_w) as usize;
@@ -464,6 +588,7 @@ mod tests {
             metrics(),
             &theme,
             rect(),
+            &[],
         );
 
         let has_overflow_marker = painter
@@ -499,6 +624,7 @@ mod tests {
             metrics(),
             &theme,
             rect(),
+            &[],
         );
 
         // Line 3 starts with 'L' followed by '3'. The foreground calls should
@@ -549,7 +675,8 @@ mod tests {
         let src = "fn main() {}\n";
         let mut buf = Buffer::from_text(src);
         // Set Rust language and parse so highlight data is available.
-        buf.syntax.set_language_from_path(std::path::Path::new("x.rs"));
+        buf.syntax
+            .set_language_from_path(std::path::Path::new("x.rs"));
         buf.syntax.parse(src);
 
         let pane = make_pane(1);
@@ -565,6 +692,7 @@ mod tests {
             metrics(),
             &theme,
             rect(),
+            &[],
         );
 
         // 'f' and 'n' must be painted with the keyword color.
@@ -594,6 +722,40 @@ mod tests {
         assert!(
             !fg_cps.contains(&('f' as u32)),
             "'f' must not be painted as plain foreground; fg_cps: {fg_cps:?}"
+        );
+    }
+
+    // ── draw_editor_diagnostic_gutter_stripe_painted ──────────────────────────
+
+    /// When a `RenderDiagnostic` is supplied for line 0, the gutter stripe must
+    /// be painted at `rect.x` (leftmost pixel) in `theme.failure` (Error severity).
+    /// The test verifies via the pixel buffer that the stripe color is present.
+    #[test]
+    fn draw_editor_diagnostic_gutter_stripe_painted() {
+        use crate::raster::pixel_at;
+
+        let buf = Buffer::from_text("error here\n");
+        let pane = make_pane(1);
+        let m = metrics();
+        let r = rect(); // 400x200, origin 0,0
+        let mut raster = Raster::new(400, 200);
+        raster.clear(MINERAL_DARK.background);
+        let mut painter = CapturePainter::default();
+        let theme = MINERAL_DARK;
+
+        let diag = vec![RenderDiagnostic {
+            line: 0,
+            severity: RenderSeverity::Error,
+        }];
+
+        draw_editor_into(&mut raster, &mut painter, &pane, &buf, m, &theme, r, &diag);
+
+        // The 4 px gutter stripe is at rect.x=0, row 0.
+        // Sample the stripe at x=2 (middle of the 4px stripe), y=middle of row 0.
+        let px = pixel_at(&raster, 2, (m.cell_h * 0.5) as usize);
+        assert_eq!(
+            px, theme.failure,
+            "gutter stripe at x=2,y=row0_mid should be failure color, got {px:?}"
         );
     }
 }

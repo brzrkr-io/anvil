@@ -250,7 +250,10 @@ mod tests {
     fn syntax_set_language_from_rs_path() {
         let mut layer = SyntaxLayer::new();
         layer.set_language_from_path(&path("main.rs"));
-        assert!(layer.language.is_some(), "Rust path should activate a language");
+        assert!(
+            layer.language.is_some(),
+            "Rust path should activate a language"
+        );
         assert!(layer.query.is_some(), "Rust path should build a query");
     }
 
@@ -274,7 +277,10 @@ mod tests {
         let has_keyword = spans
             .iter()
             .any(|(r, role)| *role == SyntaxRole::Keyword && &src[r.clone()] == "fn");
-        assert!(has_keyword, "expected 'fn' to be tagged as Keyword; got: {spans:?}");
+        assert!(
+            has_keyword,
+            "expected 'fn' to be tagged as Keyword; got: {spans:?}"
+        );
     }
 
     // ── NE8-T3: parse Python → string role ───────────────────────────────────
@@ -288,7 +294,10 @@ mod tests {
 
         let spans = layer.highlights_for_range(0, src.len(), src);
         let has_string = spans.iter().any(|(_, role)| *role == SyntaxRole::String);
-        assert!(has_string, "expected a String role in Python source; got: {spans:?}");
+        assert!(
+            has_string,
+            "expected a String role in Python source; got: {spans:?}"
+        );
     }
 
     // ── NE8-T4: incremental edit preserves tree ───────────────────────────────
@@ -313,14 +322,20 @@ mod tests {
             new_end_position: Point::new(0, 13),
         };
         layer.edit(edit, new_src);
-        assert!(layer.tree.is_some(), "tree should survive an incremental edit");
+        assert!(
+            layer.tree.is_some(),
+            "tree should survive an incremental edit"
+        );
 
         // After edit, the keyword 'fn' should still parse.
         let spans = layer.highlights_for_range(0, new_src.len(), new_src);
         let has_keyword = spans
             .iter()
             .any(|(r, role)| *role == SyntaxRole::Keyword && &new_src[r.clone()] == "fn");
-        assert!(has_keyword, "incremental edit must preserve keyword highlight");
+        assert!(
+            has_keyword,
+            "incremental edit must preserve keyword highlight"
+        );
     }
 
     // ── NE8-T5: no language → empty highlights ────────────────────────────────
@@ -364,6 +379,9 @@ mod tests {
 
         // Invalidate.
         layer.invalidate();
-        assert!(layer.visible_cache.borrow().is_none(), "invalidate must clear the cache");
+        assert!(
+            layer.visible_cache.borrow().is_none(),
+            "invalidate must clear the cache"
+        );
     }
 }

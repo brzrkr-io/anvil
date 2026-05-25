@@ -13,5 +13,6 @@ pub mod layout;
 pub mod mode;
 pub mod palette;
 pub mod pane;
+pub mod project_search;
 pub mod selection;
 pub mod tab;

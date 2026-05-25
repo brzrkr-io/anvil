@@ -157,6 +157,8 @@ pub struct Keybindings {
     /// Open a new editor pane running `nvim --listen <socket>`. Second press
     /// focuses the existing editor pane instead of spawning another.
     pub editor_new: String,
+    /// Cmd+Shift+F: open the project-wide search overlay.
+    pub project_search: String,
 }
 
 impl Default for Keybindings {
@@ -193,6 +195,7 @@ impl Default for Keybindings {
             agent_start: "cmd+shift+return".into(),
             layout_mode_toggle: "cmd+shift+e".into(),
             editor_new: "cmd+e".into(),
+            project_search: "cmd+shift+f".into(),
         }
     }
 }

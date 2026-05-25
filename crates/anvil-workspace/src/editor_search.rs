@@ -17,7 +17,12 @@ pub struct EditorSearch {
 
 impl EditorSearch {
     pub fn new() -> Self {
-        Self { query: String::new(), is_regex: false, hits: Vec::new(), current: 0 }
+        Self {
+            query: String::new(),
+            is_regex: false,
+            hits: Vec::new(),
+            current: 0,
+        }
     }
 
     /// Recompute `hits` from the current `query` and `is_regex` against `buffer`.
@@ -117,8 +122,14 @@ fn byte_range_to_positions(
     let start_col = char_start - buffer.line_to_char(start_line);
     let end_col = char_end - buffer.line_to_char(end_line);
     Some(Range {
-        start: Position { line: start_line, col: start_col },
-        end: Position { line: end_line, col: end_col },
+        start: Position {
+            line: start_line,
+            col: start_col,
+        },
+        end: Position {
+            line: end_line,
+            col: end_col,
+        },
     })
 }
 

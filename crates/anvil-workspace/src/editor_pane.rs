@@ -33,6 +33,24 @@ pub struct FontMetrics {
 
 // ── EditorAction ──────────────────────────────────────────────────────────────
 
+// ── HoverPopup (NE10) ─────────────────────────────────────────────────────────
+
+/// A hover popup anchored to a buffer position.
+///
+/// Populated by `main.rs` when `LspManager::poll_hover` returns a result.
+/// Rendered by `draw_editor_into`. Dismissed on `EditorAction::HoverDismiss`
+/// or on the next non-hover key press in the editor.
+#[derive(Debug, Clone)]
+pub struct HoverPopup {
+    /// The markdown / plain-text content from the LSP hover response.
+    pub text: String,
+    /// Buffer position at which the popup is anchored (cursor position at time
+    /// of the hover request).
+    pub anchor: Position,
+}
+
+// ── EditorAction ──────────────────────────────────────────────────────────────
+
 /// A typed editor action — the unit of currency between the keymap and the
 /// buffer/cursor engine.  NE6 insert-mode only; a future modal layer adds a
 /// keymap on top without touching this enum.
@@ -42,16 +60,36 @@ pub enum EditorAction {
     InsertNewline,
     Backspace,
     Delete,
-    MoveLeft { extend: bool },
-    MoveRight { extend: bool },
-    MoveUp { extend: bool },
-    MoveDown { extend: bool },
-    MoveLineStart { extend: bool },
-    MoveLineEnd { extend: bool },
-    MoveBufferStart { extend: bool },
-    MoveBufferEnd { extend: bool },
-    PageUp { extend: bool },
-    PageDown { extend: bool },
+    MoveLeft {
+        extend: bool,
+    },
+    MoveRight {
+        extend: bool,
+    },
+    MoveUp {
+        extend: bool,
+    },
+    MoveDown {
+        extend: bool,
+    },
+    MoveLineStart {
+        extend: bool,
+    },
+    MoveLineEnd {
+        extend: bool,
+    },
+    MoveBufferStart {
+        extend: bool,
+    },
+    MoveBufferEnd {
+        extend: bool,
+    },
+    PageUp {
+        extend: bool,
+    },
+    PageDown {
+        extend: bool,
+    },
     Save,
     Undo,
     Redo,
@@ -75,12 +113,24 @@ pub enum EditorAction {
     /// Toggle regex mode and re-scan.
     SearchToggleRegex,
     /// Place cursor at the given position; clears selection unless `extend` is true (NE7).
-    MoveTo { pos: Position, extend: bool },
+    MoveTo {
+        pos: Position,
+        extend: bool,
+    },
     /// Select the word containing `pos` (double-click, NE7).
     /// Word chars: alphanumeric + underscore.
     SelectWordAt(Position),
     /// Select the entire line containing `pos` (triple-click, NE7).
     SelectLineAt(Position),
+    // ── LSP UI (NE10) ────────────────────────────────────────────────────────
+    /// Request hover information at the current cursor position (Cmd+K).
+    ///
+    /// `main.rs` translates this into an `LspManager::request_hover` call; the
+    /// result is stored on `EditorPane::hover_popup` when polled.  The action
+    /// itself is a no-op inside `apply` — the caller handles the LSP request.
+    HoverRequest,
+    /// Dismiss the hover popup.
+    HoverDismiss,
 }
 
 /// Per-pane view state for a native editor pane.
@@ -93,6 +143,10 @@ pub struct EditorPane {
     pub scroll_vel: f32,
     /// In-buffer search state (NE11). `None` when the search bar is closed.
     pub search: Option<EditorSearch>,
+    /// Active hover popup (NE10). `None` when no hover is showing.
+    /// Set by `main.rs` when `LspManager::poll_hover` returns a result.
+    /// Cleared by `EditorAction::HoverDismiss` or on any buffer-mutating action.
+    pub hover_popup: Option<HoverPopup>,
 }
 
 /// Registry of all native editor panes and their buffers for one `Tab`.
@@ -134,10 +188,16 @@ impl EditorPaneRegistry {
             scroll_target: 0.0,
             scroll_vel: 0.0,
             search: None,
+            hover_popup: None,
         };
         self.panes.insert(pane_id, pane);
         self.buffers.insert(buffer_id, Buffer::new());
         buffer_id
+    }
+
+    /// Iterate over all `(PaneId, EditorPane)` pairs in this registry.
+    pub fn panes_iter(&self) -> impl Iterator<Item = (PaneId, &EditorPane)> {
+        self.panes.iter().map(|(&id, ep)| (id, ep))
     }
 
     /// Look up the `EditorPane` for `pane_id`.
@@ -216,7 +276,10 @@ impl EditorPaneRegistry {
                     buf.insert_char(pos, '\n');
                 }
                 let pane = self.panes.get_mut(&pane_id).unwrap();
-                let new_pos = Position { line: pos.line + 1, col: 0 };
+                let new_pos = Position {
+                    line: pos.line + 1,
+                    col: 0,
+                };
                 set_cursor(pane, new_pos, false);
                 true
             }
@@ -247,7 +310,10 @@ impl EditorPaneRegistry {
                 let new_pos = if line_delta == 0 {
                     advance_col(pos, last_line_len)
                 } else {
-                    Position { line: pos.line + line_delta, col: last_line_len }
+                    Position {
+                        line: pos.line + line_delta,
+                        col: last_line_len,
+                    }
                 };
                 set_cursor(pane, new_pos, false);
                 true
@@ -261,7 +327,10 @@ impl EditorPaneRegistry {
                 if prev == pos {
                     return false; // at buffer start
                 }
-                buf.delete_range(Range { start: prev, end: pos });
+                buf.delete_range(Range {
+                    start: prev,
+                    end: pos,
+                });
                 let pane = self.panes.get_mut(&pane_id).unwrap();
                 set_cursor(pane, prev, false);
                 true
@@ -273,7 +342,10 @@ impl EditorPaneRegistry {
                 if next == pos {
                     return false; // at buffer end
                 }
-                buf.delete_range(Range { start: pos, end: next });
+                buf.delete_range(Range {
+                    start: pos,
+                    end: next,
+                });
                 // cursor stays at pos (now points to former next char)
                 true
             }
@@ -301,7 +373,10 @@ impl EditorPaneRegistry {
                     let buf = self.buffers.get(&buffer_id).unwrap();
                     let target_line = pos.line - 1;
                     let max_col = line_grapheme_len(buf, target_line);
-                    Position { line: target_line, col: pos.col.min(max_col) }
+                    Position {
+                        line: target_line,
+                        col: pos.col.min(max_col),
+                    }
                 };
                 let pane = self.panes.get_mut(&pane_id).unwrap();
                 set_cursor(pane, new_pos, extend);
@@ -313,18 +388,27 @@ impl EditorPaneRegistry {
                 let last_line = buf.line_count().saturating_sub(1);
                 let new_pos = if pos.line >= last_line {
                     let max_col = line_grapheme_len(buf, last_line);
-                    Position { line: last_line, col: max_col }
+                    Position {
+                        line: last_line,
+                        col: max_col,
+                    }
                 } else {
                     let target_line = pos.line + 1;
                     let max_col = line_grapheme_len(buf, target_line);
-                    Position { line: target_line, col: pos.col.min(max_col) }
+                    Position {
+                        line: target_line,
+                        col: pos.col.min(max_col),
+                    }
                 };
                 let pane = self.panes.get_mut(&pane_id).unwrap();
                 set_cursor(pane, new_pos, extend);
                 false
             }
             EditorAction::MoveLineStart { extend } => {
-                let new_pos = Position { line: pane.cursor.pos.line, col: 0 };
+                let new_pos = Position {
+                    line: pane.cursor.pos.line,
+                    col: 0,
+                };
                 let pane = self.panes.get_mut(&pane_id).unwrap();
                 set_cursor(pane, new_pos, extend);
                 false
@@ -348,7 +432,10 @@ impl EditorPaneRegistry {
                 let buf = self.buffers.get(&buffer_id).unwrap();
                 let last_line = buf.line_count().saturating_sub(1);
                 let col = line_grapheme_len(buf, last_line);
-                let new_pos = Position { line: last_line, col };
+                let new_pos = Position {
+                    line: last_line,
+                    col,
+                };
                 let pane = self.panes.get_mut(&pane_id).unwrap();
                 set_cursor(pane, new_pos, extend);
                 false
@@ -359,7 +446,10 @@ impl EditorPaneRegistry {
                 let new_line = pos.line.saturating_sub(page.max(1));
                 let buf = self.buffers.get(&buffer_id).unwrap();
                 let col = pos.col.min(line_grapheme_len(buf, new_line));
-                let new_pos = Position { line: new_line, col };
+                let new_pos = Position {
+                    line: new_line,
+                    col,
+                };
                 let pane = self.panes.get_mut(&pane_id).unwrap();
                 set_cursor(pane, new_pos, extend);
                 false
@@ -371,7 +461,10 @@ impl EditorPaneRegistry {
                 let last_line = buf.line_count().saturating_sub(1);
                 let new_line = (pos.line + page.max(1)).min(last_line);
                 let col = pos.col.min(line_grapheme_len(buf, new_line));
-                let new_pos = Position { line: new_line, col };
+                let new_pos = Position {
+                    line: new_line,
+                    col,
+                };
                 let pane = self.panes.get_mut(&pane_id).unwrap();
                 set_cursor(pane, new_pos, extend);
                 false
@@ -384,7 +477,10 @@ impl EditorPaneRegistry {
                 let last_col = line_grapheme_len(buf, last_line);
                 let pane = self.panes.get_mut(&pane_id).unwrap();
                 pane.cursor.anchor = Position { line: 0, col: 0 };
-                pane.cursor.pos = Position { line: last_line, col: last_col };
+                pane.cursor.pos = Position {
+                    line: last_line,
+                    col: last_col,
+                };
                 false
             }
 
@@ -519,7 +615,10 @@ impl EditorPaneRegistry {
                 let last_line = buf.line_count().saturating_sub(1);
                 let clamped_line = pos.line.min(last_line);
                 let max_col = line_grapheme_len(buf, clamped_line);
-                let clamped = Position { line: clamped_line, col: pos.col.min(max_col) };
+                let clamped = Position {
+                    line: clamped_line,
+                    col: pos.col.min(max_col),
+                };
                 let pane = self.panes.get_mut(&pane_id).unwrap();
                 set_cursor(pane, clamped, extend);
                 false
@@ -535,9 +634,7 @@ impl EditorPaneRegistry {
                     .graphemes(true)
                     .collect();
                 let col = pos.col.min(graphemes.len().saturating_sub(1));
-                let is_word = |g: &str| {
-                    g.chars().all(|c| c.is_alphanumeric() || c == '_')
-                };
+                let is_word = |g: &str| g.chars().all(|c| c.is_alphanumeric() || c == '_');
                 // Walk left to find word start.
                 let mut lo = col;
                 while lo > 0 && is_word(graphemes[lo - 1]) {
@@ -563,7 +660,24 @@ impl EditorPaneRegistry {
                 let line_len = line_grapheme_len(buf, line);
                 let pane = self.panes.get_mut(&pane_id).unwrap();
                 pane.cursor.anchor = Position { line, col: 0 };
-                pane.cursor.pos = Position { line, col: line_len };
+                pane.cursor.pos = Position {
+                    line,
+                    col: line_len,
+                };
+                false
+            }
+
+            // ── LSP UI (NE10) ────────────────────────────────────────────────
+            // HoverRequest is a signal to main.rs; apply() just clears any stale
+            // popup so it doesn't show stale content while the request is in-flight.
+            EditorAction::HoverRequest => {
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                pane.hover_popup = None;
+                false
+            }
+            EditorAction::HoverDismiss => {
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                pane.hover_popup = None;
                 false
             }
 
@@ -632,7 +746,10 @@ pub fn pixel_to_position(
             .graphemes(true)
             .count()
     };
-    Position { line: row, col: cell_col.min(line_len) }
+    Position {
+        line: row,
+        col: cell_col.min(line_len),
+    }
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
@@ -647,7 +764,10 @@ fn set_cursor(pane: &mut EditorPane, pos: Position, extend: bool) {
 
 /// Advance `pos` by `n` grapheme columns on the same line (no line wrapping).
 fn advance_col(pos: Position, n: usize) -> Position {
-    Position { line: pos.line, col: pos.col + n }
+    Position {
+        line: pos.line,
+        col: pos.col + n,
+    }
 }
 
 /// Number of grapheme clusters on `line` (excluding any trailing newline).
@@ -667,7 +787,10 @@ fn line_grapheme_len(buf: &Buffer, line: usize) -> usize {
 /// the buffer start.
 fn prev_position(buf: &Buffer, pos: Position) -> Position {
     if pos.col > 0 {
-        return Position { line: pos.line, col: pos.col - 1 };
+        return Position {
+            line: pos.line,
+            col: pos.col - 1,
+        };
     }
     if pos.line == 0 {
         return pos;
@@ -675,7 +798,10 @@ fn prev_position(buf: &Buffer, pos: Position) -> Position {
     // Move to end of previous line.
     let prev_line = pos.line - 1;
     let col = line_grapheme_len(buf, prev_line);
-    Position { line: prev_line, col }
+    Position {
+        line: prev_line,
+        col,
+    }
 }
 
 /// Move one grapheme cluster forward from `pos`.  Returns `pos` unchanged at
@@ -683,12 +809,18 @@ fn prev_position(buf: &Buffer, pos: Position) -> Position {
 fn next_position(buf: &Buffer, pos: Position) -> Position {
     let line_len = line_grapheme_len(buf, pos.line);
     if pos.col < line_len {
-        return Position { line: pos.line, col: pos.col + 1 };
+        return Position {
+            line: pos.line,
+            col: pos.col + 1,
+        };
     }
     // Move to start of next line if there is one.
     let last_line = buf.line_count().saturating_sub(1);
     if pos.line < last_line {
-        Position { line: pos.line + 1, col: 0 }
+        Position {
+            line: pos.line + 1,
+            col: 0,
+        }
     } else {
         pos
     }
@@ -764,19 +896,27 @@ mod tests {
     }
 
     fn test_metrics() -> FontMetrics {
-        FontMetrics { cell_w: 8.0, cell_h: 16.0, descent: 3.0 }
+        FontMetrics {
+            cell_w: 8.0,
+            cell_h: 16.0,
+            descent: 3.0,
+        }
     }
 
     fn make_pane_with_text(text: &str) -> (EditorPane, Buffer) {
         let origin = Position { line: 0, col: 0 };
         let pane = EditorPane {
             buffer_id: 1,
-            cursor: Cursor { pos: origin, anchor: origin },
+            cursor: Cursor {
+                pos: origin,
+                anchor: origin,
+            },
             selection: Selection::default(),
             scroll_pos: 0.0,
             scroll_target: 0.0,
             scroll_vel: 0.0,
             search: None,
+            hover_popup: None,
         };
         let buf = anvil_editor::Buffer::from_text(text);
         (pane, buf)
@@ -799,7 +939,7 @@ mod tests {
         // Line 3 is "barnacle" (8 chars) so col 5 is within bounds.
         let (pane, buf) = make_pane_with_text("hello\nworld\nfoobar\nbarnacle\n");
         let rel_x = (2 + 5) as f64 * 8.0; // gutter 2 cols + col 5
-        let rel_y = 3.0 * 16.0;           // row 3
+        let rel_y = 3.0 * 16.0; // row 3
         let pos = pixel_to_position(&pane, &buf, rel_x, rel_y, test_metrics(), 2);
         assert_eq!(pos, Position { line: 3, col: 5 });
     }
@@ -827,7 +967,14 @@ mod tests {
             pane.cursor.pos = Position { line: 0, col: 5 };
         }
         let mut clip = None;
-        reg.apply(pid, EditorAction::MoveTo { pos: Position { line: 0, col: 3 }, extend: false }, &mut clip);
+        reg.apply(
+            pid,
+            EditorAction::MoveTo {
+                pos: Position { line: 0, col: 3 },
+                extend: false,
+            },
+            &mut clip,
+        );
         let pane = reg.get_pane(pid).unwrap();
         // Anchor should equal pos (selection collapsed).
         assert_eq!(pane.cursor.pos, Position { line: 0, col: 3 });
@@ -843,7 +990,14 @@ mod tests {
             pane.cursor.pos = Position { line: 0, col: 2 };
         }
         let mut clip = None;
-        reg.apply(pid, EditorAction::MoveTo { pos: Position { line: 0, col: 7 }, extend: true }, &mut clip);
+        reg.apply(
+            pid,
+            EditorAction::MoveTo {
+                pos: Position { line: 0, col: 7 },
+                extend: true,
+            },
+            &mut clip,
+        );
         let pane = reg.get_pane(pid).unwrap();
         // Anchor stays at 2; pos moves to 7.
         assert_eq!(pane.cursor.anchor, Position { line: 0, col: 2 });
@@ -855,7 +1009,11 @@ mod tests {
         // "hello world" — click on 'o' (col 4) should select "hello" (0..5).
         let (mut reg, pid) = make_reg_with_text("hello world");
         let mut clip = None;
-        reg.apply(pid, EditorAction::SelectWordAt(Position { line: 0, col: 4 }), &mut clip);
+        reg.apply(
+            pid,
+            EditorAction::SelectWordAt(Position { line: 0, col: 4 }),
+            &mut clip,
+        );
         let pane = reg.get_pane(pid).unwrap();
         assert_eq!(pane.cursor.anchor, Position { line: 0, col: 0 });
         assert_eq!(pane.cursor.pos, Position { line: 0, col: 5 });
@@ -866,7 +1024,11 @@ mod tests {
         // "foo\nbar\n" — select line 1 ("bar") → col 0..3.
         let (mut reg, pid) = make_reg_with_text("foo\nbar\n");
         let mut clip = None;
-        reg.apply(pid, EditorAction::SelectLineAt(Position { line: 1, col: 0 }), &mut clip);
+        reg.apply(
+            pid,
+            EditorAction::SelectLineAt(Position { line: 1, col: 0 }),
+            &mut clip,
+        );
         let pane = reg.get_pane(pid).unwrap();
         assert_eq!(pane.cursor.anchor, Position { line: 1, col: 0 });
         assert_eq!(pane.cursor.pos, Position { line: 1, col: 3 });
