@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Anvil Agent Prompt Customization</title>
+  <style>
+    :root {
+      --bg: #080a0b;
+      --panel: #111518;
+      --panel2: #171c20;
+      --line: rgba(220,228,232,.14);
+      --line2: rgba(220,228,232,.28);
+      --text: #eef2f3;
+      --muted: #87939a;
+      --dim: #566168;
+      --mineral: #2f7f86;
+      --agent: #7b67d8;
+      --agent2: #a88cff;
+      --ember: #c95a2d;
+      --verified: #4e9b68;
+      --attention: #c18a26;
+      --failure: #cc4c3e;
+      --cyan: #7fd1d6;
+      --mono: "IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background:
+        linear-gradient(rgba(238,242,243,.026) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(238,242,243,.026) 1px, transparent 1px),
+        radial-gradient(circle at 50% -10%, rgba(123,103,216,.22), transparent 35rem),
+        radial-gradient(circle at 82% 20%, rgba(47,127,134,.15), transparent 28rem),
+        radial-gradient(circle at 15% 88%, rgba(201,90,45,.10), transparent 34rem),
+        var(--bg);
+      background-size: 24px 24px, 24px 24px, auto, auto, auto, auto;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .wrap { max-width: 1540px; margin: 0 auto; padding: 28px; }
+    .bar {
+      display: flex; align-items: center; justify-content: space-between; gap: 16px;
+      border: 1px solid var(--line); background: rgba(8,10,11,.78); padding: 10px 12px;
+      font: 11px/1 var(--mono); text-transform: uppercase; letter-spacing: .12em; color: var(--muted);
+    }
+    .bar b { color: var(--text); font-weight: 500; }
+    .chips { display: flex; gap: 8px; flex-wrap: wrap; }
+    .chip { border: 1px solid var(--line); padding: 7px 9px; background: rgba(17,21,24,.7); }
+    .hero { padding: 58px 0 30px; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 1fr 460px; gap: 30px; align-items: end; }
+    .kicker { font: 12px/1 var(--mono); color: var(--agent2); letter-spacing: .16em; text-transform: uppercase; margin-bottom: 16px; }
+    h1 { margin: 0 0 16px; font: 700 clamp(40px, 7vw, 82px)/.91 var(--mono); letter-spacing: -.075em; text-transform: uppercase; }
+    .hero p { margin: 0; max-width: 820px; color: rgba(238,242,243,.68); font: 15px/1.65 var(--mono); }
+    .spec {
+      border: 1px solid rgba(123,103,216,.42); background: linear-gradient(180deg, rgba(123,103,216,.12), rgba(17,21,24,.9));
+      padding: 16px; font: 12px/1.5 var(--mono); box-shadow: 0 30px 90px rgba(0,0,0,.36);
+    }
+    .spec h2 { margin: 0 0 12px; font-size: 13px; letter-spacing: .13em; text-transform: uppercase; }
+    .spec .r { display: grid; grid-template-columns: 94px 1fr; gap: 12px; border-top: 1px solid rgba(238,242,243,.09); padding: 9px 0; color: var(--muted); }
+    .spec b { color: var(--agent2); font-weight: 500; }
+    .controls { display: flex; gap: 8px; flex-wrap: wrap; margin: 20px 0; }
+    button { cursor: pointer; color: var(--muted); background: rgba(17,21,24,.78); border: 1px solid var(--line); padding: 9px 11px; font: 12px/1 var(--mono); }
+    button:hover, button.active { color: var(--text); border-color: rgba(123,103,216,.75); background: rgba(123,103,216,.16); }
+    .grid { display: grid; grid-template-columns: repeat(3, minmax(320px,1fr)); gap: 14px; }
+    .card { border: 1px solid var(--line); background: linear-gradient(180deg, rgba(17,21,24,.95), rgba(8,10,11,.94)); padding: 14px; min-height: 300px; position: relative; overflow: hidden; }
+    .card::before { content:""; position:absolute; inset:-40px -40px auto auto; width:180px; height:180px; background: radial-gradient(circle, color-mix(in srgb, var(--c) 26%, transparent), transparent 65%); pointer-events:none; }
+    .meta { position: relative; display: flex; justify-content: space-between; gap: 10px; margin-bottom: 12px; color: var(--muted); font: 10px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+    .tag { border: 1px solid color-mix(in srgb, var(--c) 55%, transparent); color: var(--text); background: color-mix(in srgb, var(--c) 13%, transparent); padding: 5px 7px; letter-spacing: 0; text-transform: none; }
+    .term { position: relative; min-height: 142px; border: 1px solid rgba(238,242,243,.11); background: rgba(0,0,0,.32); padding: 12px; font: 12px/1.55 var(--mono); color: rgba(238,242,243,.76); }
+    .prompt { margin-top: 8px; font-size: 13px; }
+    .path { color: var(--muted); }
+    .dim { color: var(--dim); }
+    .agent { color: var(--agent2); }
+    .mineral { color: var(--mineral); }
+    .ember { color: var(--ember); }
+    .verified { color: var(--verified); }
+    .attention { color: var(--attention); }
+    .failure { color: var(--failure); }
+    .cyan { color: var(--cyan); }
+    .br { color: color-mix(in srgb, var(--c) 90%, white 8%); }
+    .meter { display: inline-flex; width: 74px; height: 7px; border: 1px solid rgba(238,242,243,.17); vertical-align: middle; margin: 0 5px; }
+    .meter i { display:block; height:100%; background: linear-gradient(90deg, var(--c), color-mix(in srgb, var(--c), white 28%)); width: var(--w); }
+    .right { float: right; color: var(--muted); }
+    .row { display: flex; justify-content: space-between; gap: 12px; border-top: 1px solid rgba(238,242,243,.07); padding-top: 7px; margin-top: 7px; }
+    .panel { margin-top: 8px; border: 1px solid color-mix(in srgb, var(--c) 34%, transparent); background: color-mix(in srgb, var(--c) 7%, transparent); padding: 7px; color: var(--muted); }
+    .title { position:relative; margin: 12px 0 7px; font: 600 16px/1.2 var(--mono); }
+    .desc { position:relative; margin: 0; color: rgba(220,228,232,.66); font-size: 13px; line-height: 1.5; }
+    .custom { position:relative; margin-top: 10px; color: var(--muted); font: 11px/1.4 var(--mono); border-top: 1px solid rgba(238,242,243,.08); padding-top: 9px; }
+    .hidden { display:none; }
+    .config { margin-top: 24px; display:grid; grid-template-columns: 1.1fr .9fr; gap: 14px; }
+    .box { border: 1px solid var(--line); background: rgba(17,21,24,.82); padding: 16px; }
+    .box h3 { margin:0 0 10px; font: 14px/1 var(--mono); text-transform:uppercase; letter-spacing:.12em; }
+    pre { margin:0; white-space:pre-wrap; color: rgba(238,242,243,.72); font: 12px/1.55 var(--mono); }
+    @media (max-width: 1180px) { .grid { grid-template-columns: repeat(2, 1fr); } .hero, .config { grid-template-columns: 1fr; } }
+    @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } .wrap { padding: 16px; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="bar"><div class="chips"><span class="chip">anvil</span><span class="chip">agent prompt</span><span class="chip">custom profiles</span></div><b>HERMES-LIKE / NOT HERMES-CLONE</b><span>ctx 73% · 141k/192k</span></div>
+    <section class="hero">
+      <div>
+        <div class="kicker">[activated agent prompt / bracketed telemetry]</div>
+        <h1>Agent prompt should feel loaded.</h1>
+        <p>Regular shell stays the clean Thin Trace Arrow. Agent mode gets the full operator console: bracket identity, model/backend, token counter, context percentage, risk/approval, tools, repo route, peer agents, evidence, and customizable skins.</p>
+      </div>
+      <aside class="spec">
+        <h2>Mode split</h2>
+        <div class="r"><b>Shell</b><span><span class="mineral">›</span> cargo test — direct command execution.</span></div>
+        <div class="r"><b>Agent</b><span><span class="agent">[hermes]</span> <span class="agent">◈</span> <span class="mineral">›</span> explain this repo — routed to agent.</span></div>
+        <div class="r"><b>Telemetry</b><span>Tokens, context %, tool policy, approvals, evidence, peer state.</span></div>
+        <div class="r"><b>Custom</b><span>Prompt skin, glyph set, density, telemetry slots, agent name.</span></div>
+      </aside>
+    </section>
+
+    <div class="controls">
+      <button class="active" data-filter="all">all 30</button>
+      <button data-filter="minimal">minimal</button>
+      <button data-filter="bracket">bracket</button>
+      <button data-filter="telemetry">telemetry</button>
+      <button data-filter="dense">dense</button>
+      <button data-filter="wild">wild</button>
+      <button data-filter="safe">approval/safety</button>
+    </div>
+
+    <main class="grid">
+      <article class="card" data-tags="minimal bracket" style="--c:var(--agent)"><div class="meta"><span>01 / canonical</span><span class="tag">minimal</span></div><div class="term"><span class="path">~/caldera/anvil</span><div class="prompt"><span class="br">[hermes]</span> <span class="agent">◈</span> <span class="mineral">›</span> make the prompt smarter</div></div><div class="title">Bracketed Hermes</div><p class="desc">The clean baseline: obvious agent mode, but not overloaded.</p><div class="custom">Custom: agent label, glyph, accent.</div></article>
+      <article class="card" data-tags="bracket telemetry" style="--c:var(--agent)"><div class="meta"><span>02 / token bar</span><span class="tag">telemetry</span></div><div class="term"><span class="br">[hermes]</span> <span class="right">141k/192k · 73%</span><br><span class="dim">ctx</span><span class="meter" style="--w:73%"><i></i></span><span class="agent">claude-sonnet</span><div class="prompt"><span class="agent">◈</span> <span class="mineral">›</span> plan the refactor</div></div><div class="title">Token Counter Rail</div><p class="desc">Shows context usage without stealing the command line.</p><div class="custom">Custom: exact tokens, percent only, hide below threshold.</div></article>
+      <article class="card" data-tags="bracket telemetry dense" style="--c:var(--agent)"><div class="meta"><span>03 / full header</span><span class="tag">dense</span></div><div class="term"><span class="br">[hermes:gpt-5.5]</span> <span class="dim">ctx</span> <span class="agent">73%</span> <span class="dim">tok</span> <span class="agent">141k/192k</span><br><span class="dim">repo</span> anvil <span class="dim">tools</span> shell,file,browser<div class="prompt"><span class="agent">◈</span> <span class="mineral">›</span> implement option 2</div></div><div class="title">Full Header Agent</div><p class="desc">Everything an agent operator wants before issuing intent.</p><div class="custom">Custom: slots ordered by profile.</div></article>
+      <article class="card" data-tags="bracket telemetry" style="--c:var(--mineral)"><div class="meta"><span>04 / honcho-ish</span><span class="tag">bracket</span></div><div class="term"><span class="br">[memory:reasoning]</span> <span class="right">ctx 73%</span><br><span class="path">~/caldera/anvil</span><div class="prompt"><span class="agent">◆</span><span class="dim">──</span><span class="mineral">›</span> what changed?</div></div><div class="title">Memory Reasoning Line</div><p class="desc">Honcho-adjacent: memory/context foregrounded, original Anvil palette.</p><div class="custom">Custom: memory label, route line style.</div></article>
+      <article class="card" data-tags="dense telemetry" style="--c:var(--agent)"><div class="meta"><span>05 / status stack</span><span class="tag">dense</span></div><div class="term"><span class="br">[HERMES]</span> <span class="verified">fresh</span> <span class="dim">·</span> <span class="attention">1 claim</span> <span class="dim">·</span> <span>2 peers</span><br><span class="dim">ctx</span> <span class="agent">73%</span> <span class="dim">risk</span> <span class="verified">low</span> <span class="dim">evidence</span> <span class="verified">on</span><div class="prompt"><span class="agent">◈</span> <span class="mineral">›</span> continue from handoff</div></div><div class="title">Status Stack</div><p class="desc">A compact cockpit for agent readiness.</p><div class="custom">Custom: Caldera fields enabled/disabled.</div></article>
+      <article class="card" data-tags="safe telemetry" style="--c:var(--attention)"><div class="meta"><span>06 / approval</span><span class="tag">safe</span></div><div class="term"><span class="br">[hermes:armed]</span> <span class="right attention">approval required</span><br><span class="attention">policy</span> write files · run tests allowed<div class="prompt"><span class="agent">◈</span> <span class="attention">?</span> <span class="mineral">›</span> edit render.rs</div></div><div class="title">Approval Gate</div><p class="desc">Agent mode can be powerful without being allowed to take over.</p><div class="custom">Custom: risk labels, approval key hints.</div></article>
+      <article class="card" data-tags="telemetry" style="--c:var(--ember)"><div class="meta"><span>07 / executing</span><span class="tag">telemetry</span></div><div class="term"><span class="br">[hermes:exec]</span> <span class="right ember">00:42</span><br><span class="dim">cmd</span> cargo test -p anvil-prompt-core<div class="prompt"><span class="agent">◈</span> <span class="ember">▶</span> <span class="mineral">›</span> running verification</div></div><div class="title">Execution Prompt</div><p class="desc">Ember only when the agent is actively running an approved action.</p><div class="custom">Custom: timer, spinner, cancel hint.</div></article>
+      <article class="card" data-tags="telemetry safe" style="--c:var(--verified)"><div class="meta"><span>08 / verified</span><span class="tag">safe</span></div><div class="term"><span class="br">[hermes:evidence]</span> <span class="right verified">test+clippy</span><br><span class="dim">proof</span> cargo test --workspace · exit 0<div class="prompt"><span class="verified">✓</span> <span class="agent">hermes</span> <span class="mineral">›</span> summarize closeout</div></div><div class="title">Evidence Prompt</div><p class="desc">Green means proof exists, not just “last command succeeded.”</p><div class="custom">Custom: evidence labels, proof source.</div></article>
+      <article class="card" data-tags="dense bracket" style="--c:var(--agent)"><div class="meta"><span>09 / model badge</span><span class="tag">bracket</span></div><div class="term"><span class="br">[hermes]</span> <span class="dim">model</span> <span class="agent">gpt-5.5</span> <span class="dim">temp</span> 0.2<br><span class="path">~/caldera/anvil</span><div class="prompt"><span class="agent">⟡</span> <span class="mineral">›</span> design agent prompt skins</div></div><div class="title">Model Badge</div><p class="desc">Useful when swapping Hermes/Codex/Claude or providers.</p><div class="custom">Custom: model visible compact/full/off.</div></article>
+      <article class="card" data-tags="dense telemetry" style="--c:var(--mineral)"><div class="meta"><span>10 / route</span><span class="tag">dense</span></div><div class="term"><span class="br">[route]</span> operator → hermes → caldera-os<br><span class="dim">ctx</span> 73% <span class="dim">peer</span> active <span class="dim">claim</span> none<div class="prompt"><span class="agent">◈</span><span class="dim">──</span><span class="mineral">›</span> sync with other agent</div></div><div class="title">Caldera Route Prompt</div><p class="desc">Makes cross-repo/multi-agent work visible.</p><div class="custom">Custom: route nodes, peer names.</div></article>
+      <article class="card" data-tags="minimal" style="--c:var(--agent)"><div class="meta"><span>11 / no brackets</span><span class="tag">minimal</span></div><div class="term"><span class="path">~/caldera/anvil</span><div class="prompt"><span class="agent">hermes</span> <span class="mineral">›</span> help me debug this</div></div><div class="title">Named Agent Prompt</div><p class="desc">No glyph mystery. The word hermes makes the mode obvious.</p><div class="custom">Custom: agent name alias.</div></article>
+      <article class="card" data-tags="minimal bracket" style="--c:var(--agent)"><div class="meta"><span>12 / brackets only</span><span class="tag">minimal</span></div><div class="term"><span class="path">~/caldera/anvil</span><div class="prompt"><span class="br">[h]</span> <span class="mineral">›</span> inspect workspace</div></div><div class="title">Tiny Bracket</div><p class="desc">The smallest possible agent-mode difference from shell prompt.</p><div class="custom">Custom: short alias h/hermes/H.</div></article>
+      <article class="card" data-tags="wild bracket" style="--c:var(--agent)"><div class="meta"><span>13 / sigil</span><span class="tag">wild</span></div><div class="term"><span class="br">[◈ HERMES ◈]</span> <span class="right">ctx 73%</span><br><span class="dim">━━━━━━━━━━━━━━━━━━━━</span><div class="prompt"><span class="agent">⟐</span> <span class="mineral">›</span> execute plan</div></div><div class="title">Hermes Sigil Bar</div><p class="desc">Cooler, more ceremonial. Good for active agent mode.</p><div class="custom">Custom: line glyph, sigil glyph.</div></article>
+      <article class="card" data-tags="wild telemetry" style="--c:var(--agent)"><div class="meta"><span>14 / memory cells</span><span class="tag">wild</span></div><div class="term"><span class="br">[mem]</span> ▣▣□▣□▣▣□ <span class="right">73%</span><br><span class="dim">facts</span> 42 <span class="dim">handoffs</span> 3 <span class="dim">claims</span> 0<div class="prompt"><span class="agent">◈</span> <span class="mineral">›</span> recall prompt direction</div></div><div class="title">Pixel Memory Cells</div><p class="desc">Honcho-inspired context/memory visual, but Anvil-native.</p><div class="custom">Custom: cell count tied to ctx percent.</div></article>
+      <article class="card" data-tags="dense safe" style="--c:var(--failure)"><div class="meta"><span>15 / blocked</span><span class="tag">safe</span></div><div class="term"><span class="br">[hermes:blocked]</span> <span class="right failure">policy</span><br><span class="failure">deny</span> git push requires explicit approval<div class="prompt"><span class="failure">×</span> <span class="agent">hermes</span> <span class="mineral">›</span> request approval?</div></div><div class="title">Blocked Agent Prompt</div><p class="desc">Makes policy refusal visible while keeping the operator in control.</p><div class="custom">Custom: policy reason verbosity.</div></article>
+      <article class="card" data-tags="dense telemetry" style="--c:var(--attention)"><div class="meta"><span>16 / stale ctx</span><span class="tag">telemetry</span></div><div class="term"><span class="br">[hermes:ctx]</span> <span class="right attention">stale 18m</span><br><span class="dim">cache</span> refresh recommended <span class="dim">tokens</span> 141k<div class="prompt"><span class="attention">~</span> <span class="agent">hermes</span> <span class="mineral">›</span> refresh first?</div></div><div class="title">Context Stale Prompt</div><p class="desc">Shows the agent has memory, but does not pretend it is always fresh.</p><div class="custom">Custom: stale threshold.</div></article>
+      <article class="card" data-tags="dense telemetry" style="--c:var(--agent)"><div class="meta"><span>17 / toolbelt</span><span class="tag">dense</span></div><div class="term"><span class="br">[tools]</span> file ✓ shell ✓ browser ✓ git read<br><span class="br">[blocked]</span> push deploy secrets sudo<div class="prompt"><span class="agent">◈</span> <span class="mineral">›</span> inspect failures</div></div><div class="title">Toolbelt Prompt</div><p class="desc">Agent capabilities and boundaries in the prompt header.</p><div class="custom">Custom: show tools only in verbose mode.</div></article>
+      <article class="card" data-tags="wild dense" style="--c:var(--mineral)"><div class="meta"><span>18 / terminal frame</span><span class="tag">wild</span></div><div class="term"><span class="dim">╭─</span><span class="br">[hermes]</span><span class="dim">──ctx:</span><span class="agent">73%</span><span class="dim">──tok:</span><span>141k</span><br><span class="dim">╰─</span><span class="agent">◈</span> <span class="mineral">›</span> generate variants</div><div class="title">Box-Draw Frame</div><p class="desc">Very hacker-console, but still compact.</p><div class="custom">Custom: ascii/rounded/sharp frame style.</div></article>
+      <article class="card" data-tags="bracket telemetry" style="--c:var(--cyan)"><div class="meta"><span>19 / percentage lead</span><span class="tag">telemetry</span></div><div class="term"><span class="br">[73%]</span> <span class="dim">context loaded</span> <span class="right">141k/192k</span><br><span class="path">anvil · rust-port</span><div class="prompt"><span class="agent">◈</span> <span class="mineral">›</span> continue</div></div><div class="title">Percent-First</div><p class="desc">If context pressure matters, make percentage the primary badge.</p><div class="custom">Custom: warn at 80%, risk at 92%.</div></article>
+      <article class="card" data-tags="minimal telemetry" style="--c:var(--agent)"><div class="meta"><span>20 / right rail</span><span class="tag">minimal</span></div><div class="term"><span class="path">~/caldera/anvil</span> <span class="right">ctx 73%</span><div class="prompt"><span class="br">[hermes]</span> <span class="mineral">›</span> summarize</div></div><div class="title">Right-Side Telemetry</div><p class="desc">Keeps the prompt start clean; metadata sits on the far side.</p><div class="custom">Custom: terminal-width aware.</div></article>
+      <article class="card" data-tags="dense telemetry" style="--c:var(--agent)"><div class="meta"><span>21 / profile</span><span class="tag">dense</span></div><div class="term"><span class="br">[profile:operator]</span> <span class="dim">skin</span> bracket-dense<br><span class="br">[agent:hermes]</span> <span class="dim">mode</span> design <span class="dim">ctx</span> 73%<div class="prompt"><span class="agent">◈</span> <span class="mineral">›</span> change skin to compact</div></div><div class="title">Profile-Aware Prompt</div><p class="desc">Makes customization itself visible and debuggable.</p><div class="custom">Custom: named profiles per repo/user.</div></article>
+      <article class="card" data-tags="safe dense" style="--c:var(--attention)"><div class="meta"><span>22 / lease</span><span class="tag">safe</span></div><div class="term"><span class="br">[lease]</span> <span class="attention">write:render.rs</span> <span class="right">04:31 left</span><br><span class="dim">scope</span> one file · tests required<div class="prompt"><span class="agent">◈</span> <span class="attention">⏱</span> <span class="mineral">›</span> proceed</div></div><div class="title">Bounded Lease Prompt</div><p class="desc">If the agent can act, show exact scope and expiration.</p><div class="custom">Custom: lease display compact/full.</div></article>
+      <article class="card" data-tags="wild telemetry" style="--c:var(--agent)"><div class="meta"><span>23 / node path</span><span class="tag">wild</span></div><div class="term"><span class="dim">operator</span><span class="agent"> ●──● </span><span class="dim">hermes</span><span class="agent"> ──● </span><span class="dim">caldera</span><br><span class="br">[ctx 73]</span> <span class="br">[tok 141k]</span><div class="prompt"><span class="agent">◈</span> <span class="mineral">›</span> route task</div></div><div class="title">Node Path Prompt</div><p class="desc">Graph-like agent routing for cross-agent work.</p><div class="custom">Custom: route visualization on/off.</div></article>
+      <article class="card" data-tags="bracket dense" style="--c:var(--agent)"><div class="meta"><span>24 / codename</span><span class="tag">bracket</span></div><div class="term"><span class="br">[anvil://hermes/operator]</span><br><span class="dim">caldera-os linked · evidence on · tools gated</span><div class="prompt"><span class="agent">◈</span> <span class="mineral">›</span> open agent deck</div></div><div class="title">URI Identity</div><p class="desc">Feels like a system endpoint rather than a chat bot.</p><div class="custom">Custom: URI scheme and namespace.</div></article>
+      <article class="card" data-tags="dense telemetry" style="--c:var(--agent)"><div class="meta"><span>25 / queue</span><span class="tag">dense</span></div><div class="term"><span class="br">[queue]</span> 3 actions · 1 approval · 0 running<br><span class="dim">next</span> claim render.rs → edit → test<div class="prompt"><span class="agent">◈</span> <span class="mineral">›</span> approve next</div></div><div class="title">Action Queue Prompt</div><p class="desc">Agent mode as a command queue, not freeform takeover.</p><div class="custom">Custom: queue count, next action.</div></article>
+      <article class="card" data-tags="minimal bracket" style="--c:var(--agent)"><div class="meta"><span>26 / compact pro</span><span class="tag">minimal</span></div><div class="term"><span class="path">~/caldera/anvil</span> <span class="right">73%</span><div class="prompt"><span class="br">[h]</span><span class="agent">◈</span><span class="mineral">›</span> _</div></div><div class="title">Compact Pro</div><p class="desc">For daily use once the visual language is learned.</p><div class="custom">Custom: compact mode after N uses.</div></article>
+      <article class="card" data-tags="wild" style="--c:var(--ember)"><div class="meta"><span>27 / hot run</span><span class="tag">wild</span></div><div class="term"><span class="br">[forge]</span> <span class="ember">active execution lane</span><br><span class="ember">▰▰▰▱▱</span> <span class="dim">tools firing</span><div class="prompt"><span class="agent">◈</span> <span class="ember">▶</span><span class="mineral">›</span> compiling</div></div><div class="title">Forge Runner</div><p class="desc">More Anvil/ember flavored for actual execution state.</p><div class="custom">Custom: animation intensity.</div></article>
+      <article class="card" data-tags="safe telemetry" style="--c:var(--failure)"><div class="meta"><span>28 / takeover guard</span><span class="tag">safe</span></div><div class="term"><span class="br">[guard]</span> <span class="verified">human owns input</span><br><span class="dim">agent can suggest · cannot submit</span><div class="prompt"><span class="agent">◈</span> <span class="mineral">›</span> propose command</div></div><div class="title">Takeover Guard</div><p class="desc">Explicitly communicates the contract when in agent mode.</p><div class="custom">Custom: show guard in onboarding only.</div></article>
+      <article class="card" data-tags="dense telemetry" style="--c:var(--agent)"><div class="meta"><span>29 / dashboard sync</span><span class="tag">dense</span></div><div class="term"><span class="br">[caldera]</span> board 4 · evidence 12 · trace live<br><span class="dim">agent</span> hermes@anvil <span class="dim">peer</span> hermes@caldera-os<div class="prompt"><span class="agent">◈</span> <span class="mineral">›</span> sync dashboard</div></div><div class="title">Dashboard-Synced</div><p class="desc">Prompt mirrors the Caldera control-plane state.</p><div class="custom">Custom: dashboard fields per repo.</div></article>
+      <article class="card" data-tags="bracket telemetry dense" style="--c:var(--agent)"><div class="meta"><span>30 / recommended</span><span class="tag">hybrid</span></div><div class="term"><span class="br">[hermes]</span> <span class="right">ctx 73% · 141k/192k</span><br><span class="dim">anvil</span> · <span class="verified">context fresh</span> · <span class="dim">tools gated</span><div class="prompt"><span class="agent">◈</span> <span class="mineral">›</span> make prompt customizable</div></div><div class="title">Recommended Agent Prompt</div><p class="desc">Bracket identity, token counter, context percent, safety hint, and clean input line.</p><div class="custom">Custom: good default for activated agent mode.</div></article>
+    </main>
+
+    <section class="config">
+      <div class="box"><h3>Example config shape</h3><pre>[prompt.shell]
+skin = "thin-trace-arrow"
+glyph = "›"
+show_agent_awareness = true
+
+[prompt.agent]
+skin = "bracket-dense"
+agent = "hermes"
+glyph = "◈"
+arrow = "›"
+show_model = true
+show_tokens = true
+show_context_percent = true
+show_tools = "compact"
+show_policy = true
+show_evidence = true
+compact_below_width = 100</pre></div>
+      <div class="box"><h3>Recommended split</h3><pre>Shell prompt:
+  ~/caldera/anvil
+  › cargo test
+
+Agent prompt:
+  [hermes] ctx 73% · 141k/192k
+  anvil · context fresh · tools gated
+  ◈ › make this prompt cooler
+
+Rule:
+  shell prompt executes commands
+  agent prompt sends instructions to agent
+  proposed shell execution is approved explicitly</pre></div>
+    </section>
+  </div>
+<script>
+  const buttons=[...document.querySelectorAll('button[data-filter]')];
+  const cards=[...document.querySelectorAll('.card')];
+  buttons.forEach(b=>b.onclick=()=>{buttons.forEach(x=>x.classList.remove('active'));b.classList.add('active');const f=b.dataset.filter;cards.forEach(c=>{const t=c.dataset.tags.split(/\s+/);c.classList.toggle('hidden',f!=='all'&&!t.includes(f));});});
+</script>
+</body>
+</html>

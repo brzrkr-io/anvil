@@ -61,6 +61,7 @@ use anvil_workspace::interact;
 use anvil_workspace::keys::{Key, Mods, encode as encode_key, encode_mouse};
 use anvil_workspace::layout::{DividerHit, NavDir, PaneId, Rect, SplitDir, adjust_ratio,
     find_divider_at, split_at_path_mut};
+use anvil_workspace::mode::{DockMetrics, Docks, LayoutMode};
 use anvil_workspace::palette::{Action, CATALOG, Palette, action_for_id};
 use anvil_workspace::tab::{Tab, TabManager};
 
@@ -457,6 +458,9 @@ pub struct App {
     keybindings: Keybindings,
     system_dark: bool,
     window_scale: f64,
+    /// Current layout mode. Defaults to `Terminal`.
+    /// Set at startup via `ANVIL_LAYOUT_MODE=ide|codex|terminal`.
+    layout_mode: LayoutMode,
 
     // -- UI state ---
     blink_phase: f32,
@@ -564,33 +568,54 @@ impl App {
         (dw, dh)
     }
 
-    /// Inner content rect in device pixels: window minus bars, padding, and
-    /// (when shown) the docked right HUD column.
+    /// Window inner rect in device pixels: window content minus OS title strip
+    /// and bottom status bar, before dock subtraction.
     ///
-    /// The HUD touches the window's right edge, so when it is visible the
-    /// grid skips the usual right `GRID_PAD` — the HUD absorbs it — and
-    /// instead reserves `self.hud_cols * cw` plus one cell of breathing room.
-    fn inner_rect(&self) -> Rect {
+    /// Left `GRID_PAD` is included so `pane_area.x = GRID_PAD` in Terminal
+    /// mode (preserving the existing left margin).  Right edge reaches to
+    /// `dw - GRID_PAD`; the right-side reservation is handled by `Docks`.
+    fn window_inner(&self) -> Rect {
         let (dw, dh) = self.device_size();
-        let pad = GRID_PAD as f64;
         let cw = self.font.metrics.cell_w;
         let ch = self.font.metrics.cell_h;
-
-        let _ = pad;
-        let _ = ch;
         let top_bar_px = self.chrome_top_px();
         let bot_bar_px = self.chrome_bottom_px();
-        let (right_margin_px, right_gutter_px) = if self.hud_visible {
-            (0.0, self.hud_cols as f64 * cw + cw)
-        } else {
-            (GRID_PAD as f64, 0.0)
-        };
         Rect {
             x: GRID_PAD as f64,
             y: top_bar_px,
-            w: (dw as f64 - GRID_PAD as f64 - right_margin_px - right_gutter_px).max(cw),
+            w: (dw as f64 - GRID_PAD as f64).max(cw),
             h: (dh as f64 - top_bar_px - bot_bar_px).max(ch),
         }
+    }
+
+    /// Build the `DockMetrics` struct from current font / HUD state.
+    fn dock_metrics(&self) -> DockMetrics {
+        DockMetrics {
+            cell_w: self.font.metrics.cell_w,
+            cell_h: self.font.metrics.cell_h,
+            hud_cols: self.hud_cols,
+            grid_pad: GRID_PAD as f64,
+        }
+    }
+
+    /// Compute `Docks` for the current mode and return the pane area rect.
+    ///
+    /// This is the single source of truth for where the terminal grid lives.
+    /// Pass this to `PaneTree::layout`, hit-test, and `draw_workspace`.
+    fn pane_area_rect(&self) -> Rect {
+        Docks::for_mode(
+            self.layout_mode,
+            self.window_scale,
+            self.dock_metrics(),
+            self.hud_visible,
+            self.chrome_bottom_px(),
+        )
+        .compute_areas(
+            self.window_inner(),
+            self.font.metrics.cell_w,
+            self.font.metrics.cell_h,
+        )
+        .pane_area
     }
 
     /// Fixed chrome-top strip height in device pixels (Option D: 36pt).
@@ -625,7 +650,7 @@ impl App {
 
     /// Resize every pane in every tab to reflect the current window size.
     fn resize_all_tabs(&mut self) {
-        let ir = self.inner_rect();
+        let ir = self.pane_area_rect();
         let cw = self.font.metrics.cell_w;
         let ch = self.font.metrics.cell_h;
         let div = DIVIDER_PX;
@@ -749,7 +774,7 @@ impl App {
     }
 
     fn focus_neighbor(&mut self, dir: NavDir) {
-        let ir = self.inner_rect();
+        let ir = self.pane_area_rect();
         let div = DIVIDER_PX;
         let next = self
             .tabs
@@ -775,7 +800,7 @@ impl App {
         }
 
         let focused_id = tab.focused_id();
-        let ir = self.inner_rect();
+        let ir = self.pane_area_rect();
         let div = DIVIDER_PX;
         let cw = self.font.metrics.cell_w;
         let ch = self.font.metrics.cell_h;
@@ -1217,7 +1242,7 @@ impl App {
     fn event_cell(&self, loc: MouseLocation, clamp: bool) -> Option<(usize, usize)> {
         let (rx, ry) = self.view_pt_to_raster_px(loc);
         let tab = self.tabs.current()?;
-        let ir = self.inner_rect();
+        let ir = self.pane_area_rect();
         let div = DIVIDER_PX;
 
         let pane_id = tab
@@ -1405,7 +1430,7 @@ impl App {
             self.raster.clear(self.theme.background);
         } else {
             // Right HUD strip — clear and let the HUD draw repaint it. Safe
-            // now that the initial PTY size matches `inner_rect`: no cells
+            // now that the initial PTY size matches `pane_area_rect`: no cells
             // ever extend into this column.
             if self.hud_visible {
                 let cw = self.font.metrics.cell_w;
@@ -1423,16 +1448,11 @@ impl App {
         }
 
         let ch = self.font.metrics.cell_h;
-        let pad = GRID_PAD as f64;
         let eff_hud = self.hud_visible;
         let (dw, dh) = self.device_size();
 
-        let inner = Rect {
-            x: self.raster.pad_x,
-            y: self.raster.pad_y,
-            w: dw as f64 - 2.0 * pad,
-            h: dh as f64 - 2.0 * pad,
-        };
+        // Pane area: single source of truth from Docks geometry.
+        let inner = self.pane_area_rect();
 
         let search_ref: Option<&anvil_term::Search> = if self.search_open {
             Some(&self.search)
@@ -2281,7 +2301,7 @@ impl AppShell {
     }
 
     /// Toggle the HUD: flip `hud_visible`, reflow terminal columns to match the
-    /// new inner_rect, and mark the frame dirty. The window size is unchanged —
+    /// new pane_area_rect, and mark the frame dirty. The window size is unchanged —
     /// the HUD expands inward, shrinking the terminal grid.
     fn toggle_hud(&mut self) {
         self.app.hud_visible = !self.app.hud_visible;
@@ -2854,7 +2874,7 @@ impl AppHandler for AppShell {
         // divider doesn't also switch focus.
         {
             let (rx, ry) = app.view_pt_to_raster_px(loc);
-            let ir = app.inner_rect();
+            let ir = app.pane_area_rect();
             if let Some(tab) = app.tabs.current() {
                 let slop = DIVIDER_PX * 0.5 + 4.0;
                 if let Some(hit) = find_divider_at(&tab.tree, ir, DIVIDER_PX, rx, ry, slop) {
@@ -2868,7 +2888,7 @@ impl AppHandler for AppShell {
         // Click-to-focus.
         {
             let (rx, ry) = app.view_pt_to_raster_px(loc);
-            let ir = app.inner_rect();
+            let ir = app.pane_area_rect();
             let hit_id = app
                 .tabs
                 .current()
@@ -3711,12 +3731,10 @@ fn main() -> Result<()> {
     // -- Cell geometry --------------------------------------------------------
     let cw = font.metrics.cell_w as usize;
     let ch = font.metrics.cell_h as usize;
-    // Initial PTY size must match what `App::inner_rect` will report once the
-    // App is constructed (with `hud_visible = true` by default), otherwise the
+    // Initial PTY size must match what `App::pane_area_rect` will report once the
+    // App is constructed (with `hud_visible = false` by default), otherwise the
     // first frames render at the wrong column count and scrollback comes back
-    // mis-shaped. Mirror the reservation: drop the right `GRID_PAD` (the HUD
-    // absorbs it) and reserve `HUD_COLS_DEFAULT + 1` cells for the docked panel.
-    // HUD is now default-off — reserve only the padding + chrome + status rows.
+    // mis-shaped. HUD is default-off — reserve only the padding + chrome + status rows.
     // (resize_all_tabs corrects to exact pane size once the window is up,
     // but the initial PTY needs sane dimensions for the first prompt frame.)
     let cols = (dw.saturating_sub(2 * GRID_PAD) / cw).max(1);
@@ -3841,6 +3859,14 @@ fn main() -> Result<()> {
         if use_gpu_render { "gpu" } else { "cpu" }
     );
 
+    // -- Layout mode (debug env-var override) ---------------------------------
+    let layout_mode = match std::env::var("ANVIL_LAYOUT_MODE").as_deref() {
+        Ok("ide") => LayoutMode::Ide,
+        Ok("codex") => LayoutMode::Codex,
+        _ => LayoutMode::Terminal,
+    };
+    eprintln!("anvil: layout_mode = {layout_mode:?}");
+
     let app = App {
         tabs,
         ptys,
@@ -3871,6 +3897,7 @@ fn main() -> Result<()> {
         keybindings,
         system_dark,
         window_scale,
+        layout_mode,
         blink_phase: 0.0,
         last_blink_opacity: -1.0,
         search: anvil_term::Search::new(),
