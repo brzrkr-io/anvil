@@ -10,6 +10,7 @@
 //!   - Agent `Snapshot` + `LocalContext`
 //!   - Git worker via `std::sync::mpsc`
 
+mod fs_worker;
 mod kube;
 
 use std::cell::RefCell;
@@ -54,7 +55,7 @@ use anvil_render::raster::Raster;
 use anvil_render::searchbar::draw_search_bar;
 use anvil_render::tabbar::{TabBarHitKind, TabBarHits, draw_tab_bar};
 use anvil_render::workspace::{DIVIDER_PX, draw_workspace, draw_workspace_chrome};
-use anvil_render::{CellBatch, FoldedBlocks, GridPainters, draw_viewport_gpu};
+use anvil_render::{CellBatch, FoldedBlocks, GridPainters, LeftDockSnapshot, draw_left_dock, draw_viewport_gpu};
 use anvil_term::DirtySet;
 use anvil_theme::{Theme, resolve as resolve_theme};
 use anvil_workspace::interact;
@@ -526,6 +527,13 @@ pub struct App {
 
     // -- kubectl worker ---
     kube_rx: mpsc::Receiver<anvil_prompt_core::KubeCtx>,
+
+    // -- filesystem worker (left dock, ID3) ---
+    fs_tx: mpsc::SyncSender<PathBuf>,
+    fs_rx: mpsc::Receiver<fs_worker::DirSnapshot>,
+    fs_snapshot: Option<LeftDockSnapshot>,
+    /// Last cwd sent to the fs worker; used to debounce re-sends.
+    fs_last_cwd: Option<String>,
 
     // -- pulse (agent dot animation) ---
     agent_pulse_phase: f32,
@@ -1328,6 +1336,28 @@ impl App {
             self.local_ctx.kube_context = Some(ctx);
         }
 
+        // ID3: drain filesystem worker and send cwd when it changes.
+        while let Ok(snap) = self.fs_rx.try_recv() {
+            self.fs_snapshot = Some(LeftDockSnapshot {
+                root: snap.root.to_string_lossy().into_owned(),
+                entries: snap
+                    .entries
+                    .into_iter()
+                    .map(|e| anvil_render::LeftDockEntry { name: e.name, is_dir: e.is_dir })
+                    .collect(),
+            });
+            self.dirty = true;
+        }
+        if self.layout_mode == LayoutMode::Ide {
+            if let Some(cwd) = self.current_cwd() {
+                let changed = self.fs_last_cwd.as_deref() != Some(cwd.as_str());
+                if changed {
+                    let _ = self.fs_tx.try_send(PathBuf::from(&cwd));
+                    self.fs_last_cwd = Some(cwd);
+                }
+            }
+        }
+
         // last-run and recent prompts from focused pane
         if let Some(tab) = self.tabs.current() {
             let id = tab.focused_id();
@@ -1450,7 +1480,7 @@ impl App {
         }
 
         let ch = self.font.metrics.cell_h;
-        let eff_hud = self.hud_visible;
+        let eff_hud = self.hud_visible || self.layout_mode == LayoutMode::Ide;
         let (dw, dh) = self.device_size();
 
         // Pane area: single source of truth from Docks geometry.
@@ -1631,7 +1661,7 @@ impl App {
             );
         }
 
-        // Context bar: Ide mode only, top strip below the OS title chrome.
+        // Context bar + left dock: Ide mode only.
         if self.layout_mode == LayoutMode::Ide {
             let areas = Docks::for_mode(
                 self.layout_mode,
@@ -1648,6 +1678,14 @@ impl App {
                 &self.theme,
                 &self.local_ctx,
                 areas.top_bar,
+            );
+            draw_left_dock(
+                &mut self.raster,
+                chrome_painter,
+                chrome_metrics,
+                &self.theme,
+                self.fs_snapshot.as_ref(),
+                areas.left_dock,
             );
         }
 
@@ -3867,6 +3905,9 @@ fn main() -> Result<()> {
     let (kube_tx, kube_rx) = mpsc::sync_channel::<anvil_prompt_core::KubeCtx>(1);
     kube::spawn_kube_worker(kube_tx);
 
+    // -- Filesystem worker (ID3) -----------------------------------------------
+    let (fs_tx, fs_rx) = fs_worker::spawn_fs_worker();
+
     // -- Theme ----------------------------------------------------------------
     let system_dark = system_is_dark();
     let effective_name = effective_theme_name(system_dark, &config.theme);
@@ -3970,6 +4011,10 @@ fn main() -> Result<()> {
         recent_cwd_tx,
         recent_rx,
         kube_rx,
+        fs_tx,
+        fs_rx,
+        fs_snapshot: None,
+        fs_last_cwd: None,
         agent_pulse_phase: 0.0,
         last_agent_pulse_opacity: -1.0,
         running_pulse_phase: 0.0,

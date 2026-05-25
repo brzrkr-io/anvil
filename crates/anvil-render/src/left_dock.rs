@@ -1,0 +1,471 @@
+//! Left dock panel — drawn only in Ide mode.
+//!
+//! Vertical 60/40 split: Explorer (top) and Outline (bottom).
+//! v1: top-level dir listing only; no click handling, no scrolling.
+//!
+//! Section heights:
+//!   explorer_h = rect.h * 0.60   (includes header row)
+//!   outline_h  = rect.h * 0.40   (includes header row)
+
+use anvil_theme::Theme;
+use anvil_workspace::layout::Rect;
+
+use crate::raster::{FontMetrics, GlyphPainter, Raster};
+
+/// A single directory entry as produced by `crates/anvil/src/fs_worker.rs`.
+///
+/// Duplicated here so `anvil-render` stays independent of the `anvil` binary
+/// crate (crate graph constraint). The binary maps its own `DirEntry` →
+/// this type by value (identical shape).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirEntry {
+    pub name: String,
+    pub is_dir: bool,
+}
+
+/// Snapshot of a directory's top-level entries.
+#[derive(Debug, Clone, Default)]
+pub struct DirSnapshot {
+    /// The directory that was listed. Empty means "no cwd yet".
+    pub root: String,
+    pub entries: Vec<DirEntry>,
+}
+
+// ── Row geometry ──────────────────────────────────────────────────────────────
+
+/// Height of a section header row in pixels (fixed; chrome font sized).
+const HEADER_H: f64 = 22.0;
+
+/// Height of a content row in pixels.
+const ROW_H: f64 = 20.0;
+
+/// Horizontal padding inside the dock.
+const PAD_X: f64 = 8.0;
+
+// ── Public entry point ────────────────────────────────────────────────────────
+
+/// Draw the left dock into `rect`.
+///
+/// - Background: `theme.charcoal`.
+/// - Right-edge 1px hairline: `theme.hairline`.
+/// - 60/40 vertical split: Explorer (top) / Outline (bottom) with a hairline divider.
+/// - `snapshot`: the latest directory listing; `None` means "waiting for cwd".
+#[allow(clippy::too_many_arguments)]
+pub fn draw_left_dock(
+    raster: &mut Raster,
+    painter: &mut dyn GlyphPainter,
+    metrics: FontMetrics,
+    theme: &Theme,
+    snapshot: Option<&DirSnapshot>,
+    rect: Rect,
+) {
+    if rect.w <= 0.0 || rect.h <= 0.0 {
+        return;
+    }
+
+    // ── Background ────────────────────────────────────────────────────────────
+    raster.fill_pixel_rect(rect.x, rect.y, rect.w, rect.h, theme.charcoal);
+
+    // Right-edge 1px hairline.
+    raster.fill_pixel_rect(rect.x + rect.w - 1.0, rect.y, 1.0, rect.h, theme.hairline);
+
+    // ── 60/40 split ───────────────────────────────────────────────────────────
+    let explorer_h = (rect.h * 0.60).floor();
+    let outline_h = rect.h - explorer_h;
+
+    let explorer_rect = Rect { x: rect.x, y: rect.y, w: rect.w - 1.0, h: explorer_h };
+    let outline_rect = Rect {
+        x: rect.x,
+        y: rect.y + explorer_h,
+        w: rect.w - 1.0,
+        h: outline_h,
+    };
+
+    // Divider between sections.
+    raster.fill_pixel_rect(rect.x, rect.y + explorer_h, rect.w - 1.0, 1.0, theme.hairline);
+
+    draw_explorer_section(raster, painter, metrics, theme, snapshot, explorer_rect);
+    draw_outline_section(raster, painter, metrics, theme, outline_rect);
+}
+
+// ── Explorer section ──────────────────────────────────────────────────────────
+
+fn draw_explorer_section(
+    raster: &mut Raster,
+    painter: &mut dyn GlyphPainter,
+    metrics: FontMetrics,
+    theme: &Theme,
+    snapshot: Option<&DirSnapshot>,
+    rect: Rect,
+) {
+    let cell_w = metrics.cell_w;
+    let cell_h = metrics.cell_h;
+
+    // ── Header row ────────────────────────────────────────────────────────────
+    let header_label: String = match snapshot {
+        Some(snap) if !snap.root.is_empty() => {
+            let basename = snap
+                .root
+                .rsplit('/')
+                .next()
+                .unwrap_or(&snap.root)
+                .to_string();
+            format!("EXPLORER \u{00b7} {}", basename)
+        }
+        _ => "EXPLORER".to_string(),
+    };
+
+    let header_y = rect.y + ((HEADER_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+    draw_text_run(
+        raster,
+        painter,
+        metrics,
+        &header_label,
+        theme.text_muted,
+        rect.x + PAD_X,
+        header_y,
+        rect.x + rect.w,
+    );
+    // Hairline under header.
+    raster.fill_pixel_rect(rect.x, rect.y + HEADER_H - 1.0, rect.w, 1.0, theme.hairline);
+
+    // ── Content rows ──────────────────────────────────────────────────────────
+    let content_y_start = rect.y + HEADER_H;
+    let content_h = rect.h - HEADER_H;
+    if content_h <= 0.0 {
+        return;
+    }
+
+    match snapshot {
+        None => {
+            // No cwd yet — waiting state.
+            let row_y = content_y_start
+                + ((ROW_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+            draw_text_run(
+                raster,
+                painter,
+                metrics,
+                "Waiting for shell prompt\u{2026}",
+                theme.text_muted,
+                rect.x + PAD_X,
+                row_y,
+                rect.x + rect.w,
+            );
+        }
+        Some(snap) if snap.entries.is_empty() => {
+            let row_y = content_y_start
+                + ((ROW_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+            draw_text_run(
+                raster,
+                painter,
+                metrics,
+                "(empty)",
+                theme.text_muted,
+                rect.x + PAD_X,
+                row_y,
+                rect.x + rect.w,
+            );
+        }
+        Some(snap) => {
+            let available_rows = (content_h / ROW_H).floor() as usize;
+            for (i, entry) in snap.entries.iter().enumerate() {
+                if i >= available_rows {
+                    break;
+                }
+                let row_top = content_y_start + i as f64 * ROW_H;
+                let glyph_y = row_top
+                    + ((ROW_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+
+                let (label, color) = if entry.is_dir {
+                    (format!("\u{25b8} {}", entry.name), theme.text_subtle)
+                } else {
+                    (entry.name.clone(), theme.text_muted)
+                };
+
+                // Truncate label to fit available width.
+                let max_chars =
+                    ((rect.w - PAD_X * 2.0 - cell_w) / cell_w).floor() as usize;
+                let truncated = truncate_name(&label, max_chars);
+
+                draw_text_run(
+                    raster,
+                    painter,
+                    metrics,
+                    &truncated,
+                    color,
+                    rect.x + PAD_X,
+                    glyph_y,
+                    rect.x + rect.w - PAD_X,
+                );
+            }
+        }
+    }
+}
+
+// ── Outline section ───────────────────────────────────────────────────────────
+
+fn draw_outline_section(
+    raster: &mut Raster,
+    painter: &mut dyn GlyphPainter,
+    metrics: FontMetrics,
+    theme: &Theme,
+    rect: Rect,
+) {
+    let cell_h = metrics.cell_h;
+
+    // ── Header row ────────────────────────────────────────────────────────────
+    let header_y = rect.y + ((HEADER_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+    draw_text_run(
+        raster,
+        painter,
+        metrics,
+        "OUTLINE",
+        theme.text_muted,
+        rect.x + PAD_X,
+        header_y,
+        rect.x + rect.w,
+    );
+    raster.fill_pixel_rect(rect.x, rect.y + HEADER_H - 1.0, rect.w, 1.0, theme.hairline);
+
+    // ── Empty-state content ───────────────────────────────────────────────────
+    let content_y = rect.y + HEADER_H;
+    let row1_y = content_y + ((ROW_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+    draw_text_run(
+        raster,
+        painter,
+        metrics,
+        "Outline unavailable",
+        theme.text_muted,
+        rect.x + PAD_X,
+        row1_y,
+        rect.x + rect.w,
+    );
+
+    // Second line at 50% alpha: blend text_subtle toward charcoal.
+    if rect.h > HEADER_H + ROW_H {
+        let row2_y = row1_y + ROW_H;
+        let muted_50 = blend_50(theme.text_subtle, theme.charcoal);
+        draw_text_run(
+            raster,
+            painter,
+            metrics,
+            "Requires nvim bridge (BR5)",
+            muted_50,
+            rect.x + PAD_X,
+            row2_y,
+            rect.x + rect.w,
+        );
+    }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Draw a string run clipped to `max_x`. Returns the x position after the last glyph.
+#[allow(clippy::too_many_arguments)]
+fn draw_text_run(
+    raster: &mut Raster,
+    painter: &mut dyn GlyphPainter,
+    metrics: FontMetrics,
+    text: &str,
+    color: [u8; 3],
+    x_start: f64,
+    y: f64,
+    max_x: f64,
+) {
+    let mut x = x_start;
+    for ch in text.chars() {
+        if x + metrics.cell_w > max_x {
+            break;
+        }
+        raster.glyph_at(painter, metrics, x, y, ch as u32, color);
+        x += metrics.cell_w;
+    }
+}
+
+/// Truncate `name` to at most `max_chars` characters, appending `…` if clipped.
+fn truncate_name(name: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let chars: Vec<char> = name.chars().collect();
+    if chars.len() <= max_chars {
+        name.to_string()
+    } else {
+        let cut = max_chars.saturating_sub(1);
+        let s: String = chars[..cut].iter().collect();
+        format!("{s}\u{2026}")
+    }
+}
+
+/// 50% alpha blend of `fg` over `bg` (integer midpoint).
+fn blend_50(fg: [u8; 3], bg: [u8; 3]) -> [u8; 3] {
+    [
+        (fg[0] as u16 + bg[0] as u16) as u8 / 2,
+        (fg[1] as u16 + bg[1] as u16) as u8 / 2,
+        (fg[2] as u16 + bg[2] as u16) as u8 / 2,
+    ]
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::raster::{PixelRect, pixel_at};
+
+    #[derive(Default)]
+    struct StubPainter {
+        pub glyphs: Vec<(u32, [u8; 3])>,
+    }
+
+    impl GlyphPainter for StubPainter {
+        #[allow(clippy::too_many_arguments)]
+        fn draw_glyph(
+            &mut self,
+            glyph_id: u32,
+            _dest: PixelRect,
+            fg: [u8; 3],
+            _metrics: FontMetrics,
+            _pixels: &mut [u8],
+            _bw: usize,
+            _bh: usize,
+        ) {
+            self.glyphs.push((glyph_id, fg));
+        }
+    }
+
+    fn metrics() -> FontMetrics {
+        FontMetrics { cell_w: 8.0, cell_h: 16.0, descent: 3.0 }
+    }
+
+    fn theme() -> Theme {
+        anvil_theme::EMBER_DARK
+    }
+
+    fn dock_rect() -> Rect {
+        Rect { x: 0.0, y: 0.0, w: 260.0, h: 800.0 }
+    }
+
+    /// Zero-size rect must not panic.
+    #[test]
+    fn zero_rect_no_panic() {
+        let m = metrics();
+        let th = theme();
+        let mut r = Raster::new(800, 800);
+        let mut p = StubPainter::default();
+        let zero = Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 };
+        draw_left_dock(&mut r, &mut p, m, &th, None, zero);
+        // No panic = pass.
+    }
+
+    /// No snapshot → "Waiting" text painted in text_muted.
+    #[test]
+    fn no_snapshot_waiting_text_painted() {
+        let m = metrics();
+        let th = theme();
+        let mut r = Raster::new(800, 800);
+        let mut p = StubPainter::default();
+
+        draw_left_dock(&mut r, &mut p, m, &th, None, dock_rect());
+
+        // "Waiting" → 'W' codepoint 87
+        let waiting_w: Vec<_> = p
+            .glyphs
+            .iter()
+            .filter(|(cp, fg)| *cp == 'W' as u32 && *fg == th.text_muted)
+            .collect();
+        assert!(!waiting_w.is_empty(), "expected 'W' in text_muted for Waiting state");
+    }
+
+    /// Empty snapshot → "(empty)" row painted.
+    #[test]
+    fn empty_snapshot_empty_row_painted() {
+        let m = metrics();
+        let th = theme();
+        let mut r = Raster::new(800, 800);
+        let mut p = StubPainter::default();
+
+        let snap = DirSnapshot { root: "/anvil".to_string(), entries: vec![] };
+        draw_left_dock(&mut r, &mut p, m, &th, Some(&snap), dock_rect());
+
+        // "(empty)" → '(' codepoint 40
+        let paren: Vec<_> = p
+            .glyphs
+            .iter()
+            .filter(|(cp, fg)| *cp == '(' as u32 && *fg == th.text_muted)
+            .collect();
+        assert!(!paren.is_empty(), "expected '(' in text_muted for empty state");
+    }
+
+    /// Snapshot with entries → file names appear in text_muted, dirs in text_subtle.
+    #[test]
+    fn entries_rendered_with_correct_colors() {
+        let m = metrics();
+        let th = theme();
+        let mut r = Raster::new(800, 800);
+        let mut p = StubPainter::default();
+
+        let snap = DirSnapshot {
+            root: "/anvil".to_string(),
+            entries: vec![
+                DirEntry { name: "src".to_string(), is_dir: true },
+                DirEntry { name: "main.rs".to_string(), is_dir: false },
+            ],
+        };
+        draw_left_dock(&mut r, &mut p, m, &th, Some(&snap), dock_rect());
+
+        // File entry 'm' should appear in text_muted.
+        let file_m: Vec<_> = p
+            .glyphs
+            .iter()
+            .filter(|(cp, fg)| *cp == 'm' as u32 && *fg == th.text_muted)
+            .collect();
+        assert!(!file_m.is_empty(), "expected 'm' in text_muted for file entry");
+
+        // Dir entry 's' (from "src") should appear in text_subtle.
+        let dir_s: Vec<_> = p
+            .glyphs
+            .iter()
+            .filter(|(cp, fg)| *cp == 's' as u32 && *fg == th.text_subtle)
+            .collect();
+        assert!(!dir_s.is_empty(), "expected 's' in text_subtle for dir entry");
+    }
+
+    /// Outline section always shows "Outline unavailable".
+    #[test]
+    fn outline_unavailable_always_shown() {
+        let m = metrics();
+        let th = theme();
+        let mut r = Raster::new(800, 800);
+        let mut p = StubPainter::default();
+
+        draw_left_dock(&mut r, &mut p, m, &th, None, dock_rect());
+
+        // "Outline" → 'O' at 79
+        let o_muted: Vec<_> = p
+            .glyphs
+            .iter()
+            .filter(|(cp, fg)| *cp == 'O' as u32 && *fg == th.text_muted)
+            .collect();
+        // There should be at least two 'O' hits: "OUTLINE" header and "Outline unavailable" body.
+        assert!(
+            o_muted.len() >= 2,
+            "expected at least 2 'O' glyphs in text_muted (OUTLINE header + body)"
+        );
+    }
+
+    /// Background is painted with charcoal.
+    #[test]
+    fn background_is_charcoal() {
+        let m = metrics();
+        let th = theme();
+        let mut r = Raster::new(800, 800);
+        r.clear([0, 0, 0]);
+        let mut p = StubPainter::default();
+
+        draw_left_dock(&mut r, &mut p, m, &th, None, dock_rect());
+
+        let px = pixel_at(&r, 50, 400); // middle of dock
+        assert_eq!(px, th.charcoal, "dock background must be charcoal");
+    }
+}
