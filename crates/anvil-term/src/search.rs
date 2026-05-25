@@ -135,7 +135,7 @@ impl Search {
     }
 
     /// Re-run the scan restricted to the block enclosing `anchor_content_row`.
-    pub fn rescan_in_block(&mut self, term: &Terminal, anchor_content_row: usize) {
+    fn rescan_in_block(&mut self, term: &Terminal, anchor_content_row: usize) {
         let query_str = match std::str::from_utf8(&self.query_buf[..self.query_len]) {
             Ok(s) => s.to_owned(),
             Err(_) => return,

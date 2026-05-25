@@ -8,7 +8,7 @@ use crate::agent_panel::{LocalContext, RunState, format_cwd};
 use crate::raster::{FontMetrics, GlyphPainter, Raster};
 
 /// Linear per-channel lerp between two RGB colors: `a*(1-t) + b*t`, clamped to 0..255.
-pub(crate) fn mix_rgb(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
+fn mix_rgb(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
     [
         (a[0] as f32 * (1.0 - t) + b[0] as f32 * t).clamp(0.0, 255.0) as u8,
         (a[1] as f32 * (1.0 - t) + b[1] as f32 * t).clamp(0.0, 255.0) as u8,

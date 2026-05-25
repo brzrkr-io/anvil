@@ -3978,6 +3978,9 @@ fn main() -> Result<()> {
     // Build the AppShell and stash it in the shared slot.
     let mut shell = AppShell::new(real_app, webview, appkit.window.clone());
     shell.painter.warm_ascii();
+    shell.bold_painter.warm_ascii();
+    shell.italic_painter.warm_ascii();
+    shell.bold_italic_painter.warm_ascii();
     shell.app.snap_anim();
     let mut grid_painters = GridPainters {
         regular: &mut shell.painter,

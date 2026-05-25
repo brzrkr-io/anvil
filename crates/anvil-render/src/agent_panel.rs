@@ -71,9 +71,6 @@ pub struct LocalContext {
     // KUBE section (task #20): current kubectl context.
     pub kube_context: Option<anvil_prompt_core::KubeCtx>,
 
-    // CI section: last CI run state on the active branch.
-    // None until a gh-ci poller is wired; section is hidden when None.
-    pub ci_status: Option<anvil_prompt_core::CiStatus>,
 }
 
 impl Default for LocalContext {
@@ -95,7 +92,6 @@ impl Default for LocalContext {
             recent_files: Vec::new(),
             recent_prompts: Vec::new(),
             kube_context: None,
-            ci_status: None,
         }
     }
 }
@@ -461,18 +457,15 @@ fn luma(rgb: [u8; 3]) -> f64 {
 /// Glass-surface tone set resolved from the current theme.
 /// All color fields are read from the theme; `surface_alpha` varies by
 /// canvas lightness (dark canvas → 0.88, light canvas → 0.72).
-pub struct GlassTones {
-    pub surface: [u8; 3],
-    pub surface_alpha: f32,
-    pub edge: [u8; 3],
-    pub label: [u8; 3],
-    pub foreground: [u8; 3],
-    pub meta: [u8; 3],
+struct GlassTones {
+    surface: [u8; 3],
+    surface_alpha: f32,
+    edge: [u8; 3],
 }
 
 /// Resolve `GlassTones` from `theme`. Luma of `theme.background` determines
 /// whether the dark (0.88) or light (0.72) surface alpha is used.
-pub fn glass_tones_for(theme: &Theme) -> GlassTones {
+fn glass_tones_for(theme: &Theme) -> GlassTones {
     let surface_alpha = if luma(theme.background) / 255.0 > 0.5 {
         0.72_f32
     } else {
@@ -482,9 +475,6 @@ pub fn glass_tones_for(theme: &Theme) -> GlassTones {
         surface: theme.panel,
         surface_alpha,
         edge: theme.hairline,
-        label: theme.text_subtle,
-        foreground: theme.foreground,
-        meta: theme.text_muted,
     }
 }
 
@@ -506,7 +496,6 @@ pub struct HudHit {
 pub enum SectionId {
     Context,
     RepoGit,
-    Ci,
     Ports,
     Recent,
     Agents,
@@ -515,11 +504,10 @@ pub enum SectionId {
 }
 
 impl SectionId {
-    /// Default top-to-bottom order: CONTEXT → REPO+GIT → CI → AGENTS → RECENT → PORTS → PROMPTS → SYSTEM.
-    pub const DEFAULT_ORDER: [SectionId; 8] = [
+    /// Default top-to-bottom order: CONTEXT → REPO+GIT → AGENTS → RECENT → PORTS → PROMPTS → SYSTEM.
+    pub const DEFAULT_ORDER: [SectionId; 7] = [
         SectionId::Context,
         SectionId::RepoGit,
-        SectionId::Ci,
         SectionId::Agents,
         SectionId::Recent,
         SectionId::Ports,
@@ -532,7 +520,6 @@ impl SectionId {
         match self {
             SectionId::Context => "context",
             SectionId::RepoGit => "repo_git",
-            SectionId::Ci => "ci",
             SectionId::Ports => "ports",
             SectionId::Recent => "recent",
             SectionId::Agents => "agents",
@@ -546,7 +533,6 @@ impl SectionId {
         match s.trim() {
             "context" => Some(SectionId::Context),
             "repo_git" => Some(SectionId::RepoGit),
-            "ci" => Some(SectionId::Ci),
             "ports" => Some(SectionId::Ports),
             "recent" => Some(SectionId::Recent),
             "agents" => Some(SectionId::Agents),
@@ -641,7 +627,7 @@ pub fn draw_right_hud(
     // the default order for any sections not listed. This is the entry
     // point for drag-to-reorder: the App persists the order to disk and
     // hands it back here every frame.
-    let mut visited = [false; 8];
+    let mut visited = [false; 7];
     let resolved_order: Vec<SectionId> = order
         .iter()
         .copied()
@@ -913,109 +899,6 @@ pub fn draw_right_hud(
                         );
                         r += 1;
                     }
-                }
-            }
-            SectionId::Ci => {
-                // --- CI -----------------------------------------------
-                // Hidden when ci_status is None (poller not wired yet).
-                let Some(ref ci) = local.ci_status else {
-                    continue;
-                };
-                if r < bottom { r += 1; }
-                let header_row = r;
-                draw_section_accent_bar(raster, metrics, start_col, r, app_theme.accent_primary);
-                draw_section_header(
-                    raster,
-                    painter,
-                    metrics,
-                    inner_col,
-                    r,
-                    "CI",
-                    app_theme.text_muted,
-                    start_col,
-                    hud_cols,
-                    app_theme.hairline,
-                );
-                push_section_header_hit(
-                    section_hits,
-                    raster,
-                    metrics,
-                    sid,
-                    inner_col,
-                    header_row,
-                    hud_cols,
-                );
-                r += 2;
-
-                // Row 1: status glyph + label + duration.
-                if r < bottom {
-                    use anvil_prompt_core::CiState;
-                    let (glyph, gcol) = match ci.state {
-                        CiState::Ok => ("\u{2713}", app_theme.verified),
-                        CiState::Failed => ("\u{2717}", app_theme.failure),
-                        CiState::Running => ("\u{25CF}", app_theme.info),
-                        CiState::Unknown => ("\u{00b7}", app_theme.alloy),
-                    };
-                    raster.cell_glyph(
-                        painter,
-                        metrics,
-                        inner_col,
-                        r,
-                        glyph.chars().next().unwrap() as u32,
-                        gcol,
-                    );
-                    match ci.state {
-                        CiState::Ok | CiState::Failed => {
-                            draw_text(
-                                raster,
-                                painter,
-                                metrics,
-                                inner_col + 2,
-                                r,
-                                &ci.branch,
-                                app_theme.foreground,
-                                max_col,
-                            );
-                            let dur = format!("{}s", ci.duration_s);
-                            draw_text_right(raster, painter, metrics, max_col, r, &dur, app_theme.text_muted);
-                        }
-                        CiState::Running => {
-                            let label = format!("{} running\u{2026}", ci.branch);
-                            draw_text(raster, painter, metrics, inner_col + 2, r, &label, app_theme.foreground, max_col);
-                        }
-                        CiState::Unknown => {
-                            draw_text(raster, painter, metrics, inner_col + 2, r, "no data", app_theme.foreground, max_col);
-                        }
-                    }
-                    r += 1;
-                }
-
-                // Row 2: open PRs count (when > 0).
-                if r < bottom && ci.open_prs > 0 {
-                    let pr_label = format!("{} open PR{}", ci.open_prs, if ci.open_prs == 1 { "" } else { "s" });
-                    draw_text(
-                        raster,
-                        painter,
-                        metrics,
-                        inner_col,
-                        r,
-                        &pr_label,
-                        app_theme.info,
-                        max_col,
-                    );
-                    if !ci.pr_url.is_empty() {
-                        push_row_hit(
-                            hits,
-                            raster,
-                            metrics,
-                            inner_col,
-                            r,
-                            hud_cols - 3,
-                            &ci.pr_url,
-                            &ci.pr_url,
-                        );
-                    }
-                    r += 1;
                 }
             }
             SectionId::Ports => {

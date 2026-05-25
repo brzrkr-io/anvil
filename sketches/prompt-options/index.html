@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Anvil Prompt Options — Visual Companion</title>
+  <style>
+    :root {
+      --graphite: #0b0d0e;
+      --charcoal: #161a1c;
+      --ash: #374046;
+      --alloy: #86919a;
+      --mist: #d2d8db;
+      --bone: #eef1f2;
+      --ink: #0c0d0e;
+      --mineral: #2f7f86;
+      --ember: #c5462a;
+      --verified: #3f8a5b;
+      --attention: #b07a14;
+      --failure: #b13a30;
+      --agent: #6a5fa3;
+      --risk: #a8623a;
+      --panel: rgba(22, 26, 28, 0.84);
+      --line: rgba(210, 216, 219, 0.14);
+      --line-strong: rgba(210, 216, 219, 0.28);
+      --shadow: rgba(0, 0, 0, 0.44);
+      --mono: "IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+      --sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--bone);
+      background:
+        linear-gradient(rgba(210,216,219,0.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(210,216,219,0.025) 1px, transparent 1px),
+        radial-gradient(circle at 72% 12%, rgba(47,127,134,0.22), transparent 28rem),
+        radial-gradient(circle at 16% 82%, rgba(197,70,42,0.10), transparent 30rem),
+        var(--graphite);
+      background-size: 24px 24px, 24px 24px, auto, auto, auto;
+      font-family: var(--sans);
+      letter-spacing: -0.01em;
+    }
+
+    header {
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 36px 28px 18px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 22px;
+      align-items: end;
+    }
+
+    .eyebrow {
+      color: var(--mineral);
+      font-family: var(--mono);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+      margin-bottom: 12px;
+    }
+
+    h1 {
+      font-size: clamp(32px, 4vw, 58px);
+      line-height: 0.96;
+      margin: 0 0 14px;
+      font-weight: 560;
+    }
+
+    .intro {
+      max-width: 820px;
+      color: rgba(238,241,242,0.72);
+      font-size: 15px;
+      line-height: 1.7;
+      margin: 0;
+    }
+
+    .legend {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(120px, 1fr));
+      gap: 8px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      background: rgba(22,26,28,0.58);
+      box-shadow: 0 18px 48px var(--shadow);
+      min-width: 310px;
+    }
+
+    .legend div {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-family: var(--mono);
+      color: var(--alloy);
+      font-size: 12px;
+    }
+
+    .dot { width: 8px; height: 8px; border-radius: 999px; display: inline-block; }
+    .mineral { color: var(--mineral); --c: var(--mineral); }
+    .ember { color: var(--ember); --c: var(--ember); }
+    .verified { color: var(--verified); --c: var(--verified); }
+    .attention { color: var(--attention); --c: var(--attention); }
+    .failure { color: var(--failure); --c: var(--failure); }
+    .agent { color: var(--agent); --c: var(--agent); }
+    .risk { color: var(--risk); --c: var(--risk); }
+    .dim { color: var(--alloy); --c: var(--alloy); }
+    .dot { background: var(--c); }
+
+    .toolbar {
+      max-width: 1440px;
+      margin: 0 auto 18px;
+      padding: 0 28px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .filter {
+      border: 1px solid var(--line);
+      background: rgba(22,26,28,0.75);
+      color: var(--alloy);
+      font: 12px/1 var(--mono);
+      padding: 9px 11px;
+      cursor: pointer;
+      transition: 160ms ease;
+    }
+
+    .filter:hover, .filter.active {
+      color: var(--bone);
+      border-color: rgba(47,127,134,0.8);
+      background: rgba(47,127,134,0.16);
+    }
+
+    main {
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 0 28px 48px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(240px, 1fr));
+      gap: 14px;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(22,26,28,0.9), rgba(11,13,14,0.82));
+      min-height: 242px;
+      padding: 14px;
+      position: relative;
+      overflow: hidden;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.22);
+      transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+    }
+
+    .card::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border-top: 1px solid rgba(238,241,242,0.08);
+      pointer-events: none;
+    }
+
+    .card:hover {
+      transform: translateY(-2px);
+      border-color: var(--line-strong);
+      background: linear-gradient(180deg, rgba(22,26,28,0.98), rgba(11,13,14,0.92));
+    }
+
+    .meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      color: var(--alloy);
+      font: 11px/1 var(--mono);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 14px;
+    }
+
+    .badge {
+      color: var(--bone);
+      border: 1px solid color-mix(in srgb, var(--c) 65%, transparent);
+      background: color-mix(in srgb, var(--c) 16%, transparent);
+      padding: 5px 7px;
+      text-transform: none;
+      letter-spacing: 0;
+    }
+
+    .terminal {
+      border: 1px solid rgba(210,216,219,0.1);
+      background:
+        linear-gradient(rgba(238,241,242,0.025) 1px, transparent 1px),
+        rgba(0,0,0,0.24);
+      background-size: 100% 22px;
+      padding: 14px;
+      min-height: 104px;
+      font-family: var(--mono);
+      font-size: 13px;
+      line-height: 1.7;
+      color: rgba(238,241,242,0.66);
+      position: relative;
+    }
+
+    .terminal .ghost { color: rgba(134,145,154,0.55); }
+    .terminal .cmd { color: rgba(238,241,242,0.86); }
+    .prompt { white-space: pre; }
+    .arrow, .sigil, .status { color: var(--c); }
+    .muted { color: var(--alloy); }
+    .right {
+      position: absolute;
+      right: 14px;
+      bottom: 14px;
+      color: var(--alloy);
+      font-size: 12px;
+    }
+    .title {
+      font-size: 17px;
+      margin: 14px 0 8px;
+      font-weight: 560;
+    }
+    .desc {
+      color: rgba(210,216,219,0.66);
+      font-size: 13px;
+      line-height: 1.55;
+      margin: 0;
+    }
+
+    .use {
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid rgba(210,216,219,0.08);
+      color: var(--alloy);
+      font: 11px/1.4 var(--mono);
+    }
+
+    .hidden { display: none; }
+
+    @media (max-width: 1180px) { .grid { grid-template-columns: repeat(3, 1fr); } }
+    @media (max-width: 860px) {
+      header { grid-template-columns: 1fr; }
+      .legend { min-width: 0; }
+      .grid { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 580px) { .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <section>
+      <div class="eyebrow">Anvil prompt visual companion / 20 directions</div>
+      <h1>Prompt shapes that stay operator-grade.</h1>
+      <p class="intro">Twenty compact prompt treatments using the Anvil palette. The goal is not decorative powerline chrome; it is a smarter shell affordance where glyphs and color encode repo, failure, agent, execution, and evidence state.</p>
+    </section>
+    <aside class="legend" aria-label="palette legend">
+      <div class="mineral"><span class="dot"></span> mineral / info / trace</div>
+      <div class="ember"><span class="dot"></span> ember / active run</div>
+      <div class="verified"><span class="dot"></span> verified / evidence</div>
+      <div class="attention"><span class="dot"></span> attention / review</div>
+      <div class="failure"><span class="dot"></span> failure / invalid</div>
+      <div class="agent"><span class="dot"></span> agent / automation</div>
+    </aside>
+  </header>
+
+  <nav class="toolbar" aria-label="filters">
+    <button class="filter active" data-filter="all">all 20</button>
+    <button class="filter" data-filter="minimal">minimal</button>
+    <button class="filter" data-filter="repo">repo-smart</button>
+    <button class="filter" data-filter="agent">agent-aware</button>
+    <button class="filter" data-filter="verify">verification</button>
+    <button class="filter" data-filter="dense">dense</button>
+  </nav>
+
+  <main>
+    <section class="grid" id="grid">
+      <article class="card" data-tags="minimal" style="--c: var(--mineral)">
+        <div class="meta"><span>01 / baseline</span><span class="badge">minimal</span></div>
+        <div class="terminal"><span class="ghost">~/caldera/anvil main</span><br><span class="prompt"><span class="arrow">❯</span> <span class="cmd">cargo test</span></span></div>
+        <div class="title">Mineral Chevron</div><p class="desc">The cleanest version: one palette-native trace arrow. Strong default if the prompt should disappear until state matters.</p><div class="use">Best: default live prompt.</div>
+      </article>
+
+      <article class="card" data-tags="minimal" style="--c: var(--mineral)">
+        <div class="meta"><span>02 / sharper</span><span class="badge">minimal</span></div>
+        <div class="terminal"><span class="ghost">~/caldera/anvil</span><br><span class="prompt"><span class="arrow">›</span> <span class="cmd">git status</span></span></div>
+        <div class="title">Thin Trace Arrow</div><p class="desc">A quieter single-angle arrow. More restrained than ❯, but slightly less distinctive in dense scrollback.</p><div class="use">Best: ultra-minimal shells.</div>
+      </article>
+
+      <article class="card" data-tags="minimal" style="--c: var(--mineral)">
+        <div class="meta"><span>03 / directional</span><span class="badge">minimal</span></div>
+        <div class="terminal"><span class="ghost">session ready</span><br><span class="prompt"><span class="arrow">→</span> <span class="cmd">cargo anvil-build</span></span></div>
+        <div class="title">Plain Arrow</div><p class="desc">Most literal arrow. Familiar and readable, but less premium than the heavier chevron.</p><div class="use">Best: classic terminal users.</div>
+      </article>
+
+      <article class="card" data-tags="minimal dense" style="--c: var(--mineral)">
+        <div class="meta"><span>04 / bracketed</span><span class="badge">minimal</span></div>
+        <div class="terminal"><span class="ghost">trace: shell.ready</span><br><span class="prompt"><span class="muted">[</span><span class="arrow">❯</span><span class="muted">]</span> <span class="cmd">make check</span></span></div>
+        <div class="title">Contained Chevron</div><p class="desc">Adds a tiny instrument-panel feel without going full powerline. Slightly more visual weight.</p><div class="use">Best: tactical/operator theme.</div>
+      </article>
+
+      <article class="card" data-tags="repo" style="--c: var(--attention)">
+        <div class="meta"><span>05 / dirty</span><span class="badge">repo</span></div>
+        <div class="terminal"><span class="ghost">main +3 modified</span><br><span class="prompt"><span class="status">*</span> <span class="arrow">❯</span> <span class="cmd">git diff</span></span></div>
+        <div class="title">Attention Prefix</div><p class="desc">Dirty state gets a small amber marker while the arrow can remain mineral in implementation. Very scannable.</p><div class="use">Best: repo dirty state.</div>
+      </article>
+
+      <article class="card" data-tags="repo dense" style="--c: var(--attention)">
+        <div class="meta"><span>06 / ahead</span><span class="badge">repo</span></div>
+        <div class="terminal"><span class="ghost">main ahead 2</span><br><span class="prompt"><span class="status">↑2</span> <span class="arrow">❯</span> <span class="cmd">git push</span></span></div>
+        <div class="title">Ahead/Behind Microstate</div><p class="desc">Exceptional git state appears only when actionable. Keeps cwd/branch in chrome, not prompt.</p><div class="use">Best: git divergence.</div>
+      </article>
+
+      <article class="card" data-tags="repo" style="--c: var(--risk)">
+        <div class="meta"><span>07 / detached</span><span class="badge">repo</span></div>
+        <div class="terminal"><span class="ghost">detached HEAD</span><br><span class="prompt"><span class="status">detached</span> <span class="arrow">❯</span> <span class="cmd">git switch -</span></span></div>
+        <div class="title">Risk Word</div><p class="desc">Uses a plain risk label when the state could cause mistakes. Less aesthetic, more operationally useful.</p><div class="use">Best: detached/rebase/merge.</div>
+      </article>
+
+      <article class="card" data-tags="repo dense" style="--c: var(--attention)">
+        <div class="meta"><span>08 / rebase</span><span class="badge">repo</span></div>
+        <div class="terminal"><span class="ghost">rebase in progress</span><br><span class="prompt"><span class="muted">{</span><span class="status">rebase</span><span class="muted">}</span> <span class="arrow">❯</span> <span class="cmd">git rebase --continue</span></span></div>
+        <div class="title">Operation Capsule</div><p class="desc">A compact text capsule for exceptional repo modes. Good guardrail, but too noisy for common states.</p><div class="use">Best: merge/rebase/cherry-pick.</div>
+      </article>
+
+      <article class="card" data-tags="agent" style="--c: var(--agent)">
+        <div class="meta"><span>09 / agent idle</span><span class="badge">agent</span></div>
+        <div class="terminal"><span class="ghost">hermes connected</span><br><span class="prompt"><span class="sigil">◈</span> <span class="arrow mineral">❯</span> <span class="cmd">hermes tasks</span></span></div>
+        <div class="title">Agent Diamond</div><p class="desc">Violet automation sigil plus normal prompt arrow. Feels very AgentOps without dominating the line.</p><div class="use">Best: agent attached/idle.</div>
+      </article>
+
+      <article class="card" data-tags="agent" style="--c: var(--agent)">
+        <div class="meta"><span>10 / agent subtle</span><span class="badge">agent</span></div>
+        <div class="terminal"><span class="ghost">model context live</span><br><span class="prompt"><span class="sigil">◇</span><span class="arrow">❯</span> <span class="cmd">review plan.md</span></span></div>
+        <div class="title">Hollow Agent Sigil</div><p class="desc">A lighter version of agent presence. Elegant, but the hollow diamond may be harder to see.</p><div class="use">Best: low-noise agent state.</div>
+      </article>
+
+      <article class="card" data-tags="agent dense" style="--c: var(--ember)">
+        <div class="meta"><span>11 / agent running</span><span class="badge">agent+run</span></div>
+        <div class="terminal"><span class="ghost">codex executing</span><br><span class="prompt"><span class="sigil agent">◈</span> <span class="arrow">▶</span> <span class="cmd">apply patch</span></span><span class="right ember">run</span></div>
+        <div class="title">Active Run Arrow</div><p class="desc">Violet marks automation, ember marks active execution. Strong semantic separation.</p><div class="use">Best: command currently running.</div>
+      </article>
+
+      <article class="card" data-tags="agent verify" style="--c: var(--attention)">
+        <div class="meta"><span>12 / approval</span><span class="badge">agent</span></div>
+        <div class="terminal"><span class="ghost">approval required</span><br><span class="prompt"><span class="sigil agent">◈</span> <span class="status">?</span> <span class="arrow">❯</span> <span class="cmd">open approval</span></span></div>
+        <div class="title">Approval Marker</div><p class="desc">Adds an attention marker only when a human decision is needed. Good for Anvil’s supervised-agent model.</p><div class="use">Best: pending approval.</div>
+      </article>
+
+      <article class="card" data-tags="verify" style="--c: var(--verified)">
+        <div class="meta"><span>13 / evidence</span><span class="badge">verify</span></div>
+        <div class="terminal"><span class="ghost">cargo test passed</span><br><span class="prompt"><span class="status">✓</span> <span class="arrow mineral">❯</span> <span class="cmd">git commit</span></span><span class="right verified">test 1.8s</span></div>
+        <div class="title">Evidence Check</div><p class="desc">Green appears only after a real verification command passes. Matches the brand rule for verified state.</p><div class="use">Best: post-test success.</div>
+      </article>
+
+      <article class="card" data-tags="verify" style="--c: var(--failure)">
+        <div class="meta"><span>14 / failed</span><span class="badge">failure</span></div>
+        <div class="terminal"><span class="ghost">exit 101</span><br><span class="prompt"><span class="arrow">❯</span> <span class="cmd">cargo test</span></span><span class="right failure">✗ 101</span></div>
+        <div class="title">Failure Arrow</div><p class="desc">The current behavior extended with right-side exit code. Fast failure recognition in scrollback.</p><div class="use">Best: previous command failed.</div>
+      </article>
+
+      <article class="card" data-tags="verify dense" style="--c: var(--verified)">
+        <div class="meta"><span>15 / checked</span><span class="badge">verify</span></div>
+        <div class="terminal"><span class="ghost">fmt/test/clippy clean</span><br><span class="prompt"><span class="muted">[</span><span class="status">✓</span><span class="muted">]</span> <span class="arrow mineral">❯</span> <span class="cmd">gh pr create</span></span></div>
+        <div class="title">Verified Bracket</div><p class="desc">A stronger evidence state when a gate suite passes. Useful before PR/merge workflows.</p><div class="use">Best: release/PR readiness.</div>
+      </article>
+
+      <article class="card" data-tags="verify" style="--c: var(--attention)">
+        <div class="meta"><span>16 / stale</span><span class="badge">verify</span></div>
+        <div class="terminal"><span class="ghost">checks stale</span><br><span class="prompt"><span class="status">~</span> <span class="arrow mineral">❯</span> <span class="cmd">cargo test</span></span></div>
+        <div class="title">Stale Check</div><p class="desc">Amber tilde indicates evidence is stale or context changed. Subtle but operationally meaningful.</p><div class="use">Best: dirty after tests passed.</div>
+      </article>
+
+      <article class="card" data-tags="dense" style="--c: var(--mineral)">
+        <div class="meta"><span>17 / telemetry</span><span class="badge">dense</span></div>
+        <div class="terminal"><span class="ghost">shell.ready</span><br><span class="prompt"><span class="arrow">❯</span> <span class="cmd">cargo build</span></span><span class="right">rs · main · 84ms</span></div>
+        <div class="title">Right Telemetry</div><p class="desc">Leaves input clean while exposing compact metadata on the right. Feels like an instrument panel.</p><div class="use">Best: wide terminals.</div>
+      </article>
+
+      <article class="card" data-tags="dense repo" style="--c: var(--mineral)">
+        <div class="meta"><span>18 / trace id</span><span class="badge">dense</span></div>
+        <div class="terminal"><span class="ghost">trace attached</span><br><span class="prompt"><span class="muted">tr:7f3a</span> <span class="arrow">❯</span> <span class="cmd">anvil inspect</span></span></div>
+        <div class="title">Trace Prefix</div><p class="desc">A low-level provenance marker. Cool, but should only appear when the trace ID is actionable.</p><div class="use">Best: control-plane sessions.</div>
+      </article>
+
+      <article class="card" data-tags="dense" style="--c: var(--ember)">
+        <div class="meta"><span>19 / execution</span><span class="badge">run</span></div>
+        <div class="terminal"><span class="ghost">active execution</span><br><span class="prompt"><span class="arrow">▶</span> <span class="cmd">deploy preview</span></span><span class="right ember">00:12</span></div>
+        <div class="title">Execution Triangle</div><p class="desc">Ember is reserved for active execution only. This is the rare state where orange should lead.</p><div class="use">Best: running commands/jobs.</div>
+      </article>
+
+      <article class="card" data-tags="minimal agent" style="--c: var(--mineral)">
+        <div class="meta"><span>20 / hybrid pick</span><span class="badge">recommended</span></div>
+        <div class="terminal"><span class="ghost">normal · agent hidden until active</span><br><span class="prompt"><span class="arrow">❯</span> <span class="cmd">work</span></span><br><span class="ghost">agent active</span><br><span class="prompt"><span class="sigil agent">◈</span> <span class="arrow">❯</span> <span class="cmd">work</span></span></div>
+        <div class="title">Adaptive Minimal</div><p class="desc">Default stays bare; extra symbols appear only when real state exists. Most aligned with Anvil’s brand contract.</p><div class="use">Best: likely v2 direction.</div>
+      </article>
+    </section>
+  </main>
+
+  <script>
+    const buttons = [...document.querySelectorAll('.filter')];
+    const cards = [...document.querySelectorAll('.card')];
+    buttons.forEach(btn => btn.addEventListener('click', () => {
+      buttons.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const filter = btn.dataset.filter;
+      cards.forEach(card => {
+        const tags = card.dataset.tags.split(/\s+/);
+        card.classList.toggle('hidden', filter !== 'all' && !tags.includes(filter));
+      });
+    }));
+  </script>
+</body>
+</html>

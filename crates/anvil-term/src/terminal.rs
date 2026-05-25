@@ -106,44 +106,6 @@ impl DirtySet {
         self.full = true;
     }
 
-    /// Iterate over contiguous spans of dirty rows as half-open `(start, end)`
-    /// intervals where every row in `start..end` is dirty.
-    pub fn iter_spans(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
-        DirtySpans { set: self, row: 0 }
-    }
-}
-
-struct DirtySpans<'a> {
-    set: &'a DirtySet,
-    row: usize,
-}
-
-impl<'a> Iterator for DirtySpans<'a> {
-    type Item = (usize, usize);
-
-    fn next(&mut self) -> Option<(usize, usize)> {
-        if self.set.full {
-            // Emit the single all-rows span on the first call, then stop.
-            if self.row == 0 {
-                self.row = self.set.cap;
-                return Some((0, self.set.cap));
-            }
-            return None;
-        }
-        // Skip clean rows.
-        while self.row < self.set.cap && !self.set.contains(self.row) {
-            self.row += 1;
-        }
-        if self.row >= self.set.cap {
-            return None;
-        }
-        let start = self.row;
-        // Advance through the contiguous dirty span.
-        while self.row < self.set.cap && self.set.contains(self.row) {
-            self.row += 1;
-        }
-        Some((start, self.row))
-    }
 }
 
 // =============================================================================
@@ -3241,45 +3203,4 @@ mod tests {
         assert!(!block.is_unified_diff_row(&term, base + 5));
     }
 
-    // ── DirtySet::iter_spans tests ────────────────────────────────────────────
-
-    #[test]
-    fn dirty_spans_empty() {
-        let set = DirtySet::none(8);
-        let spans: Vec<_> = set.iter_spans().collect();
-        assert!(spans.is_empty());
-    }
-
-    #[test]
-    fn dirty_spans_single_row() {
-        let mut set = DirtySet::none(8);
-        set.mark(3);
-        let spans: Vec<_> = set.iter_spans().collect();
-        assert_eq!(spans, [(3, 4)]);
-    }
-
-    #[test]
-    fn dirty_spans_two_adjacent_rows_merge() {
-        let mut set = DirtySet::none(8);
-        set.mark(2);
-        set.mark(3);
-        let spans: Vec<_> = set.iter_spans().collect();
-        assert_eq!(spans, [(2, 4)]);
-    }
-
-    #[test]
-    fn dirty_spans_two_separated_rows() {
-        let mut set = DirtySet::none(8);
-        set.mark(1);
-        set.mark(5);
-        let spans: Vec<_> = set.iter_spans().collect();
-        assert_eq!(spans, [(1, 2), (5, 6)]);
-    }
-
-    #[test]
-    fn dirty_spans_full_is_one_span() {
-        let set = DirtySet::all(8);
-        let spans: Vec<_> = set.iter_spans().collect();
-        assert_eq!(spans, [(0, 8)]);
-    }
 }
