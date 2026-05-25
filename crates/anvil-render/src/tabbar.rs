@@ -153,20 +153,24 @@ pub fn draw_tab_bar(
         let is_active = t == tabs.active;
 
         // Active tab: charcoal panel covering the FULL chrome strip height
-        // (minus the hairline), then a 3px accent rule pinned just above
-        // the hairline. Matches D's `.tab.active { background: charcoal }
-        // .tab.active::after { left:4px; right:4px; bottom:0; height:2px }`.
+        // (minus the hairline), 1px vertical hairlines on both edges, then a
+        // 3px accent rule full-width pinned just above the hairline.
+        // Per BRAND: "thin bordered technical panels with squared corners";
+        // "sharp panels, sparse accents" — full-width rule is a deliberate
+        // selection cue, not decoration.
         if is_active {
             raster.fill_pixel_rect(x, 0.0, tw, chrome_top_px - 1.0, theme.charcoal);
-            let inset = 4.0 * window_scale;
+            // 1px vertical hairlines — left and right edges.
+            raster.fill_pixel_rect(x, 0.0, 1.0, chrome_top_px - 1.0, theme.hairline);
+            raster.fill_pixel_rect(x + tw - 1.0, 0.0, 1.0, chrome_top_px - 1.0, theme.hairline);
+            // Full-width accent rule.
             let rule_y = chrome_top_px - 4.0;
-            raster.fill_pixel_rect(
-                x + inset,
-                rule_y,
-                (tw - 2.0 * inset).max(0.0),
-                3.0,
-                theme.accent_bright,
-            );
+            raster.fill_pixel_rect(x, rule_y, tw, 3.0, theme.accent_bright);
+        } else {
+            // Inactive tab: 1px left-edge hairline so adjacent tabs have a
+            // sharp dividing line. Right edge is provided by the next tab's
+            // left hairline (or the active tab's right hairline).
+            raster.fill_pixel_rect(x, 0.0, 1.0, chrome_top_px - 1.0, theme.hairline);
         }
 
         // Label: pixel-positioned, sitting inside the tab with a 2-cell
