@@ -33,8 +33,8 @@ use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSAppearance, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
-    NSBackingStoreType, NSEvent, NSEventModifierFlags, NSImage, NSView, NSWindow, NSWindowDelegate,
-    NSWindowStyleMask, NSWindowTitleVisibility,
+    NSBackingStoreType, NSEvent, NSEventModifierFlags, NSImage, NSMenu, NSMenuItem, NSView,
+    NSWindow, NSWindowDelegate, NSWindowStyleMask, NSWindowTitleVisibility,
 };
 use objc2_foundation::{
     MainThreadMarker, NSData, NSNotification, NSPoint, NSRect, NSSize, NSString, NSTimer,
@@ -85,6 +85,18 @@ pub struct MouseLocation {
     pub x: f64,
     /// y in view-point coordinates (origin = view bottom-left).
     pub y: f64,
+}
+
+// ── ContextAction ─────────────────────────────────────────────────────────────
+
+/// Actions dispatched from the right-click context menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextAction {
+    Copy,
+    Paste,
+    Clear,
+    SplitRight,
+    SplitDown,
 }
 
 // ── AppHandler trait ──────────────────────────────────────────────────────────
@@ -146,6 +158,9 @@ pub trait AppHandler {
     /// `json` is the raw UTF-8 JSON string posted by
     /// `window.webkit.messageHandlers.anvil.postMessage(…)`.
     fn webview_message(&mut self, json: String);
+
+    /// An item was selected from the right-click context menu.
+    fn context_action(&mut self, action: ContextAction);
 }
 
 // ── NSEvent decoding ──────────────────────────────────────────────────────────
@@ -383,6 +398,91 @@ define_class!(
             // SAFETY: handler pointer is valid for the app lifetime.
             let mut h = unsafe { self.ivars().handler.borrow_mut() };
             h.key_down(ev);
+        }
+
+        // ── Right-click context menu ──────────────────────────────────────────
+
+        #[unsafe(method(rightMouseDown:))]
+        fn right_mouse_down(&self, event: &NSEvent) {
+            // SAFETY: ObjC method callbacks are always on the main thread.
+            let mtm = unsafe { MainThreadMarker::new_unchecked() };
+
+            // Build a 5-item context menu and show it at the cursor.
+            let menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str(""));
+            menu.setAutoenablesItems(false);
+
+            // Helper: build one item with self as target and the given selector.
+            // We use `msg_send!` for setTarget since objc2 marks it unsafe.
+            let add_item = |title: &str, sel: objc2::runtime::Sel| {
+                // SAFETY: initWithTitle:action:keyEquivalent: is a valid selector.
+                let item = unsafe {
+                    NSMenuItem::initWithTitle_action_keyEquivalent(
+                        NSMenuItem::alloc(mtm),
+                        &NSString::from_str(title),
+                        Some(sel),
+                        &NSString::from_str(""),
+                    )
+                };
+                // SAFETY: self is the target object; selector is defined on AnvilView.
+                unsafe {
+                    let self_obj: *const AnvilView = self;
+                    let _: () = msg_send![&*item, setTarget: self_obj];
+                }
+                item.setEnabled(true);
+                item
+            };
+
+            // SAFETY: sel! macro produces valid selectors for methods defined
+            // in this define_class! block below.
+            let copy_item  = add_item("Copy",        objc2::sel!(anvilContextCopy:));
+            let paste_item = add_item("Paste",       objc2::sel!(anvilContextPaste:));
+            let clear_item = add_item("Clear",       objc2::sel!(anvilContextClear:));
+            let spr_item   = add_item("Split Right", objc2::sel!(anvilContextSplitRight:));
+            let spd_item   = add_item("Split Down",  objc2::sel!(anvilContextSplitDown:));
+
+            menu.addItem(&copy_item);
+            menu.addItem(&paste_item);
+            menu.addItem(&NSMenuItem::separatorItem(mtm));
+            menu.addItem(&clear_item);
+            menu.addItem(&NSMenuItem::separatorItem(mtm));
+            menu.addItem(&spr_item);
+            menu.addItem(&spd_item);
+
+            // SAFETY: popUpContextMenu:withEvent:forView: is a class method;
+            // menu, event, and self are all valid objects on the main thread.
+            NSMenu::popUpContextMenu_withEvent_forView(&menu, event, self);
+        }
+
+        // ── Context menu action selectors ─────────────────────────────────────
+
+        #[unsafe(method(anvilContextCopy:))]
+        fn anvil_context_copy(&self, _sender: *mut objc2::runtime::AnyObject) {
+            let mut h = unsafe { self.ivars().handler.borrow_mut() };
+            h.context_action(ContextAction::Copy);
+        }
+
+        #[unsafe(method(anvilContextPaste:))]
+        fn anvil_context_paste(&self, _sender: *mut objc2::runtime::AnyObject) {
+            let mut h = unsafe { self.ivars().handler.borrow_mut() };
+            h.context_action(ContextAction::Paste);
+        }
+
+        #[unsafe(method(anvilContextClear:))]
+        fn anvil_context_clear(&self, _sender: *mut objc2::runtime::AnyObject) {
+            let mut h = unsafe { self.ivars().handler.borrow_mut() };
+            h.context_action(ContextAction::Clear);
+        }
+
+        #[unsafe(method(anvilContextSplitRight:))]
+        fn anvil_context_split_right(&self, _sender: *mut objc2::runtime::AnyObject) {
+            let mut h = unsafe { self.ivars().handler.borrow_mut() };
+            h.context_action(ContextAction::SplitRight);
+        }
+
+        #[unsafe(method(anvilContextSplitDown:))]
+        fn anvil_context_split_down(&self, _sender: *mut objc2::runtime::AnyObject) {
+            let mut h = unsafe { self.ivars().handler.borrow_mut() };
+            h.context_action(ContextAction::SplitDown);
         }
     }
 );

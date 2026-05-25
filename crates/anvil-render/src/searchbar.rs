@@ -1,7 +1,7 @@
 //! The in-terminal search bar — a fixed-pixel-height strip at the bottom of
 //! the window. Mirrors the status-bar pixel-strip pattern.
 
-use anvil_term::Search;
+use anvil_term::{Search, SearchScope};
 use anvil_theme::Theme;
 
 use crate::raster::{FontMetrics, GlyphPainter, Raster};
@@ -45,8 +45,12 @@ pub fn draw_search_bar(
         strip_top + ((chrome_bottom_px - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
     let pad_x = 14.0 * window_scale;
 
-    // ── Left: "find: " prefix + query + cursor block ─────────────────────
-    const PREFIX: &str = "find: ";
+    // ── Left: scope tag (when Block) + "find: " prefix + query + cursor block
+    let prefix = if search.scope() == SearchScope::Block {
+        "block find: "
+    } else {
+        "find: "
+    };
 
     let query = search.query();
 
@@ -72,7 +76,7 @@ pub fn draw_search_bar(
         *x += cell_w;
     };
 
-    for ch in PREFIX.chars() {
+    for ch in prefix.chars() {
         draw_char(raster, painter, ch, theme.text_muted, &mut x);
     }
 

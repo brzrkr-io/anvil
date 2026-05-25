@@ -25,7 +25,9 @@ use anyhow::Result;
 use anvil_agent::Snapshot as AgentSnapshot;
 use anvil_config::{Chord, Config, Watcher, parse_chord};
 use anvil_platform::AtlasPainter;
-use anvil_platform::appkit::{AppHandler, AppKitApp, KeyEvent, KeyInput, Modifiers, MouseLocation};
+use anvil_platform::appkit::{
+    AppHandler, AppKitApp, ContextAction, KeyEvent, KeyInput, Modifiers, MouseLocation,
+};
 use anvil_platform::font::{CHROME_PT, Font, FontFace, register_bundled};
 use anvil_platform::metal::{PresentMode, Renderer, present_mode};
 use anvil_platform::pty::Pty;
@@ -336,6 +338,8 @@ struct Keybindings {
     prev_tab: Option<Chord>,
     jump: [Option<Chord>; 9],
     search_open: Option<Chord>,
+    /// Cmd+Shift+F: open search bar scoped to the current block.
+    search_open_block: Option<Chord>,
     search_next: Option<Chord>,
     search_prev: Option<Chord>,
     /// Cmd+Opt+R: toggle regex mode while the search bar is open.
@@ -370,6 +374,7 @@ impl Keybindings {
             prev_tab: parse_chord(&kb.prev_tab),
             jump,
             search_open: parse_chord(&kb.search_open),
+            search_open_block: parse_chord("cmd+shift+f"),
             search_next: parse_chord(&kb.search_next),
             search_prev: parse_chord(&kb.search_prev),
             search_regex_toggle: parse_chord("cmd+opt+r"),
@@ -678,6 +683,7 @@ impl App {
             return;
         }
         self.search_open = true;
+        self.search.set_scope(anvil_term::SearchScope::All);
         // Re-run query against current focused pane terminal.
         let q = self.search.query().to_string();
         if let Some(tab) = self.tabs.current_mut() {
@@ -691,11 +697,31 @@ impl App {
         self.force_full_redraw = true;
     }
 
+    /// Open the search bar scoped to the block containing the cursor row of
+    /// the focused pane. If already open in any mode, re-scopes to Block.
+    fn open_search_block(&mut self) {
+        self.search_open = true;
+        let q = self.search.query().to_string();
+        if let Some(tab) = self.tabs.current_mut() {
+            let id = tab.focused_id();
+            if let Some(pane) = tab.registry.get_mut(id) {
+                let term = &pane.terminal;
+                // Cursor content row: history rows + cursor y-position in grid.
+                let anchor = term.line_count().saturating_sub(term.rows()) + term.cursor().y;
+                self.search.set_query_in_block(term, &q, anchor);
+            }
+        }
+        self.resize_all_tabs();
+        self.dirty = true;
+        self.force_full_redraw = true;
+    }
+
     fn close_search(&mut self) {
         if !self.search_open {
             return;
         }
         self.search_open = false;
+        self.search.set_scope(anvil_term::SearchScope::All);
         self.resize_all_tabs();
         self.dirty = true;
         self.force_full_redraw = true;
@@ -1952,6 +1978,10 @@ impl App {
         }
         test!(kb.search_open, {
             self.open_search();
+            return true;
+        });
+        test!(kb.search_open_block, {
+            self.open_search_block();
             return true;
         });
         test!(kb.search_next, {
@@ -3294,6 +3324,49 @@ impl AppHandler for AppShell {
             Err(e) => eprintln!("anvil: webview message decode failed: {e}"),
         }
     }
+
+    fn context_action(&mut self, action: ContextAction) {
+        match action {
+            ContextAction::Copy => {
+                if let Some(text) = self.app.focused_selection_text() {
+                    anvil_platform::system::set_clipboard(&text);
+                }
+            }
+            ContextAction::Paste => {
+                if let Some(text) = anvil_platform::system::get_clipboard() {
+                    let bracketed = self
+                        .app
+                        .tabs
+                        .current()
+                        .and_then(|t| t.registry.get(t.focused_id()))
+                        .map(|p| p.terminal.modes.bracketed_paste)
+                        .unwrap_or(false);
+                    if bracketed {
+                        self.app.write_to_focused_pty(b"\x1b[200~");
+                    }
+                    self.app.write_to_focused_pty(text.as_bytes());
+                    if bracketed {
+                        self.app.write_to_focused_pty(b"\x1b[201~");
+                    }
+                }
+            }
+            ContextAction::Clear => {
+                if let Some(tab) = self.app.tabs.current_mut() {
+                    let id = tab.focused_id();
+                    if let Some(pane) = tab.registry.get_mut(id) {
+                        pane.terminal.feed(b"\x1b[H\x1b[2J");
+                    }
+                }
+            }
+            ContextAction::SplitRight => {
+                self.app.split_focused_pane(SplitDir::Horizontal);
+            }
+            ContextAction::SplitDown => {
+                self.app.split_focused_pane(SplitDir::Vertical);
+            }
+        }
+        self.app.dirty = true;
+    }
 }
 
 // ── Key conversion ────────────────────────────────────────────────────────────
@@ -3840,6 +3913,11 @@ fn main() -> Result<()> {
         fn webview_message(&mut self, json: String) {
             if let Some(h) = &mut *self.0.borrow_mut() {
                 h.webview_message(json)
+            }
+        }
+        fn context_action(&mut self, action: ContextAction) {
+            if let Some(h) = &mut *self.0.borrow_mut() {
+                h.context_action(action)
             }
         }
     }

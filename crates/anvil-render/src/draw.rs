@@ -463,6 +463,10 @@ trait ViewportSink {
     /// Paint the 2–3px left-gutter accent stripe for a block row at alpha 0.65
     /// (CPU only; GPU no-op — stripe lives in the pad_x band outside the cell grid).
     fn draw_block_accent_stripe(&mut self, ry: usize, m: FontMetrics, rgb: [u8; 3]);
+    /// Paint a 2×3 px ember dot in the left gutter for an OSC 133;A prompt mark.
+    /// Vertically centered on the row.  Same x geometry as the block accent stripe.
+    /// (CPU only; GPU no-op.)
+    fn draw_prompt_jump_dot(&mut self, ry: usize, m: FontMetrics, rgb: [u8; 3]);
     /// Draw one terminal cell.
     #[allow(clippy::too_many_arguments)]
     fn draw_cell(
@@ -583,6 +587,16 @@ impl ViewportSink for CpuSink<'_> {
         let px = (self.raster.origin_x - bar_w - 2.0).max(0.0);
         let py = self.raster.origin_y + ry as f64 * m.cell_h - self.raster.y_shift_px;
         self.raster.fill_pixel_rect_alpha(px, py, bar_w, m.cell_h, rgb, 0.65);
+    }
+
+    fn draw_prompt_jump_dot(&mut self, ry: usize, m: FontMetrics, rgb: [u8; 3]) {
+        const DOT_W: f64 = 2.0;
+        const DOT_H: f64 = 3.0;
+        let bar_w = 3.0_f64.max(m.cell_w * 0.22);
+        let px = (self.raster.origin_x - bar_w - 2.0).max(0.0);
+        let row_top = self.raster.origin_y + ry as f64 * m.cell_h - self.raster.y_shift_px;
+        let py = row_top + (m.cell_h - DOT_H) * 0.5;
+        self.raster.fill_pixel_rect_alpha(px, py, DOT_W, DOT_H, rgb, 0.9);
     }
 
     fn draw_cell(
@@ -788,6 +802,10 @@ impl ViewportSink for GpuSink<'_> {
 
     fn draw_block_accent_stripe(&mut self, _ry: usize, _m: FontMetrics, _rgb: [u8; 3]) {
         // GPU path: accent stripe is a pixel-buffer operation; no-op here.
+    }
+
+    fn draw_prompt_jump_dot(&mut self, _ry: usize, _m: FontMetrics, _rgb: [u8; 3]) {
+        // GPU path: gutter dot lives in the pad_x pixel buffer; no-op here.
     }
 
     fn draw_cell(
@@ -1067,9 +1085,10 @@ fn draw_viewport_into(
             }
         }
 
-        // Prompt-rule hairline.
+        // Prompt-rule hairline + quick-jump gutter dot.
         if terminal.is_prompt_start(abs) {
             sink.draw_prompt_rule(y as f64, metrics, rule_rgb, rule_x_start, rule_x_end);
+            sink.draw_prompt_jump_dot(y, metrics, theme.accent_primary);
         }
     }
 

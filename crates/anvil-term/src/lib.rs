@@ -11,7 +11,7 @@ pub use cell::{Attrs, Cell, Color};
 pub use grid::{Grid, Modes, ScrollRegion};
 pub use parser::{Handler, Parser};
 pub use scrollback::{DEFAULT_CAPACITY, Scrollback};
-pub use search::{MAX_MATCHES as SEARCH_MAX_MATCHES, Match, MatchKind, Search};
+pub use search::{MAX_MATCHES as SEARCH_MAX_MATCHES, Match, MatchKind, Search, SearchScope};
 pub use terminal::{
     Block, BlockState, Cursor, CursorShape, DiffKind, DirtySet, LastRun, PrivateModes, PromptMark,
     PromptMarkKind, Terminal,

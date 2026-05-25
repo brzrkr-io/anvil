@@ -10,4 +10,5 @@ pub mod shell_integration;
 pub mod system;
 pub mod webview;
 
+pub use appkit::ContextAction;
 pub use glyph_atlas::{AtlasError, AtlasPainter};
