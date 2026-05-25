@@ -1725,10 +1725,9 @@ impl App {
                     self.raster.origin_y = e.rect.y;
 
                     let cursor_params = if e.id == focused_id {
-                        let cur = pane.terminal.cursor();
                         Some(anvil_render::CursorParams {
-                            ax: cur.x as f32,
-                            ay: cur.y as f32,
+                            ax: pane.cursor_ax,
+                            ay: pane.cursor_ay,
                             blink_phase: self.blink_phase,
                             cfg: self.cursor_cfg,
                         })
@@ -2449,6 +2448,18 @@ impl AppHandler for AppShell {
                 .is_some_and(|p| p.terminal.any_block_completed_within(within));
             if pulsing {
                 app.dirty = true;
+            }
+        }
+
+        // Snap cursor_ax/ay to the live terminal cursor every tick so
+        // both CPU and GPU draw paths render the cursor at its real cell.
+        // No animation — animating produced trail artifacts.
+        if let Some(tab) = app.tabs.current_mut() {
+            let id = tab.focused_id();
+            if let Some(pane) = tab.registry.get_mut(id) {
+                let cur = pane.terminal.cursor();
+                pane.cursor_ax = cur.x as f32;
+                pane.cursor_ay = cur.y as f32;
             }
         }
 
