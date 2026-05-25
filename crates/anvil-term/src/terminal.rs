@@ -68,7 +68,11 @@ impl DirtySet {
                 bits[row / 64] |= 1u64 << (row % 64);
             }
         }
-        DirtySet { bits, cap: rows, full: all }
+        DirtySet {
+            bits,
+            cap: rows,
+            full: all,
+        }
     }
 
     /// True when every viewport row needs redrawing.
@@ -105,7 +109,6 @@ impl DirtySet {
     pub fn force_full(&mut self) {
         self.full = true;
     }
-
 }
 
 // =============================================================================
@@ -3202,5 +3205,4 @@ mod tests {
         // `  context` — not a diff marker
         assert!(!block.is_unified_diff_row(&term, base + 5));
     }
-
 }

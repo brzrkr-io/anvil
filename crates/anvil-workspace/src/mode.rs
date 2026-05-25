@@ -174,10 +174,20 @@ mod tests {
     const GRID_PAD: f64 = 24.0;
 
     fn metrics(hud_cols: usize) -> DockMetrics {
-        DockMetrics { cell_w: 8.0, cell_h: 16.0, hud_cols, grid_pad: GRID_PAD }
+        DockMetrics {
+            cell_w: 8.0,
+            cell_h: 16.0,
+            hud_cols,
+            grid_pad: GRID_PAD,
+        }
     }
 
-    const INNER: Rect = Rect { x: 0.0, y: 36.0, w: 1280.0, h: 744.0 };
+    const INNER: Rect = Rect {
+        x: 0.0,
+        y: 36.0,
+        w: 1280.0,
+        h: 744.0,
+    };
     const MIN_W: f64 = 8.0;
     const MIN_H: f64 = 16.0;
     const BOTTOM_H: f64 = 24.0;
@@ -246,7 +256,10 @@ mod tests {
         let docks = docks_for(LayoutMode::Terminal, false);
         assert_eq!(docks.left_w, 0.0, "Terminal mode must have zero left dock");
         // right_w absorbs the right GRID_PAD when HUD is hidden
-        assert_eq!(docks.right_w, GRID_PAD, "Terminal/HUD-off right_w must equal GRID_PAD");
+        assert_eq!(
+            docks.right_w, GRID_PAD,
+            "Terminal/HUD-off right_w must equal GRID_PAD"
+        );
     }
 
     // ── Terminal mode: pane_area equals inner minus bottom bar ────────────────

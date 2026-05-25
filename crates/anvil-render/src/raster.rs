@@ -428,9 +428,8 @@ impl Raster {
         // SAFETY: pixels is [u8] with length divisible by 4 and alignment ≥ 1.
         // u32 requires alignment 4; we use an explicit pointer cast rather than
         // align_to so we can assert the invariant ourselves.
-        let view: &mut [u32] = unsafe {
-            std::slice::from_raw_parts_mut(self.pixels.as_mut_ptr() as *mut u32, total)
-        };
+        let view: &mut [u32] =
+            unsafe { std::slice::from_raw_parts_mut(self.pixels.as_mut_ptr() as *mut u32, total) };
         for y in y0..y1 {
             let row_start = y * self.width + x0;
             let row_end = y * self.width + x1;

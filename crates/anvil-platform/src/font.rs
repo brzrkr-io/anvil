@@ -84,9 +84,8 @@ use std::ptr::NonNull;
 
 use anvil_render::{FontMetrics, GlyphPainter, PixelRect};
 use objc2_core_foundation::{
-    CFArray, CFArrayCallBacks, CFDictionary,
-    CFDictionaryKeyCallBacks, CFDictionaryValueCallBacks, CFError, CFRetained, CFString, CGPoint,
-    CGSize,
+    CFArray, CFArrayCallBacks, CFDictionary, CFDictionaryKeyCallBacks, CFDictionaryValueCallBacks,
+    CFError, CFRetained, CFString, CGPoint, CGSize,
 };
 #[allow(deprecated)]
 use objc2_core_text::{
@@ -383,8 +382,6 @@ fn enable_calt(base: CFRetained<CTFont>) -> CFRetained<CTFont> {
     // SAFETY: size=0.0 preserves size; null matrix = identity; desc is valid.
     unsafe { base.copy_with_attributes(0.0, std::ptr::null(), Some(&desc)) }
 }
-
-
 
 /// Chrome font size in logical points (rendered at CHROME_PT × scale device px).
 pub const CHROME_PT: f64 = 11.0;
@@ -830,5 +827,4 @@ mod tests {
         assert!(f.metrics.cell_w > 0.0);
         assert!(f.metrics.cell_h > 0.0);
     }
-
 }

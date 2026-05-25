@@ -459,7 +459,14 @@ trait ViewportSink {
     /// Clear one row's background to `bg` before redrawing (CPU only; GPU no-op).
     fn clear_row_bg(&mut self, ry: usize, m: FontMetrics, bg: [u8; 3]);
     /// Paint a selection wash over a full row (CPU only; GPU no-op).
-    fn fill_selection_row(&mut self, ry: usize, cols: usize, m: FontMetrics, rgb: [u8; 3], alpha: f64);
+    fn fill_selection_row(
+        &mut self,
+        ry: usize,
+        cols: usize,
+        m: FontMetrics,
+        rgb: [u8; 3],
+        alpha: f64,
+    );
     /// Draw one terminal cell.
     #[allow(clippy::too_many_arguments)]
     fn draw_cell(
@@ -493,14 +500,7 @@ trait ViewportSink {
         theme: &Theme,
     );
     /// Draw the prompt-rule hairline above row `ry`.
-    fn draw_prompt_rule(
-        &mut self,
-        ry: f64,
-        m: FontMetrics,
-        rgb: [u8; 3],
-        x_start: f64,
-        x_end: f64,
-    );
+    fn draw_prompt_rule(&mut self, ry: f64, m: FontMetrics, rgb: [u8; 3], x_start: f64, x_end: f64);
     /// Draw the text cursor when pinned to live bottom.
     fn draw_cursor(
         &mut self,
@@ -547,7 +547,11 @@ impl<'a> CpuSink<'a> {
     ///   `GridPainters` struct, which requires 4 separate `&mut dyn` refs).
     /// - `raster` is a separate, distinct object from all painters.
     /// - No two mutable pointers alias; only one is accessed at a time per call.
-    fn new(raster: &'a mut Raster, painters: &'a mut GridPainters<'_>, running_pulse_phase: f32) -> Self {
+    fn new(
+        raster: &'a mut Raster,
+        painters: &'a mut GridPainters<'_>,
+        running_pulse_phase: f32,
+    ) -> Self {
         // SAFETY: each raw pointer is derived from a valid, non-aliasing
         // `&'a mut dyn GlyphPainter` that outlives `CpuSink<'a>`.
         let reg = painters.regular as *mut dyn GlyphPainter;
@@ -572,10 +576,18 @@ impl ViewportSink for CpuSink<'_> {
         self.raster.clear_pixel_rows(y_top, y_bot, bg);
     }
 
-    fn fill_selection_row(&mut self, ry: usize, cols: usize, m: FontMetrics, rgb: [u8; 3], alpha: f64) {
+    fn fill_selection_row(
+        &mut self,
+        ry: usize,
+        cols: usize,
+        m: FontMetrics,
+        rgb: [u8; 3],
+        alpha: f64,
+    ) {
         let px = self.raster.origin_x;
         let py = self.raster.origin_y + ry as f64 * m.cell_h;
-        self.raster.fill_pixel_rect_alpha(px, py, cols as f64 * m.cell_w, m.cell_h, rgb, alpha);
+        self.raster
+            .fill_pixel_rect_alpha(px, py, cols as f64 * m.cell_w, m.cell_h, rgb, alpha);
     }
 
     fn draw_cell(
@@ -622,7 +634,16 @@ impl ViewportSink for CpuSink<'_> {
         theme: &Theme,
     ) {
         let summary = format!(" \u{2304} {hidden} hidden");
-        draw_text_row(self.raster, self.regular, m, 0, ry, &summary, theme.alloy, cols);
+        draw_text_row(
+            self.raster,
+            self.regular,
+            m,
+            0,
+            ry,
+            &summary,
+            theme.alloy,
+            cols,
+        );
     }
 
     fn draw_block_header(
@@ -634,11 +655,24 @@ impl ViewportSink for CpuSink<'_> {
         m: FontMetrics,
         theme: &Theme,
     ) {
-        draw_block_header_cpu(self.raster, self.regular, m, theme, block, cmd_text, ry, cols);
+        draw_block_header_cpu(
+            self.raster,
+            self.regular,
+            m,
+            theme,
+            block,
+            cmd_text,
+            ry,
+            cols,
+        );
 
         // Running-block header dot: sine-modulated 2×2 dot at col 0 while block is Running.
         if block.state == BlockState::Running {
-            let alpha = 0.45 + 0.55 * (std::f32::consts::TAU * self.running_pulse_phase).sin().max(0.0);
+            let alpha = 0.45
+                + 0.55
+                    * (std::f32::consts::TAU * self.running_pulse_phase)
+                        .sin()
+                        .max(0.0);
             let dot_px = (m.cell_w * 0.5 - 1.0).max(0.0);
             let dot_py = m.cell_h * 0.5 - 1.0;
             self.raster.fill_pixel_rect_alpha(
@@ -661,8 +695,10 @@ impl ViewportSink for CpuSink<'_> {
                 // Bottom 2px of the header row.
                 let py = self.raster.origin_y + (ry + 1) as f64 * m.cell_h - 2.0;
                 self.raster.fill_pixel_rect_alpha(
-                    px, py,
-                    cols as f64 * m.cell_w, 2.0,
+                    px,
+                    py,
+                    cols as f64 * m.cell_w,
+                    2.0,
                     theme.accent_ember,
                     alpha,
                 );
@@ -794,7 +830,14 @@ impl ViewportSink for GpuSink<'_> {
         // GPU path has no per-pixel buffer to clear.
     }
 
-    fn fill_selection_row(&mut self, _ry: usize, _cols: usize, _m: FontMetrics, _rgb: [u8; 3], _alpha: f64) {
+    fn fill_selection_row(
+        &mut self,
+        _ry: usize,
+        _cols: usize,
+        _m: FontMetrics,
+        _rgb: [u8; 3],
+        _alpha: f64,
+    ) {
         // GPU path: selection wash is not composited in the CPU pixel buffer.
     }
 
@@ -840,7 +883,8 @@ impl ViewportSink for GpuSink<'_> {
             let xy = [base_xy[0], base_xy[1] - self.shift];
             let wh = [self.cw, self.ch];
             let slot = self.rasterizer.glyph_slot(cp as u32, m);
-            self.batch.push_cell(xy, wh, slot, theme.alloy, theme.background);
+            self.batch
+                .push_cell(xy, wh, slot, theme.alloy, theme.background);
         }
     }
 
@@ -869,7 +913,11 @@ impl ViewportSink for GpuSink<'_> {
 
         // Running-block header dot: sine-modulated color at col 0 while block is Running.
         if block.state == BlockState::Running {
-            let alpha = 0.45 + 0.55 * (std::f32::consts::TAU * self.running_pulse_phase).sin().max(0.0);
+            let alpha = 0.45
+                + 0.55
+                    * (std::f32::consts::TAU * self.running_pulse_phase)
+                        .sin()
+                        .max(0.0);
             let dot_col = 0.5_f64 - 1.0 / m.cell_w; // ~center of col 0
             let dot_row = ry as f64 + 0.5 - 1.0 / m.cell_h;
             let rect = self.raster.cell_rect(m, dot_col, dot_row);
@@ -939,8 +987,13 @@ impl ViewportSink for GpuSink<'_> {
                             let base_fg = resolve_color(cell.fg, theme.foreground, theme);
                             let glyph_fg = mix(base_fg, theme.background, opacity);
                             let slot = self.rasterizer.glyph_slot(cell.cp as u32, m);
-                            self.batch
-                                .push_cell(bxy, [self.cw, self.ch], slot, glyph_fg, cursor_rgb);
+                            self.batch.push_cell(
+                                bxy,
+                                [self.cw, self.ch],
+                                slot,
+                                glyph_fg,
+                                cursor_rgb,
+                            );
                         }
                     }
                 }
@@ -1047,10 +1100,12 @@ fn draw_viewport_into(
         if let Some(ref block) = block_opt {
             if block.is_unified_diff_row(terminal, abs) {
                 // Determine sign from first cell.
-                let sigil = terminal.line(
-                    abs.saturating_sub(terminal.evicted_lines)
-                )[0].cp;
-                let rgb = if sigil == '+' { theme.verified } else { theme.failure };
+                let sigil = terminal.line(abs.saturating_sub(terminal.evicted_lines))[0].cp;
+                let rgb = if sigil == '+' {
+                    theme.verified
+                } else {
+                    theme.failure
+                };
                 sink.fill_selection_row(y, cols, metrics, rgb, 0.12);
             }
         }
@@ -1058,7 +1113,12 @@ fn draw_viewport_into(
         // Draw all cells in this row.
         {
             let row: Vec<Cell> = match off_opt {
-                None => terminal.viewport_row(y).iter().take(cols).copied().collect(),
+                None => terminal
+                    .viewport_row(y)
+                    .iter()
+                    .take(cols)
+                    .copied()
+                    .collect(),
                 Some(off) => terminal
                     .viewport_row_at(off, y)
                     .iter()
@@ -1082,8 +1142,7 @@ fn draw_viewport_into(
         // Block header overlay.
         if let Some(ref block) = block_opt {
             if abs == block.command_line && !folded.contains(block.command_line) {
-                let cmd_text =
-                    read_command_text(terminal, crow, block.command_start_col as usize);
+                let cmd_text = read_command_text(terminal, crow, block.command_start_col as usize);
                 sink.draw_block_header(y, cols, block, &cmd_text, metrics, theme);
             }
         }
@@ -1097,11 +1156,7 @@ fn draw_viewport_into(
     // Cursor: only when pinned to live bottom.
     if let Some(cp) = cursor_params {
         let cur = terminal.cursor();
-        if cur.visible
-            && terminal.viewport_offset() == 0
-            && is_live
-            && cur.x < cols
-            && cur.y < rows
+        if cur.visible && terminal.viewport_offset() == 0 && is_live && cur.x < cols && cur.y < rows
         {
             sink.draw_cursor(terminal, cp, metrics, theme, rows, cols);
         }
@@ -1248,28 +1303,22 @@ pub fn draw_viewport_gpu(
     if scroll_pos == 0.0 {
         let mut sink = GpuSink::new(batch, rasterizer, raster, metrics, 0.0, running_pulse_phase);
         draw_viewport_into(
-            &mut sink,
-            terminal,
-            metrics,
-            theme,
-            rows,
-            cols,
-            None,
-            rows,
-            selection,
-            search,
-            cursor,
-            0.0,
-            0.0,
-            &folded,
-            None,
+            &mut sink, terminal, metrics, theme, rows, cols, None, rows, selection, search, cursor,
+            0.0, 0.0, &folded, None,
         );
     } else {
         let base = scroll_pos.floor() as usize;
         let frac = scroll_pos as f64 - scroll_pos.floor() as f64;
         let shift = ((1.0 - frac) * metrics.cell_h) as f32;
         let off = base + 1;
-        let mut sink = GpuSink::new(batch, rasterizer, raster, metrics, shift, running_pulse_phase);
+        let mut sink = GpuSink::new(
+            batch,
+            rasterizer,
+            raster,
+            metrics,
+            shift,
+            running_pulse_phase,
+        );
         draw_viewport_into(
             &mut sink,
             terminal,
@@ -2269,8 +2318,14 @@ mod tests {
             0.0,
         );
 
-        let partial_calls = painter.calls.len() + bold_p.calls.len() + italic_p.calls.len() + bold_italic_p.calls.len();
-        let full_calls = painter_full.calls.len() + bold_full.calls.len() + italic_full.calls.len() + bold_italic_full.calls.len();
+        let partial_calls = painter.calls.len()
+            + bold_p.calls.len()
+            + italic_p.calls.len()
+            + bold_italic_p.calls.len();
+        let full_calls = painter_full.calls.len()
+            + bold_full.calls.len()
+            + italic_full.calls.len()
+            + bold_italic_full.calls.len();
         assert!(
             partial_calls < full_calls,
             "partial draw ({partial_calls} calls) should be less than full draw ({full_calls} calls)",
@@ -2344,8 +2399,14 @@ mod tests {
             Selection::default(),
             None,
         );
-        assert!(!bold_p.calls.is_empty(), "bold painter must receive a call for BOLD cell");
-        assert!(regular_p.calls.is_empty(), "regular painter must not receive BOLD cell calls");
+        assert!(
+            !bold_p.calls.is_empty(),
+            "bold painter must receive a call for BOLD cell"
+        );
+        assert!(
+            regular_p.calls.is_empty(),
+            "regular painter must not receive BOLD cell calls"
+        );
         assert!(italic_p.calls.is_empty());
         assert!(bold_italic_p.calls.is_empty());
     }
@@ -2381,7 +2442,10 @@ mod tests {
             Selection::default(),
             None,
         );
-        assert!(!italic_p.calls.is_empty(), "italic painter must receive a call for ITALIC cell");
+        assert!(
+            !italic_p.calls.is_empty(),
+            "italic painter must receive a call for ITALIC cell"
+        );
         assert!(regular_p.calls.is_empty());
         assert!(bold_p.calls.is_empty());
         assert!(bold_italic_p.calls.is_empty());
@@ -2424,7 +2488,9 @@ mod tests {
             0.0,
         );
         // The bold 'X' must have routed to bold_p.
-        assert!(!bold_p.calls.is_empty(), "bold painter must receive bold cell");
+        assert!(
+            !bold_p.calls.is_empty(),
+            "bold painter must receive bold cell"
+        );
     }
-
 }

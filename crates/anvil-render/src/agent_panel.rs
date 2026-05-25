@@ -18,7 +18,6 @@ use anvil_theme::Theme;
 
 use crate::raster::{FontMetrics, GlyphPainter, PixelRect, Raster};
 
-
 // --- Data types -------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,7 +69,6 @@ pub struct LocalContext {
 
     // KUBE section (task #20): current kubectl context.
     pub kube_context: Option<anvil_prompt_core::KubeCtx>,
-
 }
 
 impl Default for LocalContext {
@@ -442,7 +440,9 @@ pub fn draw(
 
     // --- Footer: Local context (cwd · branch · last-run) --------------------
     if row < max_row {
-        draw_local_footer(raster, painter, metrics, theme, card_col, row, local, PANEL_COLS);
+        draw_local_footer(
+            raster, painter, metrics, theme, card_col, row, local, PANEL_COLS,
+        );
     }
 }
 
@@ -612,7 +612,13 @@ pub fn draw_right_hud(
         surface_rect.h,
         tones.edge,
     );
-    raster.fill_pixel_rect(surface_rect.x, surface_rect.y, surface_rect.w, 1.0, tones.edge);
+    raster.fill_pixel_rect(
+        surface_rect.x,
+        surface_rect.y,
+        surface_rect.w,
+        1.0,
+        tones.edge,
+    );
 
     // Bind cell-grid coords for the rest of the function.
     let start_col = content_col;
@@ -732,7 +738,9 @@ pub fn draw_right_hud(
             }
             SectionId::RepoGit => {
                 // --- REPO + GIT (merged) ---------------------------------
-                if r < bottom { r += 1; }
+                if r < bottom {
+                    r += 1;
+                }
                 let header_row = r;
                 draw_section_accent_bar(raster, metrics, start_col, r, app_theme.accent_primary);
                 draw_section_header(
@@ -787,7 +795,14 @@ pub fn draw_right_hud(
                 if r < bottom {
                     if let Some(parent) = parent_path_compact(&local.cwd, hud_cols - 4) {
                         draw_text(
-                            raster, painter, metrics, inner_col, r, &parent, app_theme.text_muted, max_col,
+                            raster,
+                            painter,
+                            metrics,
+                            inner_col,
+                            r,
+                            &parent,
+                            app_theme.text_muted,
+                            max_col,
                         );
                         push_row_hit(
                             hits,
@@ -806,7 +821,14 @@ pub fn draw_right_hud(
                 if local.git == GitState::NoRepo || local.branch.is_empty() {
                     if r < bottom {
                         draw_text(
-                            raster, painter, metrics, inner_col, r, "no repo", app_theme.text_muted, max_col,
+                            raster,
+                            painter,
+                            metrics,
+                            inner_col,
+                            r,
+                            "no repo",
+                            app_theme.text_muted,
+                            max_col,
                         );
                         r += 1;
                     }
@@ -832,10 +854,7 @@ pub fn draw_right_hud(
                         if after_branch + 1 < max_col {
                             let mut bits: Vec<(String, [u8; 3])> = Vec::new();
                             if local.git_dirty > 0 {
-                                bits.push((
-                                    format!(" *{}", local.git_dirty),
-                                    app_theme.attention,
-                                ));
+                                bits.push((format!(" *{}", local.git_dirty), app_theme.attention));
                             }
                             let ab = format_ahead_behind(local.git_ahead, local.git_behind);
                             if !ab.is_empty() {
@@ -876,14 +895,27 @@ pub fn draw_right_hud(
                             c += 1;
                         }
                         if !local.head_subject.is_empty() && c + 1 < max_col {
-                            raster.cell_glyph(painter, metrics, c, r, ' ' as u32, app_theme.text_muted);
+                            raster.cell_glyph(
+                                painter,
+                                metrics,
+                                c,
+                                r,
+                                ' ' as u32,
+                                app_theme.text_muted,
+                            );
                             c += 1;
                             for ch in local.head_subject.chars() {
                                 if c >= max_col {
                                     break;
                                 }
-                                raster
-                                    .cell_glyph(painter, metrics, c, r, ch as u32, app_theme.text_muted);
+                                raster.cell_glyph(
+                                    painter,
+                                    metrics,
+                                    c,
+                                    r,
+                                    ch as u32,
+                                    app_theme.text_muted,
+                                );
                                 c += 1;
                             }
                         }
@@ -906,10 +938,18 @@ pub fn draw_right_hud(
                 if local.ports.is_empty() {
                     continue;
                 }
-                if r < bottom { r += 1; }
+                if r < bottom {
+                    r += 1;
+                }
                 let header_row = r;
                 if r < bottom {
-                    draw_section_accent_bar(raster, metrics, start_col, r, app_theme.accent_primary);
+                    draw_section_accent_bar(
+                        raster,
+                        metrics,
+                        start_col,
+                        r,
+                        app_theme.accent_primary,
+                    );
                     draw_section_header(
                         raster,
                         painter,
@@ -942,7 +982,14 @@ pub fn draw_right_hud(
                             if c + 1 >= max_col {
                                 break;
                             }
-                            raster.cell_glyph(painter, metrics, c, r, ' ' as u32, app_theme.text_muted);
+                            raster.cell_glyph(
+                                painter,
+                                metrics,
+                                c,
+                                r,
+                                ' ' as u32,
+                                app_theme.text_muted,
+                            );
                             c += 1;
                         }
                         let label_start = c;
@@ -974,10 +1021,18 @@ pub fn draw_right_hud(
                 if local.recent_files.is_empty() {
                     continue;
                 }
-                if r < bottom { r += 1; }
+                if r < bottom {
+                    r += 1;
+                }
                 let header_row = r;
                 if r < bottom {
-                    draw_section_accent_bar(raster, metrics, start_col, r, app_theme.accent_primary);
+                    draw_section_accent_bar(
+                        raster,
+                        metrics,
+                        start_col,
+                        r,
+                        app_theme.accent_primary,
+                    );
                     draw_section_header(
                         raster,
                         painter,
@@ -1011,7 +1066,14 @@ pub fn draw_right_hud(
                         .filter(|s| !s.is_empty())
                         .unwrap_or(full_path.as_str());
                     draw_text(
-                        raster, painter, metrics, inner_col, r, basename, app_theme.text_muted, max_col,
+                        raster,
+                        painter,
+                        metrics,
+                        inner_col,
+                        r,
+                        basename,
+                        app_theme.text_muted,
+                        max_col,
                     );
                     // HudHit: Cmd-click opens the full path in the default editor.
                     let hit_copy = full_path.clone();
@@ -1032,7 +1094,9 @@ pub fn draw_right_hud(
             }
             SectionId::Agents => {
                 // --- AGENTS --------------------------------------------
-                if r < bottom { r += 1; }
+                if r < bottom {
+                    r += 1;
+                }
                 let header_row = r;
                 draw_section_accent_bar(raster, metrics, start_col, r, app_theme.accent_primary);
                 draw_section_header(
@@ -1220,7 +1284,9 @@ pub fn draw_right_hud(
             SectionId::System => {
                 // --- SYSTEM (compact) ----------------------------------
                 // Single row: "mem ▄▅▆▆▃▁ N/N GB · load X.XX"
-                if r < bottom { r += 1; }
+                if r < bottom {
+                    r += 1;
+                }
                 let header_row = r;
                 draw_section_accent_bar(raster, metrics, start_col, r, app_theme.accent_primary);
                 draw_section_header(
@@ -1258,16 +1324,42 @@ pub fn draw_right_hud(
                     let load_label = format!("load {load_str}");
 
                     // "mem" label in text_muted, gauge + numbers in foreground.
-                    draw_text(raster, painter, metrics, inner_col, r, "mem", app_theme.text_muted, max_col);
+                    draw_text(
+                        raster,
+                        painter,
+                        metrics,
+                        inner_col,
+                        r,
+                        "mem",
+                        app_theme.text_muted,
+                        max_col,
+                    );
                     let gauge_start = inner_col + 4; // "mem "
                     let gauge_text = if total_gb > 0.0 {
                         format!("{mem_bar} {:.0}/{:.0} GB", used_gb, total_gb)
                     } else {
                         mem_bar
                     };
-                    draw_text(raster, painter, metrics, gauge_start, r, &gauge_text, app_theme.foreground, max_col);
+                    draw_text(
+                        raster,
+                        painter,
+                        metrics,
+                        gauge_start,
+                        r,
+                        &gauge_text,
+                        app_theme.foreground,
+                        max_col,
+                    );
                     // Right-align "load X.XX".
-                    draw_text_right(raster, painter, metrics, max_col, r, &load_label, app_theme.foreground);
+                    draw_text_right(
+                        raster,
+                        painter,
+                        metrics,
+                        max_col,
+                        r,
+                        &load_label,
+                        app_theme.foreground,
+                    );
                     r += 1;
                 }
             }
@@ -1392,7 +1484,14 @@ fn draw_section_header(
         raster.cell_glyph(painter, metrics, c, row, ch as u32, color);
     }
     // 1px hairline on the row below the header.
-    draw_section_rule(raster, metrics, start_col, row + 1, hud_cols, hairline_color);
+    draw_section_rule(
+        raster,
+        metrics,
+        start_col,
+        row + 1,
+        hud_cols,
+        hairline_color,
+    );
 }
 
 /// A faint horizontal hairline used as a section separator inside the HUD.
@@ -2862,6 +2961,9 @@ mod tests {
         let has_disk = chars
             .windows(disk_label.len())
             .any(|w| w == disk_label.as_slice());
-        assert!(!has_disk, "expected no 'disk' row in compact SYSTEM section");
+        assert!(
+            !has_disk,
+            "expected no 'disk' row in compact SYSTEM section"
+        );
     }
 }

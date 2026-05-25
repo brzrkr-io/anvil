@@ -111,7 +111,11 @@ pub fn draw_status_bar(
     let right_start = (total_w - pad_x - right_text_w).max(x);
     let mut rx = right_start;
     let dot_color = if agent_active {
-        mix_rgb(theme.charcoal, theme.agent, 0.5 + 0.5 * (std::f32::consts::TAU * pulse_phase).sin())
+        mix_rgb(
+            theme.charcoal,
+            theme.agent,
+            0.5 + 0.5 * (std::f32::consts::TAU * pulse_phase).sin(),
+        )
     } else {
         theme.text_subtle
     };
@@ -385,7 +389,11 @@ mod tests {
             .calls
             .iter()
             .any(|(cp, fg)| *cp == 0x25CF && *fg == th.text_subtle);
-        assert!(dot_subtle, "expected ● in text_subtle when disconnected, got {:?}", painter.calls);
+        assert!(
+            dot_subtle,
+            "expected ● in text_subtle when disconnected, got {:?}",
+            painter.calls
+        );
 
         // The "idle" text chars must appear in text_muted (not agent).
         let idle_muted: Vec<char> = painter

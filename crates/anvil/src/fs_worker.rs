@@ -82,7 +82,10 @@ pub fn spawn_fs_worker() -> (mpsc::SyncSender<PathBuf>, mpsc::Receiver<DirSnapsh
 /// On IO error returns an empty snapshot (honest empty state).
 fn read_dir_snapshot(root: &PathBuf) -> DirSnapshot {
     let entries = read_entries(root).unwrap_or_default();
-    DirSnapshot { root: root.clone(), entries }
+    DirSnapshot {
+        root: root.clone(),
+        entries,
+    }
 }
 
 /// Read, filter, sort, and cap entries. Returns `Err` on IO failure.
@@ -128,8 +131,14 @@ fn read_entries(root: &PathBuf) -> Result<Vec<DirEntry>, std::io::Error> {
     let total = dirs.len() + files.len();
     let mut result: Vec<DirEntry> = Vec::with_capacity(total.min(ENTRY_CAP + 1));
 
-    let dir_entries = dirs.into_iter().map(|n| DirEntry { name: n, is_dir: true });
-    let file_entries = files.into_iter().map(|n| DirEntry { name: n, is_dir: false });
+    let dir_entries = dirs.into_iter().map(|n| DirEntry {
+        name: n,
+        is_dir: true,
+    });
+    let file_entries = files.into_iter().map(|n| DirEntry {
+        name: n,
+        is_dir: false,
+    });
 
     for entry in dir_entries.chain(file_entries) {
         if result.len() < ENTRY_CAP {
@@ -156,7 +165,8 @@ mod tests {
 
     /// Create an isolated temp subdirectory unique to this test run.
     fn make_test_dir(suffix: &str) -> PathBuf {
-        let base = std::env::temp_dir().join(format!("anvil_fs_test_{suffix}_{}", std::process::id()));
+        let base =
+            std::env::temp_dir().join(format!("anvil_fs_test_{suffix}_{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(&base).expect("create test dir");
         base
@@ -178,12 +188,15 @@ mod tests {
         assert!(!snap.entries.is_empty());
 
         // First entry must be the dir.
-        assert!(snap.entries[0].is_dir, "first entry should be dir, got: {:?}", snap.entries[0]);
+        assert!(
+            snap.entries[0].is_dir,
+            "first entry should be dir, got: {:?}",
+            snap.entries[0]
+        );
         assert_eq!(snap.entries[0].name, "src");
 
         // Remaining entries are files in alphabetical order.
-        let file_names: Vec<&str> =
-            snap.entries[1..].iter().map(|e| e.name.as_str()).collect();
+        let file_names: Vec<&str> = snap.entries[1..].iter().map(|e| e.name.as_str()).collect();
         assert_eq!(file_names, &["apple.txt", "mango.txt", "zebra.txt"]);
 
         let _ = fs::remove_dir_all(&root);
@@ -195,7 +208,10 @@ mod tests {
         let path = PathBuf::from("/nonexistent/path/that/does/not/exist");
         let snap = read_dir_snapshot(&path);
         assert_eq!(snap.root, path);
-        assert!(snap.entries.is_empty(), "expected empty entries for bad path");
+        assert!(
+            snap.entries.is_empty(),
+            "expected empty entries for bad path"
+        );
     }
 
     /// Hidden files (dot-prefix) are excluded.
@@ -227,7 +243,10 @@ mod tests {
         let snap = read_dir_snapshot(&root);
         let names: Vec<&str> = snap.entries.iter().map(|e| e.name.as_str()).collect();
         assert!(!names.contains(&"target"), "target should be excluded");
-        assert!(!names.contains(&"node_modules"), "node_modules should be excluded");
+        assert!(
+            !names.contains(&"node_modules"),
+            "node_modules should be excluded"
+        );
         assert!(!names.contains(&".git"), ".git should be excluded");
         assert!(names.contains(&"Cargo.toml"));
 

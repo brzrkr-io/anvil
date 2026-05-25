@@ -188,7 +188,10 @@ mod tests {
 
     #[test]
     fn layout_mode_ids_parse() {
-        assert_eq!(action_for_id("layout.mode:terminal"), Some(Action::LayoutTerminal));
+        assert_eq!(
+            action_for_id("layout.mode:terminal"),
+            Some(Action::LayoutTerminal)
+        );
         assert_eq!(action_for_id("layout.mode:ide"), Some(Action::LayoutIde));
         assert_eq!(action_for_id("layout.mode:codex"), None);
     }

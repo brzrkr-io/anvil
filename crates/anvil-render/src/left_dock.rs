@@ -104,7 +104,12 @@ pub fn draw_left_dock(
     let explorer_h = (rect.h * 0.60).floor();
     let outline_h = rect.h - explorer_h;
 
-    let explorer_rect = Rect { x: rect.x, y: rect.y, w: rect.w - 1.0, h: explorer_h };
+    let explorer_rect = Rect {
+        x: rect.x,
+        y: rect.y,
+        w: rect.w - 1.0,
+        h: explorer_h,
+    };
     let outline_rect = Rect {
         x: rect.x,
         y: rect.y + explorer_h,
@@ -113,7 +118,13 @@ pub fn draw_left_dock(
     };
 
     // Divider between sections.
-    raster.fill_pixel_rect(rect.x, rect.y + explorer_h, rect.w - 1.0, 1.0, theme.hairline);
+    raster.fill_pixel_rect(
+        rect.x,
+        rect.y + explorer_h,
+        rect.w - 1.0,
+        1.0,
+        theme.hairline,
+    );
 
     draw_explorer_section(raster, painter, metrics, theme, snapshot, explorer_rect);
     draw_outline_section(raster, painter, metrics, theme, outline, outline_rect);
@@ -170,8 +181,7 @@ fn draw_explorer_section(
     match snapshot {
         None => {
             // No cwd yet — waiting state.
-            let row_y = content_y_start
-                + ((ROW_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+            let row_y = content_y_start + ((ROW_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
             draw_text_run(
                 raster,
                 painter,
@@ -184,8 +194,7 @@ fn draw_explorer_section(
             );
         }
         Some(snap) if snap.entries.is_empty() => {
-            let row_y = content_y_start
-                + ((ROW_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+            let row_y = content_y_start + ((ROW_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
             draw_text_run(
                 raster,
                 painter,
@@ -204,8 +213,7 @@ fn draw_explorer_section(
                     break;
                 }
                 let row_top = content_y_start + i as f64 * ROW_H;
-                let glyph_y = row_top
-                    + ((ROW_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+                let glyph_y = row_top + ((ROW_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
 
                 let (label, color) = if entry.is_dir {
                     (format!("\u{25b8} {}", entry.name), theme.text_subtle)
@@ -214,8 +222,7 @@ fn draw_explorer_section(
                 };
 
                 // Truncate label to fit available width.
-                let max_chars =
-                    ((rect.w - PAD_X * 2.0 - cell_w) / cell_w).floor() as usize;
+                let max_chars = ((rect.w - PAD_X * 2.0 - cell_w) / cell_w).floor() as usize;
                 let truncated = truncate_name(&label, max_chars);
 
                 draw_text_run(
@@ -316,8 +323,7 @@ fn draw_outline_section(
                     break;
                 }
                 let row_top = content_y + i as f64 * ROW_H;
-                let glyph_y = row_top
-                    + ((ROW_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+                let glyph_y = row_top + ((ROW_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
 
                 // Indent: 2 cells per depth level.
                 let indent_cells = row.depth as usize * 2;
@@ -340,8 +346,7 @@ fn draw_outline_section(
 
                 // Name: one cell after the glyph + one space gap.
                 let name_x = x_start + cell_w * 2.0;
-                let max_name_chars =
-                    ((x_max - name_x) / cell_w).floor().max(0.0) as usize;
+                let max_name_chars = ((x_max - name_x) / cell_w).floor().max(0.0) as usize;
                 let truncated = truncate_name(&row.name, max_name_chars);
                 draw_text_run(
                     raster,
@@ -362,11 +367,9 @@ fn draw_outline_section(
 fn outline_kind_glyph(kind: OutlineKind) -> &'static str {
     match kind {
         OutlineKind::Function | OutlineKind::Method => "\u{0192}", // ƒ
-        OutlineKind::Class
-        | OutlineKind::Struct
-        | OutlineKind::Enum => "\u{25a2}", // ▢
-        OutlineKind::Module => "\u{2699}", // ⚙
-        _ => "\u{00b7}", // ·
+        OutlineKind::Class | OutlineKind::Struct | OutlineKind::Enum => "\u{25a2}", // ▢
+        OutlineKind::Module => "\u{2699}",                         // ⚙
+        _ => "\u{00b7}",                                           // ·
     }
 }
 
@@ -447,7 +450,11 @@ mod tests {
     }
 
     fn metrics() -> FontMetrics {
-        FontMetrics { cell_w: 8.0, cell_h: 16.0, descent: 3.0 }
+        FontMetrics {
+            cell_w: 8.0,
+            cell_h: 16.0,
+            descent: 3.0,
+        }
     }
 
     fn theme() -> Theme {
@@ -455,7 +462,12 @@ mod tests {
     }
 
     fn dock_rect() -> Rect {
-        Rect { x: 0.0, y: 0.0, w: 260.0, h: 800.0 }
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 260.0,
+            h: 800.0,
+        }
     }
 
     /// Zero-size rect must not panic.
@@ -465,7 +477,12 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 800);
         let mut p = StubPainter::default();
-        let zero = Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 };
+        let zero = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 0.0,
+            h: 0.0,
+        };
         draw_left_dock(&mut r, &mut p, m, &th, None, None, zero);
         // No panic = pass.
     }
@@ -486,7 +503,10 @@ mod tests {
             .iter()
             .filter(|(cp, fg)| *cp == 'W' as u32 && *fg == th.text_muted)
             .collect();
-        assert!(!waiting_w.is_empty(), "expected 'W' in text_muted for Waiting state");
+        assert!(
+            !waiting_w.is_empty(),
+            "expected 'W' in text_muted for Waiting state"
+        );
     }
 
     /// Empty snapshot → "(empty)" row painted.
@@ -497,7 +517,10 @@ mod tests {
         let mut r = Raster::new(800, 800);
         let mut p = StubPainter::default();
 
-        let snap = DirSnapshot { root: "/anvil".to_string(), entries: vec![] };
+        let snap = DirSnapshot {
+            root: "/anvil".to_string(),
+            entries: vec![],
+        };
         draw_left_dock(&mut r, &mut p, m, &th, Some(&snap), None, dock_rect());
 
         // "(empty)" → '(' codepoint 40
@@ -506,7 +529,10 @@ mod tests {
             .iter()
             .filter(|(cp, fg)| *cp == '(' as u32 && *fg == th.text_muted)
             .collect();
-        assert!(!paren.is_empty(), "expected '(' in text_muted for empty state");
+        assert!(
+            !paren.is_empty(),
+            "expected '(' in text_muted for empty state"
+        );
     }
 
     /// Snapshot with entries → file names appear in text_muted, dirs in text_subtle.
@@ -520,8 +546,14 @@ mod tests {
         let snap = DirSnapshot {
             root: "/anvil".to_string(),
             entries: vec![
-                DirEntry { name: "src".to_string(), is_dir: true },
-                DirEntry { name: "main.rs".to_string(), is_dir: false },
+                DirEntry {
+                    name: "src".to_string(),
+                    is_dir: true,
+                },
+                DirEntry {
+                    name: "main.rs".to_string(),
+                    is_dir: false,
+                },
             ],
         };
         draw_left_dock(&mut r, &mut p, m, &th, Some(&snap), None, dock_rect());
@@ -532,7 +564,10 @@ mod tests {
             .iter()
             .filter(|(cp, fg)| *cp == 'm' as u32 && *fg == th.text_muted)
             .collect();
-        assert!(!file_m.is_empty(), "expected 'm' in text_muted for file entry");
+        assert!(
+            !file_m.is_empty(),
+            "expected 'm' in text_muted for file entry"
+        );
 
         // Dir entry 's' (from "src") should appear in text_subtle.
         let dir_s: Vec<_> = p
@@ -540,7 +575,10 @@ mod tests {
             .iter()
             .filter(|(cp, fg)| *cp == 's' as u32 && *fg == th.text_subtle)
             .collect();
-        assert!(!dir_s.is_empty(), "expected 's' in text_subtle for dir entry");
+        assert!(
+            !dir_s.is_empty(),
+            "expected 's' in text_subtle for dir entry"
+        );
     }
 
     /// Outline section with `None` shows "Outline unavailable".
@@ -597,7 +635,10 @@ mod tests {
             .iter()
             .filter(|(cp, fg)| *cp == 'N' as u32 && *fg == th.text_subtle)
             .collect();
-        assert!(!n_subtle.is_empty(), "expected 'N' in text_subtle for 'No symbols' row");
+        assert!(
+            !n_subtle.is_empty(),
+            "expected 'N' in text_subtle for 'No symbols' row"
+        );
     }
 
     /// `Some(rows)` → symbol names painted in text_muted.
@@ -609,8 +650,16 @@ mod tests {
         let mut p = StubPainter::default();
 
         let rows = vec![
-            OutlineRow { name: "my_fn".to_string(), kind: OutlineKind::Function, depth: 0 },
-            OutlineRow { name: "MyStruct".to_string(), kind: OutlineKind::Struct, depth: 0 },
+            OutlineRow {
+                name: "my_fn".to_string(),
+                kind: OutlineKind::Function,
+                depth: 0,
+            },
+            OutlineRow {
+                name: "MyStruct".to_string(),
+                kind: OutlineKind::Struct,
+                depth: 0,
+            },
         ];
         draw_left_dock(&mut r, &mut p, m, &th, None, Some(&rows), dock_rect());
 
@@ -620,7 +669,10 @@ mod tests {
             .iter()
             .filter(|(cp, fg)| *cp == 'm' as u32 && *fg == th.text_muted)
             .collect();
-        assert!(!m_muted.is_empty(), "expected 'm' in text_muted for function symbol name");
+        assert!(
+            !m_muted.is_empty(),
+            "expected 'm' in text_muted for function symbol name"
+        );
 
         // ƒ glyph (0x0192) should appear in accent_primary.
         let f_accent: Vec<_> = p
@@ -628,6 +680,9 @@ mod tests {
             .iter()
             .filter(|(cp, fg)| *cp == '\u{0192}' as u32 && *fg == th.accent_primary)
             .collect();
-        assert!(!f_accent.is_empty(), "expected ƒ glyph in accent_primary for function kind");
+        assert!(
+            !f_accent.is_empty(),
+            "expected ƒ glyph in accent_primary for function kind"
+        );
     }
 }

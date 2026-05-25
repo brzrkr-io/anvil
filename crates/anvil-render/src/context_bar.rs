@@ -46,8 +46,7 @@ pub fn draw_context_bar(
     raster.fill_pixel_rect(bx, by + bar_h - 1.0, bar_w, 1.0, theme.hairline);
 
     // Vertical centre for glyph baseline.
-    let glyph_y =
-        by + ((bar_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+    let glyph_y = by + ((bar_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
 
     let pad_x = 14.0; // matches status bar padding
 
@@ -72,10 +71,10 @@ pub fn draw_context_bar(
 
     // Project kind icon glyph.
     let project_icon: Option<&str> = match local.project_kind.as_deref() {
-        Some("rust") => Some("\u{25b6}"),   // ▶  (compact triangle)
-        Some("node") => Some("\u{2022}"),   // •
-        Some("make") => Some("\u{25a0}"),   // ■
-        Some(_) => Some("\u{25cb}"),         // ○  generic
+        Some("rust") => Some("\u{25b6}"), // ▶  (compact triangle)
+        Some("node") => Some("\u{2022}"), // •
+        Some("make") => Some("\u{25a0}"), // ■
+        Some(_) => Some("\u{25cb}"),      // ○  generic
         None => None,
     };
 
@@ -187,7 +186,11 @@ mod tests {
     }
 
     fn font_metrics() -> FontMetrics {
-        FontMetrics { cell_w: 8.0, cell_h: 16.0, descent: 3.0 }
+        FontMetrics {
+            cell_w: 8.0,
+            cell_h: 16.0,
+            descent: 3.0,
+        }
     }
 
     fn theme() -> Theme {
@@ -195,7 +198,12 @@ mod tests {
     }
 
     fn bar_rect() -> Rect {
-        Rect { x: 0.0, y: 36.0, w: 800.0, h: 24.0 }
+        Rect {
+            x: 0.0,
+            y: 36.0,
+            w: 800.0,
+            h: 24.0,
+        }
     }
 
     // Smoke: no panic, background painted.
@@ -207,7 +215,15 @@ mod tests {
         let mut p = StubPainter::default();
         r.clear([0, 0, 0]);
 
-        draw_context_bar(&mut r, &mut p, m, &th, &LocalContext::default(), None, bar_rect());
+        draw_context_bar(
+            &mut r,
+            &mut p,
+            m,
+            &th,
+            &LocalContext::default(),
+            None,
+            bar_rect(),
+        );
 
         let px = pixel_at(&r, 4, 42); // inside the bar
         assert_ne!(px, th.background, "bar background must be painted");
@@ -220,7 +236,12 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 100);
         let mut p = StubPainter::default();
-        let zero = Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 };
+        let zero = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 0.0,
+            h: 0.0,
+        };
         draw_context_bar(&mut r, &mut p, m, &th, &LocalContext::default(), None, zero);
     }
 
@@ -326,7 +347,10 @@ mod tests {
             .calls
             .iter()
             .any(|(_, fg)| *fg == th.accent || *fg == th.text_subtle);
-        assert!(!accent_or_subtle, "no branch data → no accent/subtle glyphs");
+        assert!(
+            !accent_or_subtle,
+            "no branch data → no accent/subtle glyphs"
+        );
     }
 
     // head_short appears on the right when set.
@@ -370,7 +394,13 @@ mod tests {
             ..EditorSnapshot::default()
         };
         draw_context_bar(
-            &mut r, &mut p, m, &th, &LocalContext::default(), Some(&snap), bar_rect(),
+            &mut r,
+            &mut p,
+            m,
+            &th,
+            &LocalContext::default(),
+            Some(&snap),
+            bar_rect(),
         );
 
         let muted_chars: Vec<char> = p
@@ -399,7 +429,13 @@ mod tests {
             ..EditorSnapshot::default()
         };
         draw_context_bar(
-            &mut r, &mut p, m, &th, &LocalContext::default(), Some(&snap), bar_rect(),
+            &mut r,
+            &mut p,
+            m,
+            &th,
+            &LocalContext::default(),
+            Some(&snap),
+            bar_rect(),
         );
 
         // No glyphs should appear (LocalContext is empty; snap is Disconnected).

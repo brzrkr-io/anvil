@@ -55,13 +55,17 @@ use anvil_render::raster::Raster;
 use anvil_render::searchbar::draw_search_bar;
 use anvil_render::tabbar::{TabBarHitKind, TabBarHits, draw_tab_bar};
 use anvil_render::workspace::{DIVIDER_PX, draw_workspace, draw_workspace_chrome};
-use anvil_render::{CellBatch, FoldedBlocks, GridPainters, LeftDockSnapshot, OutlineKind, OutlineRow, draw_left_dock, draw_viewport_gpu};
+use anvil_render::{
+    CellBatch, FoldedBlocks, GridPainters, LeftDockSnapshot, OutlineKind, OutlineRow,
+    draw_left_dock, draw_viewport_gpu,
+};
 use anvil_term::DirtySet;
 use anvil_theme::{Theme, resolve as resolve_theme};
 use anvil_workspace::interact;
 use anvil_workspace::keys::{Key, Mods, encode as encode_key, encode_mouse};
-use anvil_workspace::layout::{DividerHit, NavDir, PaneId, Rect, SplitDir, adjust_ratio,
-    find_divider_at, split_at_path_mut};
+use anvil_workspace::layout::{
+    DividerHit, NavDir, PaneId, Rect, SplitDir, adjust_ratio, find_divider_at, split_at_path_mut,
+};
 use anvil_workspace::mode::{DockMetrics, Docks, LayoutMode};
 use anvil_workspace::palette::{Action, CATALOG, Palette, action_for_id};
 use anvil_workspace::tab::{Tab, TabManager};
@@ -978,7 +982,12 @@ impl App {
         };
 
         // Spawn nvim --listen <socket> in the new pane.
-        match Pty::spawn_exec(&nvim_str, &[&nvim_str, "--listen", &socket_str], cols as u16, rows as u16) {
+        match Pty::spawn_exec(
+            &nvim_str,
+            &[&nvim_str, "--listen", &socket_str],
+            cols as u16,
+            rows as u16,
+        ) {
             Ok(pty) => {
                 self.ptys.insert(new_id, pty);
             }
@@ -999,8 +1008,7 @@ impl App {
             bridge.set_socket(Some(socket_path));
             bridge.kick();
         } else {
-            self.editor_bridge =
-                Some(anvil_editor::EditorBridge::spawn(Some(socket_path)));
+            self.editor_bridge = Some(anvil_editor::EditorBridge::spawn(Some(socket_path)));
         }
 
         self.resize_all_tabs();
@@ -1470,8 +1478,9 @@ impl App {
                     anvil_caldera::DEFAULT_ENDPOINT,
                     root,
                 ));
-                self.caldera_client =
-                    Some(anvil_caldera::CalderaClient::new(anvil_caldera::DEFAULT_ENDPOINT));
+                self.caldera_client = Some(anvil_caldera::CalderaClient::new(
+                    anvil_caldera::DEFAULT_ENDPOINT,
+                ));
             }
         }
 
@@ -1503,7 +1512,10 @@ impl App {
                 entries: snap
                     .entries
                     .into_iter()
-                    .map(|e| anvil_render::LeftDockEntry { name: e.name, is_dir: e.is_dir })
+                    .map(|e| anvil_render::LeftDockEntry {
+                        name: e.name,
+                        is_dir: e.is_dir,
+                    })
                     .collect(),
             });
             self.dirty = true;
@@ -1688,8 +1700,8 @@ impl App {
                                 ds.mark(prev);
                             }
                             // Viewport scroll change → force full for this pane.
-                            let scroll_changed = pane.scroll_pos != 0.0
-                                || pane.terminal.viewport_offset() != 0;
+                            let scroll_changed =
+                                pane.scroll_pos != 0.0 || pane.terminal.viewport_offset() != 0;
                             if scroll_changed {
                                 ds.force_full();
                             }
@@ -1714,7 +1726,8 @@ impl App {
                             }
                             // Update cursor_row_prev to the animated row so the next
                             // frame clears the correct pixel rows.
-                            self.cursor_row_prev.insert(e.id, pane.cursor_ay.round() as usize);
+                            self.cursor_row_prev
+                                .insert(e.id, pane.cursor_ay.round() as usize);
                             let _ = rows;
                             map.insert(e.id, ds);
                         }
@@ -2081,7 +2094,11 @@ impl App {
         let tab_count = self.tabs.tabs.len();
         for idx in (0..tab_count).rev() {
             let pane_count = self.tabs.tabs[idx].tree.leaf_count();
-            let panes_label = if pane_count == 1 { "pane".to_string() } else { "panes".to_string() };
+            let panes_label = if pane_count == 1 {
+                "pane".to_string()
+            } else {
+                "panes".to_string()
+            };
             cmds.push(BridgeCmd {
                 id: format!("tab.switch:{idx}"),
                 title: format!("Tab {} · {} {}", idx + 1, pane_count, panes_label),
@@ -2558,18 +2575,24 @@ impl AppShell {
             eprintln!("anvil: font reinit failed at {new_pt} pt; keeping current");
             return;
         };
-        let new_bold = Font::init_face(&names, pixel_size, FontFace::Bold, true)
-            .unwrap_or_else(|_| Font::init_first_available(&names, pixel_size)
-                .or_else(|_| Font::init("Menlo", pixel_size))
-                .expect("fallback must be available"));
+        let new_bold =
+            Font::init_face(&names, pixel_size, FontFace::Bold, true).unwrap_or_else(|_| {
+                Font::init_first_available(&names, pixel_size)
+                    .or_else(|_| Font::init("Menlo", pixel_size))
+                    .expect("fallback must be available")
+            });
         let new_italic = Font::init_face(&names, pixel_size, FontFace::Italic, true)
-            .unwrap_or_else(|_| Font::init_first_available(&names, pixel_size)
-                .or_else(|_| Font::init("Menlo", pixel_size))
-                .expect("fallback must be available"));
+            .unwrap_or_else(|_| {
+                Font::init_first_available(&names, pixel_size)
+                    .or_else(|_| Font::init("Menlo", pixel_size))
+                    .expect("fallback must be available")
+            });
         let new_bold_italic = Font::init_face(&names, pixel_size, FontFace::BoldItalic, true)
-            .unwrap_or_else(|_| Font::init_first_available(&names, pixel_size)
-                .or_else(|_| Font::init("Menlo", pixel_size))
-                .expect("fallback must be available"));
+            .unwrap_or_else(|_| {
+                Font::init_first_available(&names, pixel_size)
+                    .or_else(|_| Font::init("Menlo", pixel_size))
+                    .expect("fallback must be available")
+            });
 
         // Replace heap-stable font allocations. Keep old Boxes alive until
         // *after* the corresponding painter is overwritten (the painter drop
@@ -2577,7 +2600,8 @@ impl AppShell {
         let old_font = std::mem::replace(&mut self.app.font, Box::new(new_font));
         let old_bold = std::mem::replace(&mut self.app.bold_font, Box::new(new_bold));
         let old_italic = std::mem::replace(&mut self.app.italic_font, Box::new(new_italic));
-        let old_bold_italic = std::mem::replace(&mut self.app.bold_italic_font, Box::new(new_bold_italic));
+        let old_bold_italic =
+            std::mem::replace(&mut self.app.bold_italic_font, Box::new(new_bold_italic));
         self.app.font_size_pt = new_pt;
 
         // SAFETY: same lifetime-extension pattern as `AppShell::new` —
@@ -2820,13 +2844,11 @@ impl AppHandler for AppShell {
         // while any pane in the current tab has a shell command running.
         {
             let any_running = app.tabs.current().is_some_and(|t| {
-                all_pane_ids_in_tree(t)
-                    .into_iter()
-                    .any(|pid| {
-                        t.registry
-                            .get(pid)
-                            .is_some_and(|p| p.terminal.last_run().running)
-                    })
+                all_pane_ids_in_tree(t).into_iter().any(|pid| {
+                    t.registry
+                        .get(pid)
+                        .is_some_and(|p| p.terminal.last_run().running)
+                })
             });
             if any_running {
                 app.running_pulse_phase += 1.5 / 60.0;
@@ -2880,8 +2902,7 @@ impl AppHandler for AppShell {
                     // Snap: quantize to nearest integer row (unit is rows).
                     pane.scroll_pos = pane.scroll_target.round();
                     pane.scroll_vel = 0.0;
-                    pane.terminal
-                        .set_viewport_offset(pane.scroll_pos as usize);
+                    pane.terminal.set_viewport_offset(pane.scroll_pos as usize);
                     app.dirty = true;
                 }
 
@@ -3570,7 +3591,12 @@ impl AppHandler for AppShell {
             // Clone the hit fields we need before mutably borrowing app.tabs.
             let (path, child_index, split_rect, split_dir) = {
                 let hit = app.divider_drag.as_ref().unwrap();
-                (hit.path.clone(), hit.child_index, hit.split_rect, hit.split_dir)
+                (
+                    hit.path.clone(),
+                    hit.child_index,
+                    hit.split_rect,
+                    hit.split_dir,
+                )
             };
             if let Some(tab) = app.tabs.current_mut() {
                 if let Some(sp) = split_at_path_mut(&mut tab.tree, &path) {
@@ -3579,12 +3605,8 @@ impl AppHandler for AppShell {
                     // Use the split node's own rect (captured at mouse-down) so
                     // nested splits compute available space correctly.
                     let (available, mouse_offset) = match split_dir {
-                        SplitDir::Horizontal => {
-                            (split_rect.w - total_gutter, rx - split_rect.x)
-                        }
-                        SplitDir::Vertical => {
-                            (split_rect.h - total_gutter, ry - split_rect.y)
-                        }
+                        SplitDir::Horizontal => (split_rect.w - total_gutter, rx - split_rect.x),
+                        SplitDir::Vertical => (split_rect.h - total_gutter, ry - split_rect.y),
                     };
                     // The desired pixel size of children[0..=child_index] combined
                     // is the mouse offset minus the gutters before child_index.
@@ -3693,9 +3715,7 @@ impl AppHandler for AppShell {
             (dy as f32) * 1.5
         };
         if std::env::var_os("ANVIL_PERF").is_some() {
-            eprintln!(
-                "anvil-perf: scroll dy={dy:.2} pp={pixel_precise} d={d:.3}"
-            );
+            eprintln!("anvil-perf: scroll dy={dy:.2} pp={pixel_precise} d={d:.3}");
         }
 
         if let Some(tab) = app.tabs.current_mut() {
@@ -3726,7 +3746,8 @@ impl AppHandler for AppShell {
             italic: &mut self.italic_painter,
             bold_italic: &mut self.bold_italic_painter,
         };
-        self.app.render_frame(&mut grid_painters, &mut self.chrome_painter);
+        self.app
+            .render_frame(&mut grid_painters, &mut self.chrome_painter);
     }
 
     fn live_resize_ended(&mut self) {
@@ -3737,7 +3758,8 @@ impl AppHandler for AppShell {
             italic: &mut self.italic_painter,
             bold_italic: &mut self.bold_italic_painter,
         };
-        self.app.render_frame(&mut grid_painters, &mut self.chrome_painter);
+        self.app
+            .render_frame(&mut grid_painters, &mut self.chrome_painter);
     }
 
     fn focus_gained(&mut self) {
@@ -4055,22 +4077,25 @@ fn main() -> Result<()> {
             .expect("at least Menlo must be available as a system font"),
     );
     let bold_font: Box<Font> = Box::new(
-        Font::init_face(&font_names, pixel_size, FontFace::Bold, true)
-            .unwrap_or_else(|_| Font::init_first_available(&font_names, pixel_size)
+        Font::init_face(&font_names, pixel_size, FontFace::Bold, true).unwrap_or_else(|_| {
+            Font::init_first_available(&font_names, pixel_size)
                 .or_else(|_| Font::init("Menlo", pixel_size))
-                .expect("fallback must be available")),
+                .expect("fallback must be available")
+        }),
     );
     let italic_font: Box<Font> = Box::new(
-        Font::init_face(&font_names, pixel_size, FontFace::Italic, true)
-            .unwrap_or_else(|_| Font::init_first_available(&font_names, pixel_size)
+        Font::init_face(&font_names, pixel_size, FontFace::Italic, true).unwrap_or_else(|_| {
+            Font::init_first_available(&font_names, pixel_size)
                 .or_else(|_| Font::init("Menlo", pixel_size))
-                .expect("fallback must be available")),
+                .expect("fallback must be available")
+        }),
     );
     let bold_italic_font: Box<Font> = Box::new(
-        Font::init_face(&font_names, pixel_size, FontFace::BoldItalic, true)
-            .unwrap_or_else(|_| Font::init_first_available(&font_names, pixel_size)
+        Font::init_face(&font_names, pixel_size, FontFace::BoldItalic, true).unwrap_or_else(|_| {
+            Font::init_first_available(&font_names, pixel_size)
                 .or_else(|_| Font::init("Menlo", pixel_size))
-                .expect("fallback must be available")),
+                .expect("fallback must be available")
+        }),
     );
     // Chrome font: fixed CHROME_PT pt regardless of user terminal size.
     let chrome_pixel_size = CHROME_PT * window_scale;
@@ -4481,7 +4506,9 @@ fn main() -> Result<()> {
         italic: &mut shell.italic_painter,
         bold_italic: &mut shell.bold_italic_painter,
     };
-    shell.app.render_frame(&mut grid_painters, &mut shell.chrome_painter);
+    shell
+        .app
+        .render_frame(&mut grid_painters, &mut shell.chrome_painter);
     shell.app.dirty = false;
     *shell_slot.borrow_mut() = Some(shell);
 

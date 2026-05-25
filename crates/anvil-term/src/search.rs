@@ -2,7 +2,10 @@
 
 use regex::Regex;
 
-use crate::{cell::Cell, terminal::{PromptMarkKind, Terminal}};
+use crate::{
+    cell::Cell,
+    terminal::{PromptMarkKind, Terminal},
+};
 
 /// A run of matched cells on one content row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -148,7 +151,12 @@ impl Search {
         }
     }
 
-    fn rescan_literal(&mut self, term: &Terminal, query_str: &str, row_range: Option<(usize, usize)>) {
+    fn rescan_literal(
+        &mut self,
+        term: &Terminal,
+        query_str: &str,
+        row_range: Option<(usize, usize)>,
+    ) {
         self.matches.clear();
         self.current = 0;
 
@@ -189,7 +197,12 @@ impl Search {
         }
     }
 
-    fn rescan_regex(&mut self, term: &Terminal, query_str: &str, row_range: Option<(usize, usize)>) {
+    fn rescan_regex(
+        &mut self,
+        term: &Terminal,
+        query_str: &str,
+        row_range: Option<(usize, usize)>,
+    ) {
         if query_str.is_empty() {
             self.matches.clear();
             self.current = 0;
@@ -634,10 +647,12 @@ mod tests {
         // 0 and 1 (or the grid holds them) — use line_count to find "needle".
         let anchor_row = {
             let total = t.line_count();
-            (0..total).find(|&r| {
-                let row = t.line(r);
-                row.len() >= 6 && row[0].cp == 'n'
-            }).expect("needle row not found")
+            (0..total)
+                .find(|&r| {
+                    let row = t.line(r);
+                    row.len() >= 6 && row[0].cp == 'n'
+                })
+                .expect("needle row not found")
         };
 
         let mut s = Search::new();
@@ -648,14 +663,20 @@ mod tests {
         // With anchor in block 1, "needle" must not be returned.
         let anchor_row_b1 = {
             let total = t.line_count();
-            (0..total).find(|&r| {
-                let row = t.line(r);
-                row.len() >= 5 && row[0].cp == 'o'
-            }).expect("other row not found")
+            (0..total)
+                .find(|&r| {
+                    let row = t.line(r);
+                    row.len() >= 5 && row[0].cp == 'o'
+                })
+                .expect("other row not found")
         };
         let mut s2 = Search::new();
         s2.set_query_in_block(&t, "needle", anchor_row_b1);
-        assert_eq!(0, s2.count(), "needle is outside block 1 and must not match");
+        assert_eq!(
+            0,
+            s2.count(),
+            "needle is outside block 1 and must not match"
+        );
     }
 
     /// A hit in the target block is found; a hit in the block immediately
@@ -674,15 +695,21 @@ mod tests {
         // Locate the first row with 'n'.
         let anchor_row = {
             let total = t.line_count();
-            (0..total).find(|&r| {
-                let row = t.line(r);
-                row.len() >= 6 && row[0].cp == 'n'
-            }).expect("first needle row not found")
+            (0..total)
+                .find(|&r| {
+                    let row = t.line(r);
+                    row.len() >= 6 && row[0].cp == 'n'
+                })
+                .expect("first needle row not found")
         };
 
         let mut s = Search::new();
         s.set_query_in_block(&t, "needle", anchor_row);
         // Block 1 has exactly one "needle"; block 2's copy must be excluded.
-        assert_eq!(1, s.count(), "only the hit in the anchor block should match");
+        assert_eq!(
+            1,
+            s.count(),
+            "only the hit in the anchor block should match"
+        );
     }
 }

@@ -41,8 +41,7 @@ pub fn draw_search_bar(
     raster.fill_pixel_rect(0.0, strip_top, total_w, 1.0, theme.hairline);
 
     // Vertical glyph baseline — same formula as statusbar.rs.
-    let glyph_y =
-        strip_top + ((chrome_bottom_px - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+    let glyph_y = strip_top + ((chrome_bottom_px - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
     let pad_x = 14.0 * window_scale;
 
     // ── Left: scope tag (when Block) + "find: " prefix + query + cursor block
@@ -86,7 +85,13 @@ pub fn draw_search_bar(
 
     // Cursor block after the last query character.
     if x + cell_w <= right_edge {
-        raster.fill_pixel_rect(x, strip_top + 2.0, cell_w, chrome_bottom_px - 4.0, theme.accent_bright);
+        raster.fill_pixel_rect(
+            x,
+            strip_top + 2.0,
+            cell_w,
+            chrome_bottom_px - 4.0,
+            theme.accent_bright,
+        );
     }
 
     // ── Right: match counter ─────────────────────────────────────────────
@@ -149,7 +154,15 @@ mod tests {
         let theme = anvil_theme::MINERAL_DARK;
         let chrome_bottom_px = m.cell_h * 2.0; // 40px
 
-        draw_search_bar(&mut r, &mut painter, m, &theme, &search, chrome_bottom_px, 1.0);
+        draw_search_bar(
+            &mut r,
+            &mut painter,
+            m,
+            &theme,
+            &search,
+            chrome_bottom_px,
+            1.0,
+        );
 
         // A pixel near the vertical center of the strip should be theme.charcoal.
         let strip_top = (200.0 - chrome_bottom_px) as usize;
@@ -186,7 +199,15 @@ mod tests {
         r.clear([0, 0, 0]);
         let search = Search::new();
         let theme = anvil_theme::MINERAL_DARK;
-        draw_search_bar(&mut r, &mut painter, m, &theme, &search, m.cell_h * 2.0, 1.0);
+        draw_search_bar(
+            &mut r,
+            &mut painter,
+            m,
+            &theme,
+            &search,
+            m.cell_h * 2.0,
+            1.0,
+        );
 
         let muted: Vec<char> = painter
             .calls

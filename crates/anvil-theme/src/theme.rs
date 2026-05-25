@@ -112,7 +112,7 @@ impl Theme {
 pub const EMBER_DARK: Theme = Theme {
     background: [0x1a, 0x18, 0x15],
     foreground: [0xdc, 0xd8, 0xd2],
-    accent: [0xd4, 0x60, 0x3a],      // accent_primary as cursor
+    accent: [0xd4, 0x60, 0x3a], // accent_primary as cursor
     surface: [0x25, 0x22, 0x20],
     border: [0x3e, 0x3a, 0x36],
     ansi: [
@@ -156,7 +156,7 @@ pub const EMBER_DARK: Theme = Theme {
 pub const EMBER_LIGHT: Theme = Theme {
     background: [0xf4, 0xed, 0xe6],
     foreground: [0x1e, 0x1a, 0x17],
-    accent: [0xa2, 0x37, 0x18],      // accent_primary as cursor
+    accent: [0xa2, 0x37, 0x18], // accent_primary as cursor
     surface: [0xfd, 0xfa, 0xf7],
     border: [0xbd, 0xb0, 0xa0],
     ansi: [

@@ -8,13 +8,13 @@
 //!   over a bounded channel.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{self, SyncSender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::transport::{Endpoint, Transport, TransportError};
 use crate::codec::Value;
+use crate::transport::{Endpoint, Transport, TransportError};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -162,7 +162,10 @@ impl EditorBridge {
 
     /// Clone the current snapshot. O(1) mutex lock + clone.
     pub fn snapshot(&self) -> EditorSnapshot {
-        self.snapshot.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.snapshot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Update the socket path the bridge targets.
@@ -330,28 +333,18 @@ fn poll_once(t: &mut Transport) -> Result<PollData, TransportError> {
     };
 
     // 2. Get buffer file name → basename only.
-    let name_val = t.call(
-        "nvim_buf_get_name",
-        &[Value::Uint(buf_id)],
-        CALL_TIMEOUT,
-    )?;
+    let name_val = t.call("nvim_buf_get_name", &[Value::Uint(buf_id)], CALL_TIMEOUT)?;
     let buffer_name = match name_val {
-        Value::Str(s) if !s.is_empty() => {
-            Path::new(&s)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .map(|n| n.to_string())
-        }
+        Value::Str(s) if !s.is_empty() => Path::new(&s)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.to_string()),
         _ => None,
     };
 
     // 3. Get cursor position from window 0 (current window).
     //    nvim_win_get_cursor(0) returns [row, col] (1-indexed row, 0-indexed col).
-    let cursor_val = t.call(
-        "nvim_win_get_cursor",
-        &[Value::Uint(0)],
-        CALL_TIMEOUT,
-    )?;
+    let cursor_val = t.call("nvim_win_get_cursor", &[Value::Uint(0)], CALL_TIMEOUT)?;
     let cursor = parse_cursor(cursor_val);
 
     // 4. Get modified flag.
@@ -362,7 +355,11 @@ fn poll_once(t: &mut Transport) -> Result<PollData, TransportError> {
     )?;
     let modified = matches!(modified_val, Value::Bool(true));
 
-    Ok(PollData { buffer_name, cursor, modified })
+    Ok(PollData {
+        buffer_name,
+        cursor,
+        modified,
+    })
 }
 
 /// Parse `nvim_win_get_cursor` response `[row, col]` (row 1-indexed) into
@@ -434,7 +431,11 @@ return { attached = true, symbols = out }
 fn pull_outline(t: &mut Transport, snap: &Arc<Mutex<EditorSnapshot>>) {
     let script = Value::Str(OUTLINE_LUA.to_string());
     let args = Value::Array(vec![]);
-    let result = t.call("nvim_exec_lua", &[script, args], Duration::from_millis(2000));
+    let result = t.call(
+        "nvim_exec_lua",
+        &[script, args],
+        Duration::from_millis(2000),
+    );
 
     let map = match result {
         Ok(Value::Map(m)) => m,
@@ -468,10 +469,7 @@ fn pull_outline(t: &mut Transport, snap: &Arc<Mutex<EditorSnapshot>>) {
             });
         }
         Some(Value::Array(arr)) => {
-            let symbols: Vec<OutlineSymbol> = arr
-                .into_iter()
-                .filter_map(decode_symbol)
-                .collect();
+            let symbols: Vec<OutlineSymbol> = arr.into_iter().filter_map(decode_symbol).collect();
             set_snap(snap, |s| {
                 s.outline = symbols;
                 s.outline_state = OutlineState::Ready;

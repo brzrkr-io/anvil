@@ -35,7 +35,10 @@ mod tests {
 
     #[test]
     fn prod_cluster_name() {
-        assert_eq!(EnvKind::from_cluster_name("gke-prod-us-east1"), EnvKind::Prod);
+        assert_eq!(
+            EnvKind::from_cluster_name("gke-prod-us-east1"),
+            EnvKind::Prod
+        );
         assert_eq!(EnvKind::from_cluster_name("k8s-prd-cluster"), EnvKind::Prod);
     }
 

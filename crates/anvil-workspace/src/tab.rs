@@ -673,7 +673,10 @@ mod tests {
         }
         mgr.active = 1;
         mgr.move_tab(0, 2);
-        assert_eq!(mgr.active, 0, "active index adjusts when a tab before it moves past it");
+        assert_eq!(
+            mgr.active, 0,
+            "active index adjusts when a tab before it moves past it"
+        );
     }
 
     #[test]

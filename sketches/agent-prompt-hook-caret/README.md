@@ -54,15 +54,17 @@ Normal with identity:
 Expanded:
 
 ```text
-│ ctx ▮▮▮▮░░ │ tok ▮▮░░░ │
+│ ctx ▮▮▮▮░░ │ tok ▮▮▮░░░ │
 ⌁ ask agent
 ```
+
+Color rule: `ctx` meter is ember/orange, `tok` meter is violet/purple. Do not use both-purple double meters.
 
 Cooler operator version:
 
 ```text
 hermesd | state:warm | repo:anvil
-ctx ▮▮▮▮░░ | tok ▮▮░░░
+ctx ▮▮▮▮░░ | tok ▮▮▮░░░
 ⌁ continue from handoff
 ```
 
@@ -70,9 +72,9 @@ ctx ▮▮▮▮░░ | tok ▮▮░░░
 
 - 02 Hermes Pipe Chip — best everyday prompt with identity.
 - 03 Inline Load Chip — best compact bar version.
-- 04 Pipe Rail Stack — best expanded prompt.
-- 14 Twin Reference Bars — closest to the provided screenshot style.
-- 25 Recommended Hook Caret Family — implementation direction.
+- 04 Pipe Rail Stack — selected expanded prompt.
+- 14 Twin Reference Bars — screenshot-style expanded telemetry, with ctx orange and tok purple.
+- 25 Pipe Rail Stack Family — implementation direction.
 - 26 Rail Operator Prompt — coolest hacker/operator variant.
 - 27 Compact Reference Bar — best visual callback to the screenshot.
 - 28 Ultra Compact Chip — best narrow mode.

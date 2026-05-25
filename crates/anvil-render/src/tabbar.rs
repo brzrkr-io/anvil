@@ -115,7 +115,15 @@ pub fn draw_tab_bar(
     let right_w = right_str.chars().count() as f64 * cell_w;
     let right_pad = 14.0 * window_scale; // D: .right-indicators { padding: 0 14px }
     let right_start_x = (total_w - right_w - right_pad).max(0.0);
-    draw_right_indicators(raster, painter, metrics, theme, &right_str, right_start_x, glyph_y);
+    draw_right_indicators(
+        raster,
+        painter,
+        metrics,
+        theme,
+        &right_str,
+        right_start_x,
+        glyph_y,
+    );
 
     // ── Tabs ─────────────────────────────────────────────────────────────
     let n = tabs.count();
@@ -176,7 +184,11 @@ pub fn draw_tab_bar(
         // Label: pixel-positioned, sitting inside the tab with a 2-cell
         // left pad and a 3-cell gap+× on the right.
         // Fade toward the chrome background as the tab animates in/out.
-        let fg_base = if is_active { theme.foreground } else { theme.text_muted };
+        let fg_base = if is_active {
+            theme.foreground
+        } else {
+            theme.text_muted
+        };
         let fg = blend_color(fg_base, theme.graphite, anim);
         let label = tab_label(tabs, t);
         let label_x0 = x + 2.0 * cell_w;
@@ -192,14 +204,28 @@ pub fn draw_tab_bar(
         // Close × on active tab.
         let close_x = x + tw - 2.0 * cell_w;
         if is_active && close_x + cell_w <= total_w {
-            raster.glyph_at(painter, metrics, close_x, glyph_y, '×' as u32, theme.text_muted);
+            raster.glyph_at(
+                painter,
+                metrics,
+                close_x,
+                glyph_y,
+                '×' as u32,
+                theme.text_muted,
+            );
         }
 
         // Unread dot on background tabs with new output.
         let tab_has_unread = tabs.tabs.get(t).is_some_and(|tab| tab.has_unread);
         let dot_x = x + tw - cell_w;
         if !is_active && tab_has_unread && dot_x + cell_w <= total_w {
-            raster.glyph_at(painter, metrics, dot_x, glyph_y, '·' as u32, theme.attention);
+            raster.glyph_at(
+                painter,
+                metrics,
+                dot_x,
+                glyph_y,
+                '·' as u32,
+                theme.attention,
+            );
         }
 
         // Push the close-× hit FIRST so it wins over the surrounding Tab
@@ -235,7 +261,14 @@ pub fn draw_tab_bar(
     // `+` button: one cell of gap after the last tab.
     let add_x = x + cell_w;
     if add_x + cell_w <= right_start_x {
-        raster.glyph_at(painter, metrics, add_x, glyph_y, '+' as u32, theme.text_muted);
+        raster.glyph_at(
+            painter,
+            metrics,
+            add_x,
+            glyph_y,
+            '+' as u32,
+            theme.text_muted,
+        );
         hits_out.hits.push(TabBarHit {
             rect: PixelRect {
                 x: add_x,
@@ -520,7 +553,10 @@ mod tests {
         // basin col 8, tabs_start_col 10. Active tab 0 width=10, at cols 10..20.
         // col 15 → x = 150, y = 10 (mid of cell_h=20).
         let px = pixel_at(&r, 150, 10);
-        assert_eq!(px, th.charcoal, "expected charcoal for active tab, got {px:?}");
+        assert_eq!(
+            px, th.charcoal,
+            "expected charcoal for active tab, got {px:?}"
+        );
     }
 
     /// When a non-active tab has `has_unread`, the painter receives a `·` glyph

@@ -242,9 +242,21 @@ pub fn draw(
     // 1px hairline border on all four edges.
     let b = 1.0_f64;
     raster.fill_pixel_rect(left_px, top_px, card_w_px, b, theme.hairline);
-    raster.fill_pixel_rect(left_px, top_px + card_h_px - b, card_w_px, b, theme.hairline);
+    raster.fill_pixel_rect(
+        left_px,
+        top_px + card_h_px - b,
+        card_w_px,
+        b,
+        theme.hairline,
+    );
     raster.fill_pixel_rect(left_px, top_px, b, card_h_px, theme.hairline);
-    raster.fill_pixel_rect(left_px + card_w_px - b, top_px, b, card_h_px, theme.hairline);
+    raster.fill_pixel_rect(
+        left_px + card_w_px - b,
+        top_px,
+        b,
+        card_h_px,
+        theme.hairline,
+    );
 
     // In two-column mode: 1px vertical divider down the centre.
     if two_col {
@@ -396,7 +408,14 @@ fn draw_column(
                 }
                 first_header = false;
                 draw_text_px(
-                    raster, painter, metrics, chord_x, row_y, label, theme.text_muted, max_x,
+                    raster,
+                    painter,
+                    metrics,
+                    chord_x,
+                    row_y,
+                    label,
+                    theme.text_muted,
+                    max_x,
                 );
                 row_y += ch;
             }
@@ -413,7 +432,14 @@ fn draw_column(
                 );
                 if desc_x < max_x {
                     draw_text_px(
-                        raster, painter, metrics, desc_x, row_y, desc, theme.text_muted, max_x,
+                        raster,
+                        painter,
+                        metrics,
+                        desc_x,
+                        row_y,
+                        desc,
+                        theme.text_muted,
+                        max_x,
                     );
                 }
                 row_y += ch;
