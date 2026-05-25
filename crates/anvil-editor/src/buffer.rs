@@ -292,6 +292,18 @@ impl Buffer {
         self.tracked_path.as_deref()
     }
 
+    /// Return the LSP language-id for this buffer, derived from the file
+    /// extension of `tracked_path`.  `None` for scratch buffers or unknown
+    /// extensions.
+    pub fn language_id(&self) -> Option<&'static str> {
+        let ext = self
+            .tracked_path
+            .as_ref()?
+            .extension()
+            .and_then(|e| e.to_str())?;
+        crate::lsp::language_id_for_ext(ext)
+    }
+
     /// Returns `true` if the file on disk has been modified since the buffer
     /// was last opened or saved.
     ///

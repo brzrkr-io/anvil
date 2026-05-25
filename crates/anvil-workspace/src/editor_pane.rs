@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use anvil_editor::{Buffer, BufferId, Cursor, Position, Range};
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::editor_search::EditorSearch;
 use crate::layout::PaneId;
 use crate::selection::Selection;
 
@@ -60,6 +61,19 @@ pub enum EditorAction {
     SelectAll,
     GoToLine(usize),
     InsertTab,
+    // ── Search (NE11) ────────────────────────────────────────────────────────
+    /// Open in-buffer search (initialise EditorSearch if not already open).
+    SearchOpen,
+    /// Close in-buffer search and clear the EditorSearch state.
+    SearchClose,
+    /// Update the search query and re-scan.
+    SearchSetQuery(String),
+    /// Advance to the next hit (wrapping); moves the cursor.
+    SearchNext,
+    /// Retreat to the previous hit (wrapping); moves the cursor.
+    SearchPrev,
+    /// Toggle regex mode and re-scan.
+    SearchToggleRegex,
     /// Place cursor at the given position; clears selection unless `extend` is true (NE7).
     MoveTo { pos: Position, extend: bool },
     /// Select the word containing `pos` (double-click, NE7).
@@ -77,6 +91,8 @@ pub struct EditorPane {
     pub scroll_pos: f32,
     pub scroll_target: f32,
     pub scroll_vel: f32,
+    /// In-buffer search state (NE11). `None` when the search bar is closed.
+    pub search: Option<EditorSearch>,
 }
 
 /// Registry of all native editor panes and their buffers for one `Tab`.
@@ -117,6 +133,7 @@ impl EditorPaneRegistry {
             scroll_pos: 0.0,
             scroll_target: 0.0,
             scroll_vel: 0.0,
+            search: None,
         };
         self.panes.insert(pane_id, pane);
         self.buffers.insert(buffer_id, Buffer::new());
@@ -426,6 +443,76 @@ impl EditorPaneRegistry {
                 true
             }
 
+            // ── Search (NE11) ────────────────────────────────────────────────
+            EditorAction::SearchOpen => {
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                if pane.search.is_none() {
+                    pane.search = Some(EditorSearch::new());
+                }
+                false
+            }
+            EditorAction::SearchClose => {
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                pane.search = None;
+                false
+            }
+            EditorAction::SearchSetQuery(q) => {
+                // Update the query on the pane search state.
+                {
+                    let pane = self.panes.get_mut(&pane_id).unwrap();
+                    if let Some(s) = &mut pane.search {
+                        s.query = q;
+                    }
+                }
+                // Re-scan using the buffer (separate field from panes, so these
+                // borrows are non-overlapping at the struct-field level).
+                let buf = self.buffers.get(&buffer_id).unwrap();
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                if let Some(s) = &mut pane.search {
+                    s.rescan(buf);
+                }
+                false
+            }
+            EditorAction::SearchNext => {
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                if let Some(s) = &mut pane.search {
+                    s.next();
+                    if let Some(hit) = s.current_hit() {
+                        // Select the match: anchor=start, pos=end.
+                        pane.cursor.anchor = hit.start;
+                        pane.cursor.pos = hit.end;
+                        pane.scroll_target = hit.start.line as f32;
+                    }
+                }
+                false
+            }
+            EditorAction::SearchPrev => {
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                if let Some(s) = &mut pane.search {
+                    s.prev();
+                    if let Some(hit) = s.current_hit() {
+                        pane.cursor.anchor = hit.start;
+                        pane.cursor.pos = hit.end;
+                        pane.scroll_target = hit.start.line as f32;
+                    }
+                }
+                false
+            }
+            EditorAction::SearchToggleRegex => {
+                {
+                    let pane = self.panes.get_mut(&pane_id).unwrap();
+                    if let Some(s) = &mut pane.search {
+                        s.is_regex = !s.is_regex;
+                    }
+                }
+                let buf = self.buffers.get(&buffer_id).unwrap();
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                if let Some(s) = &mut pane.search {
+                    s.rescan(buf);
+                }
+                false
+            }
+
             // ── Mouse actions (NE7) ─────────────────────────────────────────
             EditorAction::MoveTo { pos, extend } => {
                 let buf = self.buffers.get(&buffer_id).unwrap();
@@ -689,6 +776,7 @@ mod tests {
             scroll_pos: 0.0,
             scroll_target: 0.0,
             scroll_vel: 0.0,
+            search: None,
         };
         let buf = anvil_editor::Buffer::from_text(text);
         (pane, buf)

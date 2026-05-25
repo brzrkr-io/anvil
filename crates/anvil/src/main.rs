@@ -63,6 +63,7 @@ use anvil_term::DirtySet;
 use anvil_theme::{Theme, resolve as resolve_theme};
 use anvil_editor::Position as EditorPosition;
 use anvil_workspace::editor_pane::{EditorAction, FontMetrics as EditorFontMetrics, pixel_to_position};
+use anvil_workspace::editor_search::EditorSearch;
 use anvil_workspace::interact;
 use anvil_workspace::keys::{Key, Mods, encode as encode_key, encode_mouse};
 use anvil_workspace::layout::{
@@ -579,6 +580,13 @@ pub struct App {
     // -- window geometry (view-point size, updated on resize) ---
     view_width_pt: f64,
     view_height_pt: f64,
+
+    // -- LSP client core (NE9) ---
+    /// `None` only when the Tokio runtime failed to start (extremely rare).
+    lsp_manager: Option<anvil_editor::LspManager>,
+    /// Per-pane timestamp of the last LSP `didChange` sync. Used for 250 ms
+    /// debounce so we don't flood the server on every keystroke.
+    lsp_last_sync: HashMap<PaneId, Instant>,
 }
 
 // ── App helpers ───────────────────────────────────────────────────────────────
@@ -762,6 +770,14 @@ impl App {
             return;
         }
         self.search_open = true;
+        // NE11: if focused pane is a native editor, open editor search.
+        if self.focused_is_native_editor() {
+            self.apply_editor_action(EditorAction::SearchOpen);
+            self.resize_all_tabs();
+            self.dirty = true;
+            self.force_full_redraw = true;
+            return;
+        }
         self.search.set_scope(anvil_term::SearchScope::All);
         // Re-run query against current focused pane terminal.
         let q = self.search.query().to_string();
@@ -803,6 +819,10 @@ impl App {
             return;
         }
         self.search_open = false;
+        // NE11: close editor search if the focused pane is a native editor.
+        if self.focused_is_native_editor() {
+            self.apply_editor_action(EditorAction::SearchClose);
+        }
         self.search.set_scope(anvil_term::SearchScope::All);
         self.resize_all_tabs();
         self.dirty = true;
@@ -2047,6 +2067,11 @@ impl App {
         let chrome_bot = self.chrome_bottom_px();
         let scale = self.window_scale;
         if self.search_open {
+            // For native editor panes, read EditorSearch from the focused pane.
+            let editor_search: Option<&EditorSearch> = self.tabs.current().and_then(|tab| {
+                let id = tab.focused_id();
+                tab.editor_panes.get_pane(id)?.search.as_ref()
+            });
             draw_search_bar(
                 &mut self.raster,
                 chrome_painter,
@@ -2055,6 +2080,7 @@ impl App {
                 &self.search,
                 chrome_bot,
                 scale,
+                editor_search,
             );
         } else {
             let clock = local_hhmm();
@@ -2577,8 +2603,13 @@ impl App {
             if !self.search_open {
                 self.open_search();
             }
-            self.search.next();
-            self.scroll_to_current_match();
+            // NE11: route to editor search when native editor is focused.
+            if self.focused_is_native_editor() {
+                self.apply_editor_action(EditorAction::SearchNext);
+            } else {
+                self.search.next();
+                self.scroll_to_current_match();
+            }
             self.dirty = true;
             return true;
         });
@@ -2586,26 +2617,36 @@ impl App {
             if !self.search_open {
                 self.open_search();
             }
-            self.search.prev();
-            self.scroll_to_current_match();
+            // NE11: route to editor search when native editor is focused.
+            if self.focused_is_native_editor() {
+                self.apply_editor_action(EditorAction::SearchPrev);
+            } else {
+                self.search.prev();
+                self.scroll_to_current_match();
+            }
             self.dirty = true;
             return true;
         });
         // Cmd+Opt+R: toggle regex mode (only when search is open).
         test!(kb.search_regex_toggle, {
             if self.search_open {
-                let new_mode = !self.search.is_regex();
-                self.search.set_regex(new_mode);
-                // Re-run the scan with the new mode.
-                if let Some(tab) = self.tabs.current_mut() {
-                    let id = tab.focused_id();
-                    if let Some(pane) = tab.registry.get_mut(id) {
-                        if let Some(terminal) = &pane.terminal {
-                            self.search.rescan(terminal);
+                // NE11: route to editor search when native editor is focused.
+                if self.focused_is_native_editor() {
+                    self.apply_editor_action(EditorAction::SearchToggleRegex);
+                } else {
+                    let new_mode = !self.search.is_regex();
+                    self.search.set_regex(new_mode);
+                    // Re-run the scan with the new mode.
+                    if let Some(tab) = self.tabs.current_mut() {
+                        let id = tab.focused_id();
+                        if let Some(pane) = tab.registry.get_mut(id) {
+                            if let Some(terminal) = &pane.terminal {
+                                self.search.rescan(terminal);
+                            }
                         }
                     }
+                    self.scroll_to_current_match();
                 }
-                self.scroll_to_current_match();
                 self.dirty = true;
             }
             return true;
@@ -3150,6 +3191,47 @@ impl AppHandler for AppShell {
             app.refresh_hud();
         }
 
+        // LSP didChange debounce (NE9): for each native editor pane in the
+        // current tab, if the buffer has a tracked path and a known language id,
+        // and at least 250 ms have elapsed since the last sync, send didChange.
+        {
+            const LSP_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(250);
+            let now = Instant::now();
+            if let (Some(lsp), Some(tab)) =
+                (app.lsp_manager.as_mut(), app.tabs.current())
+            {
+                // Collect (pane_id, path, lang_id, text) for native editor panes
+                // that have a tracked path with a known language id.
+                let pending: Vec<(PaneId, PathBuf, &'static str, String)> = {
+                    all_pane_ids_in_tree(tab)
+                        .into_iter()
+                        .filter_map(|pid| {
+                            let ep = tab.editor_panes.get_pane(pid)?;
+                            let buf = tab.editor_panes.get_buffer(ep.buffer_id)?;
+                            let path = buf.tracked_path()?.to_path_buf();
+                            let lang = buf.language_id()?;
+                            let text = buf.to_text();
+                            Some((pid, path, lang, text))
+                        })
+                        .collect()
+                };
+
+                for (pid, path, lang_id, text) in pending {
+                    let last = app.lsp_last_sync.get(&pid).copied();
+                    let server_id =
+                        anvil_editor::server_id_for_language(lang_id).unwrap_or(lang_id);
+                    if last.is_none() {
+                        // First sync for this pane: send didOpen.
+                        lsp.did_open(server_id, path, lang_id, text);
+                        app.lsp_last_sync.insert(pid, now);
+                    } else if last.is_some_and(|t| now.duration_since(t) >= LSP_DEBOUNCE) {
+                        lsp.did_change(server_id, path, text);
+                        app.lsp_last_sync.insert(pid, now);
+                    }
+                }
+            }
+        }
+
         if app.dirty {
             let mut grid_painters = GridPainters {
                 regular: &mut self.painter,
@@ -3263,6 +3345,56 @@ impl AppHandler for AppShell {
 
         // Search bar handling.
         if self.app.search_open {
+            // NE11: when a native editor pane has search open, route to editor
+            // search actions instead of the terminal search path.
+            if self.app.focused_is_native_editor() {
+                match event.key {
+                    KeyInput::Escape => self.app.close_search(),
+                    KeyInput::Enter => {
+                        self.app.apply_editor_action(EditorAction::SearchNext);
+                        self.app.dirty = true;
+                    }
+                    KeyInput::Backspace => {
+                        // Drop the last codepoint from the editor search query.
+                        let cur_q = self
+                            .app
+                            .tabs
+                            .current()
+                            .and_then(|tab| {
+                                let id = tab.focused_id();
+                                let s = tab.editor_panes.get_pane(id)?.search.as_ref()?;
+                                Some(s.query.clone())
+                            })
+                            .unwrap_or_default();
+                        let mut qbytes = cur_q.into_bytes();
+                        while !qbytes.is_empty() && (qbytes[qbytes.len() - 1] & 0xC0) == 0x80 {
+                            qbytes.pop();
+                        }
+                        qbytes.pop();
+                        let new_q = String::from_utf8_lossy(&qbytes).into_owned();
+                        self.app.apply_editor_action(EditorAction::SearchSetQuery(new_q));
+                        self.app.dirty = true;
+                    }
+                    KeyInput::Char(ch) => {
+                        let cur_q = self
+                            .app
+                            .tabs
+                            .current()
+                            .and_then(|tab| {
+                                let id = tab.focused_id();
+                                let s = tab.editor_panes.get_pane(id)?.search.as_ref()?;
+                                Some(s.query.clone())
+                            })
+                            .unwrap_or_default();
+                        let new_q = format!("{cur_q}{ch}");
+                        self.app.apply_editor_action(EditorAction::SearchSetQuery(new_q));
+                        self.app.dirty = true;
+                    }
+                    _ => {}
+                }
+                return;
+            }
+            // Terminal search key handling.
             match event.key {
                 KeyInput::Escape => self.app.close_search(),
                 KeyInput::Enter => {
@@ -4680,6 +4812,8 @@ fn main() -> Result<()> {
         palette: Palette::default(),
         view_width_pt: win_w,
         view_height_pt: win_h,
+        lsp_manager: anvil_editor::LspManager::new(),
+        lsp_last_sync: HashMap::new(),
     };
 
     // -- AppKitApp: builds the window, view, timer ----------------------------

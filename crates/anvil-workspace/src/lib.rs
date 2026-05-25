@@ -6,6 +6,7 @@
 //! scripts) lives in `crates/anvil-platform` — it has platform-specific deps.
 
 pub mod editor_pane;
+pub mod editor_search;
 pub mod interact;
 pub mod keys;
 pub mod layout;

@@ -314,6 +314,7 @@ mod tests {
             scroll_pos: 0.0,
             scroll_target: 0.0,
             scroll_vel: 0.0,
+            search: None,
         }
     }
 

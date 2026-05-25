@@ -3,6 +3,7 @@
 
 use anvil_term::{Search, SearchScope};
 use anvil_theme::Theme;
+use anvil_workspace::editor_search::EditorSearch;
 
 use crate::raster::{FontMetrics, GlyphPainter, Raster};
 
@@ -16,6 +17,9 @@ use crate::raster::{FontMetrics, GlyphPainter, Raster};
 /// Left: "find: " prefix (muted) + query (foreground) + cursor block
 ///       (accent_bright) at the insertion point.
 /// Right: match counter `cur/total` in `text_muted`.
+///
+/// Pass `editor_search` when the focused pane is a native editor pane (NE11);
+/// pass `None` for terminal panes (which use `search` instead).
 #[allow(clippy::too_many_arguments)]
 pub fn draw_search_bar(
     raster: &mut Raster,
@@ -25,6 +29,7 @@ pub fn draw_search_bar(
     search: &Search,
     chrome_bottom_px: f64,
     window_scale: f64,
+    editor_search: Option<&EditorSearch>,
 ) {
     let cell_w = metrics.cell_w;
     let cell_h = metrics.cell_h;
@@ -44,17 +49,22 @@ pub fn draw_search_bar(
     let glyph_y = strip_top + ((chrome_bottom_px - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
     let pad_x = 14.0 * window_scale;
 
-    // ── Left: scope tag (when Block) + "find: " prefix + query + cursor block
-    let prefix = if search.scope() == SearchScope::Block {
-        "block find: "
+    // ── Resolve query + counter from either source ────────────────────────────
+    let (prefix, query, cur, count) = if let Some(es) = editor_search {
+        let count = es.count();
+        let cur = if count == 0 { 0 } else { es.current + 1 };
+        ("find: ", es.query.as_str(), cur, count)
     } else {
-        "find: "
+        let prefix = if search.scope() == SearchScope::Block {
+            "block find: "
+        } else {
+            "find: "
+        };
+        let count = search.count();
+        let cur = if count == 0 { 0 } else { search.current + 1 };
+        (prefix, search.query(), cur, count)
     };
 
-    let query = search.query();
-
-    let count = search.count();
-    let cur = if count == 0 { 0 } else { search.current + 1 };
     let counter = format!("{cur}/{count}");
 
     // Right-side reservation: counter + 1-column gap.
@@ -162,6 +172,7 @@ mod tests {
             &search,
             chrome_bottom_px,
             1.0,
+            None,
         );
 
         // A pixel near the vertical center of the strip should be theme.charcoal.
@@ -186,7 +197,7 @@ mod tests {
         // width=1, chrome_bottom_px=40 — strip_top=0, but total_w=1 is > 0,
         // so the function runs without panic and the counter space calculation
         // pushes x past right_edge — no glyphs drawn.
-        draw_search_bar(&mut r, &mut painter, m, &theme, &search, 40.0, 1.0);
+        draw_search_bar(&mut r, &mut painter, m, &theme, &search, 40.0, 1.0, None);
         // No assertion on glyph calls — just verify no panic.
     }
 
@@ -207,6 +218,7 @@ mod tests {
             &search,
             m.cell_h * 2.0,
             1.0,
+            None,
         );
 
         let muted: Vec<char> = painter

@@ -6,6 +6,7 @@
 //! `buffer` module: native `Buffer` type built on `ropey`.
 
 pub mod buffer;
+pub mod lsp;
 pub mod nvim;
 pub mod syntax;
 
@@ -24,3 +25,9 @@ pub use buffer::{
     Range,
 };
 pub use syntax::{SyntaxLayer, SyntaxRole};
+
+// Re-export LSP types used by App and main.rs (NE9).
+pub use lsp::{
+    DiagnosticSeverity, DocumentDiagnostic, LspManager, LspState, language_id_for_ext,
+    server_id_for_language,
+};
