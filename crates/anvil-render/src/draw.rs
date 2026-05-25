@@ -928,6 +928,18 @@ fn draw_viewport_into(
             }
         }
 
+        // Diff-row tint (unified diff +/- content lines only).
+        if let Some(ref block) = block_opt {
+            if block.is_unified_diff_row(terminal, abs) {
+                // Determine sign from first cell.
+                let sigil = terminal.line(
+                    abs.saturating_sub(terminal.evicted_lines)
+                )[0].cp;
+                let rgb = if sigil == '+' { theme.verified } else { theme.failure };
+                sink.fill_selection_row(y, cols, metrics, rgb, 0.12);
+            }
+        }
+
         // Draw all cells in this row.
         {
             let row: Vec<Cell> = match off_opt {

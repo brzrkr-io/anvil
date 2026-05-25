@@ -148,7 +148,8 @@ pub fn draw_tab_bar(
 
     let mut x = tabs_start_x;
     for t in 0..n {
-        let tw = *tab_widths.get(t).unwrap_or(&(8.0 * cell_w));
+        let anim = tabs.tabs.get(t).map(|tab| tab.anim_phase).unwrap_or(1.0);
+        let tw = tab_widths.get(t).unwrap_or(&(8.0 * cell_w)) * anim as f64;
         let is_active = t == tabs.active;
 
         // Active tab: charcoal panel covering the FULL chrome strip height
@@ -170,7 +171,9 @@ pub fn draw_tab_bar(
 
         // Label: pixel-positioned, sitting inside the tab with a 2-cell
         // left pad and a 3-cell gap+× on the right.
-        let fg = if is_active { theme.foreground } else { theme.text_muted };
+        // Fade toward the chrome background as the tab animates in/out.
+        let fg_base = if is_active { theme.foreground } else { theme.text_muted };
+        let fg = blend_color(fg_base, theme.graphite, anim);
         let label = tab_label(tabs, t);
         let label_x0 = x + 2.0 * cell_w;
         let label_x_end = x + tw - 3.0 * cell_w;
@@ -242,6 +245,16 @@ pub fn draw_tab_bar(
 
     // 1px hairline at the bottom of the strip.
     raster.fill_pixel_rect(0.0, chrome_top_px - 1.0, total_w, 1.0, theme.hairline);
+}
+
+/// Blend `a` toward `b` by `(1 - t)`: `t=1.0` returns `a`, `t=0.0` returns `b`.
+fn blend_color(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
+    let t = t.clamp(0.0, 1.0);
+    [
+        (a[0] as f32 * t + b[0] as f32 * (1.0 - t)) as u8,
+        (a[1] as f32 * t + b[1] as f32 * (1.0 - t)) as u8,
+        (a[2] as f32 * t + b[2] as f32 * (1.0 - t)) as u8,
+    ]
 }
 
 /// Build the right-side indicator string. Uses the Nerd Font branch glyph
@@ -480,6 +493,9 @@ mod tests {
         mgr.push(Tab::new_single_pane(20, 4, 0));
         mgr.push(Tab::new_single_pane(20, 4, 0));
         mgr.active = 0;
+        // Advance anim_phase to 1.0 so the tab is fully open (steady state).
+        mgr.tabs[0].anim_phase = 1.0;
+        mgr.tabs[1].anim_phase = 1.0;
         let mut hits = make_hits();
 
         draw_tab_bar(
@@ -518,6 +534,8 @@ mod tests {
         mgr.push(Tab::new_single_pane(20, 4, 0)); // tab 0 — active
         mgr.push(Tab::new_single_pane(20, 4, 0)); // tab 1 — background with unread
         mgr.active = 0;
+        mgr.tabs[0].anim_phase = 1.0;
+        mgr.tabs[1].anim_phase = 1.0;
         mgr.tabs[1].has_unread = true;
         let mut hits = make_hits();
 
@@ -561,6 +579,8 @@ mod tests {
         mgr.push(Tab::new_single_pane(20, 4, 0));
         mgr.push(Tab::new_single_pane(20, 4, 0));
         mgr.active = 0;
+        mgr.tabs[0].anim_phase = 1.0;
+        mgr.tabs[1].anim_phase = 1.0;
         mgr.tabs[0].has_unread = true; // active tab — dot must be suppressed
         let mut hits = make_hits();
 

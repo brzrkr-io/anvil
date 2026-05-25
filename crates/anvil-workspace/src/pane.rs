@@ -39,6 +39,10 @@ pub struct Pane {
 
     // Per-pane view state animated by the main thread.
     pub scroll_pos: f32,
+    /// Easing target for smooth-scroll momentum release.
+    pub scroll_target: f32,
+    /// Accumulated wheel delta since last settle; cleared when easing stops.
+    pub scroll_vel: f32,
     pub cursor_ax: f32,
     pub cursor_ay: f32,
     pub selection: Selection,
@@ -58,6 +62,8 @@ impl Pane {
             id,
             terminal,
             scroll_pos: 0.0,
+            scroll_target: 0.0,
+            scroll_vel: 0.0,
             cursor_ax: 0.0,
             cursor_ay: 0.0,
             selection: Selection::default(),
@@ -168,6 +174,8 @@ mod tests {
         let p = Pane::new(7, 80, 24, 0);
         assert_eq!(p.id, 7);
         assert_eq!(p.scroll_pos, 0.0);
+        assert_eq!(p.scroll_target, 0.0);
+        assert_eq!(p.scroll_vel, 0.0);
         assert_eq!(p.cursor_ax, 0.0);
         assert_eq!(p.cursor_ay, 0.0);
         assert!(!p.selection.active);

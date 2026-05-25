@@ -853,8 +853,11 @@ impl App {
     }
 
     fn close_active_tab(&mut self) {
-        if !self.tabs.close_active() {
-            terminate_app();
+        if !self.tabs.begin_close_at(self.tabs.active) {
+            // Last live tab — terminate immediately.
+            if !self.tabs.close_active() {
+                terminate_app();
+            }
         } else {
             self.dirty = true;
         }
@@ -2205,6 +2208,28 @@ impl AppHandler for AppShell {
             }
         }
 
+        // Tab open/close micro-animation.
+        // Opening: phase → 1 at 1/6 per tick (~100ms at 60Hz).
+        // Closing: phase → 0 at 1/5 per tick (~80ms at 60Hz).
+        {
+            let mut any_animating = false;
+            for tab in &mut app.tabs.tabs {
+                if (tab.anim_phase - tab.target_phase).abs() > 0.001 {
+                    if tab.target_phase > tab.anim_phase {
+                        tab.anim_phase = (tab.anim_phase + 1.0 / 6.0).min(tab.target_phase);
+                    } else {
+                        tab.anim_phase = (tab.anim_phase - 1.0 / 5.0).max(tab.target_phase);
+                    }
+                    any_animating = true;
+                }
+            }
+            if any_animating {
+                app.dirty = true;
+                // Remove tabs that finished closing.
+                app.tabs.purge_closed_tabs();
+            }
+        }
+
         // Blink.
         let (effective_blink, app_blink_cfg) = {
             let tab = app.tabs.current();
@@ -2393,6 +2418,8 @@ impl AppHandler for AppShell {
             if let Some(pane) = tab.registry.get_mut(id) {
                 pane.terminal.scroll_to_bottom();
                 pane.scroll_pos = 0.0;
+                pane.scroll_target = 0.0;
+                pane.scroll_vel = 0.0;
                 pane.selection.clear();
             }
         }

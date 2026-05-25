@@ -76,6 +76,11 @@ pub struct Tab {
     /// True when this tab has received PTY output since it was last focused.
     /// Cleared on focus; set by the tick loop for background tabs.
     pub has_unread: bool,
+    /// Animation phase: 0.0 = invisible (close complete), 1.0 = fully open.
+    /// Driven by the tick loop toward `target_phase`.
+    pub anim_phase: f32,
+    /// Target for `anim_phase`: 1.0 when opening, 0.0 when closing.
+    pub target_phase: f32,
 }
 
 impl Tab {
@@ -86,6 +91,8 @@ impl Tab {
             tree,
             registry,
             has_unread: false,
+            anim_phase: 0.0,
+            target_phase: 1.0,
         }
     }
 
@@ -118,6 +125,8 @@ impl Tab {
             tree,
             registry,
             has_unread: false,
+            anim_phase: 0.0,
+            target_phase: 1.0,
         }
     }
 
@@ -193,6 +202,54 @@ impl TabManager {
         }
         self.active = next_active_after_close(old_count, index, self.active);
         true
+    }
+
+    /// Begin an animated close of the tab at `index`: set target_phase = 0 so
+    /// the tick loop fades it out, then calls [`purge_closed_tabs`] to remove it.
+    /// Also updates `active` immediately so the user sees the next tab.
+    /// Returns `true` if a non-closing tab remains (app should not quit).
+    pub fn begin_close_at(&mut self, index: usize) -> bool {
+        if index >= self.tabs.len() {
+            return !self.tabs.is_empty();
+        }
+        // Count tabs that are not already closing.
+        let live = self.tabs.iter().filter(|t| t.target_phase > 0.0).count();
+        if live <= 1 {
+            // Last live tab — skip animation; caller handles termination.
+            return false;
+        }
+        self.tabs[index].target_phase = 0.0;
+        let old_count = self.tabs.len();
+        // Adjust active to point at the next non-closing tab.
+        self.active = next_active_after_close(old_count, index, self.active);
+        if self.tabs.get(self.active).is_some_and(|t| t.target_phase == 0.0) {
+            if let Some(i) = self.tabs.iter().position(|t| t.target_phase > 0.0) {
+                self.active = i;
+            }
+        }
+        if let Some(tab) = self.tabs.get_mut(self.active) {
+            tab.clear_unread();
+        }
+        true
+    }
+
+    /// Remove tabs whose `anim_phase` has reached 0 with `target_phase` == 0.
+    /// Returns `true` if any tabs were removed.
+    pub fn purge_closed_tabs(&mut self) -> bool {
+        let before = self.tabs.len();
+        let mut i = 0;
+        while i < self.tabs.len() {
+            if self.tabs[i].target_phase == 0.0 && self.tabs[i].anim_phase <= 0.0 {
+                let old_count = self.tabs.len();
+                self.tabs.remove(i);
+                if self.active >= i && self.active > 0 {
+                    self.active = next_active_after_close(old_count, i, self.active);
+                }
+            } else {
+                i += 1;
+            }
+        }
+        self.tabs.len() < before
     }
 
     pub fn switch_to(&mut self, index: usize) {
@@ -477,5 +534,56 @@ mod tests {
         mgr.prev();
         assert_eq!(mgr.active, 0);
         assert!(!mgr.tabs[0].has_unread);
+    }
+
+    // ── anim_phase / target_phase ─────────────────────────────────────────────
+
+    #[test]
+    fn tab_new_starts_animating_in() {
+        let tab = Tab::new_single_pane(80, 24, 0);
+        assert_eq!(tab.anim_phase, 0.0);
+        assert_eq!(tab.target_phase, 1.0);
+    }
+
+    #[test]
+    fn begin_close_at_sets_target_and_moves_active() {
+        let mut mgr = TabManager::default();
+        mgr.push(Tab::new_single_pane(1, 1, 0));
+        mgr.push(Tab::new_single_pane(1, 1, 0));
+        mgr.active = 1;
+        // Manually advance anim_phase so tabs are "live"
+        mgr.tabs[0].anim_phase = 1.0;
+        mgr.tabs[1].anim_phase = 1.0;
+
+        let remains = mgr.begin_close_at(1);
+        assert!(remains, "should remain after closing non-last tab");
+        assert_eq!(mgr.tabs[1].target_phase, 0.0);
+        assert_eq!(mgr.active, 0, "active should move to remaining tab");
+        // Tab count unchanged until purge
+        assert_eq!(mgr.count(), 2);
+    }
+
+    #[test]
+    fn begin_close_at_last_live_returns_false() {
+        let mut mgr = TabManager::default();
+        mgr.push(Tab::new_single_pane(1, 1, 0));
+        mgr.tabs[0].anim_phase = 1.0;
+        let remains = mgr.begin_close_at(0);
+        assert!(!remains, "last live tab should return false");
+    }
+
+    #[test]
+    fn purge_closed_tabs_removes_finished_tabs() {
+        let mut mgr = TabManager::default();
+        mgr.push(Tab::new_single_pane(1, 1, 0));
+        mgr.push(Tab::new_single_pane(1, 1, 0));
+        mgr.tabs[0].anim_phase = 1.0;
+        mgr.tabs[1].anim_phase = 1.0;
+        mgr.begin_close_at(0);
+        // Simulate phase reaching 0
+        mgr.tabs[0].anim_phase = 0.0;
+        let removed = mgr.purge_closed_tabs();
+        assert!(removed);
+        assert_eq!(mgr.count(), 1);
     }
 }

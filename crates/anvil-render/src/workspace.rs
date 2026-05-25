@@ -158,7 +158,6 @@ fn draw_dividers(
     theme: &Theme,
     focused_id: PaneId,
 ) {
-    let _ = focused_id; // focus is indicated by the cursor, not a pane border
     // For each pair of leaves, if they share a boundary (with a gutter between
     // them), fill the gutter rectangle.
     for (ai, a) in entries.iter().enumerate() {
@@ -199,6 +198,23 @@ fn draw_dividers(
                     }
                 }
             }
+        }
+    }
+
+    // Paint a 1px inset accent border on the focused pane (only when there are
+    // 2+ panes — single-pane layout needs no focus ring).
+    if entries.len() >= 2 {
+        if let Some(e) = entries.iter().find(|e| e.id == focused_id) {
+            let r = &e.rect;
+            let c = theme.accent;
+            // Top edge (1px tall, full width).
+            raster.fill_pixel_rect(r.x, r.y, r.w, 1.0, c);
+            // Bottom edge.
+            raster.fill_pixel_rect(r.x, r.y + r.h - 1.0, r.w, 1.0, c);
+            // Left edge (inner height, avoids double-painting corners).
+            raster.fill_pixel_rect(r.x, r.y + 1.0, 1.0, r.h - 2.0, c);
+            // Right edge.
+            raster.fill_pixel_rect(r.x + r.w - 1.0, r.y + 1.0, 1.0, r.h - 2.0, c);
         }
     }
 }
@@ -377,10 +393,9 @@ mod tests {
         );
     }
 
-    /// Two-pane: gutter carries theme.border; no accent border around the
-    /// focused pane (focus is indicated by the cursor).
+    /// Two-pane: focused pane has a 1px inset accent border; non-focused does not.
     #[test]
-    fn focused_pane_has_no_accent_border() {
+    fn focused_pane_has_accent_border() {
         let m = metrics();
         let w = 800_usize;
         let h = 400_usize;
@@ -413,26 +428,40 @@ mod tests {
             m,
             &theme,
             None,
-            id1,
+            id1, // focused
             0.0,
             CursorConfig::default(),
             None,
         );
 
-        // The focused pane must not paint an accent ring on any of its edges.
+        // Focused pane (id1) is the left half of inner.
         let pane1_w = (inner.w - DIVIDER_PX) * 0.5;
         let mid_y = (inner.y + inner.h * 0.5) as usize;
-        for x in [
-            (inner.x + 0.5) as usize,                        // left edge
-            ((inner.x + pane1_w - 1.0) as usize).max(1),     // right inside
-            (inner.x + pane1_w + DIVIDER_PX + 0.5) as usize, // right of gutter
-        ] {
-            let px = pixel_at(&r, x, mid_y);
-            assert_ne!(
-                px, theme.accent,
-                "no accent ring around focused pane (x={x}, got {px:?})"
-            );
-        }
+
+        // Left inset edge of focused pane should carry accent.
+        let left_x = inner.x as usize;
+        let px = pixel_at(&r, left_x, mid_y);
+        assert_eq!(
+            px, theme.accent,
+            "focused pane left inset should be accent (x={left_x}, got {px:?})"
+        );
+
+        // Top inset edge of focused pane should carry accent.
+        let top_y = inner.y as usize;
+        let mid_x = (inner.x + pane1_w * 0.5) as usize;
+        let px = pixel_at(&r, mid_x, top_y);
+        assert_eq!(
+            px, theme.accent,
+            "focused pane top inset should be accent (y={top_y}, got {px:?})"
+        );
+
+        // Non-focused pane (id2, right half): its left inset must NOT be accent.
+        let pane2_left_x = (inner.x + pane1_w + DIVIDER_PX) as usize;
+        let px = pixel_at(&r, pane2_left_x, mid_y);
+        assert_ne!(
+            px, theme.accent,
+            "non-focused pane must not have accent border (x={pane2_left_x}, got {px:?})"
+        );
     }
 
     /// draw_workspace smoke: does not panic on single pane with content.
