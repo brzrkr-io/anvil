@@ -61,7 +61,8 @@ use anvil_render::{
 };
 use anvil_term::DirtySet;
 use anvil_theme::{Theme, resolve as resolve_theme};
-use anvil_workspace::editor_pane::EditorAction;
+use anvil_editor::Position as EditorPosition;
+use anvil_workspace::editor_pane::{EditorAction, FontMetrics as EditorFontMetrics, pixel_to_position};
 use anvil_workspace::interact;
 use anvil_workspace::keys::{Key, Mods, encode as encode_key, encode_mouse};
 use anvil_workspace::layout::{
@@ -541,6 +542,9 @@ pub struct App {
     /// Monotonic counter bumped per `new_editor_pane` call, used to make
     /// socket paths unique within a process lifetime.
     editor_socket_counter: u32,
+    /// When set, the buffer position where a native-editor drag-select began
+    /// (NE7). Cleared on mouse-up; used by mouse_dragged to extend selection.
+    editor_mouse_drag_start: Option<EditorPosition>,
     /// Resolved path to the `nvim` binary. Cached on first `which` lookup.
     nvim_path: Option<std::path::PathBuf>,
 
@@ -1322,6 +1326,38 @@ impl App {
                 let _ = pty.write(bytes);
             }
         }
+    }
+
+    /// Compute the pixel (rel_x, rel_y) of `loc` relative to the focused
+    /// native editor pane's draw rect.  Returns `None` if no native editor pane
+    /// is focused or the mouse is outside the pane area.
+    fn native_editor_rel_px(&self, loc: MouseLocation) -> Option<(f64, f64)> {
+        let (rx, ry) = self.view_pt_to_raster_px(loc);
+        let tab = self.tabs.current()?;
+        let id = tab.focused_id();
+        // Must be a native editor pane.
+        tab.editor_panes.get_pane(id)?;
+        let ir = self.pane_area_rect();
+        let entries = tab.tree.layout(ir, DIVIDER_PX);
+        let pr = entries.iter().find(|e| e.id == id)?.rect;
+        Some((rx - pr.x, ry - pr.y))
+    }
+
+    /// Convert a mouse location to an editor buffer `Position` for the focused
+    /// native editor pane.  Returns `None` if the focused pane is not a native
+    /// editor pane.
+    fn native_editor_pos_at(&self, loc: MouseLocation) -> Option<EditorPosition> {
+        let (rel_x, rel_y) = self.native_editor_rel_px(loc)?;
+        let tab = self.tabs.current()?;
+        let id = tab.focused_id();
+        let pane = tab.editor_panes.get_pane(id)?;
+        let buf = tab.editor_panes.get_buffer(pane.buffer_id)?;
+        let metrics = EditorFontMetrics {
+            cell_w: self.font.metrics.cell_w,
+            cell_h: self.font.metrics.cell_h,
+            descent: self.font.metrics.descent,
+        };
+        Some(pixel_to_position(pane, buf, rel_x, rel_y, metrics, 0))
     }
 
     /// Return true if the focused pane is a native editor pane (NE6).
@@ -3500,6 +3536,23 @@ impl AppHandler for AppShell {
             }
         }
 
+        // Native editor mouse: click → cursor, double → word, triple → line (NE7).
+        if app.focused_is_native_editor() {
+            if let Some(pos) = app.native_editor_pos_at(loc) {
+                let action = if click_count >= 3 {
+                    EditorAction::SelectLineAt(pos)
+                } else if click_count == 2 {
+                    EditorAction::SelectWordAt(pos)
+                } else {
+                    EditorAction::MoveTo { pos, extend: mods.shift }
+                };
+                app.apply_editor_action(action);
+                app.editor_mouse_drag_start = Some(pos);
+                app.dirty = true;
+            }
+            return;
+        }
+
         // Mouse reporting.
         {
             let (btn_mode, x10_mode) = app
@@ -3689,6 +3742,9 @@ impl AppHandler for AppShell {
     fn mouse_up(&mut self, loc: MouseLocation, _mods: Modifiers) {
         let app = &mut self.app;
 
+        // Native editor drag-select: release (NE7).
+        app.editor_mouse_drag_start = None;
+
         // Tab reorder drag: release — just clear the state.
         if app.tab_drag.take().is_some() {
             app.dirty = true;
@@ -3785,6 +3841,15 @@ impl AppHandler for AppShell {
 
     fn mouse_dragged(&mut self, loc: MouseLocation) {
         let app = &mut self.app;
+
+        // Native editor drag-select: extend selection to current pointer (NE7).
+        if app.editor_mouse_drag_start.is_some() && app.focused_is_native_editor() {
+            if let Some(pos) = app.native_editor_pos_at(loc) {
+                app.apply_editor_action(EditorAction::MoveTo { pos, extend: true });
+                app.dirty = true;
+            }
+            return;
+        }
 
         // Tab reorder drag: if the cursor has moved past the threshold into a
         // different tab's hit zone, move the dragged tab there.
@@ -3954,6 +4019,18 @@ impl AppHandler for AppShell {
         };
         if std::env::var_os("ANVIL_PERF").is_some() {
             eprintln!("anvil-perf: scroll dy={dy:.2} pp={pixel_precise} d={d:.3}");
+        }
+
+        // Native editor scroll (NE7): update scroll_target; easing loop applies it.
+        if app.focused_is_native_editor() {
+            if let Some(tab) = app.tabs.current_mut() {
+                let id = tab.focused_id();
+                if let Some(pane) = tab.editor_panes.get_pane_mut(id) {
+                    pane.scroll_target = (pane.scroll_target + d).max(0.0);
+                }
+            }
+            app.dirty = true;
+            return;
         }
 
         if let Some(tab) = app.tabs.current_mut() {
@@ -4586,6 +4663,7 @@ fn main() -> Result<()> {
         editor_snapshot: None,
         editor_pane_id: None,
         editor_socket_counter: 0,
+        editor_mouse_drag_start: None,
         nvim_path: None,
         git_tx,
         git_rx,

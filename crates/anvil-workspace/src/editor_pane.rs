@@ -15,6 +15,21 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::layout::PaneId;
 use crate::selection::Selection;
 
+// ── FontMetrics (NE7) ────────────────────────────────────────────────────────
+
+/// Font cell dimensions used by mouse hit-testing.  Mirrors the fields of
+/// `anvil_render::FontMetrics`; kept here to avoid a dependency cycle
+/// (anvil-render → anvil-workspace → anvil-render).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FontMetrics {
+    /// Width of one monospace cell in device pixels.
+    pub cell_w: f64,
+    /// Height of one monospace cell in device pixels.
+    pub cell_h: f64,
+    /// Baseline descent in device pixels (positive = below baseline).
+    pub descent: f64,
+}
+
 // ── EditorAction ──────────────────────────────────────────────────────────────
 
 /// A typed editor action — the unit of currency between the keymap and the
@@ -45,6 +60,13 @@ pub enum EditorAction {
     SelectAll,
     GoToLine(usize),
     InsertTab,
+    /// Place cursor at the given position; clears selection unless `extend` is true (NE7).
+    MoveTo { pos: Position, extend: bool },
+    /// Select the word containing `pos` (double-click, NE7).
+    /// Word chars: alphanumeric + underscore.
+    SelectWordAt(Position),
+    /// Select the entire line containing `pos` (triple-click, NE7).
+    SelectLineAt(Position),
 }
 
 /// Per-pane view state for a native editor pane.
@@ -404,6 +426,60 @@ impl EditorPaneRegistry {
                 true
             }
 
+            // ── Mouse actions (NE7) ─────────────────────────────────────────
+            EditorAction::MoveTo { pos, extend } => {
+                let buf = self.buffers.get(&buffer_id).unwrap();
+                let last_line = buf.line_count().saturating_sub(1);
+                let clamped_line = pos.line.min(last_line);
+                let max_col = line_grapheme_len(buf, clamped_line);
+                let clamped = Position { line: clamped_line, col: pos.col.min(max_col) };
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                set_cursor(pane, clamped, extend);
+                false
+            }
+            EditorAction::SelectWordAt(pos) => {
+                let buf = self.buffers.get(&buffer_id).unwrap();
+                let last_line = buf.line_count().saturating_sub(1);
+                let line = pos.line.min(last_line);
+                let line_str: String = buf.line(line).chars().collect();
+                let graphemes: Vec<&str> = line_str
+                    .trim_end_matches('\n')
+                    .trim_end_matches('\r')
+                    .graphemes(true)
+                    .collect();
+                let col = pos.col.min(graphemes.len().saturating_sub(1));
+                let is_word = |g: &str| {
+                    g.chars().all(|c| c.is_alphanumeric() || c == '_')
+                };
+                // Walk left to find word start.
+                let mut lo = col;
+                while lo > 0 && is_word(graphemes[lo - 1]) {
+                    lo -= 1;
+                }
+                // Walk right to find word end.
+                let mut hi = col;
+                if hi < graphemes.len() && is_word(graphemes[hi]) {
+                    hi += 1;
+                    while hi < graphemes.len() && is_word(graphemes[hi]) {
+                        hi += 1;
+                    }
+                }
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                pane.cursor.anchor = Position { line, col: lo };
+                pane.cursor.pos = Position { line, col: hi };
+                false
+            }
+            EditorAction::SelectLineAt(pos) => {
+                let buf = self.buffers.get(&buffer_id).unwrap();
+                let last_line = buf.line_count().saturating_sub(1);
+                let line = pos.line.min(last_line);
+                let line_len = line_grapheme_len(buf, line);
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                pane.cursor.anchor = Position { line, col: 0 };
+                pane.cursor.pos = Position { line, col: line_len };
+                false
+            }
+
             // ── Copy / Cut ──────────────────────────────────────────────────
             EditorAction::Copy => {
                 if let Some(text) = selected_text(pane, self.buffers.get(&buffer_id).unwrap()) {
@@ -425,6 +501,51 @@ impl EditorPaneRegistry {
             }
         }
     }
+}
+
+// ── Public helpers (NE7) ─────────────────────────────────────────────────────
+
+/// Convert a click pixel (relative to pane top-left) to a buffer `Position`.
+///
+/// Accounts for gutter width, scroll offset, and grapheme column walk.
+///
+/// - `rel_x`, `rel_y`: pointer position in device pixels relative to the
+///   top-left corner of the pane's draw area.
+/// - `metrics`: font cell dimensions in device pixels.
+/// - `gutter_cols`: width of the line-number gutter in character columns.
+pub fn pixel_to_position(
+    editor_pane: &EditorPane,
+    buffer: &Buffer,
+    rel_x: f64,
+    rel_y: f64,
+    metrics: FontMetrics,
+    gutter_cols: usize,
+) -> Position {
+    // Row: floor(rel_y / cell_h) + scroll_pos, clamped to buffer bounds.
+    let row_raw = (rel_y / metrics.cell_h).floor() as usize;
+    let line_count = buffer.line_count();
+    let last_line = line_count.saturating_sub(1);
+    let row = (row_raw + editor_pane.scroll_pos as usize).min(last_line);
+
+    // Column: subtract gutter pixels, then walk graphemes.
+    let col_pixel = rel_x - gutter_cols as f64 * metrics.cell_w;
+    if col_pixel < 0.0 {
+        return Position { line: row, col: 0 };
+    }
+    let cell_col = (col_pixel / metrics.cell_w).round() as usize;
+
+    // Walk line graphemes and clamp to line length.
+    let line_len = if line_count == 0 {
+        0
+    } else {
+        let line_str: String = buffer.line(row).chars().collect();
+        line_str
+            .trim_end_matches('\n')
+            .trim_end_matches('\r')
+            .graphemes(true)
+            .count()
+    };
+    Position { line: row, col: cell_col.min(line_len) }
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
@@ -553,6 +674,114 @@ mod tests {
     fn buf_text(reg: &EditorPaneRegistry, pane_id: PaneId) -> String {
         let bid = reg.get_pane(pane_id).unwrap().buffer_id;
         reg.get_buffer(bid).unwrap().to_text()
+    }
+
+    fn test_metrics() -> FontMetrics {
+        FontMetrics { cell_w: 8.0, cell_h: 16.0, descent: 3.0 }
+    }
+
+    fn make_pane_with_text(text: &str) -> (EditorPane, Buffer) {
+        let origin = Position { line: 0, col: 0 };
+        let pane = EditorPane {
+            buffer_id: 1,
+            cursor: Cursor { pos: origin, anchor: origin },
+            selection: Selection::default(),
+            scroll_pos: 0.0,
+            scroll_target: 0.0,
+            scroll_vel: 0.0,
+        };
+        let buf = anvil_editor::Buffer::from_text(text);
+        (pane, buf)
+    }
+
+    // ── NE7 pixel_to_position tests ──────────────────────────────────────────
+
+    #[test]
+    fn pixel_to_position_origin_returns_0_0() {
+        let (pane, buf) = make_pane_with_text("hello\nworld\n");
+        let pos = pixel_to_position(&pane, &buf, 0.0, 0.0, test_metrics(), 0);
+        assert_eq!(pos, Position { line: 0, col: 0 });
+    }
+
+    #[test]
+    fn pixel_to_position_row_3_col_5_with_gutter() {
+        // row = floor(3*16 / 16) + 0 = 3
+        // rel_x = gutter(2)*8 + col(5)*8 = 16 + 40 = 56
+        // col_pixel = 56 - 16 = 40; 40/8 = 5.0 → 5
+        // Line 3 is "barnacle" (8 chars) so col 5 is within bounds.
+        let (pane, buf) = make_pane_with_text("hello\nworld\nfoobar\nbarnacle\n");
+        let rel_x = (2 + 5) as f64 * 8.0; // gutter 2 cols + col 5
+        let rel_y = 3.0 * 16.0;           // row 3
+        let pos = pixel_to_position(&pane, &buf, rel_x, rel_y, test_metrics(), 2);
+        assert_eq!(pos, Position { line: 3, col: 5 });
+    }
+
+    #[test]
+    fn pixel_to_position_clamps_overflow() {
+        // Buffer has 2 lines of "hi". Click far past end.
+        let (pane, buf) = make_pane_with_text("hi\nhi\n");
+        let pos = pixel_to_position(&pane, &buf, 9999.0, 9999.0, test_metrics(), 0);
+        let last_line = buf.line_count().saturating_sub(1);
+        assert_eq!(pos.line, last_line);
+        // col clamped to "hi" length = 2
+        assert!(pos.col <= 2);
+    }
+
+    // ── NE7 action tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn apply_move_to_clears_selection() {
+        let (mut reg, pid) = make_reg_with_text("hello world");
+        // Put cursor at col 5 with anchor at 0 (simulating a selection).
+        {
+            let pane = reg.get_pane_mut(pid).unwrap();
+            pane.cursor.anchor = Position { line: 0, col: 0 };
+            pane.cursor.pos = Position { line: 0, col: 5 };
+        }
+        let mut clip = None;
+        reg.apply(pid, EditorAction::MoveTo { pos: Position { line: 0, col: 3 }, extend: false }, &mut clip);
+        let pane = reg.get_pane(pid).unwrap();
+        // Anchor should equal pos (selection collapsed).
+        assert_eq!(pane.cursor.pos, Position { line: 0, col: 3 });
+        assert_eq!(pane.cursor.anchor, Position { line: 0, col: 3 });
+    }
+
+    #[test]
+    fn apply_move_to_with_extend_preserves_anchor() {
+        let (mut reg, pid) = make_reg_with_text("hello world");
+        {
+            let pane = reg.get_pane_mut(pid).unwrap();
+            pane.cursor.anchor = Position { line: 0, col: 2 };
+            pane.cursor.pos = Position { line: 0, col: 2 };
+        }
+        let mut clip = None;
+        reg.apply(pid, EditorAction::MoveTo { pos: Position { line: 0, col: 7 }, extend: true }, &mut clip);
+        let pane = reg.get_pane(pid).unwrap();
+        // Anchor stays at 2; pos moves to 7.
+        assert_eq!(pane.cursor.anchor, Position { line: 0, col: 2 });
+        assert_eq!(pane.cursor.pos, Position { line: 0, col: 7 });
+    }
+
+    #[test]
+    fn apply_select_word_at_picks_word_span() {
+        // "hello world" — click on 'o' (col 4) should select "hello" (0..5).
+        let (mut reg, pid) = make_reg_with_text("hello world");
+        let mut clip = None;
+        reg.apply(pid, EditorAction::SelectWordAt(Position { line: 0, col: 4 }), &mut clip);
+        let pane = reg.get_pane(pid).unwrap();
+        assert_eq!(pane.cursor.anchor, Position { line: 0, col: 0 });
+        assert_eq!(pane.cursor.pos, Position { line: 0, col: 5 });
+    }
+
+    #[test]
+    fn apply_select_line_at_picks_full_line() {
+        // "foo\nbar\n" — select line 1 ("bar") → col 0..3.
+        let (mut reg, pid) = make_reg_with_text("foo\nbar\n");
+        let mut clip = None;
+        reg.apply(pid, EditorAction::SelectLineAt(Position { line: 1, col: 0 }), &mut clip);
+        let pane = reg.get_pane(pid).unwrap();
+        assert_eq!(pane.cursor.anchor, Position { line: 1, col: 0 });
+        assert_eq!(pane.cursor.pos, Position { line: 1, col: 3 });
     }
 
     // ── NE6 apply tests ──────────────────────────────────────────────────────
