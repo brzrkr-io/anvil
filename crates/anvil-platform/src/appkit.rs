@@ -545,6 +545,26 @@ impl AppKitApp {
             let _: () = unsafe { msg_send![&*window, setAppearance: &*dark] };
         }
 
+        // Paint the title-bar/traffic-light region with the chrome graphite
+        // tint (EMBER_DARK #16110d = 22,17,13) so it blends with our chrome
+        // strip rather than showing the system title-bar material.
+        // NOTE: this is hardcoded to EMBER_DARK; dynamic theme-switch support
+        // is a follow-up task.
+        // SAFETY: NSColor class and colorWithRed:green:blue:alpha: are safe
+        // to call on the main thread.
+        unsafe {
+            let cls_name = c"NSColor";
+            let cls = objc2::runtime::AnyClass::get(cls_name).expect("NSColor must be available");
+            let bg_color: Retained<NSObject> = msg_send![
+                cls,
+                colorWithRed: (22.0_f64 / 255.0),
+                green: (17.0_f64 / 255.0),
+                blue: (13.0_f64 / 255.0),
+                alpha: 1.0_f64
+            ];
+            let _: () = msg_send![&*window, setBackgroundColor: &*bg_color];
+        }
+
         // ── Handler Rc → raw pointer for ivars ───────────────────────────────
         // We box each clone of the Rc and take a raw pointer.  The boxes are
         // freed when `AppKitApp` is dropped (after the run loop exits).

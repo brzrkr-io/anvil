@@ -586,6 +586,24 @@ impl ViewportSink for CpuSink<'_> {
         theme: &Theme,
     ) {
         draw_block_header_cpu(self.raster, self.painter, m, theme, block, cmd_text, ry, cols);
+
+        // Block-header pulse: 200ms ember flash on command completion.
+        if let Some(t) = block.completed_at {
+            let elapsed_ms = t.elapsed().as_millis() as f64;
+            if elapsed_ms < 200.0 {
+                let frac = elapsed_ms / 200.0; // 0.0 → 1.0
+                let alpha = (std::f64::consts::PI * frac).sin(); // 0 → 1 → 0
+                let px = self.raster.origin_x;
+                // Bottom 2px of the header row.
+                let py = self.raster.origin_y + (ry + 1) as f64 * m.cell_h - 2.0;
+                self.raster.fill_pixel_rect_alpha(
+                    px, py,
+                    cols as f64 * m.cell_w, 2.0,
+                    theme.accent_ember,
+                    alpha,
+                );
+            }
+        }
     }
 
     fn draw_prompt_rule(
@@ -1825,6 +1843,7 @@ mod tests {
             exit_code,
             duration_ms: 0,
             diff_kind: anvil_term::DiffKind::None,
+            completed_at: None,
         }
     }
 

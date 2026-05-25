@@ -27,17 +27,22 @@ use crate::{
 /// screen switch). When `is_full()`, callers should redraw all rows rather
 /// than iterating `iter()`.
 pub struct DirtySet {
-    /// Per-row dirty flags, indexed by viewport row.
-    bitmap: Vec<bool>,
-    /// When true every row is dirty; `bitmap` is not consulted.
+    /// Packed u64 words; bit `row % 64` of word `row / 64` is set when that
+    /// row is dirty. Always `(cap + 63) / 64` words long.
+    bits: Vec<u64>,
+    /// Logical row count (capacity). Rows at or beyond this index are ignored.
+    cap: usize,
+    /// When true every row is dirty; `bits` is not consulted.
     full: bool,
 }
 
 impl DirtySet {
     /// Construct a full-dirty set for `rows` viewport rows.
     pub fn all(rows: usize) -> Self {
+        let words = rows.div_ceil(64);
         DirtySet {
-            bitmap: vec![true; rows],
+            bits: vec![0; words],
+            cap: rows,
             full: true,
         }
     }
@@ -45,15 +50,25 @@ impl DirtySet {
     /// Construct a clean set for `rows` viewport rows (no rows dirty).
     /// Use `mark` to add specific dirty rows.
     pub fn none(rows: usize) -> Self {
+        let words = rows.div_ceil(64);
         DirtySet {
-            bitmap: vec![false; rows],
+            bits: vec![0; words],
+            cap: rows,
             full: false,
         }
     }
 
     /// Construct from a raw bitmap (from `Grid::take_dirty`) and the `all` flag.
     fn from_raw(bitmap: Vec<bool>, all: bool) -> Self {
-        DirtySet { bitmap, full: all }
+        let rows = bitmap.len();
+        let words = rows.div_ceil(64);
+        let mut bits = vec![0u64; words];
+        for (row, dirty) in bitmap.into_iter().enumerate() {
+            if dirty {
+                bits[row / 64] |= 1u64 << (row % 64);
+            }
+        }
+        DirtySet { bits, cap: rows, full: all }
     }
 
     /// True when every viewport row needs redrawing.
@@ -66,19 +81,21 @@ impl DirtySet {
         if self.full {
             return true;
         }
-        self.bitmap.get(row).copied().unwrap_or(true)
+        if row >= self.cap {
+            return true;
+        }
+        self.bits[row / 64] & (1u64 << (row % 64)) != 0
     }
 
-    /// Iterate dirty row indices. When `is_full()` this yields `0..bitmap.len()`.
+    /// Iterate dirty row indices. When `is_full()` this yields `0..cap`.
     pub fn iter(&self) -> impl Iterator<Item = usize> + '_ {
-        let len = self.bitmap.len();
-        (0..len).filter(move |&r| self.contains(r))
+        (0..self.cap).filter(move |&r| self.contains(r))
     }
 
     /// Mark an additional row dirty (used by callers that know cursor rows etc.).
     pub fn mark(&mut self, row: usize) {
-        if row < self.bitmap.len() {
-            self.bitmap[row] = true;
+        if row < self.cap {
+            self.bits[row / 64] |= 1u64 << (row % 64);
         } else {
             self.full = true;
         }
@@ -183,7 +200,7 @@ pub enum DiffKind {
 
 /// A shell command and its output, derived from adjacent OSC-133 marks.
 /// All line numbers are ABSOLUTE (comparable to `PromptMark::line`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Block {
     /// Absolute line of the `command_start` mark (133;B).
     pub command_line: usize,
@@ -203,6 +220,10 @@ pub struct Block {
     pub duration_ms: u64,
     /// Whether the output is a unified diff. Detected once at block completion.
     pub diff_kind: DiffKind,
+    /// Wall-clock instant when the block transitioned from Running → Exited.
+    /// `None` when still running. Not serialized.
+    #[serde(skip)]
+    pub completed_at: Option<Instant>,
 }
 
 impl Block {
@@ -273,6 +294,9 @@ pub struct Terminal {
     /// OSC-133 semantic prompt marks, oldest first.
     marks: [PromptMark; MAX_MARKS],
     mark_count: usize,
+    /// Wall-clock instant for each CommandDone mark at the same index.
+    /// Parallel to `marks`; `None` for non-CommandDone marks.
+    mark_completion_times: [Option<Instant>; MAX_MARKS],
     /// Rows evicted from scrollback over the session's lifetime.
     pub evicted_lines: usize,
 
@@ -327,6 +351,7 @@ impl Terminal {
             clipboard_len: 0,
             marks,
             mark_count: 0,
+            mark_completion_times: [None; MAX_MARKS],
             evicted_lines: 0,
             shell_running: false,
             shell_run_start: None,
@@ -605,6 +630,15 @@ impl Terminal {
         &self.marks[..self.mark_count]
     }
 
+    /// Return true if any command completed within the given duration.
+    /// Used by the tick loop to decide whether to keep the frame dirty for
+    /// the block-header pulse animation.
+    pub fn any_block_completed_within(&self, within: std::time::Duration) -> bool {
+        self.mark_completion_times[..self.mark_count]
+            .iter()
+            .any(|t| t.is_some_and(|t| t.elapsed() < within))
+    }
+
     // --- shell-state accessor -------------------------------------------------
 
     pub fn last_run(&self) -> LastRun {
@@ -633,6 +667,7 @@ impl Terminal {
 
     fn block_from_mark(&self, i: usize) -> Block {
         let marks = &self.marks[..self.mark_count];
+        let ctimes = &self.mark_completion_times[..self.mark_count];
         // `i` indexes a CommandStart mark (OSC 133;C — "command submitted,
         // output begins"). The shell prompt + typed command live on the row
         // of the *preceding* OutputStart (133;B) or PromptStart (133;A) mark
@@ -671,6 +706,7 @@ impl Terminal {
             exit_code: 0,
             duration_ms: 0,
             diff_kind: DiffKind::None,
+            completed_at: None,
         };
         let mut j = i + 1;
         while j < marks.len() {
@@ -684,6 +720,7 @@ impl Terminal {
                     b.state = BlockState::Exited;
                     b.exit_code = m.exit_code;
                     b.duration_ms = m.duration_ms;
+                    b.completed_at = ctimes[j];
                 }
                 PromptMarkKind::OutputStart => {
                     // B mark for the NEXT prompt — not part of this block.
@@ -879,6 +916,7 @@ impl Terminal {
         // Drop the oldest mark when at capacity.
         if self.mark_count == MAX_MARKS {
             self.marks.copy_within(1..MAX_MARKS, 0);
+            self.mark_completion_times.copy_within(1..MAX_MARKS, 0);
             self.mark_count -= 1;
         }
 
@@ -901,6 +939,11 @@ impl Terminal {
             col,
             exit_code,
             duration_ms,
+        };
+        self.mark_completion_times[self.mark_count] = if kind == PromptMarkKind::CommandDone {
+            Some(Instant::now())
+        } else {
+            None
         };
         self.mark_count += 1;
     }

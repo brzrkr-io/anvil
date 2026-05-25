@@ -84,13 +84,15 @@ use std::ptr::NonNull;
 
 use anvil_render::{FontMetrics, GlyphPainter, PixelRect};
 use objc2_core_foundation::{
-    CFArray, CFArrayCallBacks, CFDictionary, CFDictionaryKeyCallBacks,
-    CFDictionaryValueCallBacks, CFError, CFRetained, CFString, CGPoint, CGSize,
+    CFArray, CFArrayCallBacks, CFAttributedString, CFBoolean, CFDictionary,
+    CFDictionaryKeyCallBacks, CFDictionaryValueCallBacks, CFError, CFRetained, CFString, CGPoint,
+    CGSize,
 };
 #[allow(deprecated)]
 use objc2_core_text::{
     CTFont, CTFontDescriptor, CTFontManagerRegisterGraphicsFont, CTFontOrientation,
-    CTFontSymbolicTraits, kCTFontFeatureSettingsAttribute,
+    CTFontSymbolicTraits, CTLine, kCTFontAttributeName, kCTFontFeatureSettingsAttribute,
+    kCTForegroundColorFromContextAttributeName,
 };
 use thiserror::Error;
 
@@ -123,11 +125,9 @@ impl FontFace {
         match self {
             FontFace::Bold => CTFontSymbolicTraits::TraitBold,
             FontFace::Italic => CTFontSymbolicTraits::TraitItalic,
-            FontFace::BoldItalic => {
-                CTFontSymbolicTraits(
-                    CTFontSymbolicTraits::TraitBold.0 | CTFontSymbolicTraits::TraitItalic.0,
-                )
-            }
+            FontFace::BoldItalic => CTFontSymbolicTraits(
+                CTFontSymbolicTraits::TraitBold.0 | CTFontSymbolicTraits::TraitItalic.0,
+            ),
             FontFace::Regular | FontFace::Chrome => CTFontSymbolicTraits(0),
         }
     }
@@ -184,8 +184,10 @@ impl Font {
         let ct: CFRetained<CTFont> = if face.needs_traits() {
             let traits = face.symbolic_traits();
             // SAFETY: size=0.0 preserves original size; null matrix = identity.
-            let variant =
-                unsafe { base.ct.copy_with_symbolic_traits(0.0, std::ptr::null(), traits, traits) };
+            let variant = unsafe {
+                base.ct
+                    .copy_with_symbolic_traits(0.0, std::ptr::null(), traits, traits)
+            };
             match variant {
                 Some(v) => v,
                 None => {
@@ -208,9 +210,7 @@ impl Font {
                             ty: 0.0,
                         };
                         // SAFETY: skew is a valid stack CGAffineTransform.
-                        unsafe {
-                            base.ct.copy_with_attributes(0.0, &skew as *const _, None)
-                        }
+                        unsafe { base.ct.copy_with_attributes(0.0, &skew as *const _, None) }
                     } else {
                         eprintln!(
                             "anvil: bold face unavailable for \"{}\"; using regular",
@@ -225,11 +225,7 @@ impl Font {
         };
 
         // Optionally enable the calt (contextual alternates) OpenType feature.
-        let ct = if ligatures {
-            enable_calt(ct)
-        } else {
-            ct
-        };
+        let ct = if ligatures { enable_calt(ct) } else { ct };
 
         Font::from_ct(ct)
     }
@@ -593,6 +589,223 @@ impl GlyphPainter for CoreTextPainter<'_> {
     }
 }
 
+impl CoreTextPainter<'_> {
+    /// Draw a shaped run of codepoints into a BGRA8 pixel buffer.
+    ///
+    /// Unlike `draw_glyph`, which draws one codepoint per call (preventing
+    /// ligature substitution), `draw_run` gathers all codepoints into a single
+    /// `CFAttributedString`, shapes them through `CTLine::with_attributed_string`,
+    /// and draws the resulting glyph run in one pass. This enables OpenType
+    /// `calt` ligature substitution (e.g. `->` → `→`, `!=` → `≠`) when the
+    /// font has the feature active (see `Font::init_face` with `ligatures: true`).
+    ///
+    /// # Arguments
+    ///
+    /// * `codepoints` — Unicode scalar values for consecutive same-style cells.
+    ///   Must be non-empty; all cells must share fg/bg/attrs (the caller is
+    ///   responsible for splitting at style boundaries).
+    /// * `start_x` / `dest_y` — top-left of the first cell, in top-down bitmap
+    ///   pixels (same coordinate space as `PixelRect` in `draw_glyph`).
+    /// * `fg` — RGB foreground color used to tint the shaped glyphs.
+    /// * `pixels` / `bitmap_width` / `bitmap_height` — the BGRA8 destination.
+    /// * `cell_w` / `cell_h` / `descent` — per-font metrics (from `Font::metrics`).
+    ///
+    /// # Why the caller must opt in
+    ///
+    /// The existing `draw_glyph` render path in `draw.rs` calls this painter
+    /// once per cell. Upgrading it to produce same-style runs requires the
+    /// render loop to accumulate runs before calling the painter — a change to
+    /// `crates/anvil-render/src/draw.rs` that is deferred to a future render
+    /// rewrite. This method is provided now so that infrastructure is ready
+    /// when the render side is updated.
+    ///
+    /// # Limitations (TODO for the render rewrite)
+    ///
+    /// * The `draw_glyph` path does **not** call this method. Per-cell rendering
+    ///   prevents visible ligature substitution regardless of the `calt` flag on
+    ///   the CTFont descriptor.
+    /// * Wide (double-width) glyphs produced by shaping are not accounted for —
+    ///   the run width is fixed at `cell_w * codepoints.len()`. The render loop
+    ///   will need to query the shaped advance and reconcile it with the grid.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_run(
+        &self,
+        codepoints: &[u32],
+        start_x: f64,
+        dest_y: f64,
+        fg: [u8; 3],
+        pixels: &mut [u8],
+        bitmap_width: usize,
+        bitmap_height: usize,
+        cell_w: f64,
+        cell_h: f64,
+        descent: f64,
+    ) {
+        if codepoints.is_empty() {
+            return;
+        }
+
+        // ── 1. Build a UTF-16 CFString from the codepoints ───────────────────
+        let mut utf16: Vec<u16> = Vec::with_capacity(codepoints.len() * 2);
+        for &cp in codepoints {
+            if cp <= 0xFFFF {
+                utf16.push(cp as u16);
+            } else {
+                let v = cp - 0x10000;
+                utf16.push(0xD800 + (v >> 10) as u16);
+                utf16.push(0xDC00 + (v & 0x3FF) as u16);
+            }
+        }
+        // SAFETY: utf16 is a valid non-null u16 slice.
+        let cf_str = unsafe {
+            unsafe extern "C-unwind" {
+                fn CFStringCreateWithCharacters(
+                    alloc: *const c_void,
+                    chars: *const u16,
+                    num_chars: objc2_core_foundation::CFIndex,
+                ) -> Option<std::ptr::NonNull<CFString>>;
+            }
+            let raw = CFStringCreateWithCharacters(
+                std::ptr::null(),
+                utf16.as_ptr(),
+                utf16.len() as objc2_core_foundation::CFIndex,
+            );
+            match raw {
+                Some(p) => CFRetained::from_raw(p),
+                None => return,
+            }
+        };
+
+        // ── 2. Build attributes dict:
+        //      { kCTFontAttributeName: self.font.ct,
+        //        kCTForegroundColorFromContextAttributeName: kCFBooleanTrue }
+        //
+        // Setting kCTForegroundColorFromContextAttributeName tells CTLine::draw
+        // to use the CG context's current fill color (white) for text, instead
+        // of requiring a CGColor in kCTForegroundColorAttributeName.
+        #[allow(clippy::borrow_deref_ref)]
+        let font_key = unsafe { &*kCTFontAttributeName as *const CFString as *const c_void };
+        let font_val = self.font.ct.as_ref() as *const CTFont as *const c_void;
+        // SAFETY: kCFBooleanTrue is a valid static CF object.
+        #[allow(clippy::borrow_deref_ref)]
+        let fg_key = unsafe {
+            &*kCTForegroundColorFromContextAttributeName as *const CFString as *const c_void
+        };
+        let fg_val: *const c_void = unsafe {
+            unsafe extern "C" {
+                static kCFBooleanTrue: Option<&'static CFBoolean>;
+            }
+            match kCFBooleanTrue {
+                Some(b) => b as *const CFBoolean as *const c_void,
+                None => return,
+            }
+        };
+        let mut keys = [font_key, fg_key];
+        let mut vals = [font_val, fg_val];
+        // SAFETY: 2-element key/value arrays with valid CF callback statics.
+        let attr_dict: CFRetained<CFDictionary> = unsafe {
+            unsafe extern "C" {
+                static kCFTypeDictionaryKeyCallBacks: CFDictionaryKeyCallBacks;
+                static kCFTypeDictionaryValueCallBacks: CFDictionaryValueCallBacks;
+            }
+            match CFDictionary::new(
+                None,
+                keys.as_mut_ptr(),
+                vals.as_mut_ptr(),
+                2,
+                &kCFTypeDictionaryKeyCallBacks as *const CFDictionaryKeyCallBacks,
+                &kCFTypeDictionaryValueCallBacks as *const CFDictionaryValueCallBacks,
+            ) {
+                Some(d) => d,
+                None => return,
+            }
+        };
+
+        // ── 3. Create CFAttributedString ─────────────────────────────────────
+        // SAFETY: cf_str and attr_dict are valid retained CF objects.
+        let attr_str = unsafe {
+            CFAttributedString::new(None, Some(cf_str.as_ref()), Some(attr_dict.as_ref()))
+        };
+        let attr_str = match attr_str {
+            Some(s) => s,
+            None => return,
+        };
+
+        // ── 4. Shape: CTLine applies calt and returns the glyph run ──────────
+        // SAFETY: attr_str is a valid CFAttributedString.
+        let line = unsafe { CTLine::with_attributed_string(&attr_str) };
+
+        // ── 5. Rasterize the shaped line into a wide RGBA buffer ─────────────
+        //
+        // CTLine::draw requires a full-color context (it uses the CoreText text
+        // rendering pipeline, unlike the lower-level CTFont::draw_glyphs which
+        // works in a gray context). We allocate a 4-bytes-per-pixel RGBA buffer,
+        // draw with white fill, then extract the red channel as a coverage mask.
+        let run_cells = codepoints.len();
+        let run_w = (cell_w * run_cells as f64).ceil() as usize;
+        let run_h = cell_h.ceil() as usize;
+        if run_w == 0 || run_h == 0 {
+            return;
+        }
+        let stride = run_w * 4;
+        let mut run_buf = vec![0u8; stride * run_h];
+        let srgb = match objc2_core_graphics::CGColorSpace::new_device_rgb() {
+            Some(cs) => cs,
+            None => return,
+        };
+        // kCGImageAlphaPremultipliedLast = 1; RGBA, 8 bpc, premultiplied alpha.
+        let ctx = unsafe {
+            objc2_core_graphics::CGBitmapContextCreate(
+                run_buf.as_mut_ptr() as *mut c_void,
+                run_w,
+                run_h,
+                8,
+                stride,
+                Some(&srgb),
+                1, // kCGImageAlphaPremultipliedLast
+            )
+        };
+        let ctx = match ctx {
+            Some(c) => c,
+            None => return,
+        };
+        // Text matrix identity + white fill so R channel = coverage.
+        objc2_core_graphics::CGContext::set_text_matrix(Some(&ctx), unsafe {
+            objc2_core_graphics::CGAffineTransformIdentity
+        });
+        objc2_core_graphics::CGContext::set_rgb_fill_color(Some(&ctx), 1.0, 1.0, 1.0, 1.0);
+        // Baseline in CG y-up = descent above the bottom of the context.
+        objc2_core_graphics::CGContext::set_text_position(Some(&ctx), 0.0, descent);
+
+        // SAFETY: ctx is a valid CGContext; line is a valid CTLine.
+        unsafe { line.draw(&ctx) }
+        drop(ctx);
+        drop(srgb);
+
+        // ── 6. Extract red channel as coverage mask, composite into dest ─────
+        // run_buf is RGBA premultiplied; for white-on-black text the red channel
+        // == coverage. Build a GlyphMask with that single channel.
+        let mut coverage = vec![0u8; run_w * run_h];
+        for (i, chunk) in run_buf.chunks_exact(4).enumerate() {
+            coverage[i] = chunk[0]; // R of premultiplied RGBA = coverage
+        }
+        let run_mask = GlyphMask {
+            pixels: coverage,
+            width: run_w,
+            height: run_h,
+        };
+        composite_mask(
+            &run_mask,
+            start_x,
+            dest_y,
+            fg,
+            pixels,
+            bitmap_width,
+            bitmap_height,
+        );
+    }
+}
+
 impl Rasterizer {
     fn new(cell_w: usize, cell_h: usize, descent: f64) -> Option<Self> {
         let mut buf = vec![0u8; cell_w * cell_h];
@@ -785,7 +998,10 @@ mod tests {
     #[test]
     fn font_face_bold_has_correct_traits() {
         let traits = FontFace::Bold.symbolic_traits();
-        assert_eq!(traits.0 & CTFontSymbolicTraits::TraitBold.0, CTFontSymbolicTraits::TraitBold.0);
+        assert_eq!(
+            traits.0 & CTFontSymbolicTraits::TraitBold.0,
+            CTFontSymbolicTraits::TraitBold.0
+        );
         assert_eq!(traits.0 & CTFontSymbolicTraits::TraitItalic.0, 0);
     }
 
@@ -866,5 +1082,38 @@ mod tests {
             bundle.chrome.metrics.cell_h,
             bundle.grid[0].metrics.cell_h
         );
+    }
+
+    /// `draw_run` shapes a multi-codepoint run and inks pixels.
+    ///
+    /// Verifies the shaping infrastructure is wired up end-to-end: a
+    /// CFAttributedString is built, CTLine shapes it, and the result composites
+    /// into the destination buffer.
+    #[test]
+    fn draw_run_inks_pixels_for_a_run_of_codepoints() {
+        let names = &["IBMPlexMono", "SFMono-Regular", "Menlo"];
+        let font = Font::init_face(names, 26.0, FontFace::Regular, true).unwrap();
+        let painter = CoreTextPainter::new(&font);
+        let cell_w = font.metrics.cell_w.ceil();
+        let cell_h = font.metrics.cell_h.ceil();
+        let descent = font.metrics.descent;
+        let run = &['A' as u32, 'B' as u32, 'C' as u32];
+        let bmp_w = (cell_w * run.len() as f64) as usize;
+        let bmp_h = cell_h as usize;
+        let mut pixels = vec![0u8; bmp_w * bmp_h * 4];
+        painter.draw_run(
+            run,
+            0.0,
+            0.0,
+            [255, 255, 255],
+            &mut pixels,
+            bmp_w,
+            bmp_h,
+            cell_w,
+            cell_h,
+            descent,
+        );
+        let inked = pixels.iter().filter(|&&b| b != 0).count();
+        assert!(inked > 0, "draw_run inked no pixels for 'A', 'B', 'C'");
     }
 }

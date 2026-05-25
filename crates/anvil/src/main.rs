@@ -2270,6 +2270,20 @@ impl AppHandler for AppShell {
             }
         }
 
+        // Block-header pulse (item 23): keep dirty while any visible block is
+        // mid-flash. 250ms window gives a small grace margin beyond 200ms.
+        {
+            let within = std::time::Duration::from_millis(250);
+            let pulsing = app
+                .tabs
+                .current()
+                .and_then(|t| t.registry.get(t.focused_id()))
+                .is_some_and(|p| p.terminal.any_block_completed_within(within));
+            if pulsing {
+                app.dirty = true;
+            }
+        }
+
         // Cursor: snap to target every frame. No animation.
         //
         // The previous code glided the cursor over ~6 ticks (~100ms). During
