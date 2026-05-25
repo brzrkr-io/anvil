@@ -25,6 +25,61 @@
 
 use std::collections::HashMap;
 use std::ffi::c_void;
+
+// ── Inline LRU glyph cache ────────────────────────────────────────────────────
+
+/// Maximum number of rasterized glyph masks retained per `CoreTextPainter`.
+/// At a typical 8×16 cell the cap costs ≤ 256 KB; an uncapped u16 key space
+/// could reach ~8 MB for an emoji-heavy session.
+const GLYPH_CACHE_CAP: usize = 2048;
+
+/// A tiny LRU cache mapping glyph index → `GlyphMask`.
+///
+/// Each entry carries a monotonic `tick` that is bumped on every hit or insert.
+/// When the map is full, one linear scan evicts the entry with the smallest tick.
+struct GlyphCache {
+    map: HashMap<u16, (GlyphMask, u64)>,
+    tick: u64,
+    cap: usize,
+}
+
+impl GlyphCache {
+    fn new(cap: usize) -> Self {
+        Self {
+            map: HashMap::new(),
+            tick: 0,
+            cap,
+        }
+    }
+
+    fn clear(&mut self) {
+        self.map.clear();
+        self.tick = 0;
+    }
+
+    /// Return a reference to the cached mask, bumping its recency tick.
+    fn get(&mut self, key: u16) -> Option<&GlyphMask> {
+        if let Some(entry) = self.map.get_mut(&key) {
+            self.tick += 1;
+            entry.1 = self.tick;
+            // Re-borrow immutably for the return value.
+            return self.map.get(&key).map(|(m, _)| m);
+        }
+        None
+    }
+
+    /// Insert a mask. Evicts the LRU entry when the cap is reached.
+    fn insert(&mut self, key: u16, mask: GlyphMask) {
+        if self.map.len() >= self.cap && !self.map.contains_key(&key) {
+            // Linear scan: find the key with the smallest tick.
+            if let Some((&evict_key, _)) = self.map.iter().min_by_key(|(_, (_, t))| t) {
+                self.map.remove(&evict_key);
+            }
+        }
+        self.tick += 1;
+        self.map.insert(key, (mask, self.tick));
+    }
+}
 use std::ptr::NonNull;
 
 use anvil_render::{FontMetrics, GlyphPainter, PixelRect};
@@ -460,7 +515,7 @@ struct GlyphMask {
 pub struct CoreTextPainter<'a> {
     font: &'a Font,
     rasterizer: Option<Rasterizer>,
-    cache: HashMap<u16, GlyphMask>,
+    cache: GlyphCache,
 }
 
 impl<'a> CoreTextPainter<'a> {
@@ -468,7 +523,7 @@ impl<'a> CoreTextPainter<'a> {
         Self {
             font,
             rasterizer: None,
-            cache: HashMap::new(),
+            cache: GlyphCache::new(GLYPH_CACHE_CAP),
         }
     }
 }
@@ -514,8 +569,8 @@ impl GlyphPainter for CoreTextPainter<'_> {
             }
         }
 
-        // Rasterize the glyph once; subsequent calls hit the cache.
-        if !self.cache.contains_key(&glyph) {
+        // Rasterize the glyph once; subsequent calls hit the LRU cache.
+        if self.cache.get(glyph).is_none() {
             let mask = self
                 .rasterizer
                 .as_mut()
@@ -523,7 +578,7 @@ impl GlyphPainter for CoreTextPainter<'_> {
                 .rasterize(&self.font.ct, glyph);
             self.cache.insert(glyph, mask);
         }
-        let mask = self.cache.get(&glyph).unwrap();
+        let mask = self.cache.get(glyph).unwrap();
 
         // Composite the mask into the BGRA8 destination, tinted with fg.
         composite_mask(

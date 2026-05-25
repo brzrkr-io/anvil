@@ -420,17 +420,21 @@ impl Raster {
 
     fn fill_pixel_rect_internal(&mut self, rect: PixelRect, rgb: [u8; 3]) {
         let (x0, y0, x1, y1) = self.clip_rect(rect);
-        let [r, g, b] = rgb;
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+        let packed = pack_bgra_u32(rgb);
+        let total = self.pixels.len() / 4;
+        // SAFETY: pixels is [u8] with length divisible by 4 and alignment ≥ 1.
+        // u32 requires alignment 4; we use an explicit pointer cast rather than
+        // align_to so we can assert the invariant ourselves.
+        let view: &mut [u32] = unsafe {
+            std::slice::from_raw_parts_mut(self.pixels.as_mut_ptr() as *mut u32, total)
+        };
         for y in y0..y1 {
-            let row_start = (y * self.width + x0) * 4;
-            let row_end = (y * self.width + x1) * 4;
-            let row = &mut self.pixels[row_start..row_end];
-            for px in row.chunks_exact_mut(4) {
-                px[0] = b;
-                px[1] = g;
-                px[2] = r;
-                px[3] = 0xff;
-            }
+            let row_start = y * self.width + x0;
+            let row_end = y * self.width + x1;
+            view[row_start..row_end].fill(packed);
         }
     }
 

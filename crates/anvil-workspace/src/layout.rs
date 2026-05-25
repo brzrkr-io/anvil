@@ -228,6 +228,10 @@ pub struct DividerHit {
     pub axis_center: f64,
     /// Path (sequence of child indices) from the root to the split node.
     pub path: Vec<usize>,
+    /// Pixel rect of the split node that owns this divider.
+    pub split_rect: Rect,
+    /// Direction of the split node that owns this divider.
+    pub split_dir: SplitDir,
 }
 
 /// Find the divider closest to `(px, py)` within `slop_px` device pixels.
@@ -310,6 +314,8 @@ fn find_divider_in_node(
                     child_index: i,
                     axis_center: gutter_center,
                     path: hit_path,
+                    split_rect: rect,
+                    split_dir: sp.dir,
                 });
             }
             offset += divider_px;
@@ -357,6 +363,33 @@ pub fn adjust_ratio(sp: &mut Split, divider_index: usize, delta: f64, min_ratio:
     let new_i = (sp.ratios[i] + delta).max(min_ratio).min(total - min_ratio);
     sp.ratios[i] = new_i;
     sp.ratios[j] = total - new_i;
+}
+
+/// Walk the tree to the split node identified by `path` (a sequence of child
+/// indices produced by [`find_divider_at`]) and return a mutable reference to
+/// it.  Returns `None` if the path is empty or leads to a leaf.
+pub fn split_at_path_mut<'a>(tree: &'a mut PaneTree, path: &[usize]) -> Option<&'a mut Split> {
+    let mut node: &mut PaneNode = &mut tree.root;
+    // The path encodes the sequence of child indices that lead to the split
+    // that *contains* the divider.  The last element of the path is the child
+    // index of the child *before* the divider, so we stop one level up.
+    // We want the split that owns the divider, which is the node reached by
+    // following path[0..path.len()-1] from the root.
+    let parent_path = if path.is_empty() {
+        return None;
+    } else {
+        &path[..path.len() - 1]
+    };
+    for &idx in parent_path {
+        node = match node {
+            PaneNode::Split(sp) => sp.children.get_mut(idx).map(|b| b.as_mut())?,
+            PaneNode::Leaf(_) => return None,
+        };
+    }
+    match node {
+        PaneNode::Split(sp) => Some(sp),
+        PaneNode::Leaf(_) => None,
+    }
 }
 
 // ---------------------------------------------------------------------------

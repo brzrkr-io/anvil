@@ -57,7 +57,8 @@ use anvil_term::DirtySet;
 use anvil_theme::{Theme, resolve as resolve_theme};
 use anvil_workspace::interact;
 use anvil_workspace::keys::{Key, Mods, encode as encode_key, encode_mouse};
-use anvil_workspace::layout::{NavDir, PaneId, Rect, SplitDir};
+use anvil_workspace::layout::{DividerHit, NavDir, PaneId, Rect, SplitDir, adjust_ratio,
+    find_divider_at, split_at_path_mut};
 use anvil_workspace::palette::{Action, CATALOG, Palette, action_for_id};
 use anvil_workspace::tab::{Tab, TabManager};
 
@@ -459,6 +460,9 @@ pub struct App {
     /// Mouse is currently dragging the HUD's left edge hairline. While true,
     /// `mouse_dragged` updates `hud_cols` instead of extending a selection.
     hud_drag_active: bool,
+    /// When set, the user grabbed a pane divider and is dragging it to resize.
+    /// Cleared on mouse-up.
+    divider_drag: Option<DividerHit>,
     /// Chrome-row hit regions (tab switches, close ×, + button). Refilled
     /// by `draw_tab_bar` each render; consumed by `mouse_down`.
     tab_bar_hits: TabBarHits,
@@ -2541,6 +2545,21 @@ impl AppHandler for AppShell {
             }
         }
 
+        // Pane divider drag: hit-test before click-to-focus so a grab on the
+        // divider doesn't also switch focus.
+        {
+            let (rx, ry) = app.view_pt_to_raster_px(loc);
+            let ir = app.inner_rect();
+            if let Some(tab) = app.tabs.current() {
+                let slop = DIVIDER_PX * 0.5 + 4.0;
+                if let Some(hit) = find_divider_at(&tab.tree, ir, DIVIDER_PX, rx, ry, slop) {
+                    app.divider_drag = Some(hit);
+                    app.dirty = true;
+                    return;
+                }
+            }
+        }
+
         // Click-to-focus.
         {
             let (rx, ry) = app.view_pt_to_raster_px(loc);
@@ -2687,6 +2706,13 @@ impl AppHandler for AppShell {
     fn mouse_up(&mut self, loc: MouseLocation, _mods: Modifiers) {
         let app = &mut self.app;
 
+        // Pane divider drag: release.
+        if app.divider_drag.is_some() {
+            app.divider_drag = None;
+            app.dirty = true;
+            return;
+        }
+
         // HUD resize drag: release.
         if app.hud_drag_active {
             app.hud_drag_active = false;
@@ -2770,6 +2796,48 @@ impl AppHandler for AppShell {
 
     fn mouse_dragged(&mut self, loc: MouseLocation) {
         let app = &mut self.app;
+
+        // Pane divider drag: adjust the split ratio based on mouse position.
+        if app.divider_drag.is_some() {
+            let (rx, ry) = app.view_pt_to_raster_px(loc);
+            // Clone the hit fields we need before mutably borrowing app.tabs.
+            let (path, child_index, split_rect, split_dir) = {
+                let hit = app.divider_drag.as_ref().unwrap();
+                (hit.path.clone(), hit.child_index, hit.split_rect, hit.split_dir)
+            };
+            if let Some(tab) = app.tabs.current_mut() {
+                if let Some(sp) = split_at_path_mut(&mut tab.tree, &path) {
+                    let n = sp.children.len();
+                    let total_gutter = DIVIDER_PX * (n as f64 - 1.0);
+                    // Use the split node's own rect (captured at mouse-down) so
+                    // nested splits compute available space correctly.
+                    let (available, mouse_offset) = match split_dir {
+                        SplitDir::Horizontal => {
+                            (split_rect.w - total_gutter, rx - split_rect.x)
+                        }
+                        SplitDir::Vertical => {
+                            (split_rect.h - total_gutter, ry - split_rect.y)
+                        }
+                    };
+                    // The desired pixel size of children[0..=child_index] combined
+                    // is the mouse offset minus the gutters before child_index.
+                    let gutter_offset = child_index as f64 * DIVIDER_PX;
+                    let desired_px = (mouse_offset - gutter_offset - DIVIDER_PX * 0.5)
+                        .max(0.0)
+                        .min(available);
+                    // desired_px = sum(ratios[0..=child_index]) * available
+                    let prefix_sum: f64 = sp.ratios[..child_index].iter().sum();
+                    let new_ratio_i = (desired_px / available) - prefix_sum;
+                    let old_ratio_i = sp.ratios[child_index];
+                    let delta = new_ratio_i - old_ratio_i;
+                    adjust_ratio(sp, child_index, delta, 0.05);
+                }
+            }
+            app.resize_all_tabs();
+            app.force_full_redraw = true;
+            app.dirty = true;
+            return;
+        }
 
         // HUD resize drag: convert mouse x to a new column count and reflow.
         if app.hud_drag_active {
@@ -3338,6 +3406,7 @@ fn main() -> Result<()> {
         hud_tick: 0,
         hud_cols: HUD_COLS_DEFAULT,
         hud_drag_active: false,
+        divider_drag: None,
         tab_bar_hits: TabBarHits::default(),
         hud_hits: Vec::new(),
         hud_section_order: load_hud_section_order()

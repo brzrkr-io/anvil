@@ -618,6 +618,7 @@ pub fn draw_right_hud(
         surface_rect.h,
         tones.edge,
     );
+    raster.fill_pixel_rect(surface_rect.x, surface_rect.y, surface_rect.w, 1.0, tones.edge);
 
     // Bind cell-grid coords for the rest of the function.
     let start_col = content_col;
@@ -663,6 +664,7 @@ pub fn draw_right_hud(
                     continue;
                 };
                 let header_row = r;
+                draw_section_accent_bar(raster, metrics, start_col, r, app_theme.accent_primary);
                 draw_section_header(
                     raster,
                     painter,
@@ -670,7 +672,7 @@ pub fn draw_right_hud(
                     inner_col,
                     r,
                     "CONTEXT",
-                    app_theme.text_subtle,
+                    app_theme.text_muted,
                     start_col,
                     hud_cols,
                     app_theme.hairline,
@@ -736,7 +738,9 @@ pub fn draw_right_hud(
             }
             SectionId::RepoGit => {
                 // --- REPO + GIT (merged) ---------------------------------
+                if r < bottom { r += 1; }
                 let header_row = r;
+                draw_section_accent_bar(raster, metrics, start_col, r, app_theme.accent_primary);
                 draw_section_header(
                     raster,
                     painter,
@@ -744,7 +748,7 @@ pub fn draw_right_hud(
                     inner_col,
                     r,
                     "REPO + GIT",
-                    app_theme.text_subtle,
+                    app_theme.text_muted,
                     start_col,
                     hud_cols,
                     app_theme.hairline,
@@ -835,7 +839,7 @@ pub fn draw_right_hud(
                             let mut bits: Vec<(String, [u8; 3])> = Vec::new();
                             if local.git_dirty > 0 {
                                 bits.push((
-                                    format!(" *{} modified", local.git_dirty),
+                                    format!(" *{}", local.git_dirty),
                                     app_theme.attention,
                                 ));
                             }
@@ -909,7 +913,9 @@ pub fn draw_right_hud(
                 let Some(ref ci) = local.ci_status else {
                     continue;
                 };
+                if r < bottom { r += 1; }
                 let header_row = r;
+                draw_section_accent_bar(raster, metrics, start_col, r, app_theme.accent_primary);
                 draw_section_header(
                     raster,
                     painter,
@@ -917,7 +923,7 @@ pub fn draw_right_hud(
                     inner_col,
                     r,
                     "CI",
-                    app_theme.text_subtle,
+                    app_theme.text_muted,
                     start_col,
                     hud_cols,
                     app_theme.hairline,
@@ -936,23 +942,11 @@ pub fn draw_right_hud(
                 // Row 1: status glyph + label + duration.
                 if r < bottom {
                     use anvil_prompt_core::CiState;
-                    let (glyph, gcol, label) = match ci.state {
-                        CiState::Ok => (
-                            "\u{2713}",
-                            app_theme.verified,
-                            format!("{} \u{00b7} {}s", ci.branch, ci.duration_s),
-                        ),
-                        CiState::Failed => (
-                            "\u{2717}",
-                            app_theme.failure,
-                            format!("{} \u{00b7} {}s", ci.branch, ci.duration_s),
-                        ),
-                        CiState::Running => (
-                            "\u{25CF}",
-                            app_theme.info,
-                            format!("{} running\u{2026}", ci.branch),
-                        ),
-                        CiState::Unknown => ("\u{00b7}", app_theme.alloy, "no data".to_string()),
+                    let (glyph, gcol) = match ci.state {
+                        CiState::Ok => ("\u{2713}", app_theme.verified),
+                        CiState::Failed => ("\u{2717}", app_theme.failure),
+                        CiState::Running => ("\u{25CF}", app_theme.info),
+                        CiState::Unknown => ("\u{00b7}", app_theme.alloy),
                     };
                     raster.cell_glyph(
                         painter,
@@ -962,16 +956,29 @@ pub fn draw_right_hud(
                         glyph.chars().next().unwrap() as u32,
                         gcol,
                     );
-                    draw_text(
-                        raster,
-                        painter,
-                        metrics,
-                        inner_col + 2,
-                        r,
-                        &label,
-                        app_theme.foreground,
-                        max_col,
-                    );
+                    match ci.state {
+                        CiState::Ok | CiState::Failed => {
+                            draw_text(
+                                raster,
+                                painter,
+                                metrics,
+                                inner_col + 2,
+                                r,
+                                &ci.branch,
+                                app_theme.foreground,
+                                max_col,
+                            );
+                            let dur = format!("{}s", ci.duration_s);
+                            draw_text_right(raster, painter, metrics, max_col, r, &dur, app_theme.text_muted);
+                        }
+                        CiState::Running => {
+                            let label = format!("{} running\u{2026}", ci.branch);
+                            draw_text(raster, painter, metrics, inner_col + 2, r, &label, app_theme.foreground, max_col);
+                        }
+                        CiState::Unknown => {
+                            draw_text(raster, painter, metrics, inner_col + 2, r, "no data", app_theme.foreground, max_col);
+                        }
+                    }
                     r += 1;
                 }
 
@@ -1008,8 +1015,10 @@ pub fn draw_right_hud(
                 if local.ports.is_empty() {
                     continue;
                 }
+                if r < bottom { r += 1; }
                 let header_row = r;
                 if r < bottom {
+                    draw_section_accent_bar(raster, metrics, start_col, r, app_theme.accent_primary);
                     draw_section_header(
                         raster,
                         painter,
@@ -1017,7 +1026,7 @@ pub fn draw_right_hud(
                         inner_col,
                         r,
                         "PORTS",
-                        app_theme.text_subtle,
+                        app_theme.text_muted,
                         start_col,
                         hud_cols,
                         app_theme.hairline,
@@ -1074,8 +1083,10 @@ pub fn draw_right_hud(
                 if local.recent_files.is_empty() {
                     continue;
                 }
+                if r < bottom { r += 1; }
                 let header_row = r;
                 if r < bottom {
+                    draw_section_accent_bar(raster, metrics, start_col, r, app_theme.accent_primary);
                     draw_section_header(
                         raster,
                         painter,
@@ -1083,7 +1094,7 @@ pub fn draw_right_hud(
                         inner_col,
                         r,
                         "RECENT",
-                        app_theme.text_subtle,
+                        app_theme.text_muted,
                         start_col,
                         hud_cols,
                         app_theme.hairline,
@@ -1130,7 +1141,9 @@ pub fn draw_right_hud(
             }
             SectionId::Agents => {
                 // --- AGENTS --------------------------------------------
+                if r < bottom { r += 1; }
                 let header_row = r;
+                draw_section_accent_bar(raster, metrics, start_col, r, app_theme.accent_primary);
                 draw_section_header(
                     raster,
                     painter,
@@ -1138,7 +1151,7 @@ pub fn draw_right_hud(
                     inner_col,
                     r,
                     "AGENTS",
-                    app_theme.text_subtle,
+                    app_theme.text_muted,
                     start_col,
                     hud_cols,
                     app_theme.hairline,
@@ -1242,7 +1255,9 @@ pub fn draw_right_hud(
             SectionId::System => {
                 // --- SYSTEM (compact) ----------------------------------
                 // Single row: "mem ▄▅▆▆▃▁ N/N GB · load X.XX"
+                if r < bottom { r += 1; }
                 let header_row = r;
+                draw_section_accent_bar(raster, metrics, start_col, r, app_theme.accent_primary);
                 draw_section_header(
                     raster,
                     painter,
@@ -1250,7 +1265,7 @@ pub fn draw_right_hud(
                     inner_col,
                     r,
                     "SYSTEM",
-                    app_theme.text_subtle,
+                    app_theme.text_muted,
                     start_col,
                     hud_cols,
                     app_theme.hairline,
@@ -1368,6 +1383,22 @@ fn push_row_hit(
     });
 }
 
+/// 2px vertical accent bar, gutter-left, vertically centered on the header row.
+/// Brand anchor for every section — call immediately before `draw_section_header`.
+fn draw_section_accent_bar(
+    raster: &mut Raster,
+    metrics: FontMetrics,
+    start_col: usize,
+    row: usize,
+    color: [u8; 3],
+) {
+    let (cw, ch) = (metrics.cell_w, metrics.cell_h);
+    let bar_h = (ch * 0.55).max(3.0);
+    let x = raster.pad_x + start_col as f64 * cw + 1.0;
+    let y = raster.pad_y + row as f64 * ch + (ch - bar_h) * 0.5;
+    raster.fill_pixel_rect(x, y, 2.0, bar_h, color);
+}
+
 /// Draw a plain section header label (no `─` fill) in `text_subtle` color,
 /// then a 1px hairline immediately below the header row.
 ///
@@ -1411,9 +1442,8 @@ fn draw_section_rule(
 ) {
     let cw = metrics.cell_w;
     let ch = metrics.cell_h;
-    // The rule sits on the row's vertical midline so it reads as inset, not
-    // as part of either the row above or below.
-    let y = raster.pad_y + (row as f64 + 0.5) * ch;
+    // The rule sits just below the header text.
+    let y = raster.pad_y + (row as f64 + 0.1) * ch;
     let x = raster.pad_x + (start_col + 1) as f64 * cw;
     let w = (cols as f64 - 2.0) * cw;
     raster.fill_pixel_rect(x, y, w, 1.0, color);
