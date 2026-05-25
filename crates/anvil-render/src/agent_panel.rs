@@ -118,7 +118,7 @@ pub enum Placement {
 pub const PANEL_COLS: usize = 36;
 
 /// Width of the docked right-side HUD in terminal columns.
-pub const HUD_COLS: usize = 34;
+pub const HUD_COLS: usize = 30;
 
 /// Dynamic card height: 4 base rows + up to 3 priority rows.
 fn card_rows(snap: &Snapshot) -> usize {
@@ -454,6 +454,36 @@ fn luma(rgb: [u8; 3]) -> f64 {
     0.2126 * rgb[0] as f64 + 0.7152 * rgb[1] as f64 + 0.0722 * rgb[2] as f64
 }
 
+/// Glass-surface tone set resolved from the current theme.
+/// All color fields are read from the theme; `surface_alpha` varies by
+/// canvas lightness (dark canvas → 0.88, light canvas → 0.72).
+pub struct GlassTones {
+    pub surface: [u8; 3],
+    pub surface_alpha: f32,
+    pub edge: [u8; 3],
+    pub label: [u8; 3],
+    pub foreground: [u8; 3],
+    pub meta: [u8; 3],
+}
+
+/// Resolve `GlassTones` from `theme`. Luma of `theme.background` determines
+/// whether the dark (0.88) or light (0.72) surface alpha is used.
+pub fn glass_tones_for(theme: &Theme) -> GlassTones {
+    let surface_alpha = if luma(theme.background) / 255.0 > 0.5 {
+        0.72_f32
+    } else {
+        0.88_f32
+    };
+    GlassTones {
+        surface: theme.panel,
+        surface_alpha,
+        edge: theme.hairline,
+        label: theme.text_subtle,
+        foreground: theme.foreground,
+        meta: theme.text_muted,
+    }
+}
+
 /// A clickable region inside the HUD. Click → copy text; Cmd-click → open
 /// path/URL in the user's default app. Empty strings disable that gesture.
 #[derive(Clone, Debug)]
@@ -568,26 +598,25 @@ pub fn draw_right_hud(
         return;
     }
 
-    // Surface alpha: 0.88 for dark canvas, 0.72 for light canvas.
-    let surface_alpha = if luma(app_theme.background) < 128.0 { 0.88 } else { 0.72 };
+    let tones = glass_tones_for(app_theme);
 
     // Frosted glass: composite theme.panel over whatever's behind with
-    // `surface_alpha` < 1, so the canvas tints through. A 1px hairline on
+    // surface_alpha < 1, so the canvas tints through. A 1px hairline on
     // the left edge separates the panel from the terminal grid.
     raster.fill_pixel_rect_alpha(
         surface_rect.x,
         surface_rect.y,
         surface_rect.w,
         surface_rect.h,
-        app_theme.panel,
-        surface_alpha,
+        tones.surface,
+        tones.surface_alpha as f64,
     );
     raster.fill_pixel_rect(
         surface_rect.x,
         surface_rect.y,
         1.0,
         surface_rect.h,
-        app_theme.hairline,
+        tones.edge,
     );
 
     // Bind cell-grid coords for the rest of the function.

@@ -37,9 +37,6 @@ use anvil_render::agent_panel::{
     SectionId, draw_right_hud,
 };
 
-/// How many logical points the window grows (or shrinks) when the HUD toggles.
-const HUD_WIDTH_PT: f64 = 280.0;
-
 /// Minimum and maximum HUD width in terminal columns. The drag handler
 /// clamps the user's value to this range so they can't crush the terminal
 /// or eat the whole window.
@@ -71,8 +68,7 @@ use anvil_control::bridge::{
 
 use objc2::rc::Retained;
 use objc2_app_kit::NSWindow;
-use objc2_foundation::{MainThreadMarker, NSSize, NSTimer};
-use block2::RcBlock;
+use objc2_foundation::MainThreadMarker;
 
 // ── Embedded assets ──────────────────────────────────────────────────────────
 
@@ -2007,7 +2003,8 @@ impl App {
 pub struct AppShell {
     app: App,
     webview: Webview,
-    /// The NSWindow — held so `toggle_hud` can call `setContentSize`.
+    /// The NSWindow — retained for future use (e.g. setContentSize).
+    #[allow(dead_code)]
     window: Retained<NSWindow>,
     /// Terminal grid glyph painter (user font size).
     painter: anvil_platform::font::CoreTextPainter<'static>,
@@ -2099,30 +2096,14 @@ impl AppShell {
         }
     }
 
-    /// Toggle the HUD: flip `hud_visible` and grow or shrink the window by
-    /// `HUD_WIDTH_PT`. AppKit fires `AppShell::resize` after `setContentSize`,
-    /// which calls `resize_all_tabs` — so we do NOT call it here.
+    /// Toggle the HUD: flip `hud_visible`, reflow terminal columns to match the
+    /// new inner_rect, and mark the frame dirty. The window size is unchanged —
+    /// the HUD expands inward, shrinking the terminal grid.
     fn toggle_hud(&mut self) {
         self.app.hud_visible = !self.app.hud_visible;
-        let new_w = if self.app.hud_visible {
-            self.app.view_width_pt + HUD_WIDTH_PT
-        } else {
-            (self.app.view_width_pt - HUD_WIDTH_PT).max(400.0)
-        };
-        let new_h = self.app.view_height_pt;
+        self.app.resize_all_tabs();
+        self.app.force_full_redraw = true;
         self.app.dirty = true;
-
-        // setContentSize fires the windowDidResize delegate callback
-        // synchronously, which re-enters the AppHandler RefCell. Defer to
-        // the next runloop iteration via a 0-delay NSTimer so the current
-        // borrow (from perform_key_equivalent / key_down) drops first.
-        let window = self.window.clone();
-        let block = RcBlock::new(move |_timer: std::ptr::NonNull<NSTimer>| {
-            window.setContentSize(NSSize::new(new_w, new_h));
-        });
-        unsafe {
-            NSTimer::scheduledTimerWithTimeInterval_repeats_block(0.0, false, &block);
-        }
     }
 }
 
