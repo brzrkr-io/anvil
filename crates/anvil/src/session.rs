@@ -1,0 +1,211 @@
+//! Session persistence — item 19.
+//!
+//! Saves and restores per-workspace UI state so Anvil picks up where it left
+//! off after a relaunch.  State is written to
+//! `~/.config/anvil/sessions/<cwd_hash>.json` where `<cwd_hash>` is the
+//! 16-character lower-hex hash of the workspace cwd produced by
+//! `std::collections::hash_map::DefaultHasher`.
+//!
+//! The format is plain JSON serialised by serde_json.  No external crate is
+//! needed beyond what is already in the workspace.
+//!
+//! Failure modes
+//! - Missing session file → silent no-op; caller gets `None`.
+//! - Malformed JSON → logged once to stderr; caller gets `None`.
+//! - Write error → logged once to stderr; best-effort, never panics.
+
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+// ── Data types ────────────────────────────────────────────────────────────────
+
+/// All UI state that survives a relaunch.
+///
+/// Stored as a flat JSON object; adding new optional fields is
+/// backwards-compatible.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct SessionState {
+    /// Global UI scale multiplier (Cmd+=/Cmd+- zoom).  Default 1.0.
+    pub ui_scale: f64,
+
+    /// Explorer sidebar width in logical points.  Default 300.
+    pub left_dock_w_pt: f64,
+
+    /// Layout mode: `"terminal"` or `"ide"`.  Default `"terminal"`.
+    pub layout_mode: String,
+
+    /// Editor-over-drawer ratio for the IDE vertical split (0.0–1.0).
+    /// 0.0 = use the hard-coded default; non-zero overrides.
+    pub editor_split_ratio: f64,
+
+    /// Expanded directory paths in the Explorer.
+    pub expanded_dirs: Vec<PathBuf>,
+
+    /// Open buffer paths per pane, keyed by stringified pane id.
+    /// Each entry is the ordered list of open file paths for that pane.
+    pub open_buffers: Vec<PaneSession>,
+}
+
+/// Per-pane buffer state.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PaneSession {
+    /// Stringified pane id (used only to order sessions deterministically;
+    /// actual restore opens the paths in the main editor pane, not per-pane).
+    pub pane_id: u64,
+    /// Ordered list of open file paths.
+    pub paths: Vec<PathBuf>,
+    /// The active (focused) buffer path, if any.
+    pub active_path: Option<PathBuf>,
+}
+
+// ── Path helpers ──────────────────────────────────────────────────────────────
+
+/// Compute the session file path for `cwd`.
+///
+/// Returns `None` when `HOME` is not set.
+pub fn session_path(cwd: &Path) -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    let mut dir = PathBuf::from(home);
+    dir.push(".config");
+    dir.push("anvil");
+    dir.push("sessions");
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    cwd.hash(&mut hasher);
+    let hash = hasher.finish();
+    let filename = format!("{hash:016x}.json");
+
+    Some(dir.join(filename))
+}
+
+// ── I/O ───────────────────────────────────────────────────────────────────────
+
+/// Write `state` to the session file for `cwd`.
+///
+/// Creates parent directories if needed.  Logs and returns on error (never
+/// panics).
+pub fn save_session(cwd: &Path, state: &SessionState) {
+    let Some(path) = session_path(cwd) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let json = match serde_json::to_string_pretty(state) {
+        Ok(j) => j,
+        Err(e) => {
+            eprintln!("anvil-session: failed to serialise session: {e}");
+            return;
+        }
+    };
+    if let Err(e) = std::fs::write(&path, json.as_bytes()) {
+        eprintln!("anvil-session: failed to write {}: {e}", path.display());
+    }
+}
+
+/// Load and parse the session file for `cwd`.
+///
+/// Returns `None` silently when the file does not exist.
+/// Logs once and returns `None` on parse error.
+pub fn load_session(cwd: &Path) -> Option<SessionState> {
+    let path = session_path(cwd)?;
+    let bytes = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(_) => return None, // file not found → silent no-op
+    };
+    match serde_json::from_slice::<SessionState>(&bytes) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            eprintln!(
+                "anvil-session: failed to parse {}, starting fresh: {e}",
+                path.display()
+            );
+            None
+        }
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_path_is_16_hex_chars() {
+        let cwd = Path::new("/home/user/project");
+        if let Some(p) = session_path(cwd) {
+            let stem = p.file_stem().unwrap().to_str().unwrap();
+            assert_eq!(stem.len(), 16);
+            assert!(stem.chars().all(|c| c.is_ascii_hexdigit()));
+        }
+        // If HOME is unset the function returns None, which is valid.
+    }
+
+    #[test]
+    fn session_path_is_stable() {
+        let cwd = Path::new("/home/user/project");
+        // Same cwd must produce the same path on every call.
+        assert_eq!(session_path(cwd), session_path(cwd));
+    }
+
+    #[test]
+    fn session_round_trip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cwd = dir.path();
+
+        let state = SessionState {
+            ui_scale: 1.25,
+            left_dock_w_pt: 320.0,
+            layout_mode: "ide".to_string(),
+            editor_split_ratio: 0.72,
+            expanded_dirs: vec![PathBuf::from("/home/user/project/src")],
+            open_buffers: vec![PaneSession {
+                pane_id: 1,
+                paths: vec![PathBuf::from("/home/user/project/src/main.rs")],
+                active_path: Some(PathBuf::from("/home/user/project/src/main.rs")),
+            }],
+        };
+
+        save_session(cwd, &state);
+        let loaded = load_session(cwd).expect("session must load after save");
+
+        assert!((loaded.ui_scale - 1.25).abs() < f64::EPSILON);
+        assert!((loaded.left_dock_w_pt - 320.0).abs() < f64::EPSILON);
+        assert_eq!(loaded.layout_mode, "ide");
+        assert!((loaded.editor_split_ratio - 0.72).abs() < f64::EPSILON);
+        assert_eq!(
+            loaded.expanded_dirs,
+            vec![PathBuf::from("/home/user/project/src")]
+        );
+        assert_eq!(loaded.open_buffers.len(), 1);
+        assert_eq!(loaded.open_buffers[0].pane_id, 1);
+        assert_eq!(
+            loaded.open_buffers[0].active_path,
+            Some(PathBuf::from("/home/user/project/src/main.rs"))
+        );
+    }
+
+    #[test]
+    fn load_session_missing_file_returns_none() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cwd = dir.path();
+        // No file written — must return None silently.
+        assert!(load_session(cwd).is_none());
+    }
+
+    #[test]
+    fn load_session_corrupt_returns_none() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cwd = dir.path();
+        // Write garbage to the expected path.
+        if let Some(path) = session_path(cwd) {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"not valid json").unwrap();
+        }
+        // Must return None (logs to stderr, does not panic).
+        assert!(load_session(cwd).is_none());
+    }
+}

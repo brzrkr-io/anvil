@@ -21,8 +21,13 @@ anvil-control    = { workspace = true }
 anvil-editor     = { path = "../../crates/anvil-editor" }
 anvil-prompt-core = { path = "../../crates/anvil-prompt-core" }
 anyhow           = { workspace = true }
+serde            = { workspace = true }
+serde_json       = { workspace = true }
 libc             = { workspace = true }
 objc2            = { workspace = true }
 objc2-app-kit    = { workspace = true, features = ["NSApplication", "NSAppearance", "NSPasteboard"] }
 objc2-foundation    = { workspace = true, features = ["NSString"] }
 objc2-quartz-core   = { workspace = true, features = ["CAMetalLayer"] }
+
+[dev-dependencies]
+tempfile = "3"

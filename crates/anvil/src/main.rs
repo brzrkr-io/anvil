@@ -12,6 +12,7 @@
 
 mod fs_worker;
 mod kube;
+mod session;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -3669,6 +3670,161 @@ impl App {
 
         false
     }
+
+    // ── Shutdown (item 20) ────────────────────────────────────────────────────
+
+    /// Clean shutdown.  Called from `AppShell::should_terminate`.
+    ///
+    /// Order:
+    /// 1. Write session state (item 19).
+    /// 2. Shut down LSP servers.
+    /// 3. Drop PTYs (child processes receive SIGTERM via `Pty` Drop).
+    /// 4. Drop worker senders (threads exit when their receiver is gone).
+    pub fn shutdown(&mut self) {
+        // 1. Save session.
+        if let Some(cwd) = self.current_cwd() {
+            let cwd_path = std::path::PathBuf::from(&cwd);
+            let state = self.build_session_state();
+            session::save_session(&cwd_path, &state);
+        }
+
+        // 2. LSP shutdown.
+        if let Some(ref mut mgr) = self.lsp_manager {
+            mgr.shutdown_all();
+        }
+
+        // 3. Drop PTYs — Pty Drop sends SIGTERM to the child process.
+        self.ptys.clear();
+
+        // 4. Worker senders.  Dropping the SyncSenders closes the channel;
+        //    each worker thread's `recv()` returns Err and the thread exits.
+        // The senders are struct fields; they will be dropped with App, but
+        // closing them now makes the workers exit before the process does.
+        // We can't move them out, so we do nothing extra here — the workers
+        // are daemon-style and the OS reclaims them on exit.
+    }
+
+    /// Collect the current UI state into a `SessionState` for persistence.
+    fn build_session_state(&self) -> session::SessionState {
+        // Drawer / editor split ratio: read from the IDE root vertical split.
+        let editor_split_ratio = self
+            .tabs
+            .current()
+            .and_then(|tab| {
+                let root = &tab.tree.root;
+                match root.as_ref() {
+                    anvil_workspace::layout::PaneNode::Split(sp)
+                        if sp.dir == anvil_workspace::layout::SplitDir::Vertical
+                            && sp.children.len() == 2 =>
+                    {
+                        Some(sp.ratios[0])
+                    }
+                    _ => None,
+                }
+            })
+            .unwrap_or(0.0);
+
+        // Collect per-pane open buffer paths.
+        let mut open_buffers: Vec<session::PaneSession> = Vec::new();
+        for tab in self.tabs.tabs.iter() {
+            for (pane_id, ep) in tab.editor_panes.panes_iter() {
+                let paths: Vec<std::path::PathBuf> = ep
+                    .open_buffers
+                    .iter()
+                    .filter_map(|&bid| {
+                        tab.editor_panes
+                            .get_buffer(bid)
+                            .and_then(|b| b.tracked_path().map(|p| p.to_path_buf()))
+                    })
+                    .collect();
+                if paths.is_empty() {
+                    continue;
+                }
+                let active_path = tab
+                    .editor_panes
+                    .get_buffer(ep.buffer_id)
+                    .and_then(|b| b.tracked_path().map(|p| p.to_path_buf()));
+                open_buffers.push(session::PaneSession {
+                    pane_id: pane_id as u64,
+                    paths,
+                    active_path,
+                });
+            }
+        }
+
+        session::SessionState {
+            ui_scale: self.ui_scale,
+            left_dock_w_pt: self.left_dock_w_pt,
+            layout_mode: match self.layout_mode {
+                LayoutMode::Ide => "ide".to_string(),
+                LayoutMode::Terminal => "terminal".to_string(),
+            },
+            editor_split_ratio,
+            expanded_dirs: self.expanded_dirs.iter().cloned().collect(),
+            open_buffers,
+        }
+    }
+
+    /// Restore session state persisted by a previous run.
+    ///
+    /// Called once at startup after `ui_scale`, `left_dock_w_pt`, and
+    /// `layout_mode` have their defaults.  Silently skips on missing or
+    /// corrupt session file.
+    pub fn restore_session(&mut self, cwd: &str) {
+        let cwd_path = std::path::PathBuf::from(cwd);
+        let Some(state) = session::load_session(&cwd_path) else {
+            return;
+        };
+
+        if state.ui_scale > 0.0 {
+            self.ui_scale = state.ui_scale;
+        }
+        if state.left_dock_w_pt >= 180.0 && state.left_dock_w_pt <= 600.0 {
+            self.left_dock_w_pt = state.left_dock_w_pt;
+        }
+        match state.layout_mode.as_str() {
+            "ide" => self.layout_mode = LayoutMode::Ide,
+            "terminal" => self.layout_mode = LayoutMode::Terminal,
+            _ => {}
+        }
+        if state.editor_split_ratio > 0.0 {
+            // Apply to the current tab's root split if it is a vertical 2-child.
+            if let Some(tab) = self.tabs.current_mut() {
+                let root = &mut tab.tree.root;
+                if let anvil_workspace::layout::PaneNode::Split(sp) = root.as_mut() {
+                    if sp.dir == anvil_workspace::layout::SplitDir::Vertical
+                        && sp.children.len() == 2
+                    {
+                        let r = state.editor_split_ratio.clamp(0.40, 0.95);
+                        sp.ratios[0] = r;
+                        sp.ratios[1] = 1.0 - r;
+                    }
+                }
+            }
+        }
+        for p in state.expanded_dirs {
+            self.expanded_dirs.insert(p);
+        }
+        // Restore open buffers: open each saved path in the native editor.
+        // The active path is opened last so it ends up as the active buffer.
+        for pane_session in &state.open_buffers {
+            // Open non-active paths first.
+            for path in &pane_session.paths {
+                if pane_session
+                    .active_path
+                    .as_deref()
+                    .is_none_or(|a| a != path.as_path())
+                {
+                    self.open_path_in_native_editor(path);
+                }
+            }
+            // Open active path last so it becomes the focused buffer.
+            if let Some(active) = &pane_session.active_path {
+                self.open_path_in_native_editor(active);
+            }
+        }
+        self.dirty = true;
+    }
 }
 
 // ── AppShell — holds App + Webview + Font + Painter, impls AppHandler ────────
@@ -6313,6 +6469,7 @@ impl AppHandler for AppShell {
         self.app.focused = false;
     }
     fn should_terminate(&mut self) -> bool {
+        self.app.shutdown();
         true
     }
 
@@ -7316,6 +7473,14 @@ fn main() -> Result<()> {
     shell.italic_painter.warm_ascii();
     shell.bold_italic_painter.warm_ascii();
     shell.app.snap_anim();
+
+    // -- Session restore (item 19) -----------------------------------------------
+    // Restore after AppShell is built so the Metal layer + font are ready
+    // (open_path_in_native_editor triggers syntax highlighting).
+    if let Some(cwd) = shell.app.current_cwd() {
+        shell.app.restore_session(&cwd);
+    }
+
     let mut grid_painters = GridPainters {
         regular: &mut shell.painter,
         bold: &mut shell.bold_painter,
