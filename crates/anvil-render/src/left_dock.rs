@@ -85,6 +85,12 @@ pub struct DirSnapshot {
     /// The directory that was listed. Empty means "no cwd yet".
     pub root: String,
     pub entries: Vec<DirEntry>,
+    /// Git status badges per filename (item 10).
+    ///
+    /// Key: filename (basename only, not full path).
+    /// Value: `'M'` modified, `'A'` added, `'?'` untracked, `'D'` deleted.
+    /// Empty when not in a git repo or git is unavailable.
+    pub git_marks: std::collections::HashMap<String, char>,
 }
 
 /// Render-side outline symbol kind.
@@ -451,8 +457,26 @@ fn draw_explorer_section(
                     };
                     (chevron, theme.foreground)
                 } else {
-                    ("◇", theme.foreground)
+                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    (file_icon(name), theme.foreground)
                 };
+
+                // ── Indent guides (item 12) ───────────────────────────────────
+                // For each ancestor depth level, paint a 1px vertical line at
+                // the column where the parent's chevron sits.  Spans the row
+                // height so guides form continuous verticals across all rows.
+                for d in 1..=*depth {
+                    let guide_x =
+                        (rect.x + PAD_X + (d as f64 - 1.0) * INDENT_PX + cell_w * 0.5).floor();
+                    raster.fill_pixel_rect_alpha(
+                        guide_x,
+                        row_top,
+                        1.0,
+                        ROW_H,
+                        theme.text_subtle,
+                        0.5,
+                    );
+                }
 
                 let icon_x = rect.x + PAD_X + indent;
                 let label_x = icon_x + cell_w * 2.0;
@@ -475,6 +499,41 @@ fn draw_explorer_section(
 
                 // Name: entry filename only (not full path).
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+                // ── Git status badge (item 10) ────────────────────────────────
+                // Look up the filename in the root snapshot's git_marks.
+                // Nested children may not have marks; they're derived from the root listing.
+                let git_badge: Option<char> = snap.git_marks.get(name).copied().or_else(|| {
+                    // Also check child_snapshots for entries inside expanded dirs.
+                    path.parent()
+                        .and_then(|p| child_snapshots.get(p))
+                        .and_then(|cs| cs.git_marks.get(name).copied())
+                });
+                if let Some(badge) = git_badge {
+                    // Badge rendered in the gap between the file icon and the label.
+                    // Color: M=attention, A=verified, ?=text_subtle, D=failure.
+                    let badge_color = match badge {
+                        'M' => theme.attention,
+                        'A' => theme.verified,
+                        'D' => theme.failure,
+                        _ => theme.text_subtle,
+                    };
+                    let badge_x = label_x - cell_w;
+                    let badge_str: &[u8] = &[badge as u8];
+                    if let Ok(s) = std::str::from_utf8(badge_str) {
+                        draw_text_run(
+                            raster,
+                            painter,
+                            metrics,
+                            s,
+                            badge_color,
+                            badge_x,
+                            glyph_y,
+                            badge_x + cell_w,
+                        );
+                    }
+                }
+
                 let max_chars = ((max_x - label_x) / cell_w).floor().max(0.0) as usize;
                 let truncated = truncate_name(name, max_chars);
 
@@ -661,6 +720,29 @@ fn outline_kind_glyph(kind: OutlineKind) -> &'static str {
     }
 }
 
+// ── File icon helper (item 9) ─────────────────────────────────────────────────
+
+/// Return a 1–2 character glyph string for a file based on its extension (item 9).
+///
+/// These are ASCII/Unicode characters that render in the monospace grid.
+/// `.lock` uses "L" rather than 🔒 because emoji rendering through the cell
+/// grid atlas is unpredictable on different macOS font configs.
+fn file_icon(name: &str) -> &'static str {
+    // Match by extension (case-sensitive; lowercase extensions are the norm).
+    let ext = name.rfind('.').map(|i| &name[i + 1..]).unwrap_or("");
+    match ext {
+        "rs" => "r",
+        "md" | "markdown" => "M",
+        "toml" => "T",
+        "html" | "htm" => "<>",
+        "css" => "#",
+        "json" => "{}",
+        "txt" => "=",
+        "lock" => "L",
+        _ => "\u{25C7}", // ◇
+    }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Draw a string run clipped to `max_x`. Returns the x position after the last glyph.
@@ -799,6 +881,7 @@ mod tests {
         let snap = DirSnapshot {
             root: "/anvil".to_string(),
             entries: vec![],
+            git_marks: Default::default(),
         };
         draw_left_dock(&mut r, &mut p, m, &th, Some(&snap), None, None, dock_rect());
 
@@ -834,6 +917,7 @@ mod tests {
                     is_dir: false,
                 },
             ],
+            git_marks: Default::default(),
         };
 
         let hits = draw_left_dock(&mut r, &mut p, m, &th, Some(&snap), None, None, dock_rect());
@@ -865,6 +949,7 @@ mod tests {
                 name: "main.rs".to_string(),
                 is_dir: false,
             }],
+            git_marks: Default::default(),
         };
 
         let hits = draw_left_dock(&mut r, &mut p, m, &th, Some(&snap), None, None, dock_rect());
@@ -912,6 +997,7 @@ mod tests {
                     is_dir: false,
                 })
                 .collect(),
+            git_marks: Default::default(),
         };
 
         let hits = draw_left_dock_with_scroll(
@@ -955,6 +1041,7 @@ mod tests {
                     is_dir: false,
                 },
             ],
+            git_marks: Default::default(),
         };
         draw_left_dock(&mut r, &mut p, m, &th, Some(&snap), None, None, dock_rect());
 
@@ -969,16 +1056,16 @@ mod tests {
             "expected 'm' in foreground for file entry label"
         );
 
-        // File icon ◇ (U+25C7) for inactive file paints in text_muted (one
-        // step quieter than the label).
+        // File icon for `.rs` is 'r' (item 9: extension-based icons) and paints in
+        // text_muted (one step quieter than the label) for inactive files.
         let file_icon: Vec<_> = p
             .glyphs
             .iter()
-            .filter(|(cp, fg)| *cp == '\u{25C7}' as u32 && *fg == th.text_muted)
+            .filter(|(cp, fg)| *cp == 'r' as u32 && *fg == th.text_muted)
             .collect();
         assert!(
             !file_icon.is_empty(),
-            "expected file icon ◇ in text_muted for inactive file"
+            "expected file icon 'r' in text_muted for inactive .rs file"
         );
 
         // Dir chevron ▸ (U+25B8) icon paints in text_muted for inactive dir.
@@ -1012,6 +1099,7 @@ mod tests {
                     is_dir: false,
                 },
             ],
+            git_marks: Default::default(),
         };
 
         draw_left_dock(
@@ -1025,13 +1113,13 @@ mod tests {
             dock_rect(),
         );
 
-        // Selected row signaled by icon color: ◇ paints in accent_primary
-        // for the active file, text_muted for inactive. Labels stay
-        // foreground for both (selection visible via row bg + left rail).
+        // Selected row signaled by icon color: 'r' icon (item 9: .rs extension) paints
+        // in accent_primary for the active file, text_muted for inactive.
+        // Labels stay foreground for both (selection visible via row bg + left rail).
         let selected_icon: Vec<_> = p
             .glyphs
             .iter()
-            .filter(|(cp, fg)| *cp == '\u{25C7}' as u32 && *fg == th.accent_primary)
+            .filter(|(cp, fg)| *cp == 'r' as u32 && *fg == th.accent_primary)
             .collect();
         assert_eq!(
             selected_icon.len(),
@@ -1042,7 +1130,7 @@ mod tests {
         let inactive_icon: Vec<_> = p
             .glyphs
             .iter()
-            .filter(|(cp, fg)| *cp == '\u{25C7}' as u32 && *fg == th.text_muted)
+            .filter(|(cp, fg)| *cp == 'r' as u32 && *fg == th.text_muted)
             .collect();
         assert_eq!(
             inactive_icon.len(),
@@ -1070,6 +1158,7 @@ mod tests {
                     is_dir: false,
                 },
             ],
+            git_marks: Default::default(),
         };
 
         // Row 0 is hovered, not selected — should get panel fill.
@@ -1329,6 +1418,7 @@ mod tests {
                     is_dir: false,
                 })
                 .collect(),
+            git_marks: Default::default(),
         };
 
         // At offset=0: first content row (y ≈ HEADER_H + ROW_H/2 = 28+11 = 39) → entry 0.
@@ -1417,6 +1507,7 @@ mod tests {
                     is_dir: false,
                 },
             ],
+            git_marks: Default::default(),
         };
         let src_snap = DirSnapshot {
             root: "/project/src".to_string(),
@@ -1430,6 +1521,7 @@ mod tests {
                     is_dir: false,
                 },
             ],
+            git_marks: Default::default(),
         };
         let src_path = PathBuf::from("/project/src");
 
@@ -1492,6 +1584,7 @@ mod tests {
                 DirSnapshot {
                     root: name.to_string(),
                     entries: vec![],
+                    git_marks: Default::default(),
                 }
             } else {
                 DirSnapshot {
@@ -1500,6 +1593,7 @@ mod tests {
                         name: "sub".to_string(),
                         is_dir: true,
                     }],
+                    git_marks: Default::default(),
                 }
             }
         }
@@ -1522,11 +1616,13 @@ mod tests {
                         name: "sub".to_string(),
                         is_dir: true,
                     }],
+                    git_marks: Default::default(),
                 }
             } else {
                 DirSnapshot {
                     root: child_str,
                     entries: vec![],
+                    git_marks: Default::default(),
                 }
             };
             children.insert(child.clone(), snap);
@@ -1544,6 +1640,54 @@ mod tests {
             "depth cap should limit rows to at most {}, got {}",
             MAX_RENDER_DEPTH + 1,
             out.len()
+        );
+    }
+
+    /// Item 9: file_icon returns extension-appropriate glyphs.
+    #[test]
+    fn file_icon_returns_extension_glyphs() {
+        assert_eq!(file_icon("main.rs"), "r", ".rs → 'r'");
+        assert_eq!(file_icon("README.md"), "M", ".md → 'M'");
+        assert_eq!(file_icon("Cargo.toml"), "T", ".toml → 'T'");
+        assert_eq!(file_icon("index.html"), "<>", ".html → '<>'");
+        assert_eq!(file_icon("style.css"), "#", ".css → '#'");
+        assert_eq!(file_icon("config.json"), "{}", ".json returns braces icon");
+        assert_eq!(file_icon("notes.txt"), "=", ".txt → '='");
+        assert_eq!(file_icon("Cargo.lock"), "L", ".lock → 'L'");
+        assert_eq!(file_icon("binary"), "\u{25C7}", "no extension → ◇");
+        assert_eq!(file_icon("file.xyz"), "\u{25C7}", "unknown extension → ◇");
+    }
+
+    /// Item 10: git badge 'M' is rendered in attention color for a modified file.
+    #[test]
+    fn git_badge_modified_renders_in_attention_color() {
+        let m = metrics();
+        let th = theme();
+        let mut r = Raster::new(800, 800);
+        let mut p = StubPainter::default();
+
+        let mut git_marks = HashMap::new();
+        git_marks.insert("main.rs".to_string(), 'M');
+        let snap = DirSnapshot {
+            root: "/anvil/src".to_string(),
+            entries: vec![DirEntry {
+                name: "main.rs".to_string(),
+                is_dir: false,
+            }],
+            git_marks,
+        };
+
+        draw_left_dock(&mut r, &mut p, m, &th, Some(&snap), None, None, dock_rect());
+
+        // 'M' glyph in attention color must appear.
+        let badge_calls: Vec<_> = p
+            .glyphs
+            .iter()
+            .filter(|(cp, fg)| *cp == 'M' as u32 && *fg == th.attention)
+            .collect();
+        assert!(
+            !badge_calls.is_empty(),
+            "modified-file badge 'M' must render in attention color"
         );
     }
 }
