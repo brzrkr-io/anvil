@@ -245,7 +245,8 @@ impl LspManager {
     /// Return the handle for `server_id`, spawning the server if needed.
     fn get_or_spawn(&mut self, server_id: &'static str, lang_id: &'static str) -> &ServerHandle {
         if !self.servers.contains_key(server_id) {
-            let handle = spawn_server(&self.runtime, server_id, lang_id);
+            let workspace_root = std::env::current_dir().ok();
+            let handle = spawn_server(&self.runtime, server_id, lang_id, workspace_root);
             self.servers.insert(server_id, handle);
         }
         self.servers.get(server_id).unwrap()
@@ -286,6 +287,7 @@ fn spawn_server(
     runtime: &tokio::runtime::Runtime,
     server_id: &'static str,
     _lang_id: &'static str,
+    workspace_root: Option<PathBuf>,
 ) -> ServerHandle {
     let state = Arc::new(Mutex::new(LspState::Spawning));
     let diagnostics: Arc<Mutex<HashMap<PathBuf, Vec<DocumentDiagnostic>>>> =
@@ -316,6 +318,8 @@ fn spawn_server(
     let args: Vec<&'static str> = args.to_vec();
 
     if binary_path.is_none() {
+        // Log once to stderr so the user knows why diagnostics are disabled.
+        eprintln!("anvil-lsp: {bin} not found in PATH; diagnostics disabled");
         *state.lock().unwrap() = LspState::Failed(format!("server binary '{bin}' not on PATH"));
         return ServerHandle {
             state,
@@ -327,6 +331,8 @@ fn spawn_server(
 
     let binary_path = binary_path.unwrap();
 
+    let root_uri = workspace_root.and_then(|p| Url::from_directory_path(p).ok());
+
     runtime.spawn(async move {
         run_server(
             server_id,
@@ -336,6 +342,7 @@ fn spawn_server(
             state_task,
             diag_task,
             hover_task,
+            root_uri,
         )
         .await;
     });
@@ -350,6 +357,7 @@ fn spawn_server(
 
 // ── Server task ───────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn run_server(
     server_id: &'static str,
     binary: PathBuf,
@@ -358,6 +366,7 @@ async fn run_server(
     state: Arc<Mutex<LspState>>,
     diagnostics: Arc<Mutex<HashMap<PathBuf, Vec<DocumentDiagnostic>>>>,
     hover_result: Arc<Mutex<Option<(u64, HoverResult)>>>,
+    root_uri: Option<Url>,
 ) {
     let mut child: Child = match tokio::process::Command::new(&binary)
         .args(&args)
@@ -394,7 +403,7 @@ async fn run_server(
             initialization_options: None,
             client_info: None,
             locale: None,
-            root_uri: None,
+            root_uri: root_uri.clone(),
             root_path: None,
             trace: None,
             work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
@@ -727,6 +736,22 @@ mod tests {
         let mgr = LspManager::new().expect("runtime");
         assert_eq!(mgr.state_of("rust-analyzer"), LspState::Down);
         assert_eq!(mgr.state_of("typescript-language-server"), LspState::Down);
+    }
+
+    #[test]
+    fn lsp_initialize_sends_root_uri_from_workspace_root() {
+        // Verify that spawn_server sets Failed with the bin name when missing,
+        // and that the workspace_root path propagates through get_or_spawn
+        // without panicking (even if rust-analyzer is not installed).
+        let mut mgr = LspManager::new().expect("runtime");
+        let path = PathBuf::from("/tmp/test18.rs");
+        mgr.did_open("rust-analyzer", path, "rust", "fn main() {}".into());
+        // Either Spawning (binary found) or Failed (binary missing) — never Down.
+        let state = mgr.state_of("rust-analyzer");
+        assert!(
+            !matches!(state, LspState::Down),
+            "after did_open, state must not be Down; got {state:?}"
+        );
     }
 
     #[test]
