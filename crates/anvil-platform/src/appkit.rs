@@ -608,8 +608,17 @@ define_class!(
         // doesn't always finalize cleanly when long-lived background
         // threads (PTY readers, git/recent-files workers, caldera poller)
         // hold non-detached handles. Force the issue.
+        //
+        // `should_terminate` is called first so the handler can save session
+        // state and shut down LSP servers cleanly (item 19, item 20).
         #[unsafe(method(windowWillClose:))]
         fn window_will_close(&self, _notification: &NSNotification) {
+            // TODO(anvil-tier4-20-shouldterm): If this block ever needs to
+            // return NSTerminateLater for async cleanup, replace the
+            // process::exit with applicationShouldTerminate: plumbing.
+            let mut h = unsafe { self.ivars().handler.borrow_mut() };
+            h.should_terminate();
+            drop(h);
             std::process::exit(0);
         }
     }

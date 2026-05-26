@@ -358,6 +358,41 @@ impl LspManager {
             .unwrap_or(LspState::Down)
     }
 
+    /// Send `shutdown` + `exit` to every live server and wait up to 500 ms for
+    /// each.  Called from `App::shutdown` (item 20) before the process exits.
+    ///
+    /// Idempotent: calling this more than once is safe (the channel is already
+    /// closed after the first call so subsequent sends are no-ops).
+    pub fn shutdown_all(&mut self) {
+        for handle in self.servers.values() {
+            // Sending Shutdown closes the server's command loop; the task then
+            // sends the LSP `shutdown` request and breaks.  If the server is
+            // not yet `Live` (still spawning) the send will be buffered or
+            // dropped — both are fine, since kill_on_drop cleans up the child.
+            let _ = handle.tx.blocking_send(LspCommand::Shutdown);
+        }
+
+        // Give Tokio tasks a moment to flush the shutdown request.
+        // We budget 500 ms total, not per-server.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        while std::time::Instant::now() < deadline {
+            let all_down = self.servers.values().all(|h| {
+                matches!(
+                    *h.state.lock().unwrap(),
+                    LspState::Down | LspState::Failed(_)
+                )
+            });
+            if all_down {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        // Drop all handles; Tokio runtime drop will kill any remaining children
+        // (kill_on_drop(true) on the child process).
+        self.servers.clear();
+    }
+
     // ── Internal ──────────────────────────────────────────────────────────────
 
     /// Return the handle for `server_id`, spawning the server if needed.
@@ -1032,6 +1067,31 @@ mod tests {
             matches!(state, LspState::Failed(_)),
             "expected Failed, got {state:?}"
         );
+    }
+
+    #[test]
+    fn shutdown_all_on_empty_manager_is_noop() {
+        // No servers spawned; shutdown_all must return without blocking.
+        let mut mgr = LspManager::new().expect("runtime");
+        mgr.shutdown_all(); // must not panic or block
+        mgr.shutdown_all(); // idempotent second call
+    }
+
+    #[test]
+    fn shutdown_all_after_failed_server_is_idempotent() {
+        // Spawn a known-missing server (immediately Failed), then shut down
+        // twice to verify idempotency.
+        let mut mgr = LspManager::new().expect("runtime");
+        let path = PathBuf::from("/tmp/shutdown_test.rs");
+        mgr.did_open("nonexistent_server_xyz", path, "rust", String::new());
+        assert!(matches!(
+            mgr.state_of("nonexistent_server_xyz"),
+            LspState::Failed(_)
+        ));
+        mgr.shutdown_all(); // first shutdown
+        // After shutdown_all, servers map is cleared.
+        assert_eq!(mgr.state_of("nonexistent_server_xyz"), LspState::Down);
+        mgr.shutdown_all(); // second call must not panic
     }
 
     #[test]
