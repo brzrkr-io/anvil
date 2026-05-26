@@ -180,18 +180,12 @@ pub fn draw_workspace(
                         buf.git_gutter.as_ref(),
                     );
                 } else {
-                    // Buffer missing — fall back to blank fill.
-                    raster.fill_pixel_rect(
-                        e.rect.x,
-                        e.rect.y,
-                        e.rect.w,
-                        e.rect.h,
-                        theme.background,
-                    );
+                    // Buffer missing — panel fill with header strip.
+                    draw_empty_pane(raster, painters.regular, metrics, theme, e.rect);
                 }
             } else {
-                // EditorPane not registered yet — blank fill.
-                raster.fill_pixel_rect(e.rect.x, e.rect.y, e.rect.w, e.rect.h, theme.background);
+                // No PTY / editor pane yet — panel fill with compact header strip.
+                draw_empty_pane(raster, painters.regular, metrics, theme, e.rect);
             }
         }
     }
@@ -208,36 +202,58 @@ fn is_bottom_drawer(rect: &Rect, inner: &Rect, leaf_count: usize) -> bool {
     leaf_count > 1 && rect.h <= inner.h * 0.40 && rect.y > inner.y + inner.h * 0.45
 }
 
+/// Empty pane (no PTY, no editor). Solid `panel` base with a 22px `charcoal`
+/// header strip at the top showing a `text_subtle` label.
+fn draw_empty_pane(
+    raster: &mut Raster,
+    painter: &mut dyn crate::raster::GlyphPainter,
+    metrics: FontMetrics,
+    theme: &Theme,
+    rect: Rect,
+) {
+    if rect.w <= 0.0 || rect.h <= 0.0 {
+        return;
+    }
+    const PAD_X: f64 = 10.0;
+    const STRIP_H: f64 = 22.0;
+
+    raster.fill_pixel_rect(rect.x, rect.y, rect.w, rect.h, theme.panel);
+    raster.fill_pixel_rect_alpha(rect.x, rect.y, rect.w, 1.0, theme.hairline, 0.68);
+
+    let strip_h = STRIP_H.min(rect.h);
+    if strip_h > 0.0 {
+        raster.fill_pixel_rect(rect.x, rect.y, rect.w, strip_h, theme.charcoal);
+        let label = "TERMINAL  \u{2318}T";
+        let text_y = rect.y + ((strip_h - metrics.cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+        let mut gx = rect.x + PAD_X;
+        let max_x = rect.x + rect.w - PAD_X;
+        for ch in label.chars() {
+            if gx + metrics.cell_w > max_x {
+                break;
+            }
+            raster.glyph_at(painter, metrics, gx, text_y, ch as u32, theme.text_subtle);
+            gx += metrics.cell_w;
+        }
+    }
+}
+
 fn draw_terminal_drawer_chrome(
     raster: &mut Raster,
     _painter: &mut dyn crate::raster::GlyphPainter,
     _metrics: FontMetrics,
     theme: &Theme,
     rect: Rect,
-    active: bool,
+    _active: bool,
 ) {
     if rect.w <= 0.0 || rect.h <= 0.0 {
         return;
     }
 
-    // The preserved PTY is a secondary IDE drawer, not a second primary
-    // terminal canvas. Wash it toward the Mineral panel stack while keeping
-    // output readable underneath; reserve Ember for actual execution/unseen
-    // output indicators elsewhere.
-    raster.fill_pixel_rect_alpha(rect.x, rect.y, rect.w, rect.h, theme.charcoal, 0.34);
-
-    let cap_h = 18.0_f64.min(rect.h.max(0.0));
-    if cap_h > 0.0 {
-        raster.fill_pixel_rect_alpha(rect.x, rect.y, rect.w, cap_h, theme.surface, 0.18);
-    }
-
-    let top_rule = if active {
-        theme.accent_primary
-    } else {
-        theme.hairline
-    };
-    let top_alpha = if active { 0.48 } else { 0.68 };
-    raster.fill_pixel_rect_alpha(rect.x, rect.y, rect.w, 1.0, top_rule, top_alpha);
+    // Solid panel base under the terminal viewport — consistent surface that
+    // recedes behind the editor. Top separator is always hairline (structure,
+    // not state).
+    raster.fill_pixel_rect(rect.x, rect.y, rect.w, rect.h, theme.panel);
+    raster.fill_pixel_rect_alpha(rect.x, rect.y, rect.w, 1.0, theme.hairline, 0.68);
 }
 
 fn draw_editor_chrome(

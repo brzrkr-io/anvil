@@ -105,16 +105,16 @@ pub struct OutlineRow {
 // ── Row geometry ──────────────────────────────────────────────────────────────
 
 /// Height of a section header row in pixels (fixed; chrome font sized).
-const HEADER_H: f64 = 30.0;
+const HEADER_H: f64 = 28.0;
 
 /// Height of a content row in pixels.
 ///
-/// Explorer/outline rows are mouse targets in IDE mode, not terminal cells. Keep
-/// them at a desktop-control size so users do not need pixel-perfect aim.
-const ROW_H: f64 = 32.0;
+/// 22px matches the IDE redesign spec (§5, 2026-05-24-ide-redesign.md),
+/// VS Code, and Zed — compact operational layout.
+const ROW_H: f64 = 22.0;
 
 /// Horizontal padding inside the dock.
-const PAD_X: f64 = 12.0;
+const PAD_X: f64 = 10.0;
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
@@ -147,6 +147,7 @@ pub fn draw_left_dock(
         outline,
         rect,
         0,
+        None,
     )
 }
 
@@ -161,6 +162,7 @@ pub fn draw_left_dock_with_scroll(
     outline: Option<&[OutlineRow]>,
     rect: Rect,
     explorer_scroll_offset: usize,
+    hovered_row: Option<usize>,
 ) -> LeftDockHits {
     let mut hits = LeftDockHits::default();
     if rect.w <= 0.0 || rect.h <= 0.0 {
@@ -219,6 +221,7 @@ pub fn draw_left_dock_with_scroll(
         snapshot,
         active_file_path,
         explorer_scroll_offset,
+        hovered_row,
         explorer_rect,
         &mut hits,
     );
@@ -245,6 +248,7 @@ fn draw_explorer_section(
     snapshot: Option<&DirSnapshot>,
     active_file_path: Option<&Path>,
     scroll_offset: usize,
+    hovered_row: Option<usize>,
     rect: Rect,
     hits: &mut LeftDockHits,
 ) {
@@ -358,29 +362,29 @@ fn draw_explorer_section(
                 let row_x = rect.x + 6.0;
                 let row_w = (rect.w - 12.0).max(0.0);
                 if selected {
-                    raster.fill_pixel_rect_alpha(
+                    // Solid panel fill + 2px accent_primary left rail.
+                    raster.fill_pixel_rect(
                         row_x,
                         row_top + 2.0,
                         row_w,
                         (ROW_H - 4.0).max(0.0),
-                        theme.accent_primary,
-                        0.14,
+                        theme.panel,
                     );
                     raster.fill_pixel_rect(
                         row_x,
-                        row_top + 4.0,
+                        row_top + 2.0,
                         2.0,
-                        (ROW_H - 8.0).max(0.0),
+                        (ROW_H - 4.0).max(0.0),
                         theme.accent_primary,
                     );
-                } else if row_i % 2 == 0 {
-                    raster.fill_pixel_rect_alpha(
+                } else if hovered_row == Some(visible_i) {
+                    // Hover: solid panel fill, no left marker.
+                    raster.fill_pixel_rect(
                         row_x,
                         row_top + 2.0,
                         row_w,
                         (ROW_H - 4.0).max(0.0),
-                        theme.surface,
-                        0.05,
+                        theme.panel,
                     );
                 }
 
@@ -404,7 +408,7 @@ fn draw_explorer_section(
                     metrics,
                     icon,
                     if selected {
-                        theme.accent_bright
+                        theme.accent_primary
                     } else if entry.is_dir {
                         theme.text_subtle
                     } else {
@@ -810,7 +814,7 @@ mod tests {
             .expect("row hit region should be emitted for visible explorer row");
 
         assert!(
-            row_hit.rect.h >= 30.0,
+            row_hit.rect.h >= 20.0,
             "explorer rows must be easy mouse targets, got height {}",
             row_hit.rect.h
         );
@@ -836,9 +840,12 @@ mod tests {
         let mut r = Raster::new(800, 800);
         let mut p = StubPainter::default();
 
+        // Use 25 entries: with ROW_H=22 and explorer_h=480px, available_rows=20,
+        // so 25 entries give 5 overflow rows and scroll_offset=1 is not clamped.
+        // Entry[1] appears in visible slot 0 at y=[28, 50). Hit at y=36 → Row(1).
         let snap = DirSnapshot {
             root: "/anvil".to_string(),
-            entries: (0..20)
+            entries: (0..25)
                 .map(|i| DirEntry {
                     name: format!("file-{i}.rs"),
                     is_dir: false,
@@ -856,6 +863,7 @@ mod tests {
             None,
             dock_rect(),
             1,
+            None,
         );
 
         assert_eq!(
@@ -960,6 +968,83 @@ mod tests {
             editor_e_selected.is_empty(),
             "selection must come from active_file_path, not a hardcoded editor.rs row"
         );
+    }
+
+    /// Hover paints solid `panel` only when the row is not selected.
+    /// Selected row suppresses hover rendering.
+    #[test]
+    fn hover_paints_panel_only_when_not_selected() {
+        let m = metrics();
+        let th = theme();
+
+        let snap = DirSnapshot {
+            root: "/anvil/src".to_string(),
+            entries: vec![
+                DirEntry {
+                    name: "foo.rs".to_string(),
+                    is_dir: false,
+                },
+                DirEntry {
+                    name: "bar.rs".to_string(),
+                    is_dir: false,
+                },
+            ],
+        };
+
+        // Row 0 is hovered, not selected — should get panel fill.
+        {
+            let mut r = Raster::new(800, 800);
+            r.clear(th.charcoal);
+            let mut p = StubPainter::default();
+            draw_left_dock_with_scroll(
+                &mut r,
+                &mut p,
+                m,
+                &th,
+                Some(&snap),
+                None, // no active file
+                None,
+                dock_rect(),
+                0,
+                Some(0), // hover row 0
+            );
+            // Row 0 occupies y=[HEADER_H, HEADER_H+ROW_H) = [28, 50).
+            // The fill rect is row_top+2 .. row_top+ROW_H-2 = [30, 48).
+            // Sample the fill interior: x=50, y=38 (middle of fill strip).
+            let px = pixel_at(&r, 50, 38);
+            assert_eq!(
+                px, th.panel,
+                "hovered non-selected row must be filled with panel, got {px:?}"
+            );
+        }
+
+        // Row 0 is both hovered AND selected — selected wins, no plain panel hover.
+        // Selected fill is also panel, but with a 2px accent_primary left rail.
+        // The left-rail pixel (x=6+1=7) should be accent_primary, not just panel.
+        {
+            let mut r = Raster::new(800, 800);
+            r.clear(th.charcoal);
+            let mut p = StubPainter::default();
+            draw_left_dock_with_scroll(
+                &mut r,
+                &mut p,
+                m,
+                &th,
+                Some(&snap),
+                Some(Path::new("/anvil/src/foo.rs")), // foo.rs is selected (row 0)
+                None,
+                dock_rect(),
+                0,
+                Some(0), // hover row 0 as well
+            );
+            // Left-rail pixel (x=rect.x+6=6, inside 2px rail) should be accent_primary.
+            // Row 0 fill starts at row_top+2 = 28+2 = 30. Sample y=38.
+            let rail_px = pixel_at(&r, 6, 38);
+            assert_eq!(
+                rail_px, th.accent_primary,
+                "selected row must show accent_primary left rail even when also hovered, got {rail_px:?}"
+            );
+        }
     }
 
     /// Outline section with `None` shows calm empty-state copy.

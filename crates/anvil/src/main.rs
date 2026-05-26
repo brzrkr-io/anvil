@@ -596,6 +596,9 @@ pub struct App {
     /// Top visible row in the Explorer. Mouse wheel over the dock adjusts this
     /// without stealing focus from the active editor/terminal pane.
     explorer_scroll_offset: usize,
+    /// The explorer row index currently under the cursor (for hover highlight).
+    /// `None` when the cursor is outside the dock.
+    hovered_explorer_row: Option<usize>,
     /// Last cwd sent to the fs worker; used to debounce re-sends.
     fs_last_cwd: Option<String>,
 
@@ -2182,6 +2185,7 @@ impl App {
                     outline_rows.as_deref(),
                     areas.left_dock,
                     self.explorer_scroll_offset,
+                    self.hovered_explorer_row,
                 );
             } else {
                 self.left_dock_hits.clear();
@@ -4236,6 +4240,22 @@ impl AppHandler for AppShell {
     fn mouse_dragged(&mut self, loc: MouseLocation) {
         let app = &mut self.app;
 
+        // Update explorer hover state from mouse position.
+        {
+            let (rx, ry) = app.view_pt_to_raster_px(loc);
+            let new_hover = app.left_dock_hits.at(rx, ry).and_then(|kind| {
+                if let LeftDockHitKind::Explorer(ExplorerHit::Row(i)) = kind {
+                    Some(*i)
+                } else {
+                    None
+                }
+            });
+            if new_hover != app.hovered_explorer_row {
+                app.hovered_explorer_row = new_hover;
+                app.dirty = true;
+            }
+        }
+
         // Native editor drag-select: extend selection to current pointer (NE7).
         if app.editor_mouse_drag_start.is_some() && app.focused_is_native_editor() {
             if let Some(pos) = app.native_editor_pos_at(loc) {
@@ -5115,6 +5135,7 @@ fn main() -> Result<()> {
         fs_snapshot: None,
         active_explorer_file: None,
         explorer_scroll_offset: 0,
+        hovered_explorer_row: None,
         fs_last_cwd: None,
         agent_pulse_phase: 0.0,
         last_agent_pulse_opacity: -1.0,
