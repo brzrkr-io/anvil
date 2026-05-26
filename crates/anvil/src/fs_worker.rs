@@ -40,25 +40,43 @@ const SKIP_DIRS: &[&str] = &["target", "node_modules", ".git"];
 /// Maximum visible entries before an overflow sentinel is appended.
 const ENTRY_CAP: usize = 200;
 
-/// Spawn the fs worker. Returns `(tx, rx)`.
+/// Spawn the fs worker. Returns `(tx, rx, show_hidden_tx)`.
 ///
 /// - `tx`: main thread sends `PathBuf` (cwd) requests.
 /// - `rx`: main thread drains `DirSnapshot` results.
-pub fn spawn_fs_worker() -> (mpsc::SyncSender<PathBuf>, mpsc::Receiver<DirSnapshot>) {
+/// - `show_hidden_tx`: main thread sends the current `show_hidden` flag; the
+///   worker uses the latest value it has seen when serving the next request.
+pub fn spawn_fs_worker() -> (
+    mpsc::SyncSender<PathBuf>,
+    mpsc::Receiver<DirSnapshot>,
+    mpsc::SyncSender<bool>,
+) {
     let (req_tx, req_rx) = mpsc::sync_channel::<PathBuf>(8);
     let (snap_tx, snap_rx) = mpsc::sync_channel::<DirSnapshot>(8);
+    let (hidden_tx, hidden_rx) = mpsc::sync_channel::<bool>(4);
 
     std::thread::Builder::new()
         .name("anvil-fs-worker".to_string())
         .spawn(move || {
             let mut last_sent: Option<(PathBuf, Instant)> = None;
+            let mut show_hidden = false;
 
             loop {
+                // Drain any pending show_hidden flag updates.
+                while let Ok(h) = hidden_rx.try_recv() {
+                    show_hidden = h;
+                }
+
                 // Block until we have at least one request.
                 let first = match req_rx.recv() {
                     Ok(p) => p,
                     Err(_) => return, // sender dropped — exit cleanly
                 };
+
+                // Drain any pending flag updates that arrived while blocked.
+                while let Ok(h) = hidden_rx.try_recv() {
+                    show_hidden = h;
+                }
 
                 // Drain remaining queued requests; keep only the latest.
                 let mut latest = first;
@@ -74,7 +92,7 @@ pub fn spawn_fs_worker() -> (mpsc::SyncSender<PathBuf>, mpsc::Receiver<DirSnapsh
                     }
                 }
 
-                let snap = read_dir_snapshot(&latest);
+                let snap = read_dir_snapshot(&latest, show_hidden);
                 last_sent = Some((latest, now));
                 // Non-blocking: drop if main thread is not consuming.
                 let _ = snap_tx.try_send(snap);
@@ -82,8 +100,14 @@ pub fn spawn_fs_worker() -> (mpsc::SyncSender<PathBuf>, mpsc::Receiver<DirSnapsh
         })
         .expect("failed to spawn anvil-fs-worker thread");
 
-    (req_tx, snap_rx)
+    (req_tx, snap_rx, hidden_tx)
 }
+
+/// Request type for the child-fs worker — `(directory_path, show_hidden)`.
+pub type ChildFsRequest = (PathBuf, bool);
+
+/// Response type for the child-fs worker — `(directory_path, snapshot)`.
+pub type ChildFsResponse = (PathBuf, DirSnapshot);
 
 /// Spawn a worker that loads child directories on demand.
 ///
@@ -93,22 +117,22 @@ pub fn spawn_fs_worker() -> (mpsc::SyncSender<PathBuf>, mpsc::Receiver<DirSnapsh
 ///   dir plus its listing.  The key is the dir path so the caller can store the
 ///   snapshot in `child_snapshots`.
 pub fn spawn_child_fs_worker() -> (
-    mpsc::SyncSender<PathBuf>,
-    mpsc::Receiver<(PathBuf, DirSnapshot)>,
+    mpsc::SyncSender<ChildFsRequest>,
+    mpsc::Receiver<ChildFsResponse>,
 ) {
-    let (req_tx, req_rx) = mpsc::sync_channel::<PathBuf>(32);
-    let (snap_tx, snap_rx) = mpsc::sync_channel::<(PathBuf, DirSnapshot)>(32);
+    let (req_tx, req_rx) = mpsc::sync_channel::<ChildFsRequest>(32);
+    let (snap_tx, snap_rx) = mpsc::sync_channel::<ChildFsResponse>(32);
 
     std::thread::Builder::new()
         .name("anvil-child-fs-worker".to_string())
         .spawn(move || {
             loop {
-                let path = match req_rx.recv() {
+                let (path, show_hidden) = match req_rx.recv() {
                     Ok(p) => p,
                     Err(_) => return,
                 };
                 // Drain extras; no debounce needed — each path is unique per expand.
-                let snap = read_dir_snapshot(&path);
+                let snap = read_dir_snapshot(&path, show_hidden);
                 let _ = snap_tx.try_send((path, snap));
             }
         })
@@ -122,8 +146,11 @@ pub fn spawn_child_fs_worker() -> (
 ///
 /// Includes `git_marks`. May block for hundreds of ms on large repos because
 /// `git status --porcelain` is synchronous. Always call from a worker thread.
-pub fn read_dir_snapshot(root: &PathBuf) -> DirSnapshot {
-    let entries = read_entries(root).unwrap_or_default();
+///
+/// When `show_hidden` is `true`, dot-prefix entries are included (except for
+/// the permanently-skipped `SKIP_DIRS` entries like `.git`).
+pub fn read_dir_snapshot(root: &PathBuf, show_hidden: bool) -> DirSnapshot {
+    let entries = read_entries(root, show_hidden).unwrap_or_default();
     let git_marks = read_git_marks(root);
     DirSnapshot {
         root: root.clone(),
@@ -135,8 +162,10 @@ pub fn read_dir_snapshot(root: &PathBuf) -> DirSnapshot {
 /// Like [`read_dir_snapshot`] but skips the `git status` shell-out. Fast and
 /// safe to call on the main thread (e.g. for the synchronous startup seed).
 /// The worker thread will repopulate `git_marks` on the next async refresh.
-pub fn read_dir_snapshot_fast(root: &PathBuf) -> DirSnapshot {
-    let entries = read_entries(root).unwrap_or_default();
+///
+/// When `show_hidden` is `true`, dot-prefix entries are included.
+pub fn read_dir_snapshot_fast(root: &PathBuf, show_hidden: bool) -> DirSnapshot {
+    let entries = read_entries(root, show_hidden).unwrap_or_default();
     DirSnapshot {
         root: root.clone(),
         entries,
@@ -203,7 +232,11 @@ fn read_git_marks(root: &Path) -> HashMap<String, char> {
 }
 
 /// Read, filter, sort, and cap entries. Returns `Err` on IO failure.
-fn read_entries(root: &PathBuf) -> Result<Vec<DirEntry>, std::io::Error> {
+///
+/// When `show_hidden` is `false` (the default), dot-prefix entries are
+/// skipped.  When `true` they are included, except for `SKIP_DIRS` which are
+/// always filtered out.
+fn read_entries(root: &PathBuf, show_hidden: bool) -> Result<Vec<DirEntry>, std::io::Error> {
     let mut dirs: Vec<String> = Vec::new();
     let mut files: Vec<String> = Vec::new();
 
@@ -216,8 +249,8 @@ fn read_entries(root: &PathBuf) -> Result<Vec<DirEntry>, std::io::Error> {
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
 
-        // Skip hidden (dot-prefix) entries.
-        if name_str.starts_with('.') {
+        // Skip hidden (dot-prefix) entries unless show_hidden is set.
+        if !show_hidden && name_str.starts_with('.') {
             continue;
         }
 
@@ -296,7 +329,7 @@ mod tests {
         fs::write(root.join("mango.txt"), "").unwrap();
         fs::create_dir(root.join("src")).unwrap();
 
-        let snap = read_dir_snapshot(&root);
+        let snap = read_dir_snapshot(&root, false);
 
         assert_eq!(snap.root, root);
         assert!(!snap.entries.is_empty());
@@ -320,7 +353,7 @@ mod tests {
     #[test]
     fn unreadable_path_empty_no_panic() {
         let path = PathBuf::from("/nonexistent/path/that/does/not/exist");
-        let snap = read_dir_snapshot(&path);
+        let snap = read_dir_snapshot(&path, false);
         assert_eq!(snap.root, path);
         assert!(
             snap.entries.is_empty(),
@@ -328,7 +361,7 @@ mod tests {
         );
     }
 
-    /// Hidden files (dot-prefix) are excluded.
+    /// Hidden files (dot-prefix) are excluded when show_hidden is false.
     #[test]
     fn hidden_files_excluded() {
         let root = make_test_dir("hidden");
@@ -336,10 +369,32 @@ mod tests {
         fs::write(root.join(".hidden"), "").unwrap();
         fs::write(root.join("visible.txt"), "").unwrap();
 
-        let snap = read_dir_snapshot(&root);
+        let snap = read_dir_snapshot(&root, false);
         assert!(snap.entries.iter().all(|e| !e.name.starts_with('.')));
         assert_eq!(snap.entries.len(), 1);
         assert_eq!(snap.entries[0].name, "visible.txt");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// When show_hidden is true, dot-prefix files appear (except SKIP_DIRS).
+    #[test]
+    fn hidden_files_included_when_show_hidden() {
+        let root = make_test_dir("show_hidden");
+
+        fs::write(root.join(".env"), "").unwrap();
+        fs::write(root.join("visible.txt"), "").unwrap();
+        // .git is always skipped even when show_hidden is true.
+        fs::create_dir(root.join(".git")).unwrap();
+
+        let snap = read_dir_snapshot_fast(&root, true);
+        let names: Vec<&str> = snap.entries.iter().map(|e| e.name.as_str()).collect();
+        assert!(
+            names.contains(&".env"),
+            ".env should be visible with show_hidden"
+        );
+        assert!(names.contains(&"visible.txt"));
+        assert!(!names.contains(&".git"), ".git always skipped");
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -354,7 +409,7 @@ mod tests {
         }
         fs::write(root.join("Cargo.toml"), "").unwrap();
 
-        let snap = read_dir_snapshot(&root);
+        let snap = read_dir_snapshot(&root, false);
         let names: Vec<&str> = snap.entries.iter().map(|e| e.name.as_str()).collect();
         assert!(!names.contains(&"target"), "target should be excluded");
         assert!(

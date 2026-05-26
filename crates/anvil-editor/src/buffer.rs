@@ -252,6 +252,9 @@ pub struct Buffer {
     /// The value of `revisions` at the last save (or 0 at load). Used to decide
     /// whether the buffer is clean when a disk-change event arrives (item 27).
     pub saved_revision: u64,
+    /// Q22: user-set language override (LSP language-id, e.g. `"rust"`).
+    /// When set, takes precedence over the extension-inferred language.
+    pub language_override: Option<String>,
 }
 
 impl Buffer {
@@ -270,6 +273,7 @@ impl Buffer {
             saved_revision: 0,
             syntax: SyntaxLayer::new(),
             git_gutter: None,
+            language_override: None,
         }
     }
 
@@ -288,6 +292,7 @@ impl Buffer {
             saved_revision: 0,
             syntax: SyntaxLayer::new(),
             git_gutter: None,
+            language_override: None,
         }
     }
 
@@ -432,16 +437,54 @@ impl Buffer {
         }
     }
 
-    /// Return the LSP language-id for this buffer, derived from the file
-    /// extension of `tracked_path`.  `None` for scratch buffers or unknown
-    /// extensions.
+    /// Return the LSP language-id for this buffer.
+    ///
+    /// Returns `language_override` first if set; otherwise derived from the
+    /// file extension of `tracked_path`.  `None` for scratch buffers or
+    /// unknown extensions.
     pub fn language_id(&self) -> Option<&'static str> {
+        if let Some(ref ov) = self.language_override {
+            // Map the stored override back to a `'static str`.
+            return crate::lsp::language_id_for_ext(lang_id_to_ext(ov));
+        }
         let ext = self
             .tracked_path
             .as_ref()?
             .extension()
             .and_then(|e| e.to_str())?;
         crate::lsp::language_id_for_ext(ext)
+    }
+
+    /// Override the syntax language for this buffer.
+    ///
+    /// `lang_id` is an LSP language identifier (e.g. `"rust"`, `"python"`).
+    /// Rebuilds the syntax tree from the current buffer text.
+    pub fn set_language(&mut self, lang_id: &str) {
+        // Map lang-id → canonical extension for set_language_from_path.
+        let ext = match lang_id {
+            "rust" => "rs",
+            "typescript" => "ts",
+            "python" => "py",
+            "toml" => "toml",
+            "json" => "json",
+            "markdown" => "md",
+            _ => return,
+        };
+        let fake_path = std::path::Path::new("x").with_extension(ext);
+        self.syntax.set_language_from_path(&fake_path);
+        let text = self.rope.to_string();
+        self.syntax.parse(&text);
+        self.language_override = Some(lang_id.to_string());
+    }
+
+    /// Clear a previously set language override, reverting to extension-based detection.
+    pub fn clear_language_override(&mut self) {
+        self.language_override = None;
+        if let Some(path) = self.tracked_path.clone() {
+            self.syntax.set_language_from_path(&path);
+            let text = self.rope.to_string();
+            self.syntax.parse(&text);
+        }
     }
 
     /// Returns `true` if the file on disk has been modified since the buffer
@@ -936,6 +979,22 @@ impl Default for Buffer {
 }
 
 // ---------------------------------------------------------------------------
+// Language-id helpers (Q22) --------------------------------------------------
+
+/// Map a language-id (e.g. `"rust"`) to the canonical file extension (e.g.
+/// `"rs"`) used by `language_id_for_ext`. Returns `""` for unknowns.
+fn lang_id_to_ext(lang_id: &str) -> &'static str {
+    match lang_id {
+        "rust" => "rs",
+        "typescript" => "ts",
+        "python" => "py",
+        "toml" => "toml",
+        "json" => "json",
+        "markdown" => "md",
+        _ => "",
+    }
+}
+
 // Encoding helpers (NE2) — std only, no new crates
 // ---------------------------------------------------------------------------
 
@@ -1040,6 +1099,7 @@ impl Buffer {
             saved_revision: 0,
             syntax: SyntaxLayer::new(),
             git_gutter: None,
+            language_override: None,
         }
     }
 

@@ -578,6 +578,16 @@ struct BufferSymbolSearch {
     selected: usize,
 }
 
+// ── LanguagePickerState (Q22) ─────────────────────────────────────────────────
+
+/// State for the Cmd+K Cmd+L language-picker overlay.
+struct LanguagePickerState {
+    /// Filter text typed by the user.
+    query: String,
+    /// Currently selected row index into the filtered list.
+    selected: usize,
+}
+
 // ── App ───────────────────────────────────────────────────────────────────────
 
 /// The whole application state.  Implements [`AppHandler`] via [`AppShell`].
@@ -756,12 +766,15 @@ pub struct App {
     // -- filesystem worker (left dock, ID3) ---
     fs_tx: mpsc::SyncSender<PathBuf>,
     fs_rx: mpsc::Receiver<fs_worker::DirSnapshot>,
+    /// Sends the current `show_hidden_files` flag to the fs worker so the
+    /// next snapshot respects the toggle (Q56).
+    fs_hidden_tx: mpsc::SyncSender<bool>,
     /// Worker for child-directory expansions. Receiver kept so async
     /// re-snapshots (e.g. on watch events) can still drain results; sender
     /// retired because explorer click reads synchronously now.
     #[allow(dead_code)]
-    child_fs_tx: mpsc::SyncSender<PathBuf>,
-    child_fs_rx: mpsc::Receiver<(PathBuf, fs_worker::DirSnapshot)>,
+    child_fs_tx: mpsc::SyncSender<fs_worker::ChildFsRequest>,
+    child_fs_rx: mpsc::Receiver<fs_worker::ChildFsResponse>,
     fs_snapshot: Option<LeftDockSnapshot>,
     /// Per-directory child snapshots, populated lazily on first expand.
     child_snapshots: HashMap<PathBuf, LeftDockSnapshot>,
@@ -939,6 +952,24 @@ pub struct App {
     /// Pixel rects for the ◀ / ▶ arrows in the search bar. Repopulated each
     /// frame when the search bar is open; consumed by `mouse_down`.
     search_bar_hits: anvil_render::searchbar::SearchBarArrowHits,
+
+    // ── Show-hidden-files toggle (Q56) ────────────────────────────────────────
+    /// When true, the Explorer and fs worker include dot-prefix entries.
+    /// Toggled by Cmd+Shift+.; persisted in session JSON.
+    show_hidden_files: bool,
+
+    // ── Closed-tab history (Q16) ──────────────────────────────────────────────
+    /// Paths of recently closed editor buffers (most-recent at back). Cap 20.
+    /// Cmd+Shift+T pops the most-recent entry and reopens it.
+    closed_tabs: std::collections::VecDeque<PathBuf>,
+
+    // ── Language picker overlay (Q22) ─────────────────────────────────────────
+    /// When `Some`, the Cmd+K Cmd+L language-picker overlay is open.
+    language_picker: Option<LanguagePickerState>,
+
+    // ── Open-folder overlay (Q19) ─────────────────────────────────────────────
+    /// When `Some`, the Cmd+K Cmd+O open-folder path-input overlay is open.
+    open_folder_input: Option<String>,
 }
 
 // ── App helpers ───────────────────────────────────────────────────────────────
@@ -1683,7 +1714,10 @@ impl App {
                             // This is an intermediate directory; expand it.
                             if !self.expanded_dirs.contains(&cur) {
                                 if !self.child_snapshots.contains_key(&cur) {
-                                    let child_snap = fs_worker::read_dir_snapshot_fast(&cur);
+                                    let child_snap = fs_worker::read_dir_snapshot_fast(
+                                        &cur,
+                                        self.show_hidden_files,
+                                    );
                                     self.child_snapshots.insert(
                                         cur.clone(),
                                         LeftDockSnapshot {
@@ -1736,6 +1770,34 @@ impl App {
             return 1;
         }
         (content_h / row_h).floor() as usize
+    }
+
+    /// Rebuild `fs_snapshot` synchronously from the current root using the
+    /// current `show_hidden_files` flag. Called after toggling Q56.
+    fn refresh_fs_snapshot(&mut self) {
+        let root = match &self.fs_snapshot {
+            Some(s) => PathBuf::from(&s.root),
+            None => match std::env::current_dir() {
+                Ok(p) => p,
+                Err(_) => return,
+            },
+        };
+        let snap = fs_worker::read_dir_snapshot_fast(&root, self.show_hidden_files);
+        self.fs_snapshot = Some(LeftDockSnapshot {
+            root: snap.root.to_string_lossy().into_owned(),
+            entries: snap
+                .entries
+                .into_iter()
+                .map(|e| anvil_render::left_dock::DirEntry {
+                    name: e.name,
+                    is_dir: e.is_dir,
+                })
+                .collect(),
+            git_marks: snap.git_marks,
+        });
+        // Also clear child snapshots so sub-dirs refresh on next expand.
+        self.child_snapshots.clear();
+        self.force_full_redraw = true;
     }
 
     fn open_path_in_native_editor(&mut self, path: &Path) {
@@ -1893,6 +1955,24 @@ impl App {
         }
         self.resize_all_tabs();
         self.snap_anim();
+        self.dirty = true;
+    }
+
+    /// Q22: set the language override on the active buffer.
+    /// `lang_id` is an LSP language identifier (e.g. `"rust"`, `"python"`).
+    fn set_active_buffer_language(&mut self, lang_id: &str) {
+        let Some(tab) = self.tabs.current_mut() else {
+            return;
+        };
+        let pane_id = tab.focused_id();
+        let Some(ep) = tab.editor_panes.get_pane(pane_id) else {
+            return;
+        };
+        let bid = ep.buffer_id;
+        if let Some(buf) = tab.editor_panes.get_buffer_mut(bid) {
+            buf.set_language(lang_id);
+        }
+        self.force_full_redraw = true;
         self.dirty = true;
     }
 
@@ -3755,6 +3835,41 @@ impl App {
         }
 
         // ── Project switcher overlay (item 30) ────────────────────────────────
+        // ── Open-folder overlay (Q19) ─────────────────────────────────────────
+        if let Some(ref input) = self.open_folder_input {
+            let cw = self.font.metrics.cell_w;
+            let chrome_top = self.chrome_top_px();
+            draw_open_folder_overlay(
+                &mut self.raster,
+                chrome_painter,
+                chrome_metrics,
+                &self.theme,
+                input,
+                dw as f64,
+                chrome_top,
+                cw,
+                ch,
+            );
+        }
+
+        // ── Language picker overlay (Q22) ─────────────────────────────────────
+        if let Some(ref picker) = self.language_picker {
+            let cw = self.font.metrics.cell_w;
+            let chrome_top = self.chrome_top_px();
+            draw_language_picker_overlay(
+                &mut self.raster,
+                chrome_painter,
+                chrome_metrics,
+                &self.theme,
+                &picker.query,
+                picker.selected,
+                dw as f64,
+                chrome_top,
+                cw,
+                ch,
+            );
+        }
+
         if self.project_switcher_open {
             let cw = self.font.metrics.cell_w;
             let chrome_top = self.chrome_top_px();
@@ -4473,12 +4588,32 @@ impl App {
                     let pane_id = tab.focused_id();
                     let buffer_id = tab.editor_panes.get_pane(pane_id).map(|ep| ep.buffer_id);
                     if let Some(buffer_id) = buffer_id {
+                        // Q16: record path before closing so Cmd+Shift+T can reopen it.
+                        let closed_path = tab
+                            .editor_panes
+                            .get_buffer(buffer_id)
+                            .and_then(|b| b.tracked_path())
+                            .map(|p| p.to_path_buf());
                         tab.editor_panes.close_buffer(pane_id, buffer_id);
                         let new_bid = tab.editor_panes.get_pane(pane_id).map(|ep| ep.buffer_id);
                         if let Some(pane) = tab.registry.get_mut(pane_id) {
                             pane.editor_id = new_bid;
                         }
+                        if let Some(path) = closed_path {
+                            self.closed_tabs.push_back(path);
+                            if self.closed_tabs.len() > 20 {
+                                self.closed_tabs.pop_front();
+                            }
+                        }
                     }
+                }
+                self.dirty = true;
+                return true;
+            }
+            // Q16: Cmd+Shift+T → reopen last closed buffer tab.
+            if lch == 't' && mods.shift && !mods.control && !mods.option {
+                if let Some(path) = self.closed_tabs.pop_back() {
+                    self.open_path_in_native_editor(&path);
                 }
                 self.dirty = true;
                 return true;
@@ -4504,6 +4639,16 @@ impl App {
             // Item 25: Cmd+. → code actions.
             if ch == '.' && !mods.shift && !mods.control && !mods.option {
                 self.trigger_code_actions_request();
+                self.dirty = true;
+                return true;
+            }
+            // Q56: Cmd+Shift+. → toggle hidden files in Explorer.
+            if ch == '.' && mods.shift && !mods.control && !mods.option {
+                self.show_hidden_files = !self.show_hidden_files;
+                // Notify the fs worker of the new flag.
+                let _ = self.fs_hidden_tx.try_send(self.show_hidden_files);
+                // Refresh snapshot immediately so Explorer updates this frame.
+                self.refresh_fs_snapshot();
                 self.dirty = true;
                 return true;
             }
@@ -4964,6 +5109,23 @@ impl App {
             recent_projects.truncate(20);
         }
 
+        // Q22: collect per-buffer language overrides.
+        let mut language_overrides = std::collections::HashMap::new();
+        for tab in &self.tabs.tabs {
+            for (_pane_id, ep) in tab.editor_panes.panes_iter() {
+                for &bid in &ep.open_buffers {
+                    if let Some(buf) = tab.editor_panes.get_buffer(bid) {
+                        if let Some(ref ov) = buf.language_override {
+                            if let Some(path) = buf.tracked_path() {
+                                language_overrides
+                                    .insert(path.to_string_lossy().into_owned(), ov.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         session::SessionState {
             ui_scale: self.ui_scale,
             font_scale: self.font_scale,
@@ -4976,6 +5138,8 @@ impl App {
             expanded_dirs: self.expanded_dirs.iter().cloned().collect(),
             open_buffers,
             recent_projects,
+            show_hidden_files: self.show_hidden_files,
+            language_overrides,
         }
     }
 
@@ -5023,6 +5187,9 @@ impl App {
         for p in state.expanded_dirs {
             self.expanded_dirs.insert(p);
         }
+        // Q56: restore show_hidden_files flag.
+        self.show_hidden_files = state.show_hidden_files;
+
         // Restore open buffers: open each saved path in the native editor.
         // The active path is opened last so it ends up as the active buffer.
         for pane_session in &state.open_buffers {
@@ -5039,6 +5206,28 @@ impl App {
             // Open active path last so it becomes the focused buffer.
             if let Some(active) = &pane_session.active_path {
                 self.open_path_in_native_editor(active);
+            }
+        }
+        // Q22: re-apply language overrides to restored buffers.
+        if !state.language_overrides.is_empty() {
+            for tab in &mut self.tabs.tabs {
+                // Collect (buffer_id, path, lang) triples to avoid borrow conflict.
+                let to_override: Vec<(anvil_editor::BufferId, String)> = tab
+                    .editor_panes
+                    .panes_iter()
+                    .flat_map(|(_pid, ep)| ep.open_buffers.iter().copied())
+                    .filter_map(|bid| {
+                        let buf = tab.editor_panes.get_buffer(bid)?;
+                        let path = buf.tracked_path()?.to_string_lossy().into_owned();
+                        let lang = state.language_overrides.get(&path)?.clone();
+                        Some((bid, lang))
+                    })
+                    .collect();
+                for (bid, lang) in to_override {
+                    if let Some(buf) = tab.editor_panes.get_buffer_mut(bid) {
+                        buf.set_language(&lang);
+                    }
+                }
             }
         }
         // Item 30: restore recent projects list.
@@ -6194,6 +6383,110 @@ impl AppHandler for AppShell {
             return;
         }
 
+        // ── Open-folder overlay (Q19: Cmd+K Cmd+O) ──────────────────────────
+        if self.app.open_folder_input.is_some() {
+            match event.key {
+                KeyInput::Escape => {
+                    self.app.open_folder_input = None;
+                    self.app.dirty = true;
+                }
+                KeyInput::Enter => {
+                    let input = self.app.open_folder_input.take().unwrap_or_default();
+                    let path = PathBuf::from(&input);
+                    if path.is_dir() {
+                        // Save session then relaunch in the chosen directory.
+                        let cwd_str = self.app.current_cwd().unwrap_or_default();
+                        let state = self.app.build_session_state();
+                        session::save_session(std::path::Path::new(&cwd_str), &state);
+                        if let Ok(exe) = std::env::current_exe() {
+                            let _ = std::process::Command::new(&exe).current_dir(&path).spawn();
+                        }
+                        terminate_app();
+                    }
+                    self.app.dirty = true;
+                }
+                KeyInput::Backspace => {
+                    if let Some(ref mut s) = self.app.open_folder_input {
+                        let mut bytes = s.as_bytes().to_vec();
+                        while !bytes.is_empty() && (bytes[bytes.len() - 1] & 0xC0) == 0x80 {
+                            bytes.pop();
+                        }
+                        bytes.pop();
+                        *s = String::from_utf8_lossy(&bytes).into_owned();
+                    }
+                    self.app.dirty = true;
+                }
+                KeyInput::Char(ch) => {
+                    if let Some(ref mut s) = self.app.open_folder_input {
+                        s.push(ch);
+                    }
+                    self.app.dirty = true;
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // ── Language picker overlay (Q22: Cmd+K Cmd+L) ──────────────────────
+        if self.app.language_picker.is_some() {
+            let langs = PICKER_LANGS;
+            match event.key {
+                KeyInput::Escape => {
+                    self.app.language_picker = None;
+                    self.app.dirty = true;
+                }
+                KeyInput::Enter => {
+                    if let Some(ref picker) = self.app.language_picker {
+                        let filtered = picker_filtered(langs, &picker.query);
+                        if let Some(&lang) = filtered.get(picker.selected) {
+                            self.app.set_active_buffer_language(lang);
+                        }
+                    }
+                    self.app.language_picker = None;
+                    self.app.dirty = true;
+                }
+                KeyInput::Up => {
+                    if let Some(ref mut picker) = self.app.language_picker {
+                        if picker.selected > 0 {
+                            picker.selected -= 1;
+                        }
+                    }
+                    self.app.dirty = true;
+                }
+                KeyInput::Down => {
+                    if let Some(ref mut picker) = self.app.language_picker {
+                        let filtered = picker_filtered(langs, &picker.query);
+                        let max = filtered.len().saturating_sub(1);
+                        if picker.selected < max {
+                            picker.selected += 1;
+                        }
+                    }
+                    self.app.dirty = true;
+                }
+                KeyInput::Backspace => {
+                    if let Some(ref mut picker) = self.app.language_picker {
+                        let mut bytes = picker.query.as_bytes().to_vec();
+                        while !bytes.is_empty() && (bytes[bytes.len() - 1] & 0xC0) == 0x80 {
+                            bytes.pop();
+                        }
+                        bytes.pop();
+                        picker.query = String::from_utf8_lossy(&bytes).into_owned();
+                        picker.selected = 0;
+                    }
+                    self.app.dirty = true;
+                }
+                KeyInput::Char(ch) => {
+                    if let Some(ref mut picker) = self.app.language_picker {
+                        picker.query.push(ch);
+                        picker.selected = 0;
+                    }
+                    self.app.dirty = true;
+                }
+                _ => {}
+            }
+            return;
+        }
+
         // ── Goto-line overlay (item 11) ──────────────────────────────────────
         if self.app.goto_line_input.is_some() {
             match event.key {
@@ -6502,6 +6795,24 @@ impl AppHandler for AppShell {
         // The next plain (non-Cmd) key completes or cancels the chord.
         if self.app.pending_chord_k {
             self.app.pending_chord_k = false;
+            // Q19: Cmd+K O → open folder (global — no editor focus required).
+            if matches!(event.key, KeyInput::Char('o') | KeyInput::Char('O')) {
+                let cwd = self.app.current_cwd().unwrap_or_else(|| String::from("/"));
+                self.app.open_folder_input = Some(cwd);
+                self.app.dirty = true;
+                return;
+            }
+            // Q22: Cmd+K L → language picker (requires an open editor buffer).
+            if matches!(event.key, KeyInput::Char('l') | KeyInput::Char('L')) {
+                if self.app.focused_is_native_editor() {
+                    self.app.language_picker = Some(LanguagePickerState {
+                        query: String::new(),
+                        selected: 0,
+                    });
+                    self.app.dirty = true;
+                }
+                return;
+            }
             if self.app.focused_is_native_editor() {
                 match event.key {
                     KeyInput::Char('w') | KeyInput::Char('W') => {
@@ -6748,7 +7059,10 @@ impl AppHandler for AppShell {
                             if is_dir && !self.app.expanded_dirs.contains(&path) {
                                 // Expand dir.
                                 if !self.app.child_snapshots.contains_key(&path) {
-                                    let snap = fs_worker::read_dir_snapshot_fast(&path);
+                                    let snap = fs_worker::read_dir_snapshot_fast(
+                                        &path,
+                                        self.app.show_hidden_files,
+                                    );
                                     self.app.child_snapshots.insert(
                                         path.clone(),
                                         LeftDockSnapshot {
@@ -6813,7 +7127,10 @@ impl AppHandler for AppShell {
                                     self.app.expanded_dirs.remove(&path);
                                 } else {
                                     if !self.app.child_snapshots.contains_key(&path) {
-                                        let snap = fs_worker::read_dir_snapshot_fast(&path);
+                                        let snap = fs_worker::read_dir_snapshot_fast(
+                                            &path,
+                                            self.app.show_hidden_files,
+                                        );
                                         self.app.child_snapshots.insert(
                                             path.clone(),
                                             LeftDockSnapshot {
@@ -6924,7 +7241,10 @@ impl AppHandler for AppShell {
                                 let parent_pb = parent.to_path_buf();
                                 if let Some(parent_snap) = self.app.child_snapshots.get_mut(parent)
                                 {
-                                    let new_snap = fs_worker::read_dir_snapshot_fast(&parent_pb);
+                                    let new_snap = fs_worker::read_dir_snapshot_fast(
+                                        &parent_pb,
+                                        self.app.show_hidden_files,
+                                    );
                                     *parent_snap = LeftDockSnapshot {
                                         root: new_snap.root.to_string_lossy().into_owned(),
                                         entries: new_snap
@@ -6939,7 +7259,10 @@ impl AppHandler for AppShell {
                                     };
                                 } else if let Some(snap) = &mut self.app.fs_snapshot {
                                     let root_pb = PathBuf::from(&snap.root);
-                                    let new_snap = fs_worker::read_dir_snapshot_fast(&root_pb);
+                                    let new_snap = fs_worker::read_dir_snapshot_fast(
+                                        &root_pb,
+                                        self.app.show_hidden_files,
+                                    );
                                     *snap = LeftDockSnapshot {
                                         root: new_snap.root.to_string_lossy().into_owned(),
                                         entries: new_snap
@@ -6996,7 +7319,10 @@ impl AppHandler for AppShell {
                             eprintln!("anvil: create {}: {e}", if is_dir { "dir" } else { "file" });
                         } else {
                             // Re-snapshot the parent.
-                            let new_snap = fs_worker::read_dir_snapshot_fast(&parent);
+                            let new_snap = fs_worker::read_dir_snapshot_fast(
+                                &parent,
+                                self.app.show_hidden_files,
+                            );
                             let snap = LeftDockSnapshot {
                                 root: new_snap.root.to_string_lossy().into_owned(),
                                 entries: new_snap
@@ -7053,7 +7379,10 @@ impl AppHandler for AppShell {
                         if let Some(parent) = path.parent() {
                             if let Some(root_snap) = &mut self.app.fs_snapshot {
                                 let root_pb = PathBuf::from(&root_snap.root.clone());
-                                let new_snap = fs_worker::read_dir_snapshot_fast(&root_pb);
+                                let new_snap = fs_worker::read_dir_snapshot_fast(
+                                    &root_pb,
+                                    self.app.show_hidden_files,
+                                );
                                 *root_snap = LeftDockSnapshot {
                                     root: new_snap.root.to_string_lossy().into_owned(),
                                     entries: new_snap
@@ -7565,7 +7894,10 @@ impl AppHandler for AppShell {
                                     // round-tripping through the worker adds
                                     // a perceptible click→render lag.
                                     if !app.child_snapshots.contains_key(&path) {
-                                        let snap = fs_worker::read_dir_snapshot_fast(&path);
+                                        let snap = fs_worker::read_dir_snapshot_fast(
+                                            &path,
+                                            app.show_hidden_files,
+                                        );
                                         app.child_snapshots.insert(
                                             path.clone(),
                                             LeftDockSnapshot {
@@ -7649,12 +7981,24 @@ impl AppHandler for AppShell {
                     // buffers remain (fall back to scratch — new scratch was
                     // created inside close_buffer).
                     if let Some(tab) = app.tabs.current_mut() {
+                        // Q16: record path before closing so Cmd+Shift+T can reopen it.
+                        let closed_path = tab
+                            .editor_panes
+                            .get_buffer(h.buffer_id)
+                            .and_then(|b| b.tracked_path())
+                            .map(|p| p.to_path_buf());
                         let _new_active = tab.editor_panes.close_buffer(h.pane_id, h.buffer_id);
                         // Sync pane.editor_id to whatever is now active.
                         if let Some(ep) = tab.editor_panes.get_pane(h.pane_id) {
                             let active = ep.buffer_id;
                             if let Some(pane) = tab.registry.get_mut(h.pane_id) {
                                 pane.editor_id = Some(active);
+                            }
+                        }
+                        if let Some(path) = closed_path {
+                            app.closed_tabs.push_back(path);
+                            if app.closed_tabs.len() > 20 {
+                                app.closed_tabs.pop_front();
                             }
                         }
                     }
@@ -9458,6 +9802,131 @@ fn draw_save_as_overlay(
     raster.fill_pixel_rect(x, panel_y + 2.0, cw, panel_h - 4.0, theme.accent_bright);
 }
 
+// ── Open-folder overlay draw (Q19) ───────────────────────────────────────────
+
+/// Draw the open-folder path-input overlay (Cmd+K Cmd+O).
+#[allow(clippy::too_many_arguments)]
+fn draw_open_folder_overlay(
+    raster: &mut anvil_render::raster::Raster,
+    painter: &mut dyn anvil_render::raster::GlyphPainter,
+    metrics: anvil_render::raster::FontMetrics,
+    theme: &anvil_theme::Theme,
+    input: &str,
+    dw: f64,
+    chrome_top: f64,
+    cw: f64,
+    ch: f64,
+) {
+    let panel_w = 60.0 * cw;
+    let panel_h = ch + 8.0;
+    let panel_x = ((dw - panel_w) * 0.5).max(0.0);
+    let panel_y = chrome_top + 4.0 * ch;
+
+    raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
+    raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent);
+    raster.fill_pixel_rect(panel_x, panel_y + panel_h - 1.0, panel_w, 1.0, theme.accent);
+    raster.fill_pixel_rect(panel_x, panel_y, 1.0, panel_h, theme.accent);
+    raster.fill_pixel_rect(panel_x + panel_w - 1.0, panel_y, 1.0, panel_h, theme.accent);
+
+    let glyph_y = panel_y + 4.0;
+    let prefix = "open folder: ";
+    let pad_x = 1.5 * cw;
+    let mut x = panel_x + pad_x;
+    for c in prefix.chars() {
+        if x + cw > panel_x + panel_w - pad_x {
+            break;
+        }
+        raster.glyph_at(painter, metrics, x, glyph_y, c as u32, theme.text_muted);
+        x += cw;
+    }
+    // Show only the tail of a long path so the cursor end is always visible.
+    let visible_cols = ((panel_w - pad_x * 2.0 - prefix.len() as f64 * cw) / cw).floor() as usize;
+    let chars: Vec<char> = input.chars().collect();
+    let start = chars.len().saturating_sub(visible_cols);
+    for &c in &chars[start..] {
+        if x + cw > panel_x + panel_w - pad_x {
+            break;
+        }
+        raster.glyph_at(painter, metrics, x, glyph_y, c as u32, theme.foreground);
+        x += cw;
+    }
+    raster.fill_pixel_rect(x, panel_y + 2.0, cw, panel_h - 4.0, theme.accent_bright);
+}
+
+// ── Language picker overlay draw (Q22) ───────────────────────────────────────
+
+/// Draw the language-picker overlay (Cmd+K Cmd+L).
+#[allow(clippy::too_many_arguments)]
+fn draw_language_picker_overlay(
+    raster: &mut anvil_render::raster::Raster,
+    painter: &mut dyn anvil_render::raster::GlyphPainter,
+    metrics: anvil_render::raster::FontMetrics,
+    theme: &anvil_theme::Theme,
+    query: &str,
+    selected: usize,
+    dw: f64,
+    chrome_top: f64,
+    cw: f64,
+    ch: f64,
+) {
+    let langs = PICKER_LANGS;
+    let filtered = picker_filtered(langs, query);
+    let rows = filtered.len();
+    let panel_w = 30.0 * cw;
+    let header_h = ch + 4.0;
+    let panel_h = header_h + (rows as f64 + 1.0) * (ch + 2.0);
+    let panel_x = ((dw - panel_w) * 0.5).max(0.0);
+    let panel_y = chrome_top + 2.0 * ch;
+
+    raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
+    raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent);
+    raster.fill_pixel_rect(panel_x, panel_y + panel_h - 1.0, panel_w, 1.0, theme.accent);
+    raster.fill_pixel_rect(panel_x, panel_y, 1.0, panel_h, theme.accent);
+    raster.fill_pixel_rect(panel_x + panel_w - 1.0, panel_y, 1.0, panel_h, theme.accent);
+
+    // Header: filter input.
+    let pad_x = 1.5 * cw;
+    let header_label = "language: ";
+    let mut hx = panel_x + pad_x;
+    let header_y = panel_y + 2.0;
+    for c in header_label.chars() {
+        raster.glyph_at(painter, metrics, hx, header_y, c as u32, theme.text_muted);
+        hx += cw;
+    }
+    for c in query.chars() {
+        if hx + cw > panel_x + panel_w - pad_x {
+            break;
+        }
+        raster.glyph_at(painter, metrics, hx, header_y, c as u32, theme.foreground);
+        hx += cw;
+    }
+    // Cursor.
+    raster.fill_pixel_rect(hx, panel_y + 2.0, cw, ch, theme.accent_bright);
+
+    raster.fill_pixel_rect(panel_x, panel_y + header_h, panel_w, 1.0, theme.hairline);
+
+    // Language rows.
+    for (i, lang) in filtered.iter().enumerate() {
+        let row_y = panel_y + header_h + 1.0 + i as f64 * (ch + 2.0);
+        if i == selected.min(rows.saturating_sub(1)) {
+            raster.fill_pixel_rect_alpha(panel_x, row_y, panel_w, ch + 2.0, theme.accent, 0.15);
+        }
+        let mut rx = panel_x + pad_x;
+        for c in lang.chars() {
+            if rx + cw > panel_x + panel_w - pad_x {
+                break;
+            }
+            let color = if i == selected.min(rows.saturating_sub(1)) {
+                theme.foreground
+            } else {
+                theme.text_muted
+            };
+            raster.glyph_at(painter, metrics, rx, row_y + 1.0, c as u32, color);
+            rx += cw;
+        }
+    }
+}
+
 // ── LSP references overlay draw (item 26) ────────────────────────────────────
 
 /// Draw the references overlay panel.
@@ -10082,6 +10551,25 @@ fn draw_project_switcher_overlay(
     }
 }
 
+// ── Language picker (Q22) ────────────────────────────────────────────────────
+
+/// All language-ids supported by the language picker (Cmd+K Cmd+L).
+const PICKER_LANGS: &[&str] = &["rust", "typescript", "python", "toml", "json", "markdown"];
+
+/// Return the subset of `langs` whose name contains `query` (case-insensitive).
+fn picker_filtered<'a>(langs: &[&'a str], query: &str) -> Vec<&'a str> {
+    let q = query.to_ascii_lowercase();
+    if q.is_empty() {
+        langs.to_vec()
+    } else {
+        langs
+            .iter()
+            .copied()
+            .filter(|l| l.contains(q.as_str()))
+            .collect()
+    }
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 fn main() -> Result<()> {
@@ -10317,7 +10805,7 @@ fn main() -> Result<()> {
     kube::spawn_kube_worker(kube_tx);
 
     // -- Filesystem worker (ID3) -----------------------------------------------
-    let (fs_tx, fs_rx) = fs_worker::spawn_fs_worker();
+    let (fs_tx, fs_rx, fs_hidden_tx) = fs_worker::spawn_fs_worker();
     // Child-directory worker: loads individual dirs on expand.
     let (child_fs_tx, child_fs_rx) = fs_worker::spawn_child_fs_worker();
 
@@ -10499,10 +10987,11 @@ fn main() -> Result<()> {
         kube_rx,
         fs_tx,
         fs_rx,
+        fs_hidden_tx,
         child_fs_tx,
         child_fs_rx,
         fs_snapshot: std::env::current_dir().ok().map(|cwd| {
-            let snap = fs_worker::read_dir_snapshot_fast(&cwd);
+            let snap = fs_worker::read_dir_snapshot_fast(&cwd, false);
             LeftDockSnapshot {
                 root: snap.root.to_string_lossy().into_owned(),
                 entries: snap
@@ -10571,6 +11060,10 @@ fn main() -> Result<()> {
         toasts: std::collections::VecDeque::new(),
         lsp_failed_toasted: HashSet::new(),
         search_bar_hits: anvil_render::searchbar::SearchBarArrowHits::default(),
+        show_hidden_files: false,
+        closed_tabs: std::collections::VecDeque::new(),
+        language_picker: None,
+        open_folder_input: None,
     };
 
     // -- AppKitApp: builds the window, view, timer ----------------------------

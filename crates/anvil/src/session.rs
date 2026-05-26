@@ -57,6 +57,16 @@ pub struct SessionState {
     /// dock widths, chrome heights, or row heights.  Default 1.0.
     #[serde(default)]
     pub font_scale: f64,
+
+    /// Q56: whether the Explorer shows dot-prefix (hidden) entries.
+    /// Default false.
+    #[serde(default)]
+    pub show_hidden_files: bool,
+
+    /// Q22: per-buffer language overrides. Key is the file path (as a string);
+    /// value is the LSP language-id (e.g. `"rust"`).
+    #[serde(default)]
+    pub language_overrides: std::collections::HashMap<String, String>,
 }
 
 /// Per-pane buffer state.
@@ -180,6 +190,7 @@ mod tests {
                 active_path: Some(PathBuf::from("/home/user/project/src/main.rs")),
             }],
             recent_projects: vec![PathBuf::from("/home/user/project")],
+            ..Default::default()
         };
 
         save_session(cwd, &state);
@@ -238,6 +249,7 @@ mod tests {
                 PathBuf::from("/home/user/project-a"),
                 PathBuf::from("/home/user/project-b"),
             ],
+            ..Default::default()
         };
         save_session(cwd, &state);
         let loaded = load_session(cwd).expect("must load");
@@ -282,6 +294,7 @@ mod tests {
             expanded_dirs: vec![],
             open_buffers: vec![],
             recent_projects: vec![],
+            ..Default::default()
         };
         save_session(cwd, &state);
         let loaded = load_session(cwd).expect("must load");
