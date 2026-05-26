@@ -1020,4 +1020,44 @@ mod tests {
         assert!(removed);
         assert_eq!(mgr.count(), 1);
     }
+
+    // ── Item 7: split_native_editor creates a second editor pane ────────────
+
+    #[test]
+    fn split_native_editor_horizontal_adds_second_editor_leaf() {
+        let mut tab = Tab::new_single_pane(80, 24, 0);
+        // Promote the initial terminal to an editor layout first.
+        let editor_id = tab.promote_terminal_to_editor_drawer().expect("promoted");
+        tab.tree.focused = editor_id;
+        let before = tab.tree.leaf_count();
+
+        let new_id = tab
+            .split_native_editor(crate::layout::SplitDir::Horizontal)
+            .expect("split succeeds");
+
+        assert_ne!(new_id, editor_id);
+        assert_eq!(tab.tree.leaf_count(), before + 1);
+        let pane = tab.registry.get(new_id).expect("new pane registered");
+        assert!(pane.terminal.is_none(), "editor split must not spawn a PTY");
+        assert!(tab.editor_panes.get_pane(new_id).is_some());
+    }
+
+    // ── Item 5: normalize_ide_editor_drawer with no terminal pane ───────────
+
+    #[test]
+    fn normalize_ide_editor_drawer_without_terminal_returns_editor_only() {
+        let mut tab = Tab::new_single_pane(80, 24, 0);
+        // Promote single terminal → editor/drawer layout.
+        tab.promote_terminal_to_editor_drawer().expect("promoted");
+        // Collapse back to editor-only by removing the terminal pane from the tree.
+        let editor_id = tab.first_editor_pane_id().unwrap();
+        *tab.tree.root = PaneNode::Leaf(editor_id);
+        tab.tree.focused = editor_id;
+
+        // With no terminal pane, normalize returns just the editor.
+        let result = tab.normalize_ide_editor_drawer();
+        assert_eq!(result, Some(editor_id));
+        // Tree is a single editor leaf (no terminal to dock at the bottom).
+        assert!(matches!(tab.tree.root.as_ref(), PaneNode::Leaf(id) if *id == editor_id));
+    }
 }

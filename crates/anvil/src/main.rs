@@ -1068,6 +1068,60 @@ impl App {
         self.dirty = true;
     }
 
+    /// Ensure the current tab has a live terminal pane for the IDE bottom
+    /// drawer.  If no terminal pane exists, split the focused pane
+    /// vertically and spawn a PTY for the new pane.  Called when entering
+    /// IDE mode so the drawer always shows a live shell.
+    fn spawn_ide_terminal_drawer(&mut self) {
+        let has_terminal = self
+            .tabs
+            .current()
+            .map(|t| t.first_terminal_pane_id().is_some())
+            .unwrap_or(false);
+        if has_terminal {
+            return;
+        }
+        let tab = match self.tabs.current() {
+            Some(t) => t,
+            None => return,
+        };
+        if tab.tree.leaf_count() >= MAX_PANES_PER_TAB {
+            return;
+        }
+        let ir = self.pane_area_rect();
+        let ch = self.font.metrics.cell_h;
+        let cw = self.font.metrics.cell_w;
+        // Drawer gets 28% of vertical space; editor keeps 72%.
+        let drawer_h = ir.h * 0.28;
+        let cols = ((ir.w / cw) as usize).max(1);
+        let rows = ((drawer_h / ch) as usize).max(1);
+        let scrollback = self.config.scrollback;
+        let new_id = match self
+            .tabs
+            .current_mut()
+            .map(|t| t.split(SplitDir::Vertical, cols, rows, scrollback))
+        {
+            Some(Ok(id)) => id,
+            Some(Err(e)) => {
+                eprintln!("anvil: ide drawer split failed: {e}");
+                return;
+            }
+            None => return,
+        };
+        match Pty::spawn_shell(cols as u16, rows as u16) {
+            Ok(pty) => {
+                self.ptys.insert(new_id, pty);
+            }
+            Err(e) => {
+                eprintln!("anvil: ide drawer pty failed: {e}");
+                if let Some(tab) = self.tabs.current_mut() {
+                    tab.tree.close_leaf(new_id);
+                    tab.registry.remove(new_id);
+                }
+            }
+        }
+    }
+
     /// Open a native editor pane (NE15: sole editor path).  Splits the
     /// focused pane horizontally and registers it as an editor pane — no
     /// PTY is spawned.
@@ -2520,6 +2574,60 @@ impl App {
         webview.hide();
     }
 
+    /// Open the command palette pre-populated with project files (Cmd+P).
+    ///
+    /// Uses `recent_files_in_dir` to walk the current project root (up to 500
+    /// files).  Each file becomes a `file:open:<abs-path>` command entry.
+    /// The palette's existing fuzzy filter handles the rest.
+    fn send_file_picker_show(&self, webview: &Webview) {
+        let root = self
+            .fs_snapshot
+            .as_ref()
+            .map(|s| s.root.clone())
+            .or_else(|| self.current_cwd());
+        let root = match root {
+            Some(r) => r,
+            None => return,
+        };
+
+        let root_path = std::path::Path::new(&root);
+        // Collect up to 500 files; use the existing walk helper (depth 3, skips target/.git/node_modules).
+        let files = recent_files_in_dir(root_path, 500);
+
+        let cmds: Vec<BridgeCmd> = files
+            .into_iter()
+            .map(|abs_path| {
+                let base = std::path::Path::new(&abs_path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| abs_path.clone());
+                // subtitle: relative path for context
+                let rel = std::path::Path::new(&abs_path)
+                    .strip_prefix(root_path)
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_else(|_| abs_path.clone());
+                BridgeCmd {
+                    id: format!("file:open:{abs_path}"),
+                    title: base,
+                    subtitle: Some(rel),
+                }
+            })
+            .collect();
+
+        let theme_tokens = ThemeTokens {
+            background: format_hex(self.theme.background),
+            foreground: format_hex(self.theme.foreground),
+            accent: format_hex(self.theme.accent),
+        };
+        let outbound = Outbound::Show {
+            commands: cmds,
+            theme: theme_tokens,
+        };
+        if let Ok(json) = bridge_encode(&outbound) {
+            webview.eval_js(&format!("window.anvil.receive({json});"));
+        }
+    }
+
     fn handle_palette_action(&mut self, action: Action, webview: &Webview) {
         match action {
             Action::ThemeDark => {
@@ -2611,6 +2719,7 @@ impl App {
             Action::LayoutIde => {
                 self.layout_mode = LayoutMode::Ide;
                 self.left_dock_visible = true;
+                self.spawn_ide_terminal_drawer();
                 if let Some(tab) = self.tabs.current_mut() {
                     tab.ensure_ide_editor_surface();
                 }
@@ -2714,6 +2823,46 @@ impl App {
             // Cmd+K → HoverRequest (NE10)
             if lch == 'k' && !mods.shift && !mods.control && !mods.option {
                 self.trigger_hover_request();
+                return true;
+            }
+            // Cmd+W → close the active buffer tab (not the whole system tab).
+            if lch == 'w' && !mods.shift && !mods.control && !mods.option {
+                if let Some(tab) = self.tabs.current_mut() {
+                    let pane_id = tab.focused_id();
+                    let buffer_id = tab.editor_panes.get_pane(pane_id).map(|ep| ep.buffer_id);
+                    if let Some(buffer_id) = buffer_id {
+                        tab.editor_panes.close_buffer(pane_id, buffer_id);
+                        let new_bid = tab.editor_panes.get_pane(pane_id).map(|ep| ep.buffer_id);
+                        if let Some(pane) = tab.registry.get_mut(pane_id) {
+                            pane.editor_id = new_bid;
+                        }
+                    }
+                }
+                self.dirty = true;
+                return true;
+            }
+            // Cmd+\ → split editor pane vertically (new pane to the right).
+            // Cmd+Shift+\ → split editor pane horizontally (new pane below).
+            if ch == '\\' && !mods.control && !mods.option {
+                let dir = if mods.shift {
+                    SplitDir::Vertical
+                } else {
+                    SplitDir::Horizontal
+                };
+                let new_id = match self.tabs.current_mut().map(|t| t.split_native_editor(dir)) {
+                    Some(Ok(id)) => id,
+                    Some(Err(e)) => {
+                        eprintln!("anvil: editor split failed: {e}");
+                        return true;
+                    }
+                    None => return true,
+                };
+                if let Some(tab) = self.tabs.current_mut() {
+                    tab.tree.focused = new_id;
+                }
+                self.resize_all_tabs();
+                self.snap_anim();
+                self.dirty = true;
                 return true;
             }
         }
@@ -2885,6 +3034,7 @@ impl App {
                     }
                 }
                 LayoutMode::Ide => {
+                    self.spawn_ide_terminal_drawer();
                     if let Some(tab) = self.tabs.current_mut() {
                         tab.ensure_ide_editor_surface();
                     }
@@ -2907,6 +3057,7 @@ impl App {
             // IDE surface: Explorer + editor + compact terminal drawer.
             self.layout_mode = LayoutMode::Ide;
             self.left_dock_visible = true;
+            self.spawn_ide_terminal_drawer();
             self.new_native_editor_pane();
             return true;
         });
@@ -2915,6 +3066,15 @@ impl App {
         if ascii_lower(ch) == 'k' && !mods.shift && !mods.control && !mods.option {
             if self.palette.summon() {
                 self.send_palette_show(webview);
+                webview.show();
+            }
+            return true;
+        }
+
+        // ⌘P — file picker (project files).
+        if ascii_lower(ch) == 'p' && !mods.shift && !mods.control && !mods.option {
+            if self.palette.summon() {
+                self.send_file_picker_show(webview);
                 webview.show();
             }
             return true;
@@ -4756,7 +4916,13 @@ impl AppHandler for AppShell {
                 self.app.dismiss_palette(&self.webview);
             }
             Ok(Inbound::Invoke(id)) => {
-                if let Some(action) = action_for_id(&id) {
+                // File-picker: file:open:<abs-path> is handled before the
+                // static action catalog so it doesn't need an Action variant.
+                if let Some(abs_path) = id.strip_prefix("file:open:") {
+                    let path = std::path::PathBuf::from(abs_path);
+                    self.app.dismiss_palette(&self.webview);
+                    self.app.open_path_in_native_editor(&path);
+                } else if let Some(action) = action_for_id(&id) {
                     // HudToggle needs window access — handle at AppShell level.
                     if action == Action::HudToggle {
                         self.app.dismiss_palette(&self.webview);

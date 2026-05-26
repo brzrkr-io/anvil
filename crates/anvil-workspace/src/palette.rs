@@ -238,6 +238,14 @@ mod tests {
         assert_eq!(action_for_id("editor.new"), Some(Action::NewEditorPane));
     }
 
+    // ── Item 2: file:open: prefix is NOT resolved by action_for_id (handled
+    // in the AppShell Invoke path directly so it doesn't need an Action copy).
+    #[test]
+    fn file_open_prefix_not_in_action_catalog() {
+        assert_eq!(action_for_id("file:open:/some/path/buffer.rs"), None);
+        assert_eq!(action_for_id("file:open:"), None);
+    }
+
     #[test]
     fn summon_after_ready_shows_immediately() {
         let mut p = Palette {
