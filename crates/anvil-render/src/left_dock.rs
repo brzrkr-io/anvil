@@ -127,16 +127,36 @@ pub struct OutlineRow {
 
 // ── Row geometry ──────────────────────────────────────────────────────────────
 
-/// Height of a section header row in pixels (fixed; chrome font sized).
-const HEADER_H: f64 = 32.0;
+/// Base height of a section header row in points (multiplied by `ui_scale`).
+const HEADER_H_BASE: f64 = 32.0;
 
-/// Height of a content row in pixels.
-///
-/// 28px gives a roomy tree that reads as IDE chrome rather than terminal grid.
-const ROW_H: f64 = 28.0;
+/// Base height of a content row in points (multiplied by `ui_scale`).
+const ROW_H_BASE: f64 = 28.0;
 
-/// Horizontal padding inside the dock.
-const PAD_X: f64 = 14.0;
+/// Base horizontal padding inside the dock (multiplied by `ui_scale`).
+const PAD_X_BASE: f64 = 14.0;
+
+/// Base indent per depth level in device pixels (multiplied by `ui_scale`).
+const INDENT_PX_BASE: f64 = 16.0;
+
+/// Derive row geometry from the current UI scale.
+struct RowMetrics {
+    header_h: f64,
+    row_h: f64,
+    pad_x: f64,
+    indent_px: f64,
+}
+
+impl RowMetrics {
+    fn from_scale(ui_scale: f64) -> Self {
+        Self {
+            header_h: (HEADER_H_BASE * ui_scale).round(),
+            row_h: (ROW_H_BASE * ui_scale).round(),
+            pad_x: (PAD_X_BASE * ui_scale).round(),
+            indent_px: (INDENT_PX_BASE * ui_scale).round(),
+        }
+    }
+}
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
@@ -176,6 +196,7 @@ pub fn draw_left_dock(
         &HashSet::new(),
         &HashMap::new(),
         0.0,
+        1.0,
     )
 }
 
@@ -194,6 +215,7 @@ pub fn draw_left_dock_with_scroll(
     expanded_dirs: &HashSet<PathBuf>,
     child_snapshots: &HashMap<PathBuf, DirSnapshot>,
     scroll_indicator_alpha: f32,
+    ui_scale: f64,
 ) -> LeftDockHits {
     let mut hits = LeftDockHits::default();
     if rect.w <= 0.0 || rect.h <= 0.0 {
@@ -244,6 +266,7 @@ pub fn draw_left_dock_with_scroll(
     );
 
     let ui_metrics = metrics;
+    let rm = RowMetrics::from_scale(ui_scale);
     draw_explorer_section(
         raster,
         painter,
@@ -258,6 +281,7 @@ pub fn draw_left_dock_with_scroll(
         scroll_indicator_alpha,
         explorer_rect,
         &mut hits,
+        &rm,
     );
     draw_outline_section(
         raster,
@@ -267,6 +291,7 @@ pub fn draw_left_dock_with_scroll(
         outline,
         outline_rect,
         &mut hits,
+        &rm,
     );
     hits
 }
@@ -276,9 +301,6 @@ pub fn draw_left_dock_with_scroll(
 /// Maximum nesting depth to render. Guards against pathological trees blowing
 /// up the render loop.
 const MAX_RENDER_DEPTH: usize = 32;
-
-/// Indent per depth level in device pixels.
-const INDENT_PX: f64 = 16.0;
 
 #[allow(clippy::too_many_arguments)]
 fn draw_explorer_section(
@@ -295,9 +317,14 @@ fn draw_explorer_section(
     scroll_indicator_alpha: f32,
     rect: Rect,
     hits: &mut LeftDockHits,
+    rm: &RowMetrics,
 ) {
     let cell_w = metrics.cell_w;
     let cell_h = metrics.cell_h;
+    let header_h = rm.header_h;
+    let row_h = rm.row_h;
+    let pad_x = rm.pad_x;
+    let indent_px = rm.indent_px;
 
     // ── Header row ────────────────────────────────────────────────────────────
     hits.hits.push(LeftDockHit {
@@ -305,7 +332,7 @@ fn draw_explorer_section(
             x: rect.x,
             y: rect.y,
             w: rect.w,
-            h: HEADER_H.min(rect.h),
+            h: header_h.min(rect.h),
         },
         kind: LeftDockHitKind::Explorer(ExplorerHit::Header),
     });
@@ -317,16 +344,16 @@ fn draw_explorer_section(
         _ => ("EXPLORER", String::new()),
     };
 
-    let header_y = rect.y + ((HEADER_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+    let header_y = rect.y + ((header_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
     draw_text_run(
         raster,
         painter,
         metrics,
         header_label,
         theme.accent_bright,
-        rect.x + PAD_X,
+        rect.x + pad_x,
         header_y,
-        rect.x + rect.w - PAD_X,
+        rect.x + rect.w - pad_x,
     );
     if !header_meta.is_empty() {
         let meta_w = header_meta.chars().count() as f64 * cell_w;
@@ -336,17 +363,17 @@ fn draw_explorer_section(
             metrics,
             &header_meta,
             theme.text_subtle,
-            rect.x + rect.w - PAD_X - meta_w,
+            rect.x + rect.w - pad_x - meta_w,
             header_y,
-            rect.x + rect.w - PAD_X,
+            rect.x + rect.w - pad_x,
         );
     }
     // Hairline under header.
-    raster.fill_pixel_rect(rect.x, rect.y + HEADER_H - 1.0, rect.w, 1.0, theme.hairline);
+    raster.fill_pixel_rect(rect.x, rect.y + header_h - 1.0, rect.w, 1.0, theme.hairline);
 
     // ── Content rows ──────────────────────────────────────────────────────────
-    let content_y_start = rect.y + HEADER_H;
-    let content_h = rect.h - HEADER_H;
+    let content_y_start = rect.y + header_h;
+    let content_h = rect.h - header_h;
     if content_h <= 0.0 {
         return;
     }
@@ -354,27 +381,27 @@ fn draw_explorer_section(
     match snapshot {
         None => {
             // No cwd yet — waiting state.
-            let row_y = content_y_start + ((ROW_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+            let row_y = content_y_start + ((row_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
             draw_text_run(
                 raster,
                 painter,
                 metrics,
                 "Waiting for shell prompt\u{2026}",
                 theme.text_muted,
-                rect.x + PAD_X,
+                rect.x + pad_x,
                 row_y,
                 rect.x + rect.w,
             );
         }
         Some(snap) if snap.entries.is_empty() => {
-            let row_y = content_y_start + ((ROW_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+            let row_y = content_y_start + ((row_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
             draw_text_run(
                 raster,
                 painter,
                 metrics,
                 "(empty)",
                 theme.text_muted,
-                rect.x + PAD_X,
+                rect.x + pad_x,
                 row_y,
                 rect.x + rect.w,
             );
@@ -382,6 +409,7 @@ fn draw_explorer_section(
         Some(snap) => {
             // Build the flat ordered list of all visible rows by walking the
             // tree top-down: root entries, then recursively expanded children.
+            // Also collect last-sibling flags per row for branch glyph rendering.
             let mut all_rows: Vec<(PathBuf, bool, usize)> = Vec::new(); // (path, is_dir, depth)
             collect_visible_rows(
                 snap,
@@ -392,7 +420,41 @@ fn draw_explorer_section(
                 &mut all_rows,
             );
 
-            let available_rows = (content_h / ROW_H).floor() as usize;
+            // Compute is_last_sibling per row at each depth level.
+            // Row i is the last sibling at depth d when no later row at the same
+            // depth has an ancestor path that matches row i's ancestor at depth d.
+            let row_count = all_rows.len();
+            let mut is_last_at_depth: Vec<Vec<bool>> = Vec::with_capacity(row_count);
+            for i in 0..row_count {
+                let depth_i = all_rows[i].2;
+                let path_i = &all_rows[i].0;
+                // For each depth level 0..=depth_i, determine is-last-sibling.
+                let flags: Vec<bool> = (0..=depth_i)
+                    .map(|d| {
+                        // Ancestor of path_i at depth d: strip (depth_i - d) trailing components.
+                        let strip = depth_i - d;
+                        let anc_i: PathBuf = path_i
+                            .ancestors()
+                            .nth(strip)
+                            .unwrap_or(path_i.as_path())
+                            .to_path_buf();
+                        // is_last: no later row at depth d has anc_i as ancestor.
+                        !all_rows[i + 1..].iter().any(|(p, _, dd)| {
+                            *dd == d && {
+                                let anc_p: PathBuf = p
+                                    .ancestors()
+                                    .nth(depth_i - d)
+                                    .unwrap_or(p.as_path())
+                                    .to_path_buf();
+                                anc_p == anc_i
+                            }
+                        })
+                    })
+                    .collect();
+                is_last_at_depth.push(flags);
+            }
+
+            let available_rows = (content_h / row_h).floor() as usize;
             let total_rows = all_rows.len();
             let first = scroll_offset.min(total_rows.saturating_sub(available_rows));
 
@@ -401,7 +463,7 @@ fn draw_explorer_section(
             {
                 // slot_i is the absolute index in `all_rows`; row_i is the screen slot.
                 let row_i = slot_i - first;
-                let row_top = content_y_start + row_i as f64 * ROW_H;
+                let row_top = content_y_start + row_i as f64 * row_h;
 
                 // The visible row index reported in the hit is `slot_i` so that
                 // `visible_rows[slot_i]` gives back the path.
@@ -410,12 +472,12 @@ fn draw_explorer_section(
                         x: rect.x,
                         y: row_top,
                         w: rect.w,
-                        h: ROW_H.min((content_y_start + content_h - row_top).max(0.0)),
+                        h: row_h.min((content_y_start + content_h - row_top).max(0.0)),
                     },
                     kind: LeftDockHitKind::Explorer(ExplorerHit::Row(slot_i)),
                 });
 
-                let glyph_y = row_top + ((ROW_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+                let glyph_y = row_top + ((row_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
 
                 let selected = !is_dir && active_file_path == Some(path.as_path());
                 let row_x = rect.x + 6.0;
@@ -426,14 +488,14 @@ fn draw_explorer_section(
                         row_x,
                         row_top + 2.0,
                         row_w,
-                        (ROW_H - 4.0).max(0.0),
+                        (row_h - 4.0).max(0.0),
                         theme.panel,
                     );
                     raster.fill_pixel_rect(
                         row_x,
                         row_top + 2.0,
                         2.0,
-                        (ROW_H - 4.0).max(0.0),
+                        (row_h - 4.0).max(0.0),
                         theme.accent_primary,
                     );
                 } else if hovered_row == Some(slot_i) {
@@ -442,62 +504,87 @@ fn draw_explorer_section(
                         row_x,
                         row_top + 2.0,
                         row_w,
-                        (ROW_H - 4.0).max(0.0),
+                        (row_h - 4.0).max(0.0),
                         theme.panel,
                     );
                 }
 
                 // Indent offset for nested entries.
-                let indent = *depth as f64 * INDENT_PX;
+                let indent = *depth as f64 * indent_px;
+
+                // ── Tree branch glyphs (item 2) ───────────────────────────────
+                // For each ancestor depth d (0..depth_i): paint │ or nothing.
+                // At the row's own depth: paint ├─ or └─.
+                let last_flags = &is_last_at_depth[slot_i];
+                if *depth > 0 {
+                    for d in 0..*depth {
+                        let col_x = (rect.x + pad_x + d as f64 * indent_px).floor();
+                        let glyph = if d + 1 == *depth {
+                            // Row's own connection glyph
+                            if last_flags.get(d).copied().unwrap_or(false) {
+                                '\u{2514}' // └
+                            } else {
+                                '\u{251C}' // ├
+                            }
+                        } else {
+                            // Ancestor: vertical bar if NOT last at that depth
+                            if last_flags.get(d).copied().unwrap_or(false) {
+                                // last sibling at this depth — no vertical line
+                                continue;
+                            }
+                            '\u{2502}' // │
+                        };
+                        raster.glyph_at(
+                            painter,
+                            metrics,
+                            col_x,
+                            glyph_y,
+                            glyph as u32,
+                            theme.text_subtle,
+                        );
+                        // Horizontal stub after the connector glyph at own depth.
+                        if d + 1 == *depth {
+                            let stub_x = col_x + cell_w;
+                            raster.glyph_at(
+                                painter,
+                                metrics,
+                                stub_x,
+                                glyph_y,
+                                '\u{2500}' as u32, // ─
+                                theme.text_subtle,
+                            );
+                        }
+                    }
+                }
+
+                // File icon column: placed after the tree connector columns.
+                let icon_x = rect.x + pad_x + indent;
 
                 // Directory chevron toggles ▸/▾ based on expanded_dirs.
-                let (icon, color) = if *is_dir {
+                let (icon_ch, icon_color) = if *is_dir {
                     let chevron = if expanded_dirs.contains(path) {
-                        "▾"
+                        '▾'
                     } else {
-                        "▸"
+                        '▸'
                     };
                     (chevron, theme.foreground)
                 } else {
                     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                    (file_icon(name), theme.foreground)
+                    let (ch, col) = file_icon_colored(name, theme);
+                    (ch, if selected { theme.accent_primary } else { col })
                 };
 
-                // ── Indent guides (item 12) ───────────────────────────────────
-                // For each ancestor depth level, paint a 1px vertical line at
-                // the column where the parent's chevron sits.  Spans the row
-                // height so guides form continuous verticals across all rows.
-                for d in 1..=*depth {
-                    let guide_x =
-                        (rect.x + PAD_X + (d as f64 - 1.0) * INDENT_PX + cell_w * 0.5).floor();
-                    raster.fill_pixel_rect_alpha(
-                        guide_x,
-                        row_top,
-                        1.0,
-                        ROW_H,
-                        theme.text_subtle,
-                        0.5,
-                    );
-                }
-
-                let icon_x = rect.x + PAD_X + indent;
-                let label_x = icon_x + cell_w * 2.0;
-                let max_x = rect.x + rect.w - PAD_X;
-
-                draw_text_run(
-                    raster,
+                raster.glyph_at(
                     painter,
                     metrics,
-                    icon,
-                    if selected {
-                        theme.accent_primary
-                    } else {
-                        theme.text_muted
-                    },
                     icon_x,
                     glyph_y,
-                    icon_x + cell_w,
+                    icon_ch as u32,
+                    icon_color,
                 );
+
+                let label_x = icon_x + cell_w * 2.0;
+                let max_x = rect.x + rect.w - pad_x;
 
                 // Name: entry filename only (not full path).
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -536,11 +623,19 @@ fn draw_explorer_section(
                     }
                 }
 
+                let label_color = theme.foreground;
                 let max_chars = ((max_x - label_x) / cell_w).floor().max(0.0) as usize;
                 let truncated = truncate_name(name, max_chars);
 
                 draw_text_run(
-                    raster, painter, metrics, &truncated, color, label_x, glyph_y, max_x,
+                    raster,
+                    painter,
+                    metrics,
+                    &truncated,
+                    label_color,
+                    label_x,
+                    glyph_y,
+                    max_x,
                 );
             }
 
@@ -612,6 +707,7 @@ fn collect_visible_rows(
 
 // ── Outline section ───────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn draw_outline_section(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
@@ -620,9 +716,13 @@ fn draw_outline_section(
     outline: Option<&[OutlineRow]>,
     rect: Rect,
     hits: &mut LeftDockHits,
+    rm: &RowMetrics,
 ) {
     let cell_h = metrics.cell_h;
     let cell_w = metrics.cell_w;
+    let header_h = rm.header_h;
+    let row_h = rm.row_h;
+    let pad_x = rm.pad_x;
 
     // ── Header row ────────────────────────────────────────────────────────────
     // Item 10: header color is text_subtle when empty, accent_bright when symbols present.
@@ -632,21 +732,21 @@ fn draw_outline_section(
     } else {
         theme.text_subtle
     };
-    let header_y = rect.y + ((HEADER_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+    let header_y = rect.y + ((header_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
     draw_text_run(
         raster,
         painter,
         metrics,
         "OUTLINE",
         header_color,
-        rect.x + PAD_X,
+        rect.x + pad_x,
         header_y,
         rect.x + rect.w,
     );
-    raster.fill_pixel_rect(rect.x, rect.y + HEADER_H - 1.0, rect.w, 1.0, theme.hairline);
+    raster.fill_pixel_rect(rect.x, rect.y + header_h - 1.0, rect.w, 1.0, theme.hairline);
 
-    let content_y = rect.y + HEADER_H;
-    let content_h = rect.h - HEADER_H;
+    let content_y = rect.y + header_h;
+    let content_h = rect.h - header_h;
     if content_h <= 0.0 {
         return;
     }
@@ -657,28 +757,28 @@ fn draw_outline_section(
             // Empty state — only the header row is shown (rendered above).
         }
         Some(rows) => {
-            let available_rows = (content_h / ROW_H).floor() as usize;
+            let available_rows = (content_h / row_h).floor() as usize;
             for (i, row) in rows.iter().enumerate() {
                 if i >= available_rows {
                     break;
                 }
-                let row_top = content_y + i as f64 * ROW_H;
+                let row_top = content_y + i as f64 * row_h;
                 hits.hits.push(LeftDockHit {
                     rect: Rect {
                         x: rect.x,
                         y: row_top,
                         w: rect.w,
-                        h: ROW_H.min((content_y + content_h - row_top).max(0.0)),
+                        h: row_h.min((content_y + content_h - row_top).max(0.0)),
                     },
                     kind: LeftDockHitKind::Outline(i),
                 });
-                let glyph_y = row_top + ((ROW_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+                let glyph_y = row_top + ((row_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
 
                 // Indent: 2 cells per depth level.
-                let indent_cells = row.depth as usize * 2;
-                let indent_px = indent_cells as f64 * cell_w;
-                let x_start = rect.x + PAD_X + indent_px;
-                let x_max = rect.x + rect.w - PAD_X;
+                let outline_indent_cells = row.depth as usize * 2;
+                let outline_indent_px = outline_indent_cells as f64 * cell_w;
+                let x_start = rect.x + pad_x + outline_indent_px;
+                let x_max = rect.x + rect.w - pad_x;
 
                 // Kind glyph.
                 let glyph = outline_kind_glyph(row.kind);
@@ -722,13 +822,41 @@ fn outline_kind_glyph(kind: OutlineKind) -> &'static str {
     }
 }
 
-// ── File icon helper (item 9) ─────────────────────────────────────────────────
+// ── File icon helpers (item 3) ────────────────────────────────────────────────
 
-/// Return a 1–2 character glyph string for a file based on its extension (item 9).
+/// Return the Nerd Font glyph char and tint color for a file based on its name
+/// and extension (item 3: colored Nerd Font glyphs from BlexMono Nerd Font Mono).
+///
+/// Callers that don't have a `Theme` can use [`file_icon`] for plain ASCII.
+pub fn file_icon_colored(name: &str, theme: &Theme) -> (char, [u8; 3]) {
+    // Exact filename overrides.
+    match name {
+        "Cargo.toml" => return ('\u{E7A8}', theme.attention), // rust glyph, attention tint
+        "README.md" | "README.MD" | "readme.md" => {
+            return ('\u{F48A}', theme.accent_bright); // markdown, accent_bright
+        }
+        _ => {}
+    }
+    let ext = name.rfind('.').map(|i| &name[i + 1..]).unwrap_or("");
+    match ext {
+        "rs" => ('\u{E7A8}', theme.attention), // rust icon
+        "md" | "markdown" => ('\u{F48A}', theme.text_muted), // markdown
+        "toml" | "yaml" | "yml" => ('\u{E6B2}', theme.text_muted), // cog
+        "json" => ('\u{E60B}', theme.text_muted),
+        "html" | "htm" => ('\u{E736}', theme.text_muted),
+        "css" => ('\u{E749}', theme.text_muted),
+        "txt" => ('\u{F15C}', theme.text_muted),
+        "lock" => ('\u{F023}', theme.text_muted),
+        _ => ('\u{25C7}', theme.text_muted), // ◇ default
+    }
+}
+
+/// Return a single ASCII/Unicode glyph string for a file (legacy; used in tests only).
 ///
 /// These are ASCII/Unicode characters that render in the monospace grid.
 /// `.lock` uses "L" rather than 🔒 because emoji rendering through the cell
 /// grid atlas is unpredictable on different macOS font configs.
+#[cfg(test)]
 fn file_icon(name: &str) -> &'static str {
     // Match by extension (case-sensitive; lowercase extensions are the norm).
     let ext = name.rfind('.').map(|i| &name[i + 1..]).unwrap_or("");
@@ -1016,6 +1144,7 @@ mod tests {
             &HashSet::new(),
             &HashMap::new(),
             0.0,
+            1.0,
         );
 
         assert_eq!(
@@ -1058,27 +1187,28 @@ mod tests {
             "expected 'm' in foreground for file entry label"
         );
 
-        // File icon for `.rs` is 'r' (item 9: extension-based icons) and paints in
-        // text_muted (one step quieter than the label) for inactive files.
+        // File icon for `.rs` is U+E7A8 (Nerd Font rust icon, item 3) and paints in
+        // text_muted (attention color from theme) for inactive files.
+        let rust_icon_cp = '\u{E7A8}' as u32;
         let file_icon: Vec<_> = p
             .glyphs
             .iter()
-            .filter(|(cp, fg)| *cp == 'r' as u32 && *fg == th.text_muted)
+            .filter(|(cp, _)| *cp == rust_icon_cp)
             .collect();
         assert!(
             !file_icon.is_empty(),
-            "expected file icon 'r' in text_muted for inactive .rs file"
+            "expected Nerd Font rust icon (U+E7A8) for inactive .rs file"
         );
 
-        // Dir chevron ▸ (U+25B8) icon paints in text_muted for inactive dir.
+        // Dir chevron ▸ (U+25B8) icon paints in foreground for inactive dir.
         let dir_chevron: Vec<_> = p
             .glyphs
             .iter()
-            .filter(|(cp, fg)| *cp == '\u{25B8}' as u32 && *fg == th.text_muted)
+            .filter(|(cp, fg)| *cp == '\u{25B8}' as u32 && *fg == th.foreground)
             .collect();
         assert!(
             !dir_chevron.is_empty(),
-            "expected dir chevron ▸ in text_muted for inactive dir"
+            "expected dir chevron ▸ in foreground for inactive dir"
         );
     }
 
@@ -1115,13 +1245,14 @@ mod tests {
             dock_rect(),
         );
 
-        // Selected row signaled by icon color: 'r' icon (item 9: .rs extension) paints
-        // in accent_primary for the active file, text_muted for inactive.
+        // Selected row signaled by icon color: U+E7A8 (Nerd Font rust, item 3) paints
+        // in accent_primary for the active file, theme.attention for inactive.
         // Labels stay foreground for both (selection visible via row bg + left rail).
+        let rust_cp = '\u{E7A8}' as u32;
         let selected_icon: Vec<_> = p
             .glyphs
             .iter()
-            .filter(|(cp, fg)| *cp == 'r' as u32 && *fg == th.accent_primary)
+            .filter(|(cp, fg)| *cp == rust_cp && *fg == th.accent_primary)
             .collect();
         assert_eq!(
             selected_icon.len(),
@@ -1132,12 +1263,12 @@ mod tests {
         let inactive_icon: Vec<_> = p
             .glyphs
             .iter()
-            .filter(|(cp, fg)| *cp == 'r' as u32 && *fg == th.text_muted)
+            .filter(|(cp, fg)| *cp == rust_cp && *fg == th.attention)
             .collect();
         assert_eq!(
             inactive_icon.len(),
             1,
-            "exactly one inactive file icon should paint in text_muted"
+            "exactly one inactive file icon should paint in theme.attention (rust tint)"
         );
     }
 
@@ -1182,10 +1313,11 @@ mod tests {
                 &HashSet::new(),
                 &HashMap::new(),
                 0.0,
+                1.0,
             );
-            // Row 0 occupies y=[HEADER_H, HEADER_H+ROW_H) = [28, 50).
-            // The fill rect is row_top+2 .. row_top+ROW_H-2 = [30, 48).
-            // Sample the fill interior: x=50, y=38 (middle of fill strip).
+            // Row 0 occupies y=[header_h, header_h+row_h) = [32, 60).
+            // The fill rect is row_top+2 .. row_top+row_h-2 = [34, 58).
+            // Sample the fill interior: x=50, y=38 (inside fill strip).
             let px = pixel_at(&r, 50, 38);
             assert_eq!(
                 px, th.panel,
@@ -1214,6 +1346,7 @@ mod tests {
                 &HashSet::new(),
                 &HashMap::new(),
                 0.0,
+                1.0,
             );
             // Left-rail pixel (x=rect.x+6=6, inside 2px rail) should be accent_primary.
             // Row 0 fill starts at row_top+2 = 28+2 = 30. Sample y=38.
@@ -1425,7 +1558,7 @@ mod tests {
             git_marks: Default::default(),
         };
 
-        // At offset=0: first content row (y ≈ HEADER_H + ROW_H/2 = 28+11 = 39) → entry 0.
+        // At offset=0: first content row (y ≈ header_h + row_h/2 = 32+14 = 46; y=39 is also in [32,60)) → entry 0.
         let hits_at_0 = {
             let mut r = Raster::new(800, 800);
             let mut p = StubPainter::default();
@@ -1443,6 +1576,7 @@ mod tests {
                 &HashSet::new(),
                 &HashMap::new(),
                 0.0,
+                1.0,
             )
         };
 
@@ -1464,6 +1598,7 @@ mod tests {
                 &HashSet::new(),
                 &HashMap::new(),
                 0.0,
+                1.0,
             )
         };
 
@@ -1548,6 +1683,7 @@ mod tests {
             &expanded,
             &children,
             0.0,
+            1.0,
         );
 
         // visible_rows should be: [/project/src (dir), /project/src/main.rs, /project/src/lib.rs, /project/Cargo.toml]
