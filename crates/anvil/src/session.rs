@@ -51,6 +51,12 @@ pub struct SessionState {
     /// Capped at 20; most-recent first.  Persisted across runs.
     #[serde(default)]
     pub recent_projects: Vec<PathBuf>,
+
+    /// H4: font-only scale multiplier (Cmd+Opt+=/- zoom).
+    /// Applied on top of `font_size_pt * window_scale`; does NOT scale
+    /// dock widths, chrome heights, or row heights.  Default 1.0.
+    #[serde(default)]
+    pub font_scale: f64,
 }
 
 /// Per-pane buffer state.
@@ -163,6 +169,7 @@ mod tests {
 
         let state = SessionState {
             ui_scale: 1.25,
+            font_scale: 1.1,
             left_dock_w_pt: 320.0,
             layout_mode: "ide".to_string(),
             editor_split_ratio: 0.72,
@@ -221,6 +228,7 @@ mod tests {
         let cwd = dir.path();
         let state = SessionState {
             ui_scale: 1.0,
+            font_scale: 1.0,
             left_dock_w_pt: 300.0,
             layout_mode: "terminal".to_string(),
             editor_split_ratio: 0.0,
@@ -257,6 +265,48 @@ mod tests {
         assert!(
             loaded.recent_projects.is_empty(),
             "old session without recent_projects must deserialise to empty vec"
+        );
+    }
+
+    /// H4: `font_scale` persists and restores correctly.
+    #[test]
+    fn session_font_scale_round_trip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cwd = dir.path();
+        let state = SessionState {
+            ui_scale: 1.0,
+            font_scale: 1.3,
+            left_dock_w_pt: 300.0,
+            layout_mode: "terminal".to_string(),
+            editor_split_ratio: 0.0,
+            expanded_dirs: vec![],
+            open_buffers: vec![],
+            recent_projects: vec![],
+        };
+        save_session(cwd, &state);
+        let loaded = load_session(cwd).expect("must load");
+        assert!(
+            (loaded.font_scale - 1.3).abs() < f64::EPSILON,
+            "font_scale must round-trip; got {}",
+            loaded.font_scale
+        );
+    }
+
+    /// H4: old session JSON without `font_scale` defaults to 0.0 (treated as
+    /// "not set" by restore_session → keeps the runtime default of 1.0).
+    #[test]
+    fn session_font_scale_missing_defaults_to_zero() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cwd = dir.path();
+        let old_json = r#"{"ui_scale":1.0,"left_dock_w_pt":300.0,"layout_mode":"terminal","editor_split_ratio":0.0,"expanded_dirs":[],"open_buffers":[]}"#;
+        if let Some(path) = session_path(cwd) {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, old_json.as_bytes()).unwrap();
+        }
+        let loaded = load_session(cwd).expect("must load");
+        assert_eq!(
+            loaded.font_scale, 0.0,
+            "missing font_scale should default to 0.0"
         );
     }
 }
