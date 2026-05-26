@@ -20,6 +20,9 @@ use crate::raster::{FontMetrics, GlyphPainter, Raster};
 pub struct ContextBarEditor<'a> {
     pub name: &'a str,
     pub modified: bool,
+    /// U1: true while a large file's syntax tree is being parsed asynchronously.
+    /// When true, a "Parsing…" chip is rendered right of the filename.
+    pub syntax_pending: bool,
 }
 
 /// Draw the context bar into `rect`.
@@ -82,6 +85,22 @@ pub fn draw_context_bar(
         glyph_y,
         bx + bar_w - 220.0,
     );
+
+    // U1: show "Parsing…" chip while a large-file syntax parse is in progress.
+    if editor.as_ref().map(|e| e.syntax_pending).unwrap_or(false) {
+        let rx = bx + bar_w - 12.0;
+        draw_chip_right(
+            raster,
+            painter,
+            metrics,
+            theme,
+            "Parsing\u{2026}",
+            rx,
+            by,
+            bar_h,
+            false,
+        );
+    }
 
     if local.git != GitState::NoRepo {
         let mut rx = bx + bar_w - 12.0;
@@ -489,6 +508,7 @@ mod tests {
         let ed = ContextBarEditor {
             name: "foo.rs",
             modified: false,
+            syntax_pending: false,
         };
         draw_context_bar(
             &mut r,

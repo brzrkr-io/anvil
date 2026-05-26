@@ -255,7 +255,14 @@ pub struct Buffer {
     /// Q22: user-set language override (LSP language-id, e.g. `"rust"`).
     /// When set, takes precedence over the extension-inferred language.
     pub language_override: Option<String>,
+    /// U1: deferred syntax parse. Set when a file is too large (> 256 KB) to
+    /// parse synchronously at load time. Cleared after the async parse completes.
+    pub syntax_pending: bool,
 }
+
+/// Byte threshold above which the initial syntax parse is deferred (U1).
+/// Files larger than this are opened immediately but parsed asynchronously.
+const SYNTAX_DEFERRED_THRESHOLD: usize = 256 * 1024;
 
 impl Buffer {
     /// Create an empty buffer.
@@ -274,6 +281,7 @@ impl Buffer {
             syntax: SyntaxLayer::new(),
             git_gutter: None,
             language_override: None,
+            syntax_pending: false,
         }
     }
 
@@ -293,6 +301,7 @@ impl Buffer {
             syntax: SyntaxLayer::new(),
             git_gutter: None,
             language_override: None,
+            syntax_pending: false,
         }
     }
 
@@ -326,9 +335,16 @@ impl Buffer {
         let mut buf = Buffer::from_text(&text);
         buf.tracked_path = Some(path.to_path_buf());
         buf.tracked_mtime = mtime;
-        // NE8: detect language by extension and do an initial full parse.
+        // NE8: detect language by extension. For large files (U1) defer the
+        // initial full parse to the async tick path; for small files parse now.
         buf.syntax.set_language_from_path(path);
-        buf.syntax.parse(&text);
+        if buf.byte_len() > SYNTAX_DEFERRED_THRESHOLD {
+            // File is large — skip the synchronous parse to keep the UI
+            // responsive. The main-thread tick will run the parse asynchronously.
+            buf.syntax_pending = true;
+        } else {
+            buf.syntax.parse(&text);
+        }
         // NE13: git gutter computed off-thread by main.rs gutter worker.
         Ok(buf)
     }
@@ -538,7 +554,12 @@ impl Buffer {
         self.undo_stack = UndoStack::new(DEFAULT_UNDO_CAP);
         self.force_new_group = false;
         self.tracked_mtime = mtime;
-        self.syntax.parse(&text);
+        if self.byte_len() > SYNTAX_DEFERRED_THRESHOLD {
+            self.syntax_pending = true;
+        } else {
+            self.syntax_pending = false;
+            self.syntax.parse(&text);
+        }
         // NE13: git gutter recomputed off-thread by main.rs gutter worker on reload.
         Ok(())
     }
@@ -1097,6 +1118,7 @@ impl Buffer {
             syntax: SyntaxLayer::new(),
             git_gutter: None,
             language_override: None,
+            syntax_pending: false,
         }
     }
 
@@ -1927,5 +1949,69 @@ mod tests {
     fn indent_style_detects_four_spaces() {
         let b = Buffer::from_text("fn f() {\n    let x = 1;\n    let y = 2;\n}\n");
         assert_eq!(b.indent_style(), IndentStyle::Spaces(4));
+    }
+
+    // ── U1: large-file deferred syntax parse ──────────────────────────────────
+
+    /// A file larger than 256 KB must open with `syntax_pending = true`.
+    #[test]
+    fn large_file_opens_with_syntax_pending() {
+        use std::time::Instant;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("large.rs");
+        // Generate ~5 MB of synthetic Rust content.
+        let line = "fn placeholder_fn() { let _x = 42; }\n";
+        let repeat = (5 * 1024 * 1024 / line.len()) + 1;
+        let content = line.repeat(repeat);
+        std::fs::write(&path, content.as_bytes()).unwrap();
+
+        let t0 = Instant::now();
+        let buf = Buffer::from_path(&path).expect("open must succeed");
+        let elapsed_ms = t0.elapsed().as_millis();
+
+        // Must return quickly (< 1 s; typically < 50 ms on any CI machine).
+        assert!(
+            elapsed_ms < 1000,
+            "from_path took {elapsed_ms} ms for a 5 MB file; expected < 1000 ms"
+        );
+        assert!(
+            buf.syntax_pending,
+            "5 MB file must have syntax_pending = true after open"
+        );
+    }
+
+    /// After `syntax.parse()` is called and `syntax_pending` cleared, the flag
+    /// is false — simulates what the async tick does.
+    #[test]
+    fn syntax_pending_clears_after_manual_parse() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("large2.rs");
+        let line = "fn f() { let _x = 0; }\n";
+        let repeat = (SYNTAX_DEFERRED_THRESHOLD / line.len()) + 1;
+        let content = line.repeat(repeat);
+        std::fs::write(&path, content.as_bytes()).unwrap();
+
+        let mut buf = Buffer::from_path(&path).expect("open must succeed");
+        assert!(buf.syntax_pending, "must start pending");
+
+        // Simulate the async tick: parse and clear the flag.
+        let text = buf.to_text();
+        buf.syntax.parse(&text);
+        buf.syntax_pending = false;
+
+        assert!(!buf.syntax_pending, "flag must be cleared after parse");
+    }
+
+    /// A small file (under 256 KB) must NOT have `syntax_pending` set.
+    #[test]
+    fn small_file_has_no_syntax_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("small.rs");
+        std::fs::write(&path, b"fn main() {}\n").unwrap();
+        let buf = Buffer::from_path(&path).expect("open must succeed");
+        assert!(
+            !buf.syntax_pending,
+            "small file must not have syntax_pending set"
+        );
     }
 }
