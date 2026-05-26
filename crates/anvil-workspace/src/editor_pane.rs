@@ -321,10 +321,30 @@ impl EditorPaneRegistry {
             return Ok(buffer_id);
         }
 
-        // Append to open_buffers, enforce cap.
+        // Identify scratch tabs (untracked, never edited) for eviction.
+        let scratch_to_evict: Vec<BufferId> = {
+            let pane = self.panes.get(&pane_id).unwrap();
+            pane.open_buffers
+                .iter()
+                .copied()
+                .filter(|bid| {
+                    self.buffers
+                        .get(bid)
+                        .map(|b| b.tracked_path().is_none() && b.revisions == 0)
+                        .unwrap_or(false)
+                })
+                .collect()
+        };
+
+        // Append to open_buffers, drop scratch siblings, enforce cap.
         {
             let pane = self.panes.get_mut(&pane_id).unwrap();
             pane.open_buffers.push(buffer_id);
+            for bid in &scratch_to_evict {
+                if let Some(pos) = pane.open_buffers.iter().position(|b| b == bid) {
+                    pane.open_buffers.remove(pos);
+                }
+            }
             // Evict oldest non-active if over the cap.
             while pane.open_buffers.len() > MAX_TABS_PER_PANE {
                 let active = pane.buffer_id;
@@ -336,6 +356,9 @@ impl EditorPaneRegistry {
                 }
             }
             pane.buffer_id = buffer_id;
+        }
+        for bid in scratch_to_evict {
+            self.buffers.remove(&bid);
         }
         self.buffers.insert(buffer_id, buffer);
         Ok(buffer_id)
@@ -1662,7 +1685,35 @@ mod tests {
             "first buffer must remain in open_buffers"
         );
         assert!(pane.open_buffers.contains(&bid2));
-        assert_eq!(pane.open_buffers.len(), 3, "scratch + a.rs + b.rs");
+        assert_eq!(
+            pane.open_buffers.len(),
+            2,
+            "scratch should have been evicted on first file open; a.rs + b.rs remain"
+        );
+    }
+
+    /// First real file open evicts the empty scratch tab.
+    #[test]
+    fn open_path_as_tab_evicts_scratch_on_first_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let p1 = dir.path().join("first.rs");
+        std::fs::write(&p1, "fn first() {}").unwrap();
+
+        let mut reg = EditorPaneRegistry::default();
+        let scratch_bid = reg.new_pane(1);
+        assert_eq!(reg.get_pane(1).unwrap().open_buffers, vec![scratch_bid]);
+
+        let file_bid = reg.open_path_as_tab(1, &p1).unwrap();
+        let pane = reg.get_pane(1).unwrap();
+        assert_eq!(
+            pane.open_buffers,
+            vec![file_bid],
+            "scratch must be gone after the first real file opens"
+        );
+        assert!(
+            reg.get_buffer(scratch_bid).is_none(),
+            "scratch buffer must be removed from registry"
+        );
     }
 
     /// open_path_as_tab deduplicates: re-opening the same file just activates it.
@@ -1682,7 +1733,11 @@ mod tests {
             "re-opening same path must return the same BufferId"
         );
         let pane = reg.get_pane(1).unwrap();
-        assert_eq!(pane.open_buffers.len(), 2, "no duplicate entry added");
+        assert_eq!(
+            pane.open_buffers.len(),
+            1,
+            "scratch evicted on first open, dup reopen adds no entry"
+        );
         assert_eq!(pane.buffer_id, bid1, "active is the existing buffer");
     }
 
