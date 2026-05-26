@@ -116,9 +116,19 @@ pub fn draw_editor_into(
     raster.fill_pixel_rect(rect.x + gutter_w - 1.0, rect.y, 1.0, rect.h, theme.hairline);
 
     // Available content columns to the right of the gutter.
+    // P3: reserve 3px at the bottom for the horizontal scrollbar when it may be visible.
+    let hscroll_bar_h = 3.0_f64;
     let content_cols = ((rect.w - gutter_w) / cw).floor() as usize;
     // Number of visible rows that fit in the pane height.
+    // Reduce by one row when soft_wrap is off (scrollbar may appear).
     let visible_rows = (rect.h / ch).ceil() as usize;
+
+    // P3: horizontal scroll column offset (floor to cell boundary).
+    let col_offset = if editor_pane.soft_wrap {
+        0usize
+    } else {
+        editor_pane.scroll_x.floor() as usize
+    };
 
     // First visible buffer line (integer snap).
     let scroll_line = editor_pane.scroll_pos.floor() as usize;
@@ -201,6 +211,8 @@ pub fn draw_editor_into(
     // When folds are active we skip hidden lines but still count visual rows.
     let mut vrow = 0usize;
     let mut line_idx = scroll_line;
+    // P3: track maximum visible line length (in grapheme cols) for h-scrollbar.
+    let mut max_line_len = 0usize;
     while vrow < visible_rows && line_idx < line_count {
         // Skip lines hidden by an active fold (they don't consume a visual row).
         if hidden_lines.contains(&line_idx) {
@@ -309,16 +321,29 @@ pub fn draw_editor_into(
 
         let graphemes: Vec<&str> = line_content.graphemes(true).collect();
         let mut painted = 0usize;
-        let overflow = graphemes.len() > content_cols;
-        let paint_limit = if overflow {
-            content_cols.saturating_sub(1)
+        // P3: a line overflows when more columns exist after the visible window.
+        let overflow = graphemes.len() > content_cols + col_offset;
+        // Paint limit is the first invisible column in the viewport window.
+        let paint_limit = (content_cols + col_offset).min(if overflow {
+            // Leave room for `▸` at the right edge of the viewport.
+            col_offset + content_cols.saturating_sub(1)
         } else {
-            content_cols
-        };
+            graphemes.len()
+        });
+
+        // P3: track max line length for horizontal scrollbar.
+        if graphemes.len() > max_line_len {
+            max_line_len = graphemes.len();
+        }
 
         // Track the byte offset within the line as we walk graphemes.
         let mut grapheme_byte = line_byte_start;
         for (col, g) in graphemes.iter().enumerate() {
+            // P3: skip columns before the scroll offset.
+            if col < col_offset {
+                grapheme_byte += g.len();
+                continue;
+            }
             if col >= paint_limit {
                 break;
             }
@@ -344,7 +369,8 @@ pub fn draw_editor_into(
 
             // Use the first scalar of the grapheme cluster as the glyph key.
             let cp = g.chars().next().unwrap_or(' ') as u32;
-            let gx = rect.x + gutter_w + col as f64 * cw;
+            // P3: subtract col_offset so visible columns start at gutter_w.
+            let gx = rect.x + gutter_w + (col - col_offset) as f64 * cw;
             // F2 guard: skip glyphs outside the pane rect (left or right edge).
             if gx < rect.x || gx + cw > rect.x + rect.w {
                 grapheme_byte += g.len();
@@ -377,8 +403,9 @@ pub fn draw_editor_into(
 
         // ── Long-line overflow marker ─────────────────────────────────────────
         if overflow {
-            let marker_col = paint_limit;
-            let gx = rect.x + gutter_w + marker_col as f64 * cw;
+            // Marker sits at the last visible column in the viewport.
+            let marker_vcol = content_cols.saturating_sub(1);
+            let gx = rect.x + gutter_w + marker_vcol as f64 * cw;
             raster.glyph_at(painter, metrics, gx, row_y, '▸' as u32, theme.text_muted);
         }
         let _ = painted; // suppress dead-code lint
@@ -471,10 +498,11 @@ pub fn draw_editor_into(
     for (i, cursor) in editor_pane.cursors.iter().enumerate() {
         let cursor_line = cursor.pos.line;
         let cursor_col = cursor.pos.col;
-        if cursor_line >= scroll_line {
+        if cursor_line >= scroll_line && cursor_col >= col_offset {
             let vrow = cursor_line - scroll_line;
-            if vrow < visible_rows {
-                let cx = rect.x + gutter_w + cursor_col as f64 * cw;
+            let vcol = cursor_col - col_offset;
+            if vrow < visible_rows && vcol < content_cols {
+                let cx = rect.x + gutter_w + vcol as f64 * cw;
                 let cy = rect.y + vrow as f64 * ch;
                 // Primary cursor: full accent color; secondary: accent_ember.
                 let color = if i == 0 {
@@ -743,6 +771,35 @@ pub fn draw_editor_into(
         );
     }
 
+    // ── P3: horizontal scrollbar ─────────────────────────────────────────────
+    // 3 px tall, `text_subtle` α = indicator_alpha * 0.6.
+    // Only shown when soft_wrap is off and any visible line exceeds content_cols.
+    // Positioned at the bottom of the editor body.
+    if !editor_pane.soft_wrap && scroll_indicator_alpha > 0.0 && max_line_len > content_cols {
+        let thumb_alpha = (scroll_indicator_alpha * 0.6) as f64;
+        let content_w = rect.w - gutter_w;
+        let total_cols = max_line_len as f64;
+        let vis_cols = content_cols as f64;
+        let thumb_w = ((vis_cols / total_cols) * content_w)
+            .max(20.0)
+            .min(content_w);
+        let max_hscroll = (total_cols - vis_cols).max(0.0);
+        let thumb_left = if max_hscroll > 0.0 {
+            rect.x + gutter_w + (editor_pane.scroll_x / max_hscroll) * (content_w - thumb_w)
+        } else {
+            rect.x + gutter_w
+        };
+        let thumb_y = rect.y + rect.h - hscroll_bar_h;
+        raster.fill_pixel_rect_alpha(
+            thumb_left,
+            thumb_y,
+            thumb_w,
+            hscroll_bar_h,
+            theme.text_subtle,
+            thumb_alpha,
+        );
+    }
+
     // ── Hover popup (NE10) ────────────────────────────────────────────────────
     if let Some(popup) = &editor_pane.hover_popup {
         let anchor = popup.anchor;
@@ -960,6 +1017,7 @@ mod tests {
             folds: std::collections::HashMap::new(),
             soft_wrap: false,
             show_whitespace: false,
+            scroll_x: 0.0,
         }
     }
 

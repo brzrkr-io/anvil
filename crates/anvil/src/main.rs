@@ -28,7 +28,7 @@ use anvil_agent::Snapshot as AgentSnapshot;
 use anvil_config::{Chord, Config, Watcher, parse_chord};
 use anvil_platform::AtlasPainter;
 use anvil_platform::appkit::{
-    AppHandler, AppKitApp, ContextAction, KeyEvent, KeyInput, Modifiers, MouseLocation,
+    AppHandler, AppKitApp, ContextAction, CursorKind, KeyEvent, KeyInput, Modifiers, MouseLocation,
     RightClickZone,
 };
 use anvil_platform::font::{CHROME_PT, Font, FontFace, register_bundled};
@@ -57,10 +57,20 @@ const SIDEBAR_DRAG_HIT_PX: f64 = 4.0;
 const SIDEBAR_W_MIN_PT: f64 = 180.0;
 const SIDEBAR_W_MAX_PT: f64 = 600.0;
 const EXPLORER_SCROLL_ROWS_PER_WHEEL: usize = 3;
+
+/// Which resize divider the cursor is hovering over (P2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DividerKind {
+    /// Right edge of the IDE sidebar (vertical divider → col-resize cursor).
+    Sidebar,
+    /// Horizontal divider between editor and drawer (row-resize cursor).
+    Drawer,
+}
 use anvil_editor::{Position as EditorPosition, WorkspaceSymbolHit};
 use anvil_render::cheatsheet::draw as draw_cheatsheet;
 use anvil_render::draw::CursorConfig;
 use anvil_render::raster::Raster;
+use unicode_segmentation::UnicodeSegmentation;
 // draw_search_bar is re-exported via draw_search_bar_with_replace; unused direct import removed.
 use anvil_render::tabbar::{TabBarHitKind, TabBarHits, draw_tab_bar};
 use anvil_render::workspace::{DIVIDER_PX, draw_workspace, draw_workspace_chrome};
@@ -647,6 +657,9 @@ pub struct App {
     sidebar_drag_active: bool,
     /// True while the user is dragging the editor/drawer horizontal divider (item 13b).
     drawer_drag_active: bool,
+    /// P3: true while dragging the editor horizontal scrollbar thumb.
+    /// `mouse_dragged` maps the x position to scroll_x.
+    hscroll_drag_active: bool,
     /// Item 8 (Tier-B): whether the IDE bottom drawer is hidden.
     /// When true the root-split ratio[0] has been forced to 1.0 (editor takes
     /// 100% of pane area).  The pre-hide ratio is saved in `drawer_saved_ratio`
@@ -672,6 +685,10 @@ pub struct App {
     /// When set, the user grabbed a pane divider and is dragging it to resize.
     /// Cleared on mouse-up.
     divider_drag: Option<DividerHit>,
+    /// P2: which resize divider the cursor is currently hovering over.
+    /// `None` when the cursor is not near a resize divider.  Drives the 1px
+    /// highlight stripe and the system cursor (col-resize or row-resize).
+    divider_hover: Option<DividerKind>,
     /// Chrome-row hit regions (tab switches, close ×, + button). Refilled
     /// by `draw_tab_bar` each render; consumed by `mouse_down`.
     tab_bar_hits: TabBarHits,
@@ -3834,6 +3851,28 @@ impl App {
             }
         }
 
+        // ── P2: divider hover highlight ───────────────────────────────────────
+        // Paint a 1px accent_primary α=0.50 stripe along the hovered divider.
+        if let Some(kind) = self.divider_hover {
+            let a = self.theme.accent_primary;
+            match kind {
+                DividerKind::Sidebar => {
+                    // Vertical stripe at the sidebar right edge, spanning the
+                    // pane area height (inner excludes the chrome strips).
+                    let edge_x = self.left_dock_w_pt * self.window_scale;
+                    self.raster
+                        .fill_pixel_rect_alpha(edge_x, inner.y, 1.0, inner.h, a, 0.50);
+                }
+                DividerKind::Drawer => {
+                    // Horizontal stripe at the drawer divider y.
+                    if let Some(div_y) = self.ide_drawer_divider_y() {
+                        self.raster
+                            .fill_pixel_rect_alpha(inner.x, div_y, inner.w, 1.0, a, 0.50);
+                    }
+                }
+            }
+        }
+
         // ── Present ───────────────────────────────────────────────────────────
 
         if !self.use_gpu_render {
@@ -5747,6 +5786,45 @@ impl AppHandler for AppShell {
             }
         }
 
+        // P3: horizontal cursor auto-scroll — keep primary cursor column in view.
+        // Runs after vertical easing so `scroll_pos` is up-to-date.
+        {
+            let cell_w = app.font.metrics.cell_w;
+            let ir = app.pane_area_rect();
+            if let Some(tab) = app.tabs.current_mut() {
+                let id = tab.focused_id();
+                // Compute content_cols and cursor state before any mutable borrow.
+                let maybe = tab.editor_panes.get_pane(id).and_then(|ep| {
+                    let buf = tab.editor_panes.get_buffer(ep.buffer_id)?;
+                    let digit_cols = buf.line_count().max(1).to_string().len();
+                    let git_cols = if buf.git_gutter.is_some() { 2 } else { 0 };
+                    let gutter_w = (digit_cols + 2 + git_cols) as f64 * cell_w;
+                    let entries = tab.tree.layout(ir, DIVIDER_PX);
+                    let pane_w = entries
+                        .iter()
+                        .find(|e| e.id == id)
+                        .map(|e| e.rect.w)
+                        .unwrap_or(0.0);
+                    let content_cols = ((pane_w - gutter_w) / cell_w).floor() as usize;
+                    Some((content_cols, ep.primary_cursor().pos.col, ep.soft_wrap))
+                });
+                if let Some((content_cols, cursor_col, soft_wrap)) = maybe {
+                    if !soft_wrap && content_cols > 0 {
+                        if let Some(ep) = tab.editor_panes.get_pane_mut(id) {
+                            let col_offset = ep.scroll_x.floor() as usize;
+                            if cursor_col < col_offset {
+                                ep.scroll_x = cursor_col as f64;
+                                app.dirty = true;
+                            } else if cursor_col >= col_offset + content_cols {
+                                ep.scroll_x = (cursor_col + 1).saturating_sub(content_cols) as f64;
+                                app.dirty = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Refresh throttle — ALWAYS runs so the bottom status bar gets
         // cwd / git / agent data even when the HUD panel is hidden.
         app.hud_tick += 1;
@@ -7609,6 +7687,29 @@ impl AppHandler for AppShell {
             }
         }
 
+        // P3: horizontal scrollbar drag — click in the bottom 3px of the focused
+        // native editor pane's body starts an hscroll drag.
+        if app.focused_is_native_editor() {
+            let (rx, ry) = app.view_pt_to_raster_px(loc);
+            let ir = app.pane_area_rect();
+            if let Some(tab) = app.tabs.current() {
+                let id = tab.focused_id();
+                let entries = tab.tree.layout(ir, DIVIDER_PX);
+                if let Some(e) = entries.iter().find(|e| e.id == id) {
+                    let hbar_y = e.rect.y + e.rect.h - 3.0;
+                    if ry >= hbar_y
+                        && ry <= e.rect.y + e.rect.h
+                        && rx >= e.rect.x
+                        && rx < e.rect.x + e.rect.w
+                    {
+                        app.hscroll_drag_active = true;
+                        app.dirty = true;
+                        return;
+                    }
+                }
+            }
+        }
+
         // Chrome row click — use hit rects populated by draw_tab_bar.
         {
             let (rx, ry) = app.view_pt_to_raster_px(loc);
@@ -7969,6 +8070,13 @@ impl AppHandler for AppShell {
             return;
         }
 
+        // P3: horizontal scrollbar drag release.
+        if app.hscroll_drag_active {
+            app.hscroll_drag_active = false;
+            app.dirty = true;
+            return;
+        }
+
         // HUD resize drag: release.
         if app.hud_drag_active {
             app.hud_drag_active = false;
@@ -8267,6 +8375,65 @@ impl AppHandler for AppShell {
             return;
         }
 
+        // P3: horizontal scrollbar thumb drag — map mouse x to scroll_x.
+        if app.hscroll_drag_active {
+            let (rx, _) = app.view_pt_to_raster_px(loc);
+            let cw = app.font.metrics.cell_w;
+            let ir = app.pane_area_rect();
+            if let Some(tab) = app.tabs.current_mut() {
+                let id = tab.focused_id();
+                let entries = tab.tree.layout(ir, DIVIDER_PX);
+                if let Some(e) = entries.iter().find(|e| e.id == id) {
+                    let pane_rect = e.rect;
+                    if let Some(ep) = tab.editor_panes.get_pane(id) {
+                        let bid = ep.buffer_id;
+                        if let Some(buf) = tab.editor_panes.get_buffer(bid) {
+                            // Compute gutter_w to match the renderer.
+                            let line_count = buf.line_count().max(1);
+                            let digit_cols = line_count.to_string().len();
+                            let git_gutter_cols = if buf.git_gutter.is_some() { 2 } else { 0 };
+                            let gutter_cols = digit_cols + 2 + git_gutter_cols;
+                            let gutter_w = gutter_cols as f64 * cw;
+                            let content_w = pane_rect.w - gutter_w;
+                            let content_cols = ((content_w) / cw).floor() as usize;
+                            // Compute max_line_len across all buffer lines.
+                            let max_line_len: usize = (0..line_count)
+                                .map(|i| {
+                                    let s: String = buf.line(i).chars().collect();
+                                    let s = s.trim_end_matches('\n').trim_end_matches('\r');
+                                    s.graphemes(true).count()
+                                })
+                                .max()
+                                .unwrap_or(0);
+                            let vis_cols = content_cols as f64;
+                            let total_cols = max_line_len as f64;
+                            let max_hscroll = (total_cols - vis_cols).max(0.0);
+                            if max_hscroll > 0.0 {
+                                let thumb_w = ((vis_cols / total_cols) * content_w)
+                                    .max(20.0)
+                                    .min(content_w);
+                                let track_start = pane_rect.x + gutter_w;
+                                let track_len = content_w - thumb_w;
+                                if track_len > 0.0 {
+                                    let t = ((rx - track_start - thumb_w / 2.0) / track_len)
+                                        .clamp(0.0, 1.0);
+                                    let new_scroll_x = t * max_hscroll;
+                                    if let Some(ep) = tab.editor_panes.get_pane_mut(id) {
+                                        if (ep.scroll_x - new_scroll_x).abs() > 0.01 {
+                                            ep.scroll_x = new_scroll_x;
+                                            app.force_full_redraw = true;
+                                            app.dirty = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
         // HUD resize drag: convert mouse x to a new column count and reflow.
         if app.hud_drag_active {
             let (rx, _) = app.view_pt_to_raster_px(loc);
@@ -8326,7 +8493,7 @@ impl AppHandler for AppShell {
         app.dirty = true;
     }
 
-    fn mouse_moved(&mut self, loc: MouseLocation) {
+    fn mouse_moved(&mut self, loc: MouseLocation) -> CursorKind {
         let app = &mut self.app;
         let (rx, ry) = app.view_pt_to_raster_px(loc);
         let new_hover = app.left_dock_hits.at(rx, ry).and_then(|kind| {
@@ -8367,10 +8534,65 @@ impl AppHandler for AppShell {
                 app.hover_mouse_time = Some(Instant::now());
             }
         }
+
+        // P2: detect divider hover for highlight stripe + cursor feedback.
+        let new_divider_hover = {
+            let mut dh: Option<DividerKind> = None;
+            // Sidebar right-edge (col-resize).
+            if app.left_dock_visible && app.layout_mode == LayoutMode::Ide {
+                let edge_x = app.left_dock_w_pt * app.window_scale;
+                if (rx - edge_x).abs() <= SIDEBAR_DRAG_HIT_PX * app.ui_scale {
+                    dh = Some(DividerKind::Sidebar);
+                }
+            }
+            // Drawer horizontal divider (row-resize).
+            if dh.is_none() {
+                const DRAWER_HIT_PT: f64 = 4.0;
+                if let Some(div_y) = app.ide_drawer_divider_y() {
+                    if (ry - div_y).abs() <= DRAWER_HIT_PT * app.ui_scale {
+                        dh = Some(DividerKind::Drawer);
+                    }
+                }
+            }
+            dh
+        };
+        if new_divider_hover != app.divider_hover {
+            app.divider_hover = new_divider_hover;
+            app.dirty = true;
+        }
+
+        match app.divider_hover {
+            Some(DividerKind::Sidebar) => CursorKind::ColResize,
+            Some(DividerKind::Drawer) => CursorKind::RowResize,
+            None => CursorKind::Arrow,
+        }
     }
 
-    fn scroll(&mut self, dy: f64, pixel_precise: bool, loc: MouseLocation) {
+    fn scroll(&mut self, dy: f64, pixel_precise: bool, shift: bool, loc: MouseLocation) {
         let app = &mut self.app;
+
+        // P3: Shift+scroll → horizontal scroll in native editor pane.
+        if shift && dy != 0.0 && app.focused_is_native_editor() {
+            let cell_w_pt = (app.font.metrics.cell_w / app.window_scale) as f32;
+            let dx_cols = if pixel_precise {
+                (dy as f32) / (cell_w_pt * 1.5)
+            } else {
+                (dy as f32) * 1.5
+            };
+            if let Some(tab) = app.tabs.current_mut() {
+                let id = tab.focused_id();
+                if let Some(ep) = tab.editor_panes.get_pane_mut(id) {
+                    if !ep.soft_wrap {
+                        ep.scroll_x = (ep.scroll_x + dx_cols as f64).max(0.0);
+                        app.scroll_indicator_alpha = 1.0;
+                        app.scroll_indicator_last_scroll = Some(Instant::now());
+                        app.dirty = true;
+                    }
+                }
+            }
+            return;
+        }
+
         if dy == 0.0 {
             return;
         }
@@ -10239,6 +10461,8 @@ fn main() -> Result<()> {
         hud_cols: HUD_COLS_DEFAULT,
         hud_drag_active: false,
         divider_drag: None,
+        divider_hover: None,
+        hscroll_drag_active: false,
         tab_bar_hits: TabBarHits::default(),
         left_dock_hits: LeftDockHits::default(),
         hud_hits: Vec::new(),
@@ -10392,14 +10616,15 @@ fn main() -> Result<()> {
                 h.mouse_dragged(l)
             }
         }
-        fn mouse_moved(&mut self, l: MouseLocation) {
-            if let Some(h) = &mut *self.0.borrow_mut() {
-                h.mouse_moved(l)
-            }
+        fn mouse_moved(&mut self, l: MouseLocation) -> CursorKind {
+            self.0
+                .borrow_mut()
+                .as_mut()
+                .map_or(CursorKind::Arrow, |h| h.mouse_moved(l))
         }
-        fn scroll(&mut self, dy: f64, pp: bool, l: MouseLocation) {
+        fn scroll(&mut self, dy: f64, pp: bool, shift: bool, l: MouseLocation) {
             if let Some(h) = &mut *self.0.borrow_mut() {
-                h.scroll(dy, pp, l)
+                h.scroll(dy, pp, shift, l)
             }
         }
         fn resize(&mut self, w: f64, h: f64, live: bool) {

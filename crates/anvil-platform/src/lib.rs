@@ -10,5 +10,5 @@ pub mod shell_integration;
 pub mod system;
 pub mod webview;
 
-pub use appkit::{ContextAction, RightClickZone};
+pub use appkit::{ContextAction, CursorKind, RightClickZone};
 pub use glyph_atlas::{AtlasError, AtlasPainter};

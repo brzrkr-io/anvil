@@ -34,9 +34,9 @@ use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSAppearance, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
-    NSBackingStoreType, NSDragOperation, NSDraggingInfo, NSEvent, NSEventModifierFlags, NSImage,
-    NSMenu, NSMenuItem, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate,
-    NSWindowStyleMask, NSWindowTitleVisibility,
+    NSBackingStoreType, NSCursor, NSDragOperation, NSDraggingInfo, NSEvent, NSEventModifierFlags,
+    NSImage, NSMenu, NSMenuItem, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow,
+    NSWindowDelegate, NSWindowStyleMask, NSWindowTitleVisibility,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSData, NSNotification, NSPoint, NSRect, NSSize, NSString, NSTimer,
@@ -87,6 +87,16 @@ pub struct MouseLocation {
     pub x: f64,
     /// y in view-point coordinates (origin = view bottom-left).
     pub y: f64,
+}
+
+/// Which system cursor should be shown.  Returned by `AppHandler::mouse_moved`
+/// so the platform layer can call the appropriate `NSCursor` class method.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CursorKind {
+    #[default]
+    Arrow,
+    ColResize,
+    RowResize,
 }
 
 // ── ContextAction ─────────────────────────────────────────────────────────────
@@ -161,12 +171,16 @@ pub trait AppHandler {
     fn mouse_dragged(&mut self, loc: MouseLocation);
 
     /// Mouse moved without any button held (passive hover).
-    fn mouse_moved(&mut self, loc: MouseLocation);
+    ///
+    /// Returns a [`CursorKind`] so the platform layer can set the system cursor
+    /// without coupling AppKit details into the application crate.
+    fn mouse_moved(&mut self, loc: MouseLocation) -> CursorKind;
 
     /// Scroll-wheel event. `dy` is the AppKit delta along Y. `pixel_precise`
     /// is true for trackpad / Magic Mouse (delta is in points), false for a
     /// traditional mouse wheel (delta is in "lines" — ~1.0 per detent).
-    fn scroll(&mut self, dy: f64, pixel_precise: bool, loc: MouseLocation);
+    /// `shift` is true when the Shift modifier is held (horizontal scroll).
+    fn scroll(&mut self, dy: f64, pixel_precise: bool, shift: bool, loc: MouseLocation);
 
     /// The window was resized (called on every resize notification; also during
     /// live resize).  `in_live_resize` matches `NSView.inLiveResize`.
@@ -382,10 +396,11 @@ define_class!(
             // (BOOL is a signed char, not a Rust bool), so every event
             // was misclassified as line-mode regardless of input source.
             let pixel_precise = event.hasPreciseScrollingDeltas();
+            let shift = decode_mods(event.modifierFlags()).shift;
             let loc = location_in_view(self, event);
             // SAFETY: handler pointer is valid for the app lifetime.
             let mut h = unsafe { self.ivars().handler.borrow_mut() };
-            h.scroll(dy, pixel_precise, loc);
+            h.scroll(dy, pixel_precise, shift, loc);
         }
 
         #[unsafe(method(mouseDown:))]
@@ -411,8 +426,15 @@ define_class!(
         fn mouse_moved(&self, event: &NSEvent) {
             let loc = location_in_view(self, event);
             // SAFETY: handler pointer is valid for the app lifetime.
-            let mut h = unsafe { self.ivars().handler.borrow_mut() };
-            h.mouse_moved(loc);
+            let cursor = {
+                let mut h = unsafe { self.ivars().handler.borrow_mut() };
+                h.mouse_moved(loc)
+            };
+            match cursor {
+                CursorKind::ColResize => NSCursor::columnResizeCursor().set(),
+                CursorKind::RowResize => NSCursor::rowResizeCursor().set(),
+                CursorKind::Arrow => NSCursor::arrowCursor().set(),
+            }
         }
 
         #[unsafe(method(mouseExited:))]
@@ -421,8 +443,11 @@ define_class!(
             // location that maps to no hit zone.
             let loc = MouseLocation { x: -1.0, y: -1.0 };
             // SAFETY: handler pointer is valid for the app lifetime.
-            let mut h = unsafe { self.ivars().handler.borrow_mut() };
-            h.mouse_moved(loc);
+            {
+                let mut h = unsafe { self.ivars().handler.borrow_mut() };
+                h.mouse_moved(loc);
+            }
+            NSCursor::arrowCursor().set();
         }
 
         /// Recreate the tracking area whenever the view is resized so the

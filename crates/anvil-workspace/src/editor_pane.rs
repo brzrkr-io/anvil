@@ -328,6 +328,11 @@ pub struct EditorPane {
     pub soft_wrap: bool,
     /// H2: show whitespace overlay — spaces render as `·`, tabs as `→`.
     pub show_whitespace: bool,
+    /// P3: horizontal scroll offset in fractional cell columns.
+    /// `0.0` = no horizontal scroll.  Forced to `0.0` when `soft_wrap` is true.
+    /// Incremented by Shift+scroll wheel; auto-scrolled to keep the cursor
+    /// visible; drives the thin horizontal scrollbar in `draw_editor_into`.
+    pub scroll_x: f64,
 }
 
 impl EditorPane {
@@ -394,6 +399,7 @@ impl EditorPaneRegistry {
             folds: HashMap::new(),
             soft_wrap: false,
             show_whitespace: false,
+            scroll_x: 0.0,
         };
         self.panes.insert(pane_id, pane);
         self.buffers.insert(buffer_id, Buffer::new());
@@ -428,6 +434,7 @@ impl EditorPaneRegistry {
             folds: HashMap::new(),
             soft_wrap: false,
             show_whitespace: false,
+            scroll_x: 0.0,
         });
         let old_buffer_id = pane.buffer_id;
         pane.buffer_id = buffer_id;
@@ -444,6 +451,7 @@ impl EditorPaneRegistry {
         pane.hover_popup = None;
         pane.completion_popup = None;
         pane.code_actions_popup = None;
+        pane.scroll_x = 0.0;
         self.buffers.remove(&old_buffer_id);
         self.buffers.insert(buffer_id, buffer);
         Ok(buffer_id)
@@ -496,6 +504,7 @@ impl EditorPaneRegistry {
                 folds: HashMap::new(),
                 soft_wrap: false,
                 show_whitespace: false,
+                scroll_x: 0.0,
             };
             e.insert(pane);
             self.buffers.insert(buffer_id, buffer);
@@ -609,6 +618,7 @@ impl EditorPaneRegistry {
             pane.hover_popup = None;
             pane.completion_popup = None;
             pane.code_actions_popup = None;
+            pane.scroll_x = 0.0;
             self.buffers.insert(new_id, Buffer::new());
             return None;
         }
@@ -2223,6 +2233,10 @@ impl EditorPaneRegistry {
             EditorAction::ToggleSoftWrap => {
                 let pane = self.panes.get_mut(&pane_id).unwrap();
                 pane.soft_wrap = !pane.soft_wrap;
+                // P3: force scroll_x to 0 when enabling soft-wrap.
+                if pane.soft_wrap {
+                    pane.scroll_x = 0.0;
+                }
                 false
             }
             EditorAction::ToggleShowWhitespace => {
@@ -2612,6 +2626,7 @@ mod tests {
             folds: HashMap::new(),
             soft_wrap: false,
             show_whitespace: false,
+            scroll_x: 0.0,
         };
         let buf = anvil_editor::Buffer::from_text(text);
         (pane, buf)

@@ -21,6 +21,7 @@ anvil-control    = { workspace = true }
 anvil-editor     = { path = "../../crates/anvil-editor" }
 anvil-prompt-core = { path = "../../crates/anvil-prompt-core" }
 anyhow           = { workspace = true }
+unicode-segmentation = { workspace = true }
 serde            = { workspace = true }
 serde_json       = { workspace = true }
 libc             = { workspace = true }
