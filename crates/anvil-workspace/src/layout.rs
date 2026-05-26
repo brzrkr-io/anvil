@@ -365,6 +365,57 @@ pub fn adjust_ratio(sp: &mut Split, divider_index: usize, delta: f64, min_ratio:
     sp.ratios[j] = total - new_i;
 }
 
+/// Walk the tree recursively and reset every `Split`'s ratios to a uniform
+/// (equal) distribution.  Used by Cmd+Shift+M (V6: equalize all panes).
+pub fn equalize_ratios(tree: &mut PaneTree) {
+    equalize_node(&mut tree.root);
+}
+
+fn equalize_node(node: &mut Box<PaneNode>) {
+    if let PaneNode::Split(sp) = node.as_mut() {
+        let n = sp.children.len();
+        let eq = 1.0 / n as f64;
+        sp.ratios = vec![eq; n];
+        for child in &mut sp.children {
+            equalize_node(child);
+        }
+    }
+}
+
+/// Walk the tree and set every split so that `focused_id` (if it appears
+/// directly as a child) gets nearly all the space (ratio ≈ 1.0) and its
+/// siblings get a sliver (MIN_RATIO each, renormalized).  Nodes that do not
+/// contain `focused_id` directly are left unchanged.
+///
+/// Used by Cmd+M (V5: maximize focused pane).
+const MAXIMIZE_SLIVER: f64 = 0.01;
+
+pub fn collapse_siblings(tree: &mut PaneTree, focused_id: PaneId) {
+    collapse_node(&mut tree.root, focused_id);
+}
+
+fn collapse_node(node: &mut Box<PaneNode>, focused_id: PaneId) {
+    if let PaneNode::Split(sp) = node.as_mut() {
+        // Look for focused_id as a direct child.
+        let focused_child = sp
+            .children
+            .iter()
+            .position(|c| matches!(c.as_ref(), PaneNode::Leaf(id) if *id == focused_id));
+        if let Some(fi) = focused_child {
+            let n = sp.children.len();
+            let sliver_total = MAXIMIZE_SLIVER * (n - 1) as f64;
+            let main_ratio = (1.0 - sliver_total).max(MAXIMIZE_SLIVER);
+            for (i, r) in sp.ratios.iter_mut().enumerate() {
+                *r = if i == fi { main_ratio } else { MAXIMIZE_SLIVER };
+            }
+        }
+        // Recurse into all split children regardless.
+        for child in &mut sp.children {
+            collapse_node(child, focused_id);
+        }
+    }
+}
+
 /// Walk the tree to the split node identified by `path` (a sequence of child
 /// indices produced by [`find_divider_at`]) and return a mutable reference to
 /// it.  Returns `None` if the path is empty or leads to a leaf.
@@ -1536,5 +1587,52 @@ mod tests {
         // Tree: [1, 2]. Try closing id 99 (absent).
         let result = tree.close_leaf(99);
         assert_eq!(result, None);
+    }
+
+    // ── V6: equalize_ratios ───────────────────────────────────────────────────
+
+    #[test]
+    fn equalize_ratios_two_pane_gives_half_each() {
+        let mut tree = PaneTree::init_single(1);
+        tree.split(SplitDir::Horizontal, 2).unwrap();
+        // Force unequal ratios first.
+        if let PaneNode::Split(sp) = tree.root.as_mut() {
+            sp.ratios[0] = 0.8;
+            sp.ratios[1] = 0.2;
+        }
+        equalize_ratios(&mut tree);
+        if let PaneNode::Split(sp) = tree.root.as_ref() {
+            assert!((sp.ratios[0] - 0.5).abs() < 1e-9);
+            assert!((sp.ratios[1] - 0.5).abs() < 1e-9);
+        } else {
+            panic!("expected split root");
+        }
+    }
+
+    #[test]
+    fn equalize_ratios_single_leaf_is_noop() {
+        let mut tree = PaneTree::init_single(42);
+        equalize_ratios(&mut tree); // must not panic
+        assert_eq!(tree.leaf_count(), 1);
+    }
+
+    // ── V5: collapse_siblings ────────────────────────────────────────────────
+
+    #[test]
+    fn collapse_siblings_gives_focused_nearly_all_space() {
+        let mut tree = PaneTree::init_single(1);
+        tree.split(SplitDir::Horizontal, 2).unwrap();
+        // focused = 2 (just split); collapse so pane 2 gets almost all space.
+        collapse_siblings(&mut tree, 2);
+        if let PaneNode::Split(sp) = tree.root.as_ref() {
+            // Sibling (pane 1) gets MAXIMIZE_SLIVER.
+            assert!((sp.ratios[0] - MAXIMIZE_SLIVER).abs() < 1e-9);
+            // Focused (pane 2) gets (1 - sliver).
+            assert!(sp.ratios[1] > 0.9);
+            let sum: f64 = sp.ratios.iter().sum();
+            assert!((sum - 1.0).abs() < 1e-9);
+        } else {
+            panic!("expected split root");
+        }
     }
 }

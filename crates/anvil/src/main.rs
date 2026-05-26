@@ -87,7 +87,8 @@ use anvil_workspace::editor_search::EditorSearch;
 use anvil_workspace::interact;
 use anvil_workspace::keys::{Key, Mods, encode as encode_key, encode_mouse};
 use anvil_workspace::layout::{
-    DividerHit, NavDir, PaneId, Rect, SplitDir, adjust_ratio, find_divider_at, split_at_path_mut,
+    DividerHit, NavDir, PaneId, Rect, SplitDir, adjust_ratio, collapse_siblings, equalize_ratios,
+    find_divider_at, split_at_path_mut,
 };
 use anvil_workspace::mode::{DockMetrics, Docks, LayoutMode};
 use anvil_workspace::palette::{Action, CATALOG, Palette, action_for_id};
@@ -818,6 +819,18 @@ pub struct App {
     sidebar_drag_active: bool,
     /// True while the user is dragging the editor/drawer horizontal divider (item 13b).
     drawer_drag_active: bool,
+    /// V1 (#3): timestamp of the most recent mouse-down on the sidebar divider.
+    /// Used to detect double-clicks (within 350ms) that reset width to 300pt.
+    sidebar_divider_last_click: Option<Instant>,
+    /// V2 (#4): timestamp of the most recent mouse-down on the drawer divider.
+    /// Used to detect double-clicks (within 350ms) that reset the ratio to 0.72/0.28.
+    drawer_divider_last_click: Option<Instant>,
+    /// V3 (#5): animated target for the drawer editor-ratio (top split).
+    /// When Some, the tick loop eases the tree's `ratios[0]` toward this value.
+    drawer_ratio_target: Option<f64>,
+    /// V5 (#10): when Some, the focused pane is "maximized" — siblings collapsed
+    /// to slivers and this id is rendered as if filling the full pane area.
+    maximized_pane_id: Option<PaneId>,
     /// P3: true while dragging the editor horizontal scrollbar thumb.
     /// `mouse_dragged` maps the x position to scroll_x.
     hscroll_drag_active: bool,
@@ -1814,25 +1827,50 @@ impl App {
     /// When visible, saves the current editor/drawer ratio and sets it to 1.0
     /// so the drawer occupies 0% of the pane area.  When hidden, restores the
     /// saved ratio.  No-op outside IDE mode or when no vertical root split exists.
+    /// V5 (#10): Cmd+M — toggle maximize for the focused pane.
+    ///
+    /// On first call: collapses all siblings to slivers and records the pane id.
+    /// On second call (same pane): equalizes all ratios back to uniform.
+    fn toggle_maximize_pane(&mut self) {
+        let focused_id = self.focused_pane_id();
+        if self.maximized_pane_id == Some(focused_id) {
+            // Un-maximize: restore uniform ratios.
+            self.maximized_pane_id = None;
+            if let Some(tab) = self.tabs.current_mut() {
+                equalize_ratios(&mut tab.tree);
+            }
+        } else {
+            // Maximize: collapse siblings.
+            self.maximized_pane_id = Some(focused_id);
+            if let Some(tab) = self.tabs.current_mut() {
+                collapse_siblings(&mut tab.tree, focused_id);
+            }
+        }
+        self.resize_all_tabs();
+        self.dirty = true;
+    }
+
+    /// V6 (#11): Cmd+Shift+M — equalize all pane sizes.
+    fn equalize_all_panes(&mut self) {
+        self.maximized_pane_id = None;
+        if let Some(tab) = self.tabs.current_mut() {
+            equalize_ratios(&mut tab.tree);
+        }
+        self.resize_all_tabs();
+        self.dirty = true;
+    }
+
     fn toggle_ide_drawer(&mut self) {
         if self.layout_mode != LayoutMode::Ide {
             return;
         }
         if self.drawer_hidden {
-            // Reveal: restore saved ratio.
+            // Reveal: animate toward the saved ratio (V3 #5).
             let r = self.drawer_saved_ratio.clamp(0.40, 0.95);
-            if let Some(tab) = self.tabs.current_mut() {
-                let root = tab.tree.root.as_mut();
-                if let anvil_workspace::layout::PaneNode::Split(sp) = root {
-                    if sp.dir == SplitDir::Vertical && sp.ratios.len() == 2 {
-                        sp.ratios[0] = r;
-                        sp.ratios[1] = 1.0 - r;
-                    }
-                }
-            }
+            self.drawer_ratio_target = Some(r);
             self.drawer_hidden = false;
         } else {
-            // Hide: capture current ratio then force 1.0 / 0.0.
+            // Hide: capture current ratio, then animate toward 1.0 / 0.0.
             let current_ratio = self
                 .tabs
                 .current()
@@ -1848,17 +1886,18 @@ impl App {
                     }
                 })
                 .unwrap_or(0.72);
-            // Only hide if there is actually a split to collapse.
-            if let Some(tab) = self.tabs.current_mut() {
-                let root = tab.tree.root.as_mut();
-                if let anvil_workspace::layout::PaneNode::Split(sp) = root {
-                    if sp.dir == SplitDir::Vertical && sp.ratios.len() == 2 {
-                        self.drawer_saved_ratio = current_ratio;
-                        sp.ratios[0] = 1.0;
-                        sp.ratios[1] = 0.0;
-                        self.drawer_hidden = true;
-                    }
-                }
+            // Only hide if there is actually a vertical IDE split.
+            let has_split = self.tabs.current().is_some_and(|tab| {
+                matches!(
+                    tab.tree.root.as_ref(),
+                    anvil_workspace::layout::PaneNode::Split(sp)
+                        if sp.dir == SplitDir::Vertical && sp.ratios.len() == 2
+                )
+            });
+            if has_split {
+                self.drawer_saved_ratio = current_ratio;
+                self.drawer_ratio_target = Some(1.0);
+                self.drawer_hidden = true;
             }
         }
         self.resize_all_tabs();
@@ -5478,7 +5517,18 @@ impl App {
             return true;
         });
         test!(kb.left_dock_toggle, {
-            self.left_dock_visible = !self.left_dock_visible;
+            // V3 (#5): animate sidebar on toggle instead of snapping.
+            if self.left_dock_visible {
+                // Hide: animate to width 0, then clear left_dock_visible at snap.
+                self.left_dock_w_pt_target = 0.0;
+                // left_dock_visible stays true until the animation snaps to 0.
+                // The G3 easing block flips it off when target reaches 0.
+            } else {
+                // Show: set visible immediately so geometry is claimed, then ease in.
+                self.left_dock_visible = true;
+                self.left_dock_w_pt = 0.0;
+                self.left_dock_w_pt_target = 300.0;
+            }
             self.resize_all_tabs();
             self.dirty = true;
             return true;
@@ -5501,6 +5551,33 @@ impl App {
         // ⌘J — toggle IDE bottom drawer (Tier-B item 8).
         if ascii_lower(ch) == 'j' && !mods.shift && !mods.control && !mods.option {
             self.toggle_ide_drawer();
+            return true;
+        }
+
+        // ⌘M — V5 (#10): maximize focused pane toggle.
+        if ascii_lower(ch) == 'm' && !mods.shift && !mods.control && !mods.option {
+            self.toggle_maximize_pane();
+            return true;
+        }
+
+        // ⌘⇧M — V6 (#11): equalize all pane sizes.
+        if ascii_lower(ch) == 'm' && mods.shift && !mods.control && !mods.option {
+            self.equalize_all_panes();
+            return true;
+        }
+
+        // ⌘H — V10 (#15): toggle HUD (right dock) in any layout mode.
+        // Works as a second chord for the HUD in IDE mode alongside ⌘\.
+        if ascii_lower(ch) == 'h' && !mods.shift && !mods.control && !mods.option {
+            // Delegate to toggle_hud — but that needs &mut AppShell (for window).
+            // We only have &mut App here.  Set the flag and mark dirty; the
+            // AppShell-level HUD toggle is the canonical path.  Return false so
+            // the AppShell can intercept via the hud_toggle keybind instead.
+            // TODO(anvil-tierV-#15): wire Cmd+H at AppShell level like hud_toggle.
+            self.hud_visible = !self.hud_visible;
+            self.resize_all_tabs();
+            self.force_full_redraw = true;
+            self.dirty = true;
             return true;
         }
 
@@ -6390,6 +6467,7 @@ impl AppHandler for AppShell {
         }
 
         // G3: smooth sidebar width easing — 3-frame settle at 0.35 factor.
+        // V3 (#5): also handles sidebar hide animation (target = 0 → clears visible).
         {
             let delta = app.left_dock_w_pt_target - app.left_dock_w_pt;
             if delta.abs() >= 0.5 {
@@ -6400,6 +6478,64 @@ impl AppHandler for AppShell {
             } else if delta != 0.0 {
                 // Snap and stop.
                 app.left_dock_w_pt = app.left_dock_w_pt_target;
+                // V3: when animating to 0, flip left_dock_visible off at snap.
+                if app.left_dock_w_pt_target == 0.0 {
+                    app.left_dock_visible = false;
+                    // Reset to default so next toggle-on starts at 300pt.
+                    app.left_dock_w_pt = 300.0;
+                    app.left_dock_w_pt_target = 300.0;
+                }
+                app.resize_all_tabs();
+                app.force_full_redraw = true;
+                app.dirty = true;
+            }
+        }
+
+        // V3 (#5): smooth drawer ratio easing — mirrors sidebar G3.
+        // drawer_ratio_target is set by toggle_ide_drawer when V3 animation is active.
+        if let Some(target) = app.drawer_ratio_target {
+            let cur = app
+                .tabs
+                .current()
+                .and_then(|tab| {
+                    let root = &tab.tree.root;
+                    match root.as_ref() {
+                        anvil_workspace::layout::PaneNode::Split(sp)
+                            if sp.dir == SplitDir::Vertical && sp.ratios.len() == 2 =>
+                        {
+                            Some(sp.ratios[0])
+                        }
+                        _ => None,
+                    }
+                })
+                .unwrap_or(target);
+            let delta = target - cur;
+            if delta.abs() >= 0.005 {
+                let next = cur + delta * 0.35;
+                if let Some(tab) = app.tabs.current_mut() {
+                    let root = tab.tree.root.as_mut();
+                    if let anvil_workspace::layout::PaneNode::Split(sp) = root {
+                        if sp.dir == SplitDir::Vertical && sp.ratios.len() == 2 {
+                            sp.ratios[0] = next;
+                            sp.ratios[1] = 1.0 - next;
+                        }
+                    }
+                }
+                app.resize_all_tabs();
+                app.force_full_redraw = true;
+                app.dirty = true;
+            } else {
+                // Snap and clear.
+                if let Some(tab) = app.tabs.current_mut() {
+                    let root = tab.tree.root.as_mut();
+                    if let anvil_workspace::layout::PaneNode::Split(sp) = root {
+                        if sp.dir == SplitDir::Vertical && sp.ratios.len() == 2 {
+                            sp.ratios[0] = target;
+                            sp.ratios[1] = 1.0 - target;
+                        }
+                    }
+                }
+                app.drawer_ratio_target = None;
                 app.resize_all_tabs();
                 app.force_full_redraw = true;
                 app.dirty = true;
@@ -8523,11 +8659,25 @@ impl AppHandler for AppShell {
         }
 
         // Sidebar right-edge resize handle (item 13).
+        // V1 (#3): double-click resets to default 300pt.
         // Hit zone: ±SIDEBAR_DRAG_HIT_PX logical pt, scaled by ui_scale (A6).
         if app.left_dock_visible && app.layout_mode == LayoutMode::Ide {
             let (rx, _ry) = app.view_pt_to_raster_px(loc);
             let edge_x = app.left_dock_w_pt * app.window_scale;
             if (rx - edge_x).abs() <= SIDEBAR_DRAG_HIT_PX * app.ui_scale {
+                const DBL_MS: u128 = 350;
+                let now = Instant::now();
+                let is_dbl = app
+                    .sidebar_divider_last_click
+                    .is_some_and(|t| now.duration_since(t).as_millis() < DBL_MS);
+                if is_dbl {
+                    // V1: reset to 300pt.
+                    app.left_dock_w_pt_target = 300.0;
+                    app.sidebar_divider_last_click = None;
+                    app.dirty = true;
+                    return;
+                }
+                app.sidebar_divider_last_click = Some(now);
                 app.sidebar_drag_active = true;
                 app.dirty = true;
                 return;
@@ -8535,12 +8685,26 @@ impl AppHandler for AppShell {
         }
 
         // IDE editor/drawer horizontal divider (item 13b).
+        // V2 (#4): double-click resets to 0.72/0.28 ratio.
         // Hit zone: ±4 logical pt, scaled by ui_scale (A6).
         {
             const DRAWER_DRAG_HIT_PT: f64 = 4.0;
             let (_rx, ry) = app.view_pt_to_raster_px(loc);
             if let Some(div_y) = app.ide_drawer_divider_y() {
                 if (ry - div_y).abs() <= DRAWER_DRAG_HIT_PT * app.ui_scale {
+                    const DBL_MS: u128 = 350;
+                    let now = Instant::now();
+                    let is_dbl = app
+                        .drawer_divider_last_click
+                        .is_some_and(|t| now.duration_since(t).as_millis() < DBL_MS);
+                    if is_dbl {
+                        // V2: animate to default 0.72/0.28 ratio.
+                        app.drawer_ratio_target = Some(0.72);
+                        app.drawer_divider_last_click = None;
+                        app.dirty = true;
+                        return;
+                    }
+                    app.drawer_divider_last_click = Some(now);
                     app.drawer_drag_active = true;
                     app.dirty = true;
                     return;
@@ -11683,6 +11847,10 @@ fn main() -> Result<()> {
         left_dock_w_pt_target: 300.0,
         sidebar_drag_active: false,
         drawer_drag_active: false,
+        sidebar_divider_last_click: None,
+        drawer_divider_last_click: None,
+        drawer_ratio_target: None,
+        maximized_pane_id: None,
         drawer_hidden: false,
         drawer_saved_ratio: 0.72,
         blink_phase: 0.0,
