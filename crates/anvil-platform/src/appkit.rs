@@ -647,6 +647,12 @@ impl AppKitApp {
     ///
     /// Panics if called from any thread other than the main thread, or if
     /// AppKit fails to create the window.
+    ///
+    /// TODO(anvil-20-window-spawn): When multi-window detach (item 20) is
+    /// implemented, refactor this into `spawn_window(title, frame) -> AppKitApp`
+    /// and call it here for the initial window.  The detach path in
+    /// `App::detach_buffer_to_new_window` will call `spawn_window` to open a
+    /// second native window hosting the detached buffer.
     pub fn new(handler: Rc<RefCell<dyn AppHandler>>, width: f64, height: f64, title: &str) -> Self {
         let mtm =
             MainThreadMarker::new().expect("AppKitApp::new must be called on the main thread");

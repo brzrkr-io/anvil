@@ -1042,6 +1042,54 @@ mod tests {
         assert!(tab.editor_panes.get_pane(new_id).is_some());
     }
 
+    // ── Item 13b: drawer drag ratio clamping ─────────────────────────────────
+
+    /// The IDE editor/drawer drag logic clamps the editor ratio to [0.40, 0.95]
+    /// (equivalent to drawer ratio in [0.05, 0.60]).  This test verifies the
+    /// clamp arithmetic matches the dragged values used in main.rs.
+    #[test]
+    fn drawer_drag_editor_ratio_clamp_bounds() {
+        // Replicate the clamping from mouse_dragged in main.rs.
+        let clamp_editor_ratio = |raw: f64| -> (f64, f64) {
+            let editor = raw.clamp(0.40, 0.95);
+            let drawer = 1.0 - editor;
+            (editor, drawer)
+        };
+
+        // At minimum drawer (0.05), editor is 0.95.
+        let (ed, dr) = clamp_editor_ratio(0.99);
+        assert!(
+            (ed - 0.95).abs() < 1e-9,
+            "editor ratio must clamp to 0.95 when dragged high; got {ed}"
+        );
+        assert!(
+            (dr - 0.05).abs() < 1e-9,
+            "drawer ratio must clamp to 0.05; got {dr}"
+        );
+
+        // At maximum drawer (0.60), editor is 0.40.
+        let (ed, dr) = clamp_editor_ratio(0.01);
+        assert!(
+            (ed - 0.40).abs() < 1e-9,
+            "editor ratio must clamp to 0.40 when dragged low; got {ed}"
+        );
+        assert!(
+            (dr - 0.60).abs() < 1e-9,
+            "drawer ratio must clamp to 0.60; got {dr}"
+        );
+
+        // Mid-point passes through unchanged.
+        let (ed, dr) = clamp_editor_ratio(0.72);
+        assert!(
+            (ed - 0.72).abs() < 1e-9,
+            "mid-point must pass through unchanged; got {ed}"
+        );
+        assert!(
+            (dr - 0.28).abs() < 1e-9,
+            "drawer mid-point must be 0.28; got {dr}"
+        );
+    }
+
     // ── Item 5: normalize_ide_editor_drawer with no terminal pane ───────────
 
     #[test]

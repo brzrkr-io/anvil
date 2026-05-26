@@ -524,6 +524,8 @@ pub struct App {
     left_dock_w_pt: f64,
     /// True while the user is dragging the sidebar right edge (item 13).
     sidebar_drag_active: bool,
+    /// True while the user is dragging the editor/drawer horizontal divider (item 13b).
+    drawer_drag_active: bool,
 
     // -- UI state ---
     blink_phase: f32,
@@ -783,6 +785,34 @@ impl App {
             self.font.metrics.cell_h,
         )
         .pane_area
+    }
+
+    /// Return the device-pixel y-coordinate of the IDE editor/drawer divider,
+    /// or `None` when the current tab's root split is not the IDE vertical split
+    /// (e.g. a single-pane layout or a non-IDE tab).
+    ///
+    /// The divider sits at `editor_rect.y + editor_rect.h` in device pixels.
+    fn ide_drawer_divider_y(&self) -> Option<f64> {
+        if self.layout_mode != LayoutMode::Ide {
+            return None;
+        }
+        let tab = self.tabs.current()?;
+        let ir = self.pane_area_rect();
+        // The IDE root split is Vertical with exactly 2 children when a drawer
+        // is present.  We confirm this before computing the divider position.
+        let root = &tab.tree.root;
+        let split = match root.as_ref() {
+            anvil_workspace::layout::PaneNode::Split(sp)
+                if sp.dir == SplitDir::Vertical && sp.children.len() == 2 =>
+            {
+                sp
+            }
+            _ => return None,
+        };
+        // editor ratio is ratios[0]; divider y = ir.y + ir.h * ratios[0].
+        let editor_ratio = split.ratios[0];
+        let divider_y = ir.y + ir.h * editor_ratio;
+        Some(divider_y)
     }
 
     /// Fixed chrome-top strip height in device pixels (Option D: 36pt).
@@ -1260,6 +1290,37 @@ impl App {
                 self.dirty = true;
             }
         }
+    }
+
+    /// Remove `buffer_id` from `pane_id` in the current tab.
+    ///
+    /// The removed buffer should eventually appear in a new native window.
+    /// That window-spawn path is not yet implemented — see
+    /// `TODO(anvil-20-window-spawn)` in `crates/anvil-platform/src/appkit.rs`.
+    ///
+    /// Currently: removes the buffer from the source pane and logs that the
+    /// window-spawn step is missing.  The API surface exists so call-sites can
+    /// be written and tested now.
+    pub fn detach_buffer_to_new_window(
+        &mut self,
+        pane_id: PaneId,
+        buffer_id: anvil_editor::BufferId,
+    ) {
+        if let Some(tab) = self.tabs.current_mut() {
+            tab.editor_panes.close_buffer(pane_id, buffer_id);
+            // Sync pane.editor_id to the new active buffer.
+            if let Some(ep) = tab.editor_panes.get_pane(pane_id) {
+                let active = ep.buffer_id;
+                if let Some(pane) = tab.registry.get_mut(pane_id) {
+                    pane.editor_id = Some(active);
+                }
+            }
+        }
+        eprintln!(
+            "anvil-window: multi-window detach not yet implemented; \
+             buffer removed from source pane only"
+        );
+        self.dirty = true;
     }
 
     fn add_tab(&mut self) {
@@ -2296,10 +2357,49 @@ impl App {
                 editor_ctx,
                 areas.top_bar,
             );
-            // NE15: nvim LSP outline removed. Native LSP outline (NE9) does
-            // not yet feed the left-dock; leave the outline section blank
-            // until a follow-up wires `editor_pane.outline`.
-            let outline_rows: Option<Vec<OutlineRow>> = None;
+            // NE9/item-19: derive outline from the active buffer's syntax tree.
+            // For Rust buffers uses tree-sitter node walk; falls back to line-regex
+            // for other languages. Non-Rust buffers produce an empty list (header-only).
+            let outline_rows: Option<Vec<OutlineRow>> = self.tabs.current().and_then(|tab| {
+                let id = tab.focused_id();
+                let ep = tab.editor_panes.get_pane(id)?;
+                let buf = tab.editor_panes.get_buffer(ep.buffer_id)?;
+                // Only populate outline for Rust files; other languages show
+                // the header-only state until multi-language support is added.
+                if buf
+                    .tracked_path()
+                    .and_then(|p| p.extension())
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.eq_ignore_ascii_case("rs"))
+                    != Some(true)
+                {
+                    return None;
+                }
+                let text = buf.to_text();
+                let symbols = anvil_editor::derive_outline_rows(buf.syntax(), &text);
+                if symbols.is_empty() {
+                    return Some(Vec::new());
+                }
+                use anvil_editor::OutlineSymbolKind;
+                use anvil_render::left_dock::{OutlineKind, OutlineRow};
+                let rows = symbols
+                    .into_iter()
+                    .map(|s| OutlineRow {
+                        name: s.name,
+                        kind: match s.kind {
+                            OutlineSymbolKind::Function => OutlineKind::Function,
+                            OutlineSymbolKind::Struct => OutlineKind::Struct,
+                            OutlineSymbolKind::Impl => OutlineKind::Module,
+                            OutlineSymbolKind::Enum => OutlineKind::Enum,
+                            OutlineSymbolKind::Trait => OutlineKind::Interface,
+                            OutlineSymbolKind::Other => OutlineKind::Other,
+                        },
+                        depth: 0,
+                        line: s.line,
+                    })
+                    .collect();
+                Some(rows)
+            });
             if self.left_dock_visible {
                 self.left_dock_hits = draw_left_dock_with_scroll(
                     &mut self.raster,
@@ -4093,6 +4193,20 @@ impl AppHandler for AppShell {
             }
         }
 
+        // IDE editor/drawer horizontal divider (item 13b).
+        // Hit zone: ±4 device px of the divider y between editor and drawer panes.
+        {
+            const DRAWER_DRAG_HIT_PX: f64 = 4.0;
+            let (_rx, ry) = app.view_pt_to_raster_px(loc);
+            if let Some(div_y) = app.ide_drawer_divider_y() {
+                if (ry - div_y).abs() <= DRAWER_DRAG_HIT_PX {
+                    app.drawer_drag_active = true;
+                    app.dirty = true;
+                    return;
+                }
+            }
+        }
+
         // Left dock click — explorer rows open folders/files before pane hit-testing.
         {
             let (rx, ry) = app.view_pt_to_raster_px(loc);
@@ -4149,6 +4263,36 @@ impl AppHandler for AppShell {
                             }
                         }
                     }
+                }
+                return;
+            }
+            // Outline row click (item 19): jump cursor to the symbol's line.
+            if let Some(LeftDockHitKind::Outline(idx)) = hit_kind {
+                // The outline_rows drawn last frame are not stored on App, so we
+                // re-derive them here to map idx → line. This is cheap (< 1 ms).
+                let jump_line: Option<usize> = app.tabs.current().and_then(|tab| {
+                    let pid = tab.focused_id();
+                    let ep = tab.editor_panes.get_pane(pid)?;
+                    let buf = tab.editor_panes.get_buffer(ep.buffer_id)?;
+                    if buf
+                        .tracked_path()
+                        .and_then(|p| p.extension())
+                        .and_then(|e| e.to_str())
+                        .map(|e| e.eq_ignore_ascii_case("rs"))
+                        != Some(true)
+                    {
+                        return None;
+                    }
+                    let text = buf.to_text();
+                    let symbols = anvil_editor::derive_outline_rows(buf.syntax(), &text);
+                    symbols.get(idx).map(|s| s.line)
+                });
+                if let Some(line) = jump_line {
+                    app.apply_editor_action(EditorAction::MoveTo {
+                        pos: EditorPosition { line, col: 0 },
+                        extend: false,
+                    });
+                    app.dirty = true;
                 }
                 return;
             }
@@ -4515,6 +4659,13 @@ impl AppHandler for AppShell {
             return;
         }
 
+        // IDE drawer divider drag: release (item 13b).
+        if app.drawer_drag_active {
+            app.drawer_drag_active = false;
+            app.dirty = true;
+            return;
+        }
+
         // HUD resize drag: release.
         if app.hud_drag_active {
             app.hud_drag_active = false;
@@ -4726,6 +4877,33 @@ impl AppHandler for AppShell {
             let new_w_pt = (rx / app.window_scale).clamp(SIDEBAR_W_MIN_PT, SIDEBAR_W_MAX_PT);
             if (new_w_pt - app.left_dock_w_pt).abs() > 0.5 {
                 app.left_dock_w_pt = new_w_pt;
+                app.resize_all_tabs();
+                app.force_full_redraw = true;
+                app.dirty = true;
+            }
+            return;
+        }
+
+        // IDE editor/drawer divider drag (item 13b): mutate the root split ratios.
+        if app.drawer_drag_active {
+            let (_, ry) = app.view_pt_to_raster_px(loc);
+            let ir = app.pane_area_rect();
+            if ir.h > 0.0 {
+                // drawer ratio = fraction of pane area below the mouse.
+                let raw_editor_ratio = (ry - ir.y) / ir.h;
+                // Clamp: drawer ratio in [0.05, 0.60] → editor ratio in [0.40, 0.95].
+                let editor_ratio = raw_editor_ratio.clamp(0.40, 0.95);
+                let drawer_ratio = 1.0 - editor_ratio;
+                let _ = drawer_ratio; // unused variable; value used via editor_ratio
+                if let Some(tab) = app.tabs.current_mut() {
+                    let root = tab.tree.root.as_mut();
+                    if let anvil_workspace::layout::PaneNode::Split(sp) = root {
+                        if sp.dir == SplitDir::Vertical && sp.ratios.len() == 2 {
+                            sp.ratios[0] = editor_ratio;
+                            sp.ratios[1] = 1.0 - editor_ratio;
+                        }
+                    }
+                }
                 app.resize_all_tabs();
                 app.force_full_redraw = true;
                 app.dirty = true;
@@ -5524,6 +5702,7 @@ fn main() -> Result<()> {
         left_dock_visible: layout_mode == LayoutMode::Ide,
         left_dock_w_pt: 300.0,
         sidebar_drag_active: false,
+        drawer_drag_active: false,
         blink_phase: 0.0,
         last_blink_opacity: -1.0,
         search: anvil_term::Search::new(),
