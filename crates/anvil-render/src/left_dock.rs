@@ -449,16 +449,9 @@ fn draw_explorer_section(
                     } else {
                         "▸"
                     };
-                    (chevron, theme.text_subtle)
+                    (chevron, theme.foreground)
                 } else {
-                    (
-                        "◇",
-                        if selected {
-                            theme.foreground
-                        } else {
-                            theme.text_muted
-                        },
-                    )
+                    ("◇", theme.foreground)
                 };
 
                 let icon_x = rect.x + PAD_X + indent;
@@ -472,10 +465,8 @@ fn draw_explorer_section(
                     icon,
                     if selected {
                         theme.accent_primary
-                    } else if *is_dir {
-                        theme.text_subtle
                     } else {
-                        theme.hairline
+                        theme.text_muted
                     },
                     icon_x,
                     glyph_y,
@@ -967,26 +958,38 @@ mod tests {
         };
         draw_left_dock(&mut r, &mut p, m, &th, Some(&snap), None, None, dock_rect());
 
-        // File entry 'm' should appear in text_muted.
+        // File label glyph 'm' must paint in foreground (high contrast).
         let file_m: Vec<_> = p
             .glyphs
             .iter()
-            .filter(|(cp, fg)| *cp == 'm' as u32 && *fg == th.text_muted)
+            .filter(|(cp, fg)| *cp == 'm' as u32 && *fg == th.foreground)
             .collect();
         assert!(
             !file_m.is_empty(),
-            "expected 'm' in text_muted for file entry"
+            "expected 'm' in foreground for file entry label"
         );
 
-        // Dir entry chevron ▸ (U+25B8) should appear in text_subtle.
+        // File icon ◇ (U+25C7) for inactive file paints in text_muted (one
+        // step quieter than the label).
+        let file_icon: Vec<_> = p
+            .glyphs
+            .iter()
+            .filter(|(cp, fg)| *cp == '\u{25C7}' as u32 && *fg == th.text_muted)
+            .collect();
+        assert!(
+            !file_icon.is_empty(),
+            "expected file icon ◇ in text_muted for inactive file"
+        );
+
+        // Dir chevron ▸ (U+25B8) icon paints in text_muted for inactive dir.
         let dir_chevron: Vec<_> = p
             .glyphs
             .iter()
-            .filter(|(cp, fg)| *cp == '\u{25B8}' as u32 && *fg == th.text_subtle)
+            .filter(|(cp, fg)| *cp == '\u{25B8}' as u32 && *fg == th.text_muted)
             .collect();
         assert!(
             !dir_chevron.is_empty(),
-            "expected dir chevron in text_subtle for dir entry"
+            "expected dir chevron ▸ in text_muted for inactive dir"
         );
     }
 
@@ -1022,24 +1025,29 @@ mod tests {
             dock_rect(),
         );
 
-        let main_m_selected: Vec<_> = p
+        // Selected row signaled by icon color: ◇ paints in accent_primary
+        // for the active file, text_muted for inactive. Labels stay
+        // foreground for both (selection visible via row bg + left rail).
+        let selected_icon: Vec<_> = p
             .glyphs
             .iter()
-            .filter(|(cp, fg)| *cp == 'm' as u32 && *fg == th.foreground)
+            .filter(|(cp, fg)| *cp == '\u{25C7}' as u32 && *fg == th.accent_primary)
             .collect();
-        assert!(
-            !main_m_selected.is_empty(),
-            "expected active file label to use foreground selected color"
+        assert_eq!(
+            selected_icon.len(),
+            1,
+            "exactly one file icon (the active one) should paint in accent_primary"
         );
 
-        let editor_e_selected: Vec<_> = p
+        let inactive_icon: Vec<_> = p
             .glyphs
             .iter()
-            .filter(|(cp, fg)| *cp == 'e' as u32 && *fg == th.foreground)
+            .filter(|(cp, fg)| *cp == '\u{25C7}' as u32 && *fg == th.text_muted)
             .collect();
-        assert!(
-            editor_e_selected.is_empty(),
-            "selection must come from active_file_path, not a hardcoded editor.rs row"
+        assert_eq!(
+            inactive_icon.len(),
+            1,
+            "exactly one inactive file icon should paint in text_muted"
         );
     }
 

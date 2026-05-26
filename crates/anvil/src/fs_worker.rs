@@ -112,7 +112,7 @@ pub fn spawn_child_fs_worker() -> (
 
 /// Read the top-level entries of `root` and return a [`DirSnapshot`].
 /// On IO error returns an empty snapshot (honest empty state).
-fn read_dir_snapshot(root: &PathBuf) -> DirSnapshot {
+pub fn read_dir_snapshot(root: &PathBuf) -> DirSnapshot {
     let entries = read_entries(root).unwrap_or_default();
     DirSnapshot {
         root: root.clone(),

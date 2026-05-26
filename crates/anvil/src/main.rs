@@ -678,6 +678,8 @@ impl App {
 
     /// The cwd of the focused terminal pane (OSC 7 path), falling back to any
     /// live terminal in the tab when focus is on a native editor surface.
+    /// Final fallback: the process cwd at launch, so the Explorer can paint
+    /// immediately without waiting for shell integration.
     fn current_cwd(&self) -> Option<String> {
         let tab = self.tabs.current()?;
         let focused_id = tab.focused_id();
@@ -690,10 +692,18 @@ impl App {
             return Some(cwd);
         }
 
-        tab.registry
+        if let Some(cwd) = tab
+            .registry
             .iter()
             .filter(|(id, _)| *id != focused_id)
             .find_map(|(_, pane)| pane.terminal.as_ref().and_then(non_empty_terminal_cwd))
+        {
+            return Some(cwd);
+        }
+
+        std::env::current_dir()
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned())
     }
 
     /// Device-pixel dimensions of the content area.
@@ -5240,7 +5250,20 @@ fn main() -> Result<()> {
         fs_rx,
         child_fs_tx,
         child_fs_rx,
-        fs_snapshot: None,
+        fs_snapshot: std::env::current_dir().ok().map(|cwd| {
+            let snap = fs_worker::read_dir_snapshot(&cwd);
+            LeftDockSnapshot {
+                root: snap.root.to_string_lossy().into_owned(),
+                entries: snap
+                    .entries
+                    .into_iter()
+                    .map(|e| anvil_render::left_dock::DirEntry {
+                        name: e.name,
+                        is_dir: e.is_dir,
+                    })
+                    .collect(),
+            }
+        }),
         child_snapshots: HashMap::new(),
         active_explorer_file: None,
         explorer_scroll_offset: 0,
