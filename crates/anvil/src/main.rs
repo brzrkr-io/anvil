@@ -14,7 +14,7 @@ mod fs_worker;
 mod kube;
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc;
@@ -599,6 +599,14 @@ pub struct App {
     /// The explorer row index currently under the cursor (for hover highlight).
     /// `None` when the cursor is outside the dock.
     hovered_explorer_row: Option<usize>,
+    /// Set of entry indices (in the current DirSnapshot) that are expanded.
+    /// Cleared whenever the root DirSnapshot changes.
+    expanded_dirs: HashSet<usize>,
+    /// Alpha for the Explorer scroll thumb (Item 8). Driven by a decay timer.
+    /// 1.0 immediately after a scroll event; decays to 0 after 600ms hold + 200ms fade.
+    scroll_indicator_alpha: f32,
+    /// Timestamp of the last explorer scroll event, for the 600ms hold + 200ms fade-out.
+    scroll_indicator_last_scroll: Option<Instant>,
     /// Last cwd sent to the fs worker; used to debounce re-sends.
     fs_last_cwd: Option<String>,
 
@@ -1099,6 +1107,7 @@ impl App {
                 entries: Vec::new(),
             });
             self.explorer_scroll_offset = 0;
+            self.expanded_dirs.clear();
             self.active_explorer_file = None;
             self.dirty = true;
             return;
@@ -1739,6 +1748,7 @@ impl App {
         // ID3: drain filesystem worker and send cwd when it changes.
         while let Ok(snap) = self.fs_rx.try_recv() {
             self.explorer_scroll_offset = 0;
+            self.expanded_dirs.clear();
             self.fs_snapshot = Some(LeftDockSnapshot {
                 root: snap.root.to_string_lossy().into_owned(),
                 entries: snap
@@ -2186,6 +2196,8 @@ impl App {
                     areas.left_dock,
                     self.explorer_scroll_offset,
                     self.hovered_explorer_row,
+                    &self.expanded_dirs,
+                    self.scroll_indicator_alpha,
                 );
             } else {
                 self.left_dock_hits.clear();
@@ -3257,6 +3269,26 @@ impl AppHandler for AppShell {
             app.dirty = true;
         }
 
+        // Item 8: scroll indicator alpha decay (600ms hold, 200ms fade-out).
+        if app.scroll_indicator_alpha > 0.0 {
+            const HOLD_MS: f64 = 600.0;
+            const FADE_MS: f64 = 200.0;
+            let elapsed_ms = app
+                .scroll_indicator_last_scroll
+                .map(|t| t.elapsed().as_secs_f64() * 1000.0)
+                .unwrap_or(f64::MAX);
+            let new_alpha = if elapsed_ms < HOLD_MS {
+                1.0_f32
+            } else {
+                let fade_progress = ((elapsed_ms - HOLD_MS) / FADE_MS).min(1.0) as f32;
+                (1.0 - fade_progress).max(0.0)
+            };
+            if (new_alpha - app.scroll_indicator_alpha).abs() > 0.005 || new_alpha == 0.0 {
+                app.scroll_indicator_alpha = new_alpha;
+                app.dirty = true;
+            }
+        }
+
         // Agent dot pulse (item 19).
         if app.agent_snap.connection == anvil_agent::Connection::Live {
             app.agent_pulse_phase += 0.3 / 60.0;
@@ -3832,9 +3864,34 @@ impl AppHandler for AppShell {
             let hit_kind = app.left_dock_hits.at(rx, ry).cloned();
             if let Some(LeftDockHitKind::Explorer(hit)) = hit_kind {
                 match hit {
-                    ExplorerHit::Header | ExplorerHit::Row(_) => {
+                    ExplorerHit::Header => {
                         if let Some(snapshot) = app.fs_snapshot.clone() {
-                            if let Some(path) = explorer_path_for_hit(&snapshot, hit) {
+                            if let Some(path) =
+                                explorer_path_for_hit(&snapshot, ExplorerHit::Header)
+                            {
+                                app.open_path_in_native_editor(&path);
+                            }
+                        }
+                    }
+                    ExplorerHit::Row(idx) => {
+                        let is_dir = app
+                            .fs_snapshot
+                            .as_ref()
+                            .and_then(|s| s.entries.get(idx))
+                            .map(|e| e.is_dir)
+                            .unwrap_or(false);
+                        if is_dir {
+                            // Item 7: toggle expand/collapse; do not open in editor.
+                            if app.expanded_dirs.contains(&idx) {
+                                app.expanded_dirs.remove(&idx);
+                            } else {
+                                app.expanded_dirs.insert(idx);
+                            }
+                            app.dirty = true;
+                        } else if let Some(snapshot) = app.fs_snapshot.clone() {
+                            if let Some(path) =
+                                explorer_path_for_hit(&snapshot, ExplorerHit::Row(idx))
+                            {
                                 app.open_path_in_native_editor(&path);
                             }
                         }
@@ -4438,6 +4495,9 @@ impl AppHandler for AppShell {
             let next = next_explorer_scroll_offset(app.explorer_scroll_offset, dy, entry_count);
             if next != app.explorer_scroll_offset {
                 app.explorer_scroll_offset = next;
+                // Item 8: trigger scroll indicator fade-in.
+                app.scroll_indicator_alpha = 1.0;
+                app.scroll_indicator_last_scroll = Some(Instant::now());
                 app.dirty = true;
             }
             return;
@@ -5152,6 +5212,9 @@ fn main() -> Result<()> {
         active_explorer_file: None,
         explorer_scroll_offset: 0,
         hovered_explorer_row: None,
+        expanded_dirs: HashSet::new(),
+        scroll_indicator_alpha: 0.0,
+        scroll_indicator_last_scroll: None,
         fs_last_cwd: None,
         agent_pulse_phase: 0.0,
         last_agent_pulse_opacity: -1.0,

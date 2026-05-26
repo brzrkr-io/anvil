@@ -7,6 +7,7 @@
 //!   explorer_h = rect.h * 0.60   (includes header row)
 //!   outline_h  = rect.h * 0.40   (includes header row)
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use anvil_theme::Theme;
@@ -148,6 +149,8 @@ pub fn draw_left_dock(
         rect,
         0,
         None,
+        &HashSet::new(),
+        0.0,
     )
 }
 
@@ -163,6 +166,8 @@ pub fn draw_left_dock_with_scroll(
     rect: Rect,
     explorer_scroll_offset: usize,
     hovered_row: Option<usize>,
+    expanded_dirs: &HashSet<usize>,
+    scroll_indicator_alpha: f32,
 ) -> LeftDockHits {
     let mut hits = LeftDockHits::default();
     if rect.w <= 0.0 || rect.h <= 0.0 {
@@ -222,6 +227,8 @@ pub fn draw_left_dock_with_scroll(
         active_file_path,
         explorer_scroll_offset,
         hovered_row,
+        expanded_dirs,
+        scroll_indicator_alpha,
         explorer_rect,
         &mut hits,
     );
@@ -249,6 +256,8 @@ fn draw_explorer_section(
     active_file_path: Option<&Path>,
     scroll_offset: usize,
     hovered_row: Option<usize>,
+    expanded_dirs: &HashSet<usize>,
+    scroll_indicator_alpha: f32,
     rect: Rect,
     hits: &mut LeftDockHits,
 ) {
@@ -337,7 +346,8 @@ fn draw_explorer_section(
         }
         Some(snap) => {
             let available_rows = (content_h / ROW_H).floor() as usize;
-            let first = scroll_offset.min(snap.entries.len().saturating_sub(available_rows));
+            let total_entries = snap.entries.len();
+            let first = scroll_offset.min(total_entries.saturating_sub(available_rows));
             for (visible_i, entry) in snap
                 .entries
                 .iter()
@@ -388,8 +398,14 @@ fn draw_explorer_section(
                     );
                 }
 
+                // Item 7: directory chevron toggles ▸/▾ based on expanded_dirs.
                 let (icon, label, color) = if entry.is_dir {
-                    ("▸", entry.name.clone(), theme.text_muted)
+                    let chevron = if expanded_dirs.contains(&visible_i) {
+                        "▾"
+                    } else {
+                        "▸"
+                    };
+                    (chevron, entry.name.clone(), theme.text_muted)
                 } else {
                     (
                         "◇",
@@ -434,6 +450,25 @@ fn draw_explorer_section(
                     rect.x + rect.w - PAD_X,
                 );
             }
+
+            // Item 8: scroll thumb — only when content overflows the dock.
+            if total_entries > available_rows && scroll_indicator_alpha > 0.0 {
+                let thumb_h = ((available_rows as f64 / total_entries as f64) * content_h)
+                    .max(20.0)
+                    .min(content_h);
+                let max_scroll = (total_entries - available_rows) as f64;
+                let thumb_top =
+                    content_y_start + (first as f64 / max_scroll) * (content_h - thumb_h);
+                let thumb_x = rect.x + rect.w - 3.0;
+                raster.fill_pixel_rect_alpha(
+                    thumb_x,
+                    thumb_top,
+                    3.0,
+                    thumb_h,
+                    theme.text_subtle,
+                    (scroll_indicator_alpha * 0.6) as f64,
+                );
+            }
         }
     }
 }
@@ -463,13 +498,20 @@ fn draw_outline_section(
     let cell_w = metrics.cell_w;
 
     // ── Header row ────────────────────────────────────────────────────────────
+    // Item 10: header color is text_subtle when empty, accent_bright when symbols present.
+    let has_symbols = outline.is_some_and(|rows| !rows.is_empty());
+    let header_color = if has_symbols {
+        theme.accent_bright
+    } else {
+        theme.text_subtle
+    };
     let header_y = rect.y + ((HEADER_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
     draw_text_run(
         raster,
         painter,
         metrics,
         "OUTLINE",
-        theme.accent_bright,
+        header_color,
         rect.x + PAD_X,
         header_y,
         rect.x + rect.w,
@@ -483,47 +525,9 @@ fn draw_outline_section(
     }
 
     match outline {
-        None => {
-            // Native outline is not ready yet; render calm product copy, not implementation state.
-            let row1_y = content_y + ((ROW_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
-            draw_text_run(
-                raster,
-                painter,
-                metrics,
-                "No symbols yet",
-                theme.text_subtle,
-                rect.x + PAD_X,
-                row1_y,
-                rect.x + rect.w,
-            );
-            if content_h > ROW_H {
-                let row2_y = row1_y + ROW_H;
-                let muted_50 = blend_50(theme.text_subtle, theme.charcoal);
-                draw_text_run(
-                    raster,
-                    painter,
-                    metrics,
-                    "Open a source file",
-                    muted_50,
-                    rect.x + PAD_X,
-                    row2_y,
-                    rect.x + rect.w,
-                );
-            }
-        }
-        Some([]) => {
-            // Server attached but no symbols.
-            let row_y = content_y + ((ROW_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
-            draw_text_run(
-                raster,
-                painter,
-                metrics,
-                "No symbols",
-                theme.text_subtle,
-                rect.x + PAD_X,
-                row_y,
-                rect.x + rect.w,
-            );
+        // Item 10: None and Some(&[]) both collapse to header-only; no body copy.
+        None | Some([]) => {
+            // Empty state — only the header row is shown (rendered above).
         }
         Some(rows) => {
             let available_rows = (content_h / ROW_H).floor() as usize;
@@ -628,15 +632,6 @@ fn truncate_name(name: &str, max_chars: usize) -> String {
         let s: String = chars[..cut].iter().collect();
         format!("{s}\u{2026}")
     }
-}
-
-/// 50% alpha blend of `fg` over `bg` (integer midpoint).
-fn blend_50(fg: [u8; 3], bg: [u8; 3]) -> [u8; 3] {
-    [
-        (fg[0] as u16 + bg[0] as u16) as u8 / 2,
-        (fg[1] as u16 + bg[1] as u16) as u8 / 2,
-        (fg[2] as u16 + bg[2] as u16) as u8 / 2,
-    ]
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -864,6 +859,8 @@ mod tests {
             dock_rect(),
             1,
             None,
+            &HashSet::new(),
+            0.0,
         );
 
         assert_eq!(
@@ -905,15 +902,15 @@ mod tests {
             "expected 'm' in text_muted for file entry"
         );
 
-        // Dir entry 's' (from "src") should appear in text_subtle.
-        let dir_s: Vec<_> = p
+        // Dir entry chevron ▸ (U+25B8) should appear in text_subtle.
+        let dir_chevron: Vec<_> = p
             .glyphs
             .iter()
-            .filter(|(cp, fg)| *cp == 's' as u32 && *fg == th.text_subtle)
+            .filter(|(cp, fg)| *cp == '\u{25B8}' as u32 && *fg == th.text_subtle)
             .collect();
         assert!(
-            !dir_s.is_empty(),
-            "expected 's' in text_subtle for dir entry"
+            !dir_chevron.is_empty(),
+            "expected dir chevron in text_subtle for dir entry"
         );
     }
 
@@ -1007,6 +1004,8 @@ mod tests {
                 dock_rect(),
                 0,
                 Some(0), // hover row 0
+                &HashSet::new(),
+                0.0,
             );
             // Row 0 occupies y=[HEADER_H, HEADER_H+ROW_H) = [28, 50).
             // The fill rect is row_top+2 .. row_top+ROW_H-2 = [30, 48).
@@ -1036,6 +1035,8 @@ mod tests {
                 dock_rect(),
                 0,
                 Some(0), // hover row 0 as well
+                &HashSet::new(),
+                0.0,
             );
             // Left-rail pixel (x=rect.x+6=6, inside 2px rail) should be accent_primary.
             // Row 0 fill starts at row_top+2 = 28+2 = 30. Sample y=38.
@@ -1047,7 +1048,7 @@ mod tests {
         }
     }
 
-    /// Outline section with `None` shows calm empty-state copy.
+    /// Outline section with `None` shows only the header row (no body copy).
     #[test]
     fn outline_unavailable_always_shown() {
         let m = metrics();
@@ -1057,7 +1058,7 @@ mod tests {
 
         draw_left_dock(&mut r, &mut p, m, &th, None, None, None, dock_rect());
 
-        // "No symbols yet" → 'N' in text_subtle.
+        // "OUTLINE" header 'N' rendered in text_subtle (Item 10: empty → text_subtle).
         let n_subtle: Vec<_> = p
             .glyphs
             .iter()
@@ -1065,7 +1066,20 @@ mod tests {
             .collect();
         assert!(
             !n_subtle.is_empty(),
-            "expected 'N' in text_subtle for calm outline empty state"
+            "expected 'N' in text_subtle for outline header in empty state"
+        );
+
+        // Item 10: body copy removed. 'c' from "sour[c]e" (in "Open a source file") must
+        // not appear — 'c' is absent from all other rendered strings ("OUTLINE", "EXPLORER",
+        // "Waiting for shell prompt…").
+        let c_body: Vec<_> = p
+            .glyphs
+            .iter()
+            .filter(|(cp, _)| *cp == 'c' as u32)
+            .collect();
+        assert!(
+            c_body.is_empty(),
+            "body copy 'Open a source file' must not render when outline is None"
         );
     }
 
@@ -1096,7 +1110,7 @@ mod tests {
         );
     }
 
-    /// `Some(&[])` → "No symbols" row painted in text_subtle.
+    /// `Some(&[])` → only the header row, no body copy.
     #[test]
     fn left_dock_renders_outline_no_symbols() {
         let m = metrics();
@@ -1106,7 +1120,7 @@ mod tests {
 
         draw_left_dock(&mut r, &mut p, m, &th, None, None, Some(&[]), dock_rect());
 
-        // "No symbols" → 'N' in text_subtle
+        // "OUTLINE" header 'N' rendered in text_subtle (Item 10: empty → text_subtle).
         let n_subtle: Vec<_> = p
             .glyphs
             .iter()
@@ -1114,7 +1128,20 @@ mod tests {
             .collect();
         assert!(
             !n_subtle.is_empty(),
-            "expected 'N' in text_subtle for 'No symbols' row"
+            "expected 'N' in text_subtle for outline header when Some(&[])"
+        );
+
+        // No body copy: 's' from "No symbols" must not appear.
+        // 's' appears in "src" (Explorer) but not in OUTLINE body when empty.
+        // More precisely, 'y' only appears in "No symbols" and "No symbols yet".
+        let y_body: Vec<_> = p
+            .glyphs
+            .iter()
+            .filter(|(cp, _)| *cp == 'y' as u32)
+            .collect();
+        assert!(
+            y_body.is_empty(),
+            "body copy must not render when outline is Some(&[])"
         );
     }
 
@@ -1160,6 +1187,124 @@ mod tests {
         assert!(
             !f_accent.is_empty(),
             "expected ƒ glyph in accent_primary for function kind"
+        );
+    }
+
+    /// Item 10: OUTLINE header uses text_subtle (not accent_bright) when outline is None.
+    /// Uses 'U' which appears only in "OUTLINE" (not in "EXPLORER" or waiting text).
+    #[test]
+    fn outline_empty_header_uses_text_subtle() {
+        let m = metrics();
+        let th = theme();
+        let mut r = Raster::new(800, 800);
+        let mut p = StubPainter::default();
+
+        draw_left_dock(&mut r, &mut p, m, &th, None, None, None, dock_rect());
+
+        // 'U' from "OUTLINE" — unique to that header — must appear in text_subtle.
+        let u_subtle: Vec<_> = p
+            .glyphs
+            .iter()
+            .filter(|(cp, fg)| *cp == 'U' as u32 && *fg == th.text_subtle)
+            .collect();
+        assert!(
+            !u_subtle.is_empty(),
+            "OUTLINE header 'U' must be in text_subtle when outline is None"
+        );
+
+        // 'U' must NOT appear in accent_bright (that would mean the wrong color was used).
+        let u_bright: Vec<_> = p
+            .glyphs
+            .iter()
+            .filter(|(cp, fg)| *cp == 'U' as u32 && *fg == th.accent_bright)
+            .collect();
+        assert!(
+            u_bright.is_empty(),
+            "OUTLINE header must NOT use accent_bright when outline is None"
+        );
+    }
+
+    /// Item 9: overflow smoke test — scroll offset changes which entries are rendered.
+    ///
+    /// Uses hit-target indices as the proxy for "which entry is at the first visible row".
+    /// At offset=0 the first content row maps to entry 0; at offset=5 it maps to entry 5.
+    #[test]
+    fn overflow_scroll_changes_rendered_entries() {
+        let m = metrics();
+        let th = theme();
+        // dock_rect height 800px: explorer_h = 480px, HEADER_H=28px, content_h = 452px.
+        // available_rows = floor(452/22) = 20.
+        // Use 30 entries to guarantee overflow at this height.
+        let snap = DirSnapshot {
+            root: "/anvil".to_string(),
+            entries: (0..30)
+                .map(|i| DirEntry {
+                    name: format!("f{i}.rs"),
+                    is_dir: false,
+                })
+                .collect(),
+        };
+
+        // At offset=0: first content row (y ≈ HEADER_H + ROW_H/2 = 28+11 = 39) → entry 0.
+        let hits_at_0 = {
+            let mut r = Raster::new(800, 800);
+            let mut p = StubPainter::default();
+            draw_left_dock_with_scroll(
+                &mut r,
+                &mut p,
+                m,
+                &th,
+                Some(&snap),
+                None,
+                None,
+                dock_rect(),
+                0,
+                None,
+                &HashSet::new(),
+                0.0,
+            )
+        };
+
+        // At offset=5: same pixel maps to entry 5.
+        let hits_at_5 = {
+            let mut r = Raster::new(800, 800);
+            let mut p = StubPainter::default();
+            draw_left_dock_with_scroll(
+                &mut r,
+                &mut p,
+                m,
+                &th,
+                Some(&snap),
+                None,
+                None,
+                dock_rect(),
+                5,
+                None,
+                &HashSet::new(),
+                0.0,
+            )
+        };
+
+        // First content row: y = HEADER_H + ROW_H/2 ≈ 28 + 11 = 39.
+        let first_row_y = 39.0_f64;
+        let hit_at_0 = hits_at_0.at(50.0, first_row_y);
+        let hit_at_5 = hits_at_5.at(50.0, first_row_y);
+
+        assert_eq!(
+            hit_at_0,
+            Some(&LeftDockHitKind::Explorer(ExplorerHit::Row(0))),
+            "at scroll_offset=0 the first content row must map to entry 0"
+        );
+        assert_eq!(
+            hit_at_5,
+            Some(&LeftDockHitKind::Explorer(ExplorerHit::Row(5))),
+            "at scroll_offset=5 the first content row must map to entry 5"
+        );
+
+        // The two hit results must differ — scroll actually changed what is rendered.
+        assert_ne!(
+            hit_at_0, hit_at_5,
+            "scroll offset must change which entry is rendered at a given pixel row"
         );
     }
 }
