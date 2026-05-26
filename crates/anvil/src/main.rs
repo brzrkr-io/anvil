@@ -4124,7 +4124,7 @@ impl AppHandler for AppShell {
                                     // round-tripping through the worker adds
                                     // a perceptible click→render lag.
                                     if !app.child_snapshots.contains_key(&path) {
-                                        let snap = fs_worker::read_dir_snapshot(&path);
+                                        let snap = fs_worker::read_dir_snapshot_fast(&path);
                                         app.child_snapshots.insert(
                                             path.clone(),
                                             LeftDockSnapshot {
@@ -5571,7 +5571,7 @@ fn main() -> Result<()> {
         child_fs_tx,
         child_fs_rx,
         fs_snapshot: std::env::current_dir().ok().map(|cwd| {
-            let snap = fs_worker::read_dir_snapshot(&cwd);
+            let snap = fs_worker::read_dir_snapshot_fast(&cwd);
             LeftDockSnapshot {
                 root: snap.root.to_string_lossy().into_owned(),
                 entries: snap

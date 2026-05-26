@@ -119,6 +119,9 @@ pub fn spawn_child_fs_worker() -> (
 
 /// Read the top-level entries of `root` and return a [`DirSnapshot`].
 /// On IO error returns an empty snapshot (honest empty state).
+///
+/// Includes `git_marks`. May block for hundreds of ms on large repos because
+/// `git status --porcelain` is synchronous. Always call from a worker thread.
 pub fn read_dir_snapshot(root: &PathBuf) -> DirSnapshot {
     let entries = read_entries(root).unwrap_or_default();
     let git_marks = read_git_marks(root);
@@ -126,6 +129,18 @@ pub fn read_dir_snapshot(root: &PathBuf) -> DirSnapshot {
         root: root.clone(),
         entries,
         git_marks,
+    }
+}
+
+/// Like [`read_dir_snapshot`] but skips the `git status` shell-out. Fast and
+/// safe to call on the main thread (e.g. for the synchronous startup seed).
+/// The worker thread will repopulate `git_marks` on the next async refresh.
+pub fn read_dir_snapshot_fast(root: &PathBuf) -> DirSnapshot {
+    let entries = read_entries(root).unwrap_or_default();
+    DirSnapshot {
+        root: root.clone(),
+        entries,
+        git_marks: HashMap::new(),
     }
 }
 
