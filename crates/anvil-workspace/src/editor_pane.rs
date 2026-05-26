@@ -145,9 +145,17 @@ pub enum EditorAction {
     ClearSecondaryCursors,
 }
 
+/// Maximum number of open buffers tracked per pane. When the limit is
+/// exceeded, the oldest non-active buffer is evicted.
+pub const MAX_TABS_PER_PANE: usize = 16;
+
 /// Per-pane view state for a native editor pane.
 pub struct EditorPane {
+    /// The currently active buffer. Kept in sync with `open_buffers`.
     pub buffer_id: BufferId,
+    /// Ordered list of open buffer IDs (insertion order, oldest first).
+    /// Always contains at least `buffer_id`.
+    pub open_buffers: Vec<BufferId>,
     /// All cursors. `cursors[0]` is the primary cursor (always present).
     /// Secondary cursors are appended by `AddCursorAt` and dropped by
     /// `ClearSecondaryCursors`.
@@ -206,6 +214,7 @@ impl EditorPaneRegistry {
         let origin = Position { line: 0, col: 0 };
         let pane = EditorPane {
             buffer_id,
+            open_buffers: vec![buffer_id],
             cursors: vec![Cursor {
                 pos: origin,
                 anchor: origin,
@@ -223,6 +232,10 @@ impl EditorPaneRegistry {
     }
 
     /// Load `path` into `pane_id`, replacing that pane's previous buffer.
+    ///
+    /// The old buffer is dropped and `open_buffers` is updated to contain only
+    /// the new buffer. For opening a file as a new tab without closing others,
+    /// use [`open_path_as_tab`] instead.
     pub fn open_path(&mut self, pane_id: PaneId, path: &Path) -> Result<BufferId, IoError> {
         let buffer = Buffer::from_path(path)?;
         let buffer_id = self.next_buffer_id;
@@ -230,6 +243,7 @@ impl EditorPaneRegistry {
         let origin = Position { line: 0, col: 0 };
         let pane = self.panes.entry(pane_id).or_insert_with(|| EditorPane {
             buffer_id,
+            open_buffers: vec![buffer_id],
             cursors: vec![Cursor {
                 pos: origin,
                 anchor: origin,
@@ -243,6 +257,7 @@ impl EditorPaneRegistry {
         });
         let old_buffer_id = pane.buffer_id;
         pane.buffer_id = buffer_id;
+        pane.open_buffers = vec![buffer_id];
         pane.cursors = vec![Cursor {
             pos: origin,
             anchor: origin,
@@ -256,6 +271,128 @@ impl EditorPaneRegistry {
         self.buffers.remove(&old_buffer_id);
         self.buffers.insert(buffer_id, buffer);
         Ok(buffer_id)
+    }
+
+    /// Open `path` as a new tab in `pane_id`.
+    ///
+    /// - If the path is already open in this pane, activate it and return its id.
+    /// - Otherwise load the file into a new buffer, append to `open_buffers`,
+    ///   activate it, and enforce the [`MAX_TABS_PER_PANE`] cap.
+    /// - The existing open buffers are preserved (unlike `open_path`).
+    pub fn open_path_as_tab(&mut self, pane_id: PaneId, path: &Path) -> Result<BufferId, IoError> {
+        // Check if the path is already open in this pane.
+        if let Some(pane) = self.panes.get(&pane_id) {
+            for &bid in &pane.open_buffers {
+                if let Some(buf) = self.buffers.get(&bid) {
+                    if buf.tracked_path() == Some(path) {
+                        // Already open — just activate.
+                        let pane = self.panes.get_mut(&pane_id).unwrap();
+                        pane.buffer_id = bid;
+                        return Ok(bid);
+                    }
+                }
+            }
+        }
+
+        // Load new buffer.
+        let buffer = Buffer::from_path(path)?;
+        let buffer_id = self.next_buffer_id;
+        self.next_buffer_id += 1;
+        let origin = Position { line: 0, col: 0 };
+
+        // Ensure a pane exists.
+        if let std::collections::hash_map::Entry::Vacant(e) = self.panes.entry(pane_id) {
+            let pane = EditorPane {
+                buffer_id,
+                open_buffers: vec![buffer_id],
+                cursors: vec![Cursor {
+                    pos: origin,
+                    anchor: origin,
+                }],
+                selection: Selection::default(),
+                scroll_pos: 0.0,
+                scroll_target: 0.0,
+                scroll_vel: 0.0,
+                search: None,
+                hover_popup: None,
+            };
+            e.insert(pane);
+            self.buffers.insert(buffer_id, buffer);
+            return Ok(buffer_id);
+        }
+
+        // Append to open_buffers, enforce cap.
+        {
+            let pane = self.panes.get_mut(&pane_id).unwrap();
+            pane.open_buffers.push(buffer_id);
+            // Evict oldest non-active if over the cap.
+            while pane.open_buffers.len() > MAX_TABS_PER_PANE {
+                let active = pane.buffer_id;
+                if let Some(pos) = pane.open_buffers.iter().position(|&b| b != active) {
+                    let evicted = pane.open_buffers.remove(pos);
+                    self.buffers.remove(&evicted);
+                } else {
+                    break;
+                }
+            }
+            pane.buffer_id = buffer_id;
+        }
+        self.buffers.insert(buffer_id, buffer);
+        Ok(buffer_id)
+    }
+
+    /// Activate `buffer_id` in `pane_id` without loading a new file.
+    ///
+    /// `buffer_id` must already be in `pane.open_buffers`. No-op if not found.
+    pub fn open_buffer(&mut self, pane_id: PaneId, buffer_id: BufferId) {
+        if let Some(pane) = self.panes.get_mut(&pane_id) {
+            if pane.open_buffers.contains(&buffer_id) {
+                pane.buffer_id = buffer_id;
+            }
+        }
+    }
+
+    /// Close `buffer_id` in `pane_id`.
+    ///
+    /// Returns the new active `BufferId`, or `None` if no buffers remain (the
+    /// pane should fall back to its scratch buffer in that case).
+    ///
+    /// Activation priority: right neighbor in `open_buffers`, or the last
+    /// remaining buffer if there is no right neighbor.
+    pub fn close_buffer(&mut self, pane_id: PaneId, buffer_id: BufferId) -> Option<BufferId> {
+        let pane = self.panes.get_mut(&pane_id)?;
+        let pos = pane.open_buffers.iter().position(|&b| b == buffer_id)?;
+        pane.open_buffers.remove(pos);
+
+        if pane.open_buffers.is_empty() {
+            // No buffers left — caller should fall back to scratch.
+            self.buffers.remove(&buffer_id);
+            // Allocate a fresh scratch buffer to keep the registry consistent.
+            let new_id = self.next_buffer_id;
+            self.next_buffer_id += 1;
+            let origin = Position { line: 0, col: 0 };
+            pane.open_buffers = vec![new_id];
+            pane.buffer_id = new_id;
+            pane.cursors = vec![Cursor {
+                pos: origin,
+                anchor: origin,
+            }];
+            pane.selection = Selection::default();
+            pane.scroll_pos = 0.0;
+            pane.scroll_target = 0.0;
+            pane.scroll_vel = 0.0;
+            pane.search = None;
+            pane.hover_popup = None;
+            self.buffers.insert(new_id, Buffer::new());
+            return None;
+        }
+
+        // Pick new active: right neighbor clamped to valid index.
+        let new_pos = pos.min(pane.open_buffers.len() - 1);
+        let new_active = pane.open_buffers[new_pos];
+        pane.buffer_id = new_active;
+        self.buffers.remove(&buffer_id);
+        Some(new_active)
     }
 
     /// Iterate over all `(PaneId, EditorPane)` pairs in this registry.
@@ -283,12 +420,14 @@ impl EditorPaneRegistry {
         self.buffers.get_mut(&buffer_id)
     }
 
-    /// Remove the `EditorPane` for `pane_id` and drop its buffer.
+    /// Remove the `EditorPane` for `pane_id` and drop all its buffers.
     ///
     /// No-op if `pane_id` is not registered.
     pub fn remove_pane(&mut self, pane_id: PaneId) {
         if let Some(pane) = self.panes.remove(&pane_id) {
-            self.buffers.remove(&pane.buffer_id);
+            for bid in pane.open_buffers {
+                self.buffers.remove(&bid);
+            }
         }
     }
 
@@ -1101,6 +1240,7 @@ mod tests {
         let origin = Position { line: 0, col: 0 };
         let pane = EditorPane {
             buffer_id: 1,
+            open_buffers: vec![1],
             cursors: vec![Cursor {
                 pos: origin,
                 anchor: origin,
@@ -1497,6 +1637,127 @@ mod tests {
             orig_len + 2,
             "InsertChar with 2 cursors must insert 2 chars; got: {new_text:?}"
         );
+    }
+
+    // ── Buffer tab management tests ───────────────────────────────────────────
+
+    /// open_path_as_tab appends a new buffer without removing the existing one.
+    #[test]
+    fn open_path_as_tab_adds_buffer_to_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let p1 = dir.path().join("a.rs");
+        let p2 = dir.path().join("b.rs");
+        std::fs::write(&p1, "fn a() {}").unwrap();
+        std::fs::write(&p2, "fn b() {}").unwrap();
+
+        let mut reg = EditorPaneRegistry::default();
+        reg.new_pane(1);
+        let bid1 = reg.open_path_as_tab(1, &p1).unwrap();
+        let bid2 = reg.open_path_as_tab(1, &p2).unwrap();
+
+        let pane = reg.get_pane(1).unwrap();
+        assert_eq!(pane.buffer_id, bid2, "active buffer must be last opened");
+        assert!(
+            pane.open_buffers.contains(&bid1),
+            "first buffer must remain in open_buffers"
+        );
+        assert!(pane.open_buffers.contains(&bid2));
+        assert_eq!(pane.open_buffers.len(), 3, "scratch + a.rs + b.rs");
+    }
+
+    /// open_path_as_tab deduplicates: re-opening the same file just activates it.
+    #[test]
+    fn open_path_as_tab_deduplicates() {
+        let dir = tempfile::tempdir().unwrap();
+        let p1 = dir.path().join("dup.rs");
+        std::fs::write(&p1, "fn dup() {}").unwrap();
+
+        let mut reg = EditorPaneRegistry::default();
+        reg.new_pane(1);
+        let bid1 = reg.open_path_as_tab(1, &p1).unwrap();
+        let bid2 = reg.open_path_as_tab(1, &p1).unwrap();
+
+        assert_eq!(
+            bid1, bid2,
+            "re-opening same path must return the same BufferId"
+        );
+        let pane = reg.get_pane(1).unwrap();
+        assert_eq!(pane.open_buffers.len(), 2, "no duplicate entry added");
+        assert_eq!(pane.buffer_id, bid1, "active is the existing buffer");
+    }
+
+    /// open_buffer switches the active buffer without loading a file.
+    #[test]
+    fn open_buffer_switches_active() {
+        let dir = tempfile::tempdir().unwrap();
+        let p1 = dir.path().join("x.rs");
+        let p2 = dir.path().join("y.rs");
+        std::fs::write(&p1, "").unwrap();
+        std::fs::write(&p2, "").unwrap();
+
+        let mut reg = EditorPaneRegistry::default();
+        reg.new_pane(1);
+        let bid1 = reg.open_path_as_tab(1, &p1).unwrap();
+        let _bid2 = reg.open_path_as_tab(1, &p2).unwrap();
+
+        reg.open_buffer(1, bid1);
+        assert_eq!(reg.get_pane(1).unwrap().buffer_id, bid1);
+    }
+
+    /// close_buffer removes a non-active buffer and picks the right neighbor.
+    #[test]
+    fn close_buffer_removes_tab_and_picks_right_neighbor() {
+        let dir = tempfile::tempdir().unwrap();
+        let p1 = dir.path().join("1.rs");
+        let p2 = dir.path().join("2.rs");
+        let p3 = dir.path().join("3.rs");
+        std::fs::write(&p1, "").unwrap();
+        std::fs::write(&p2, "").unwrap();
+        std::fs::write(&p3, "").unwrap();
+
+        let mut reg = EditorPaneRegistry::default();
+        reg.new_pane(1);
+        // open_path_as_tab adds a scratch buffer first — discard and open clean
+        let bid1 = reg.open_path_as_tab(1, &p1).unwrap();
+        let bid2 = reg.open_path_as_tab(1, &p2).unwrap();
+        let bid3 = reg.open_path_as_tab(1, &p3).unwrap();
+        // active is bid3; close bid2 (middle) → right neighbor = bid3
+        let active_before = reg.get_pane(1).unwrap().buffer_id;
+        assert_eq!(active_before, bid3);
+        // close bid2 when it's not active
+        let new_active = reg.close_buffer(1, bid2);
+        assert!(new_active.is_some());
+        // bid2 should be gone
+        let pane = reg.get_pane(1).unwrap();
+        assert!(!pane.open_buffers.contains(&bid2));
+        assert!(reg.get_buffer(bid2).is_none());
+        // bid1 and bid3 still present
+        assert!(pane.open_buffers.contains(&bid1));
+        assert!(pane.open_buffers.contains(&bid3));
+    }
+
+    /// close_buffer on the last buffer falls back to a fresh scratch buffer.
+    #[test]
+    fn close_last_buffer_creates_scratch() {
+        let dir = tempfile::tempdir().unwrap();
+        let p1 = dir.path().join("lone.rs");
+        std::fs::write(&p1, "fn lone() {}").unwrap();
+
+        let mut reg = EditorPaneRegistry::default();
+        // new_pane gives scratch; then we open one file
+        reg.new_pane(1);
+        let scratch_id = reg.get_pane(1).unwrap().buffer_id;
+        // Close the scratch buffer first to get to a clean single-tab state
+        reg.close_buffer(1, scratch_id); // closes scratch → None, new scratch allocated
+        let pane = reg.get_pane(1).unwrap();
+        let new_scratch = pane.buffer_id;
+        let result = reg.close_buffer(1, new_scratch);
+        // After closing the last buffer, close_buffer returns None (fall back to scratch).
+        assert!(result.is_none(), "closing last buffer returns None");
+        // A new scratch buffer must exist.
+        let pane = reg.get_pane(1).unwrap();
+        assert_eq!(pane.open_buffers.len(), 1);
+        assert!(reg.get_buffer(pane.buffer_id).is_some());
     }
 
     /// `ClearSecondaryCursors` drops all but the primary cursor.
