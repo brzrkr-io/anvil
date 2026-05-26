@@ -49,6 +49,11 @@ const HUD_COLS_MAX: usize = 80;
 /// down on the HUD's 1px hairline. Wide enough that the user doesn't need
 /// pixel-perfect aim to start a resize.
 const HUD_DRAG_HIT_PX: f64 = 6.0;
+/// Hit zone half-width (device pixels) for the sidebar right-edge resize handle (item 13).
+const SIDEBAR_DRAG_HIT_PX: f64 = 4.0;
+/// Minimum/maximum sidebar width in logical points (item 13).
+const SIDEBAR_W_MIN_PT: f64 = 180.0;
+const SIDEBAR_W_MAX_PT: f64 = 600.0;
 const EXPLORER_SCROLL_ROWS_PER_WHEEL: usize = 3;
 use anvil_editor::Position as EditorPosition;
 use anvil_render::cheatsheet::draw as draw_cheatsheet;
@@ -514,6 +519,11 @@ pub struct App {
     layout_mode: LayoutMode,
     /// Whether the IDE explorer dock is visible; toggled by Cmd+B.
     left_dock_visible: bool,
+    /// Current explorer sidebar width in logical points (item 13: drag-resize).
+    /// Range clamped to [180, 600] on drag. Default 300.
+    left_dock_w_pt: f64,
+    /// True while the user is dragging the sidebar right edge (item 13).
+    sidebar_drag_active: bool,
 
     // -- UI state ---
     blink_phase: f32,
@@ -758,13 +768,14 @@ impl App {
     /// This is the single source of truth for where the terminal grid lives.
     /// Pass this to `PaneTree::layout`, hit-test, and `draw_workspace`.
     fn pane_area_rect(&self) -> Rect {
-        Docks::for_mode_with_left_dock(
+        Docks::for_mode_with_left_dock_w(
             self.layout_mode,
             self.window_scale,
             self.dock_metrics(),
             self.hud_visible,
             self.chrome_bottom_px(),
             self.left_dock_visible,
+            self.left_dock_w_pt,
         )
         .compute_areas(
             self.window_inner(),
@@ -1183,6 +1194,7 @@ impl App {
             self.fs_snapshot = Some(LeftDockSnapshot {
                 root: path.to_string_lossy().into_owned(),
                 entries: Vec::new(),
+                git_marks: std::collections::HashMap::new(),
             });
             self.explorer_scroll_offset = 0;
             self.expanded_dirs.clear();
@@ -1839,6 +1851,7 @@ impl App {
                         is_dir: e.is_dir,
                     })
                     .collect(),
+                git_marks: snap.git_marks,
             });
             self.dirty = true;
         }
@@ -1857,6 +1870,7 @@ impl App {
                             is_dir: e.is_dir,
                         })
                         .collect(),
+                    git_marks: snap.git_marks,
                 },
             );
             self.dirty = true;
@@ -2240,13 +2254,14 @@ impl App {
 
         // Context bar + left dock: Ide mode only.
         if self.layout_mode == LayoutMode::Ide {
-            let areas = Docks::for_mode_with_left_dock(
+            let areas = Docks::for_mode_with_left_dock_w(
                 self.layout_mode,
                 self.window_scale,
                 self.dock_metrics(),
                 self.hud_visible,
                 self.chrome_bottom_px(),
                 self.left_dock_visible,
+                self.left_dock_w_pt,
             )
             .compute_areas(self.window_inner(), metrics.cell_w, metrics.cell_h);
             // NE15: context-bar editor segment reads from the focused native
@@ -4066,6 +4081,18 @@ impl AppHandler for AppShell {
             }
         }
 
+        // Sidebar right-edge resize handle (item 13).
+        // Hit zone: ±SIDEBAR_DRAG_HIT_PX of the dock right edge in device px.
+        if app.left_dock_visible && app.layout_mode == LayoutMode::Ide {
+            let (rx, _ry) = app.view_pt_to_raster_px(loc);
+            let edge_x = app.left_dock_w_pt * app.window_scale;
+            if (rx - edge_x).abs() <= SIDEBAR_DRAG_HIT_PX {
+                app.sidebar_drag_active = true;
+                app.dirty = true;
+                return;
+            }
+        }
+
         // Left dock click — explorer rows open folders/files before pane hit-testing.
         {
             let (rx, ry) = app.view_pt_to_raster_px(loc);
@@ -4110,6 +4137,7 @@ impl AppHandler for AppShell {
                                                         is_dir: e.is_dir,
                                                     })
                                                     .collect(),
+                                                git_marks: snap.git_marks,
                                             },
                                         );
                                     }
@@ -4480,6 +4508,13 @@ impl AppHandler for AppShell {
             return;
         }
 
+        // Sidebar resize drag: release (item 13).
+        if app.sidebar_drag_active {
+            app.sidebar_drag_active = false;
+            app.dirty = true;
+            return;
+        }
+
         // HUD resize drag: release.
         if app.hud_drag_active {
             app.hud_drag_active = false;
@@ -4682,6 +4717,19 @@ impl AppHandler for AppShell {
             app.resize_all_tabs();
             app.force_full_redraw = true;
             app.dirty = true;
+            return;
+        }
+
+        // Sidebar resize drag (item 13): convert mouse x to new left_dock_w_pt.
+        if app.sidebar_drag_active {
+            let (rx, _) = app.view_pt_to_raster_px(loc);
+            let new_w_pt = (rx / app.window_scale).clamp(SIDEBAR_W_MIN_PT, SIDEBAR_W_MAX_PT);
+            if (new_w_pt - app.left_dock_w_pt).abs() > 0.5 {
+                app.left_dock_w_pt = new_w_pt;
+                app.resize_all_tabs();
+                app.force_full_redraw = true;
+                app.dirty = true;
+            }
             return;
         }
 
@@ -5474,6 +5522,8 @@ fn main() -> Result<()> {
         // Explorer so file-open state is unmistakable. Users can still hide it
         // with Cmd+B.
         left_dock_visible: layout_mode == LayoutMode::Ide,
+        left_dock_w_pt: 300.0,
+        sidebar_drag_active: false,
         blink_phase: 0.0,
         last_blink_opacity: -1.0,
         search: anvil_term::Search::new(),
@@ -5532,6 +5582,7 @@ fn main() -> Result<()> {
                         is_dir: e.is_dir,
                     })
                     .collect(),
+                git_marks: snap.git_marks,
             }
         }),
         child_snapshots: HashMap::new(),
@@ -5793,6 +5844,7 @@ mod tests {
                     is_dir: false,
                 },
             ],
+            git_marks: std::collections::HashMap::new(),
         };
 
         assert_eq!(

@@ -82,6 +82,28 @@ impl Docks {
         chrome_bottom_px: f64,
         left_dock_visible: bool,
     ) -> Self {
+        Self::for_mode_with_left_dock_w(
+            mode,
+            scale,
+            metrics,
+            hud_visible,
+            chrome_bottom_px,
+            left_dock_visible,
+            300.0,
+        )
+    }
+
+    /// Like `for_mode_with_left_dock` but accepts a caller-supplied sidebar width
+    /// in logical points (item 13: drag-resize).
+    pub fn for_mode_with_left_dock_w(
+        mode: LayoutMode,
+        scale: f64,
+        metrics: DockMetrics,
+        hud_visible: bool,
+        chrome_bottom_px: f64,
+        left_dock_visible: bool,
+        left_dock_w_pt: f64,
+    ) -> Self {
         let cw = metrics.cell_w;
         // Must match the actual HUD paint width in main.rs::render_frame:
         // surface_w_px = hud_cols * cw + GRID_PAD.
@@ -104,7 +126,7 @@ impl Docks {
             }
             LayoutMode::Ide => Docks {
                 left_w: if left_dock_visible {
-                    300.0 * scale
+                    left_dock_w_pt * scale
                 } else {
                     0.0
                 },
