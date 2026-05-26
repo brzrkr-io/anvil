@@ -18,8 +18,15 @@ use crate::raster::{FontMetrics, GlyphPainter, Raster};
 ///       (accent_bright) at the insertion point.
 /// Right: match counter `cur/total` in `text_muted`.
 ///
+/// When `editor_search.replace_input` is `Some`, a second row is painted
+/// beneath the first with "replace: " prefix + replace text + two buttons
+/// `[replace]` and `[replace all]` on the right (item 9).
+///
 /// Pass `editor_search` when the focused pane is a native editor pane (NE11);
 /// pass `None` for terminal panes (which use `search` instead).
+///
+/// `replace_active` controls which row the text cursor appears in: `false` =
+/// find row, `true` = replace row.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_search_bar(
     raster: &mut Raster,
@@ -30,6 +37,32 @@ pub fn draw_search_bar(
     chrome_bottom_px: f64,
     window_scale: f64,
     editor_search: Option<&EditorSearch>,
+) {
+    draw_search_bar_with_replace(
+        raster,
+        painter,
+        metrics,
+        theme,
+        search,
+        chrome_bottom_px,
+        window_scale,
+        editor_search,
+        false,
+    );
+}
+
+/// Variant that accepts `replace_active` to show the cursor in the replace row.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_search_bar_with_replace(
+    raster: &mut Raster,
+    painter: &mut dyn GlyphPainter,
+    metrics: FontMetrics,
+    theme: &Theme,
+    search: &Search,
+    chrome_bottom_px: f64,
+    window_scale: f64,
+    editor_search: Option<&EditorSearch>,
+    replace_active: bool,
 ) {
     let cell_w = metrics.cell_w;
     let cell_h = metrics.cell_h;
@@ -93,13 +126,13 @@ pub fn draw_search_bar(
         draw_char(raster, painter, ch, theme.foreground, &mut x);
     }
 
-    // Cursor block after the last query character.
-    if x + cell_w <= right_edge {
+    // Cursor block after the last query character (find row, when not replace_active).
+    if !replace_active && x + cell_w <= right_edge {
         raster.fill_pixel_rect(
             x,
             strip_top + 2.0,
             cell_w,
-            chrome_bottom_px - 4.0,
+            cell_h - 4.0,
             theme.accent_bright,
         );
     }
@@ -113,6 +146,69 @@ pub fn draw_search_bar(
         }
         raster.glyph_at(painter, metrics, rx, glyph_y, ch as u32, theme.text_muted);
         rx += cell_w;
+    }
+
+    // ── Replace row (item 9) ────────────────────────────────────────────
+    if let Some(es) = editor_search {
+        if let Some(replace_text) = &es.replace_input {
+            let row2_y = glyph_y + cell_h;
+            let replace_prefix = "replace: ";
+            // Hairline separator between the two rows.
+            raster.fill_pixel_rect(0.0, strip_top + cell_h, total_w, 1.0, theme.hairline);
+
+            // Buttons on the right: "[replace]" and "[all]"
+            let btn_all = "[all]";
+            let btn_one = "[replace]";
+            let btn_all_w = btn_all.chars().count() as f64 * cell_w;
+            let btn_one_w = btn_one.chars().count() as f64 * cell_w;
+            let btn_gap = cell_w;
+            let replace_right =
+                (total_w - pad_x - btn_all_w - btn_gap - btn_one_w - btn_gap).max(pad_x);
+
+            let mut rx2 = pad_x;
+            for ch in replace_prefix.chars() {
+                if rx2 + cell_w > replace_right {
+                    break;
+                }
+                raster.glyph_at(painter, metrics, rx2, row2_y, ch as u32, theme.text_muted);
+                rx2 += cell_w;
+            }
+            for ch in replace_text.chars() {
+                if rx2 + cell_w > replace_right {
+                    break;
+                }
+                raster.glyph_at(painter, metrics, rx2, row2_y, ch as u32, theme.foreground);
+                rx2 += cell_w;
+            }
+            // Cursor block in replace row when replace_active.
+            if replace_active && rx2 + cell_w <= replace_right {
+                raster.fill_pixel_rect(
+                    rx2,
+                    strip_top + cell_h + 2.0,
+                    cell_w,
+                    cell_h - 4.0,
+                    theme.accent_bright,
+                );
+            }
+            // Draw [replace] button.
+            let mut bx = total_w - pad_x - btn_all_w - btn_gap - btn_one_w;
+            for ch in btn_one.chars() {
+                if bx + cell_w > total_w {
+                    break;
+                }
+                raster.glyph_at(painter, metrics, bx, row2_y, ch as u32, theme.text_muted);
+                bx += cell_w;
+            }
+            // Draw [all] button.
+            let mut bx2 = total_w - pad_x - btn_all_w;
+            for ch in btn_all.chars() {
+                if bx2 + cell_w > total_w {
+                    break;
+                }
+                raster.glyph_at(painter, metrics, bx2, row2_y, ch as u32, theme.text_muted);
+                bx2 += cell_w;
+            }
+        }
     }
 }
 

@@ -7,7 +7,7 @@
 //! `EditorAction` is the typed action enum used by NE6 (keyboard dispatch).  A future
 //! modal layer or vim plugin can sit as a thin keymap on top.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use anvil_editor::{Buffer, BufferId, Cursor, IoError, Position, Range};
@@ -113,6 +113,15 @@ pub enum EditorAction {
     SearchPrev,
     /// Toggle regex mode and re-scan.
     SearchToggleRegex,
+    // ── Find+Replace (item 9) ────────────────────────────────────────────────
+    /// Open find+replace mode (second input row appears).
+    FindReplaceOpen,
+    /// Update the replace string.
+    SetReplaceInput(String),
+    /// Replace the current match with the replace string, advance to the next.
+    ReplaceOne,
+    /// Replace all matches in the active buffer.
+    ReplaceAll,
     /// Place cursor at the given position; clears selection unless `extend` is true (NE7).
     MoveTo {
         pos: Position,
@@ -143,6 +152,14 @@ pub enum EditorAction {
     AddCursorAt(Position),
     /// Esc (when multi-cursor active): drop all secondary cursors, keep primary.
     ClearSecondaryCursors,
+    /// Cmd+D: extend selection to the next occurrence of the selected text (or
+    /// the word under the primary cursor when there is no selection). Adds a
+    /// secondary cursor at the start of the new match with the same-length
+    /// selection.
+    AddNextOccurrence,
+    // ── Code folding (item 13) ────────────────────────────────────────────────
+    /// Toggle fold at `line` (the line that starts the foldable range).
+    ToggleFold(usize),
 }
 
 /// Maximum number of open buffers tracked per pane. When the limit is
@@ -170,6 +187,9 @@ pub struct EditorPane {
     /// Set by `main.rs` when `LspManager::poll_hover` returns a result.
     /// Cleared by `EditorAction::HoverDismiss` or on any buffer-mutating action.
     pub hover_popup: Option<HoverPopup>,
+    /// Folded line ranges keyed by `BufferId` (item 13).
+    /// Each entry is a set of start-line numbers for active folds.
+    pub folds: HashMap<BufferId, HashSet<usize>>,
 }
 
 impl EditorPane {
@@ -225,6 +245,7 @@ impl EditorPaneRegistry {
             scroll_vel: 0.0,
             search: None,
             hover_popup: None,
+            folds: HashMap::new(),
         };
         self.panes.insert(pane_id, pane);
         self.buffers.insert(buffer_id, Buffer::new());
@@ -254,6 +275,7 @@ impl EditorPaneRegistry {
             scroll_vel: 0.0,
             search: None,
             hover_popup: None,
+            folds: HashMap::new(),
         });
         let old_buffer_id = pane.buffer_id;
         pane.buffer_id = buffer_id;
@@ -315,6 +337,7 @@ impl EditorPaneRegistry {
                 scroll_vel: 0.0,
                 search: None,
                 hover_popup: None,
+                folds: HashMap::new(),
             };
             e.insert(pane);
             self.buffers.insert(buffer_id, buffer);
@@ -1056,6 +1079,252 @@ impl EditorPaneRegistry {
                 pane.cursors.truncate(1);
                 false
             }
+
+            // ── Find+Replace (item 9) ─────────────────────────────────────────
+            EditorAction::FindReplaceOpen => {
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                if pane.search.is_none() {
+                    pane.search = Some(EditorSearch::new());
+                }
+                if let Some(s) = &mut pane.search {
+                    s.open_replace();
+                }
+                false
+            }
+            EditorAction::SetReplaceInput(text) => {
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                if let Some(s) = &mut pane.search {
+                    s.replace_input = Some(text);
+                }
+                false
+            }
+            EditorAction::ReplaceOne => {
+                // Replace the current hit with the replace string, rescan.
+                let replacement = self
+                    .panes
+                    .get(&pane_id)
+                    .and_then(|p| p.search.as_ref())
+                    .and_then(|s| s.replace_input.clone())
+                    .unwrap_or_default();
+                let hit = self
+                    .panes
+                    .get(&pane_id)
+                    .and_then(|p| p.search.as_ref())
+                    .and_then(|s| s.current_hit());
+                if let Some(range) = hit {
+                    let buf = self.buffers.get_mut(&buffer_id).unwrap();
+                    buf.replace_range(range, &replacement);
+                    // Rescan after mutation.
+                    let buf = self.buffers.get(&buffer_id).unwrap();
+                    let pane = self.panes.get_mut(&pane_id).unwrap();
+                    if let Some(s) = &mut pane.search {
+                        s.rescan(buf);
+                    }
+                    return true;
+                }
+                false
+            }
+            EditorAction::ReplaceAll => {
+                // Walk hits in reverse (highest position first) to avoid offset
+                // drift. Collect first, then apply.
+                let replacement = self
+                    .panes
+                    .get(&pane_id)
+                    .and_then(|p| p.search.as_ref())
+                    .and_then(|s| s.replace_input.clone())
+                    .unwrap_or_default();
+                let hits: Vec<anvil_editor::Range> = self
+                    .panes
+                    .get(&pane_id)
+                    .and_then(|p| p.search.as_ref())
+                    .map(|s| s.hits.clone())
+                    .unwrap_or_default();
+                if hits.is_empty() {
+                    return false;
+                }
+                // Sort descending by start position.
+                let mut sorted = hits;
+                sorted.sort_by_key(|b| std::cmp::Reverse((b.start.line, b.start.col)));
+                sorted.dedup_by_key(|r| (r.start.line, r.start.col));
+                {
+                    let buf = self.buffers.get_mut(&buffer_id).unwrap();
+                    for range in &sorted {
+                        buf.replace_range(*range, &replacement);
+                    }
+                }
+                // Rescan after all replacements.
+                let buf = self.buffers.get(&buffer_id).unwrap();
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                if let Some(s) = &mut pane.search {
+                    s.rescan(buf);
+                }
+                true
+            }
+
+            // ── AddNextOccurrence (item 12) ────────────────────────────────────
+            EditorAction::AddNextOccurrence => {
+                // Determine the search text: selection of primary cursor, or word
+                // under cursor if no selection.
+                let search_text = {
+                    let pane = self.panes.get(&pane_id).unwrap();
+                    let buf = self.buffers.get(&buffer_id).unwrap();
+                    let (start, end) = if pane.cursors[0].anchor != pane.cursors[0].pos {
+                        let a = pane.cursors[0].anchor;
+                        let p = pane.cursors[0].pos;
+                        if (a.line, a.col) <= (p.line, p.col) {
+                            (a, p)
+                        } else {
+                            (p, a)
+                        }
+                    } else {
+                        // No selection: expand to word under cursor.
+                        let pos = pane.cursors[0].pos;
+                        let line_str: String = buf
+                            .line(pos.line.min(buf.line_count().saturating_sub(1)))
+                            .chars()
+                            .collect();
+                        let graphemes: Vec<&str> = line_str
+                            .trim_end_matches('\n')
+                            .trim_end_matches('\r')
+                            .graphemes(true)
+                            .collect();
+                        let col = pos.col.min(graphemes.len().saturating_sub(1));
+                        let is_word = |g: &str| g.chars().all(|c| c.is_alphanumeric() || c == '_');
+                        let mut lo = col;
+                        while lo > 0 && is_word(graphemes[lo - 1]) {
+                            lo -= 1;
+                        }
+                        let mut hi = col;
+                        if hi < graphemes.len() && is_word(graphemes[hi]) {
+                            hi += 1;
+                            while hi < graphemes.len() && is_word(graphemes[hi]) {
+                                hi += 1;
+                            }
+                        }
+                        (
+                            Position {
+                                line: pos.line,
+                                col: lo,
+                            },
+                            Position {
+                                line: pos.line,
+                                col: hi,
+                            },
+                        )
+                    };
+                    // Extract text of [start, end) from buffer.
+                    let mut s = String::new();
+                    for line_idx in start.line..=end.line {
+                        if line_idx >= buf.line_count() {
+                            break;
+                        }
+                        let line_str: String = buf.line(line_idx).chars().collect();
+                        let graphemes: Vec<&str> = line_str
+                            .trim_end_matches('\n')
+                            .trim_end_matches('\r')
+                            .graphemes(true)
+                            .collect();
+                        let lo = if line_idx == start.line { start.col } else { 0 };
+                        let hi = if line_idx == end.line {
+                            end.col.min(graphemes.len())
+                        } else {
+                            graphemes.len()
+                        };
+                        for g in &graphemes[lo.min(graphemes.len())..hi.min(graphemes.len())] {
+                            s.push_str(g);
+                        }
+                        if line_idx < end.line {
+                            s.push('\n');
+                        }
+                    }
+                    s
+                };
+                if search_text.is_empty() {
+                    return false;
+                }
+                // Find next occurrence of search_text after the last cursor.
+                let last_cursor_end = {
+                    let pane = self.panes.get(&pane_id).unwrap();
+                    pane.cursors
+                        .iter()
+                        .map(|c| {
+                            let a = c.anchor;
+                            let p = c.pos;
+                            if (a.line, a.col) >= (p.line, p.col) {
+                                a
+                            } else {
+                                p
+                            }
+                        })
+                        .max_by_key(|p| (p.line, p.col))
+                        .unwrap_or(Position { line: 0, col: 0 })
+                };
+                // Scan buffer text for occurrences.
+                let text = self.buffers.get(&buffer_id).unwrap().to_text();
+                // Find all occurrences, pick the first one after last_cursor_end.
+                let occurrences: Vec<(Position, Position)> = {
+                    let buf = self.buffers.get(&buffer_id).unwrap();
+                    let mut results = Vec::new();
+                    for (byte_start, _) in text.match_indices(search_text.as_str()) {
+                        let byte_end = byte_start + search_text.len();
+                        if byte_end > text.len() {
+                            continue;
+                        }
+                        let char_start = text[..byte_start].chars().count();
+                        let char_end = text[..byte_end].chars().count();
+                        let start_line = buf.char_to_line(char_start);
+                        let end_line = buf.char_to_line(char_end.saturating_sub(1).max(char_start));
+                        let start_col = char_start - buf.line_to_char(start_line);
+                        let end_col = char_end - buf.line_to_char(end_line);
+                        results.push((
+                            Position {
+                                line: start_line,
+                                col: start_col,
+                            },
+                            Position {
+                                line: end_line,
+                                col: end_col,
+                            },
+                        ));
+                    }
+                    results
+                };
+                // Pick the first occurrence after last_cursor_end (wraps).
+                let next_hit = occurrences
+                    .iter()
+                    .find(|(start, _)| {
+                        (start.line, start.col) > (last_cursor_end.line, last_cursor_end.col)
+                    })
+                    .or_else(|| occurrences.first());
+                if let Some((hit_start, hit_end)) = next_hit.copied() {
+                    let pane = self.panes.get_mut(&pane_id).unwrap();
+                    // Only add if not already covered by an existing cursor.
+                    let already = pane
+                        .cursors
+                        .iter()
+                        .any(|c| c.anchor == hit_start && c.pos == hit_end);
+                    if !already {
+                        pane.cursors.push(Cursor {
+                            pos: hit_end,
+                            anchor: hit_start,
+                        });
+                        pane.scroll_target = hit_start.line as f32;
+                    }
+                }
+                false
+            }
+
+            // ── Code folding (item 13) ─────────────────────────────────────────
+            EditorAction::ToggleFold(line) => {
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                let folds = pane.folds.entry(buffer_id).or_default();
+                if folds.contains(&line) {
+                    folds.remove(&line);
+                } else {
+                    folds.insert(line);
+                }
+                false
+            }
         }
     }
 }
@@ -1274,6 +1543,7 @@ mod tests {
             scroll_vel: 0.0,
             search: None,
             hover_popup: None,
+            folds: HashMap::new(),
         };
         let buf = anvil_editor::Buffer::from_text(text);
         (pane, buf)

@@ -7,6 +7,7 @@
 
 pub mod editor_pane;
 pub mod editor_search;
+pub use editor_search::bracket_match_for;
 pub mod interact;
 pub mod keys;
 pub mod layout;

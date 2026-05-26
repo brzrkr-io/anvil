@@ -13,6 +13,9 @@ pub struct EditorSearch {
     pub is_regex: bool,
     pub hits: Vec<Range>,
     pub current: usize,
+    /// When `Some`, the search bar shows a second "replace" row (item 9).
+    /// `None` means plain find mode.
+    pub replace_input: Option<String>,
 }
 
 impl EditorSearch {
@@ -22,7 +25,21 @@ impl EditorSearch {
             is_regex: false,
             hits: Vec::new(),
             current: 0,
+            replace_input: None,
         }
+    }
+
+    /// Open in find+replace mode — sets `replace_input` to an empty string if
+    /// not already set. Query is preserved.
+    pub fn open_replace(&mut self) {
+        if self.replace_input.is_none() {
+            self.replace_input = Some(String::new());
+        }
+    }
+
+    /// Close replace mode without closing find.
+    pub fn close_replace(&mut self) {
+        self.replace_input = None;
     }
 
     /// Recompute `hits` from the current `query` and `is_regex` against `buffer`.
@@ -133,6 +150,104 @@ fn byte_range_to_positions(
     })
 }
 
+// ── Bracket matching (item 14) ────────────────────────────────────────────────
+
+/// Find the matching bracket for the bracket at (or immediately before) `pos`.
+///
+/// Scans the buffer using a simple stack algorithm, capped to `max_lines` lines
+/// to avoid hanging on huge files.
+///
+/// Returns `Some((open_pos, close_pos))` where `open_pos` ≤ `close_pos`.
+/// Returns `None` when the cursor is not on a bracket, or the match is not
+/// found within `max_lines`.
+pub fn bracket_match_for(
+    buffer: &Buffer,
+    pos: Position,
+    max_lines: usize,
+) -> Option<(Position, Position)> {
+    // Build a flat char list from the visible region (capped).
+    let start_line = pos.line.saturating_sub(max_lines / 2);
+    let end_line = (pos.line + max_lines / 2).min(buffer.line_count().saturating_sub(1));
+
+    // Flatten the region into (line, col, char) triples.
+    let mut chars: Vec<(usize, usize, char)> = Vec::new();
+    for line_idx in start_line..=end_line {
+        let line_str: String = buffer.line(line_idx).chars().collect();
+        let trimmed: &str = line_str.trim_end_matches('\n').trim_end_matches('\r');
+        for (col, ch) in trimmed.chars().enumerate() {
+            chars.push((line_idx, col, ch));
+        }
+    }
+
+    // Find the index of the bracket at `pos` (or immediately before if col > 0).
+    fn is_bracket(c: char) -> bool {
+        matches!(c, '(' | ')' | '{' | '}' | '[' | ']')
+    }
+    fn matching(c: char) -> char {
+        match c {
+            '(' => ')',
+            ')' => '(',
+            '{' => '}',
+            '}' => '{',
+            '[' => ']',
+            ']' => '[',
+            _ => c,
+        }
+    }
+    fn is_open(c: char) -> bool {
+        matches!(c, '(' | '{' | '[')
+    }
+
+    // Find the bracket position in our char list.
+    let bracket_idx = chars
+        .iter()
+        .position(|&(l, c, ch)| l == pos.line && c == pos.col && is_bracket(ch))
+        .or_else(|| {
+            // Also try col - 1 (cursor immediately after a bracket).
+            if pos.col > 0 {
+                chars
+                    .iter()
+                    .position(|&(l, c, ch)| l == pos.line && c == pos.col - 1 && is_bracket(ch))
+            } else {
+                None
+            }
+        })?;
+
+    let (bl, bc, bch) = chars[bracket_idx];
+    let _ = bc;
+
+    if is_open(bch) {
+        // Scan forward for the matching close.
+        let mut depth = 1i32;
+        for &(l, c, ch) in &chars[bracket_idx + 1..] {
+            if ch == bch {
+                depth += 1;
+            } else if ch == matching(bch) {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((Position { line: bl, col: bc }, Position { line: l, col: c }));
+                }
+            }
+        }
+    } else {
+        // Scan backward for the matching open.
+        let match_open = matching(bch);
+        let mut depth = 1i32;
+        for &(l, c, ch) in chars[..bracket_idx].iter().rev() {
+            if ch == bch {
+                depth += 1;
+            } else if ch == match_open {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((Position { line: l, col: c }, Position { line: bl, col: bc }));
+                }
+            }
+        }
+    }
+
+    None
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -200,5 +315,38 @@ mod tests {
         s.clear();
         assert_eq!(s.count(), 0, "clear() should drop all hits");
         assert!(s.query.is_empty(), "clear() should reset query");
+    }
+
+    // ── item 14: bracket matching ─────────────────────────────────────────────
+
+    #[test]
+    fn bracket_match_finds_close_for_open() {
+        // "fn f() { }" — '{' is at col 7, '}' is at col 9.
+        let b = buf("fn f() { }");
+        let pos = Position { line: 0, col: 7 };
+        let result = bracket_match_for(&b, pos, 2000);
+        assert!(result.is_some(), "should find a bracket match");
+        let (a, z) = result.unwrap();
+        assert_eq!(a, Position { line: 0, col: 7 });
+        assert_eq!(z, Position { line: 0, col: 9 });
+    }
+
+    #[test]
+    fn bracket_match_finds_open_for_close() {
+        // "fn f() { x }" — '{' at col 7, '}' at col 11.
+        let b = buf("fn f() { x }");
+        let pos = Position { line: 0, col: 11 };
+        let result = bracket_match_for(&b, pos, 2000);
+        assert!(result.is_some());
+        let (a, z) = result.unwrap();
+        assert_eq!(a.col, 7, "open brace column");
+        assert_eq!(z.col, 11, "close brace column");
+    }
+
+    #[test]
+    fn bracket_match_returns_none_when_unmatched() {
+        let b = buf("(unclosed");
+        let result = bracket_match_for(&b, Position { line: 0, col: 0 }, 2000);
+        assert!(result.is_none(), "unmatched bracket should return None");
     }
 }
