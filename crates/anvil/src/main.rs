@@ -10307,7 +10307,11 @@ mod tests {
             q.pop_front();
         }
 
-        assert_eq!(q.len(), 1, "expired toast must be removed; 1 live toast remains");
+        assert_eq!(
+            q.len(),
+            1,
+            "expired toast must be removed; 1 live toast remains"
+        );
         assert_eq!(q.front().unwrap().text, "new");
     }
 }

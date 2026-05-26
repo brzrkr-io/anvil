@@ -394,8 +394,8 @@ mod tests {
     /// non-zero hit rects for both ◀ and ▶ arrows.
     #[test]
     fn nav_arrows_hit_rects_populated_when_matches_exist() {
-        use anvil_workspace::editor_search::EditorSearch;
         use anvil_editor::Buffer;
+        use anvil_workspace::editor_search::EditorSearch;
 
         let m = metrics();
         let mut r = Raster::new(400, 200);
