@@ -222,6 +222,10 @@ pub fn draw_workspace(
                         diags,
                         buf.git_gutter.as_ref(),
                         e.id == focused_id,
+                        // Item 12: pass blink_phase so the editor cursor animates.
+                        // Only the focused pane animates; inactive panes get 0.0
+                        // (fully opaque cursor) via cursor_opacity(0.0) == 1.0.
+                        if e.id == focused_id { blink_phase } else { 0.0 },
                     );
                 } else {
                     // Buffer missing — panel fill with header strip.
