@@ -121,70 +121,77 @@ pub fn draw_workspace(
         if let Some(ref mut terminal) = pane.terminal {
             // ── Terminal pane path ────────────────────────────────────────
 
-            let cursor_params: Option<CursorParams> = if e.id == focused_id {
-                Some(CursorParams {
-                    ax: pane.cursor_ax,
-                    ay: pane.cursor_ay,
-                    blink_phase,
-                    cfg: cursor_cfg,
-                })
+            // G2: when the drawer is too short to render PTY cells, show a
+            // collapsed button strip instead.
+            let collapse_threshold = 50.0 * ui_scale;
+            if is_bottom_drawer(&e.rect, &inner, entries.len()) && e.rect.h < collapse_threshold {
+                draw_drawer_collapsed_strip(raster, painters.regular, metrics, theme, e.rect);
             } else {
-                None
-            };
+                let cursor_params: Option<CursorParams> = if e.id == focused_id {
+                    Some(CursorParams {
+                        ax: pane.cursor_ax,
+                        ay: pane.cursor_ay,
+                        blink_phase,
+                        cfg: cursor_cfg,
+                    })
+                } else {
+                    None
+                };
 
-            // rule_x bounds: horizontal span of this pane in device pixels.
-            let rule_x_start = e.rect.x;
-            let rule_x_end = e.rect.x + e.rect.w;
+                // rule_x bounds: horizontal span of this pane in device pixels.
+                let rule_x_start = e.rect.x;
+                let rule_x_end = e.rect.x + e.rect.w;
 
-            // Fold state for this pane.
-            let folded = FoldedBlocks::new(&pane.folded[..pane.folded_count]);
+                // Fold state for this pane.
+                let folded = FoldedBlocks::new(&pane.folded[..pane.folded_count]);
 
-            // Per-pane dirty set: None means "draw all rows".
-            let pane_dirty: Option<&DirtySet> = dirty.and_then(|m| m.get(&e.id));
+                // Per-pane dirty set: None means "draw all rows".
+                let pane_dirty: Option<&DirtySet> = dirty.and_then(|m| m.get(&e.id));
 
-            draw_viewport(
-                raster,
-                painters,
-                terminal,
-                metrics,
-                theme,
-                pane.scroll_pos,
-                pane.selection,
-                search,
-                cursor_params,
-                rule_x_start,
-                rule_x_end,
-                folded,
-                pane_dirty,
-                running_pulse_phase,
-            );
-
-            if is_bottom_drawer(&e.rect, &inner, entries.len()) {
-                draw_terminal_drawer_chrome(
+                draw_viewport(
                     raster,
-                    painters.regular,
+                    painters,
+                    terminal,
                     metrics,
                     theme,
-                    e.rect,
-                    e.id == focused_id,
+                    pane.scroll_pos,
+                    pane.selection,
+                    search,
+                    cursor_params,
+                    rule_x_start,
+                    rule_x_end,
+                    folded,
+                    pane_dirty,
+                    running_pulse_phase,
                 );
-            }
 
-            // Living-scrollback indicator: paint a 4px ember bar at the
-            // bottom edge of the pane when the user is scrolled up and new
-            // output has arrived below.
-            let unseen = pane.unseen_rows();
-            if unseen > 0 {
-                let bar_h = 4.0_f64;
-                let bar_y = e.rect.y + e.rect.h - bar_h;
-                raster.fill_pixel_rect_alpha(
-                    e.rect.x,
-                    bar_y,
-                    e.rect.w,
-                    bar_h,
-                    theme.accent_ember,
-                    0.92,
-                );
+                if is_bottom_drawer(&e.rect, &inner, entries.len()) {
+                    draw_terminal_drawer_chrome(
+                        raster,
+                        painters.regular,
+                        metrics,
+                        theme,
+                        e.rect,
+                        e.id == focused_id,
+                    );
+                }
+
+                // Living-scrollback indicator: paint a 4px ember bar at the
+                // bottom edge of the pane when the user is scrolled up and new
+                // output has arrived below.
+                let unseen = pane.unseen_rows();
+                if unseen > 0 {
+                    let bar_h = 4.0_f64;
+                    let bar_y = e.rect.y + e.rect.h - bar_h;
+                    raster.fill_pixel_rect_alpha(
+                        e.rect.x,
+                        bar_y,
+                        e.rect.w,
+                        bar_h,
+                        theme.accent_ember,
+                        0.92,
+                    );
+                }
             }
         } else {
             // ── Native editor pane (NE5) ──────────────────────────────────
@@ -301,6 +308,37 @@ fn draw_terminal_drawer_chrome(
     // drawer. The viewport (drawn earlier) carries the terminal cells; don't
     // overdraw them with a panel fill.
     raster.fill_pixel_rect_alpha(rect.x, rect.y, rect.w, 1.0, theme.hairline, 0.92);
+}
+
+/// Draw the collapsed drawer strip (G2): a 24pt-tall charcoal bar with
+/// "▸ TERMINAL" on the left. Rendered when the drawer rect.h < 50pt threshold.
+fn draw_drawer_collapsed_strip(
+    raster: &mut Raster,
+    painter: &mut dyn crate::raster::GlyphPainter,
+    metrics: FontMetrics,
+    theme: &Theme,
+    rect: Rect,
+) {
+    if rect.w <= 0.0 || rect.h <= 0.0 {
+        return;
+    }
+    const STRIP_H_BASE: f64 = 24.0;
+    let strip_h = STRIP_H_BASE.min(rect.h);
+    raster.fill_pixel_rect(rect.x, rect.y, rect.w, strip_h, theme.charcoal);
+    raster.fill_pixel_rect_alpha(rect.x, rect.y, rect.w, 1.0, theme.hairline, 0.92);
+
+    const PAD_X: f64 = 8.0;
+    let text_y = rect.y + ((strip_h - metrics.cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+    let label = "\u{25b8} TERMINAL"; // ▸ TERMINAL
+    let mut gx = rect.x + PAD_X;
+    let max_x = rect.x + rect.w - PAD_X;
+    for ch in label.chars() {
+        if gx + metrics.cell_w > max_x {
+            break;
+        }
+        raster.glyph_at(painter, metrics, gx, text_y, ch as u32, theme.text_subtle);
+        gx += metrics.cell_w;
+    }
 }
 
 /// Height of the per-pane editor buffer tab strip in device pixels (base, before ui_scale).
@@ -1332,6 +1370,38 @@ mod tests {
             px, theme.accent,
             "non-focused pane must not have accent border (x={pane2_left_x}, got {px:?})"
         );
+    }
+
+    // ── G2: drawer collapse strip ─────────────────────────────────────────────
+
+    /// G2: draw_drawer_collapsed_strip paints a charcoal strip and a ▸ glyph.
+    #[test]
+    fn drawer_collapsed_strip_paints_strip_and_label() {
+        let m = metrics();
+        let mut r = Raster::new(400, 100);
+        let mut painter = StubPainter::default();
+        let theme = anvil_theme::MINERAL_DARK;
+        r.clear(theme.background);
+        let rect = Rect {
+            x: 0.0,
+            y: 80.0,
+            w: 400.0,
+            h: 20.0,
+        };
+        draw_drawer_collapsed_strip(&mut r, &mut painter, m, &theme, rect);
+        // Strip must be filled (not raw background) at y=88.
+        let strip_px = pixel_at(&r, 10, 88);
+        assert_ne!(
+            strip_px, theme.background,
+            "collapsed strip must fill charcoal"
+        );
+        // ▸ glyph (U+25B8) must be painted.
+        let tri: Vec<_> = painter
+            .calls
+            .iter()
+            .filter(|(cp, _)| *cp == '\u{25B8}' as u32)
+            .collect();
+        assert!(!tri.is_empty(), "collapsed strip must render ▸ glyph");
     }
 
     /// draw_workspace smoke: does not panic on single pane with content.

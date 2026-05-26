@@ -324,10 +324,15 @@ impl EditorPane {
 /// `panes` maps a `PaneId` to its `EditorPane` view state.
 /// `buffers` maps a `BufferId` to the underlying `Buffer`.
 /// `next_buffer_id` is a monotonic counter for allocating fresh `BufferId`s.
+/// `buffer_scroll` remembers the last scroll position per buffer so tab
+/// switches restore where the user was (G4).
 pub struct EditorPaneRegistry {
     panes: HashMap<PaneId, EditorPane>,
     buffers: HashMap<BufferId, Buffer>,
     next_buffer_id: BufferId,
+    /// G4: last known scroll_pos per buffer. Saved on open_buffer (tab switch
+    /// away); restored on open_buffer (tab switch to). Dropped on close_buffer.
+    buffer_scroll: HashMap<BufferId, f32>,
 }
 
 impl Default for EditorPaneRegistry {
@@ -336,6 +341,7 @@ impl Default for EditorPaneRegistry {
             panes: HashMap::new(),
             buffers: HashMap::new(),
             next_buffer_id: 1,
+            buffer_scroll: HashMap::new(),
         }
     }
 }
@@ -513,11 +519,31 @@ impl EditorPaneRegistry {
     /// Activate `buffer_id` in `pane_id` without loading a new file.
     ///
     /// `buffer_id` must already be in `pane.open_buffers`. No-op if not found.
+    /// G4: saves the current pane scroll_pos under the outgoing buffer id and
+    /// restores it for the incoming buffer (defaulting to 0.0 if not seen before).
     pub fn open_buffer(&mut self, pane_id: PaneId, buffer_id: BufferId) {
-        if let Some(pane) = self.panes.get_mut(&pane_id) {
-            if pane.open_buffers.contains(&buffer_id) {
+        // Collect what we need before any mutation so borrow checker is happy.
+        let (outgoing, current_scroll, valid) = match self.panes.get(&pane_id) {
+            Some(pane) if pane.open_buffers.contains(&buffer_id) => {
+                (pane.buffer_id, pane.scroll_pos, true)
+            }
+            _ => return,
+        };
+        if !valid {
+            return;
+        }
+        if outgoing != buffer_id {
+            // Save scroll for the outgoing buffer.
+            self.buffer_scroll.insert(outgoing, current_scroll);
+            // Restore scroll for the incoming buffer.
+            let restored = self.buffer_scroll.get(&buffer_id).copied().unwrap_or(0.0);
+            if let Some(pane) = self.panes.get_mut(&pane_id) {
+                pane.scroll_pos = restored;
+                pane.scroll_target = restored;
                 pane.buffer_id = buffer_id;
             }
+        } else if let Some(pane) = self.panes.get_mut(&pane_id) {
+            pane.buffer_id = buffer_id;
         }
     }
 
@@ -563,6 +589,8 @@ impl EditorPaneRegistry {
         let new_active = pane.open_buffers[new_pos];
         pane.buffer_id = new_active;
         self.buffers.remove(&buffer_id);
+        // G4: drop the saved scroll position for the closed buffer.
+        self.buffer_scroll.remove(&buffer_id);
         Some(new_active)
     }
 
@@ -3266,6 +3294,89 @@ mod tests {
             l1.starts_with("bar"),
             "line 1 must be dedented; got {:?}",
             l1
+        );
+    }
+
+    // ── G4: per-buffer scroll position ───────────────────────────────────────
+
+    /// G4: open A, scroll, switch to B, switch back to A → scroll restored.
+    #[test]
+    fn buffer_scroll_restored_on_tab_switch() {
+        let mut reg = EditorPaneRegistry::default();
+        let bid_a = reg.new_pane(1);
+        // Open B as an additional tab in pane 1.
+        let bid_b = {
+            let b = anvil_editor::Buffer::new();
+            let bid = reg.next_buffer_id;
+            reg.next_buffer_id += 1;
+            reg.buffers.insert(bid, b);
+            let pane = reg.panes.get_mut(&1).unwrap();
+            pane.open_buffers.push(bid);
+            bid
+        };
+
+        // Scroll pane to line 42 while on buffer A.
+        {
+            let pane = reg.get_pane_mut(1).unwrap();
+            assert_eq!(pane.buffer_id, bid_a);
+            pane.scroll_pos = 42.0;
+            pane.scroll_target = 42.0;
+        }
+
+        // Switch to B — A's scroll should be saved.
+        reg.open_buffer(1, bid_b);
+        {
+            let pane = reg.get_pane(1).unwrap();
+            assert_eq!(pane.buffer_id, bid_b);
+            assert_eq!(pane.scroll_pos, 0.0, "B should start at 0");
+        }
+
+        // Switch back to A — scroll should be restored to 42.
+        reg.open_buffer(1, bid_a);
+        {
+            let pane = reg.get_pane(1).unwrap();
+            assert_eq!(pane.buffer_id, bid_a);
+            assert!(
+                (pane.scroll_pos - 42.0).abs() < 0.01,
+                "A scroll must be restored; got {}",
+                pane.scroll_pos
+            );
+        }
+    }
+
+    /// G4: close_buffer drops the saved scroll entry (no stale memory).
+    #[test]
+    fn buffer_scroll_dropped_on_close() {
+        let mut reg = EditorPaneRegistry::default();
+        let bid_a = reg.new_pane(1);
+        let bid_b = {
+            let b = anvil_editor::Buffer::new();
+            let bid = reg.next_buffer_id;
+            reg.next_buffer_id += 1;
+            reg.buffers.insert(bid, b);
+            let pane = reg.panes.get_mut(&1).unwrap();
+            pane.open_buffers.push(bid);
+            bid
+        };
+
+        // Set scroll on A, switch to B to save it.
+        {
+            let pane = reg.get_pane_mut(1).unwrap();
+            pane.scroll_pos = 10.0;
+        }
+        reg.open_buffer(1, bid_b);
+
+        // Saved scroll for A must be in the map.
+        assert!(
+            reg.buffer_scroll.contains_key(&bid_a),
+            "scroll for A must be saved after switching away"
+        );
+
+        // Close A — entry must be dropped.
+        reg.close_buffer(1, bid_a);
+        assert!(
+            !reg.buffer_scroll.contains_key(&bid_a),
+            "scroll for closed buffer must be removed"
         );
     }
 }

@@ -222,6 +222,30 @@ pub fn draw_left_dock_with_scroll(
         return hits;
     }
 
+    // G1: icon-only mode when dock is narrow; hide entirely when very narrow.
+    let icon_only_threshold = 120.0 * ui_scale;
+    let hide_threshold = 60.0 * ui_scale;
+    if rect.w < hide_threshold {
+        return hits;
+    }
+    if rect.w < icon_only_threshold {
+        return draw_left_dock_icons_only(
+            raster,
+            painter,
+            metrics,
+            theme,
+            snapshot,
+            active_file_path,
+            explorer_scroll_offset,
+            hovered_row,
+            expanded_dirs,
+            child_snapshots,
+            rect,
+            &mut hits,
+            ui_scale,
+        );
+    }
+
     // ── Background ────────────────────────────────────────────────────────────
     // Direction A sidebar: a quiet Mineral panel, not a red/brown block. The
     // Ember wash is only a trace so Explorer reads as a tool rail beside the
@@ -294,6 +318,146 @@ pub fn draw_left_dock_with_scroll(
         &rm,
     );
     hits
+}
+
+// ── Icons-only mode (G1) ──────────────────────────────────────────────────────
+
+/// Width of the icons-only dock in logical points (before ui_scale).
+const ICONS_ONLY_W_BASE: f64 = 48.0;
+
+/// Draw a slim icon-only sidebar: one file/dir icon per row, no labels.
+/// Hit map is populated so click-to-open/toggle still works.
+#[allow(clippy::too_many_arguments)]
+fn draw_left_dock_icons_only(
+    raster: &mut Raster,
+    painter: &mut dyn GlyphPainter,
+    metrics: FontMetrics,
+    theme: &Theme,
+    snapshot: Option<&DirSnapshot>,
+    active_file_path: Option<&Path>,
+    scroll_offset: usize,
+    hovered_row: Option<usize>,
+    expanded_dirs: &HashSet<PathBuf>,
+    child_snapshots: &HashMap<PathBuf, DirSnapshot>,
+    rect: Rect,
+    hits: &mut LeftDockHits,
+    ui_scale: f64,
+) -> LeftDockHits {
+    let rm = RowMetrics::from_scale(ui_scale);
+    let slim_w = (ICONS_ONLY_W_BASE * ui_scale).min(rect.w);
+
+    // Background.
+    raster.fill_pixel_rect(rect.x, rect.y, slim_w, rect.h, theme.charcoal);
+    raster.fill_pixel_rect_alpha(rect.x, rect.y, slim_w, rect.h, theme.accent_ember, 0.02);
+    // Right-edge hairline.
+    raster.fill_pixel_rect_alpha(
+        rect.x + slim_w - 1.0,
+        rect.y,
+        1.0,
+        rect.h,
+        theme.accent_bright,
+        0.28,
+    );
+
+    let snap = match snapshot {
+        Some(s) if !s.entries.is_empty() => s,
+        _ => return std::mem::take(hits),
+    };
+
+    let mut all_rows: Vec<(PathBuf, bool, usize)> = Vec::new();
+    collect_visible_rows(
+        snap,
+        &PathBuf::from(&snap.root),
+        0,
+        expanded_dirs,
+        child_snapshots,
+        &mut all_rows,
+    );
+
+    // Populate visible_rows (stable index for hit dispatch).
+    for (path, is_dir, _) in &all_rows {
+        hits.visible_rows.push((path.clone(), *is_dir));
+    }
+
+    let row_h = rm.row_h;
+    let available_rows = (rect.h / row_h).floor() as usize;
+    let total_rows = all_rows.len();
+    let first = scroll_offset.min(total_rows.saturating_sub(available_rows));
+    let cell_w = metrics.cell_w;
+    let cell_h = metrics.cell_h;
+
+    for (slot_i, (path, is_dir, _depth)) in
+        all_rows.iter().enumerate().skip(first).take(available_rows)
+    {
+        let row_i = slot_i - first;
+        let row_top = rect.y + row_i as f64 * row_h;
+
+        hits.hits.push(LeftDockHit {
+            rect: Rect {
+                x: rect.x,
+                y: row_top,
+                w: slim_w,
+                h: row_h.min((rect.y + rect.h - row_top).max(0.0)),
+            },
+            kind: LeftDockHitKind::Explorer(ExplorerHit::Row(slot_i)),
+        });
+
+        let glyph_y = row_top + ((row_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+        let icon_x = rect.x + (slim_w - cell_w).max(0.0) * 0.5;
+
+        let selected = !is_dir && active_file_path == Some(path.as_path());
+        let hovered = hovered_row == Some(slot_i);
+        let row_x = rect.x + 2.0;
+        let row_w = (slim_w - 4.0).max(0.0);
+        if selected {
+            raster.fill_pixel_rect(
+                row_x,
+                row_top + 2.0,
+                row_w,
+                (row_h - 4.0).max(0.0),
+                theme.panel,
+            );
+            raster.fill_pixel_rect(
+                row_x,
+                row_top + 2.0,
+                2.0,
+                (row_h - 4.0).max(0.0),
+                theme.accent_primary,
+            );
+        } else if hovered {
+            raster.fill_pixel_rect(
+                row_x,
+                row_top + 2.0,
+                row_w,
+                (row_h - 4.0).max(0.0),
+                theme.panel,
+            );
+        }
+
+        let (icon_ch, icon_color) = if *is_dir {
+            let ch = if expanded_dirs.contains(path) {
+                '▾'
+            } else {
+                '▸'
+            };
+            (ch, theme.foreground)
+        } else {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let (ch, col) = file_icon_colored(name, theme);
+            (ch, if selected { theme.accent_primary } else { col })
+        };
+
+        raster.glyph_at(
+            painter,
+            metrics,
+            icon_x,
+            glyph_y,
+            icon_ch as u32,
+            icon_color,
+        );
+    }
+
+    std::mem::take(hits)
 }
 
 // ── Explorer section ──────────────────────────────────────────────────────────
@@ -1907,6 +2071,112 @@ mod tests {
         assert_eq!(file_icon("Cargo.lock"), "L", ".lock → 'L'");
         assert_eq!(file_icon("binary"), "\u{25C7}", "no extension → ◇");
         assert_eq!(file_icon("file.xyz"), "\u{25C7}", "unknown extension → ◇");
+    }
+
+    // ── G1: icon-only and hide modes ──────────────────────────────────────────
+
+    /// G1: rect.w < 60pt (hide threshold) returns empty hits, no panic.
+    #[test]
+    fn very_narrow_dock_hides_entirely() {
+        let m = metrics();
+        let th = theme();
+        let mut r = Raster::new(800, 800);
+        let mut p = StubPainter::default();
+        let snap = DirSnapshot {
+            root: "/p".to_string(),
+            entries: vec![DirEntry {
+                name: "main.rs".to_string(),
+                is_dir: false,
+            }],
+            git_marks: Default::default(),
+        };
+        let narrow = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 40.0,
+            h: 800.0,
+        };
+        let hits = draw_left_dock_with_scroll(
+            &mut r,
+            &mut p,
+            m,
+            &th,
+            Some(&snap),
+            None,
+            None,
+            narrow,
+            0,
+            None,
+            &HashSet::new(),
+            &HashMap::new(),
+            0.0,
+            1.0,
+        );
+        assert!(hits.hits.is_empty(), "dock < 60pt must be fully hidden");
+    }
+
+    /// G1: rect.w in [60, 120) returns icon hits only — no EXPLORER header hit.
+    #[test]
+    fn narrow_dock_returns_icon_only_hits() {
+        let m = metrics();
+        let th = theme();
+        let mut r = Raster::new(800, 800);
+        let mut p = StubPainter::default();
+        let snap = DirSnapshot {
+            root: "/p".to_string(),
+            entries: vec![
+                DirEntry {
+                    name: "a.rs".to_string(),
+                    is_dir: false,
+                },
+                DirEntry {
+                    name: "b.rs".to_string(),
+                    is_dir: false,
+                },
+            ],
+            git_marks: Default::default(),
+        };
+        // 80pt wide: between 60 and 120 → icons-only.
+        let narrow = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 80.0,
+            h: 800.0,
+        };
+        let hits = draw_left_dock_with_scroll(
+            &mut r,
+            &mut p,
+            m,
+            &th,
+            Some(&snap),
+            None,
+            None,
+            narrow,
+            0,
+            None,
+            &HashSet::new(),
+            &HashMap::new(),
+            0.0,
+            1.0,
+        );
+        // No EXPLORER header hit in icons-only mode.
+        let header_hits: Vec<_> = hits
+            .hits
+            .iter()
+            .filter(|h| h.kind == LeftDockHitKind::Explorer(ExplorerHit::Header))
+            .collect();
+        assert!(header_hits.is_empty(), "icons-only must have no header hit");
+        // Two row hits for the two entries.
+        let row_hits: Vec<_> = hits
+            .hits
+            .iter()
+            .filter(|h| matches!(h.kind, LeftDockHitKind::Explorer(ExplorerHit::Row(_))))
+            .collect();
+        assert_eq!(
+            row_hits.len(),
+            2,
+            "icons-only must have one row hit per entry"
+        );
     }
 
     /// Item 10: git badge 'M' is rendered in attention color for a modified file.

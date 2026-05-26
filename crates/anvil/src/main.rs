@@ -585,6 +585,9 @@ pub struct App {
     /// Current explorer sidebar width in logical points (item 13: drag-resize).
     /// Range clamped to [180, 600] on drag. Default 300.
     left_dock_w_pt: f64,
+    /// G3: smooth target for sidebar width. Drag writes here; tick eases
+    /// `left_dock_w_pt` toward this value.
+    left_dock_w_pt_target: f64,
     /// True while the user is dragging the sidebar right edge (item 13).
     sidebar_drag_active: bool,
     /// True while the user is dragging the editor/drawer horizontal divider (item 13b).
@@ -4465,6 +4468,7 @@ impl App {
         }
         if state.left_dock_w_pt >= 180.0 && state.left_dock_w_pt <= 600.0 {
             self.left_dock_w_pt = state.left_dock_w_pt;
+            self.left_dock_w_pt_target = state.left_dock_w_pt;
         }
         match state.layout_mode.as_str() {
             "ide" => self.layout_mode = LayoutMode::Ide,
@@ -4978,6 +4982,23 @@ impl AppHandler for AppShell {
             app.blink_phase = 0.0;
             app.last_blink_opacity = -1.0;
             app.dirty = true;
+        }
+
+        // G3: smooth sidebar width easing — 3-frame settle at 0.35 factor.
+        {
+            let delta = app.left_dock_w_pt_target - app.left_dock_w_pt;
+            if delta.abs() >= 0.5 {
+                app.left_dock_w_pt += delta * 0.35;
+                app.resize_all_tabs();
+                app.force_full_redraw = true;
+                app.dirty = true;
+            } else if delta != 0.0 {
+                // Snap and stop.
+                app.left_dock_w_pt = app.left_dock_w_pt_target;
+                app.resize_all_tabs();
+                app.force_full_redraw = true;
+                app.dirty = true;
+            }
         }
 
         // Item 8: scroll indicator alpha decay (600ms hold, 200ms fade-out).
@@ -7209,13 +7230,12 @@ impl AppHandler for AppShell {
         }
 
         // Sidebar resize drag (item 13): convert mouse x to new left_dock_w_pt.
+        // G3: write to _target; the tick loop eases _pt toward it.
         if app.sidebar_drag_active {
             let (rx, _) = app.view_pt_to_raster_px(loc);
             let new_w_pt = (rx / app.window_scale).clamp(SIDEBAR_W_MIN_PT, SIDEBAR_W_MAX_PT);
-            if (new_w_pt - app.left_dock_w_pt).abs() > 0.5 {
-                app.left_dock_w_pt = new_w_pt;
-                app.resize_all_tabs();
-                app.force_full_redraw = true;
+            if (new_w_pt - app.left_dock_w_pt_target).abs() > 0.5 {
+                app.left_dock_w_pt_target = new_w_pt;
                 app.dirty = true;
             }
             return;
@@ -8637,6 +8657,7 @@ fn main() -> Result<()> {
         // with Cmd+B.
         left_dock_visible: layout_mode == LayoutMode::Ide,
         left_dock_w_pt: 300.0,
+        left_dock_w_pt_target: 300.0,
         sidebar_drag_active: false,
         drawer_drag_active: false,
         drawer_hidden: false,
