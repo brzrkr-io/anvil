@@ -458,8 +458,10 @@ fn draw_buffer_tab(
     let label = buffer_label(editor_panes, buffer_id);
     let text_color = if is_active {
         theme.foreground
-    } else {
+    } else if is_hovered {
         theme.text_muted
+    } else {
+        theme.text_subtle
     };
 
     // Layout: [PAD_L] [dirty_dot?] [label] ... [close_×]
