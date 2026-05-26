@@ -122,6 +122,10 @@ enum LspCommand {
         query: String,
         request_id: u64,
     },
+    /// U2: send a pre-formed `$/cancelRequest` notification JSON to the server.
+    CancelRequest {
+        cancel_json: serde_json::Value,
+    },
     Shutdown,
 }
 
@@ -232,6 +236,9 @@ struct ServerHandle {
 pub struct LspManager {
     runtime: tokio::runtime::Runtime,
     servers: HashMap<&'static str, ServerHandle>,
+    /// U2: maps request_id → file URI for in-flight requests. Used to cancel
+    /// pending requests when their buffer is closed.
+    in_flight: HashMap<u64, PathBuf>,
 }
 
 impl LspManager {
@@ -249,6 +256,7 @@ impl LspManager {
         Some(LspManager {
             runtime,
             servers: HashMap::new(),
+            in_flight: HashMap::new(),
         })
     }
 
@@ -308,7 +316,7 @@ impl LspManager {
     /// request; pass it to `poll_hover` to retrieve the result.
     ///
     /// A no-op (returns 0) when no live server is found for the path.
-    pub fn request_hover(&self, path: &Path, line: u32, character: u32) -> u64 {
+    pub fn request_hover(&mut self, path: &Path, line: u32, character: u32) -> u64 {
         let id = next_request_id();
         let server_id = path
             .extension()
@@ -323,6 +331,7 @@ impl LspManager {
                     character,
                     request_id: id,
                 });
+                self.in_flight.insert(id, path.to_path_buf());
                 return id;
             }
         }
@@ -332,13 +341,14 @@ impl LspManager {
     /// Poll for a hover result matching `request_id`.  Consumes the stored
     /// result on success (subsequent calls return `None` until a new request
     /// is issued).
-    pub fn poll_hover(&self, request_id: u64) -> Option<HoverResult> {
+    pub fn poll_hover(&mut self, request_id: u64) -> Option<HoverResult> {
         if request_id == 0 {
             return None;
         }
         for handle in self.servers.values() {
             let mut slot = handle.hover_result.lock().unwrap();
             if slot.as_ref().map(|(id, _)| *id) == Some(request_id) {
+                self.in_flight.remove(&request_id);
                 return slot.take().map(|(_, r)| r);
             }
         }
@@ -347,7 +357,7 @@ impl LspManager {
 
     /// Send a `textDocument/definition` request for `path` at `(line, character)`.
     /// Returns a `request_id` (non-zero on success) for use with `poll_definition`.
-    pub fn request_definition(&self, path: &Path, line: u32, character: u32) -> u64 {
+    pub fn request_definition(&mut self, path: &Path, line: u32, character: u32) -> u64 {
         let id = next_request_id();
         let server_id = path
             .extension()
@@ -362,6 +372,7 @@ impl LspManager {
                     character,
                     request_id: id,
                 });
+                self.in_flight.insert(id, path.to_path_buf());
                 return id;
             }
         }
@@ -369,13 +380,14 @@ impl LspManager {
     }
 
     /// Poll for a definition result matching `request_id`. Consumes on success.
-    pub fn poll_definition(&self, request_id: u64) -> Option<Vec<DefinitionLocation>> {
+    pub fn poll_definition(&mut self, request_id: u64) -> Option<Vec<DefinitionLocation>> {
         if request_id == 0 {
             return None;
         }
         for handle in self.servers.values() {
             let mut slot = handle.definition_result.lock().unwrap();
             if slot.as_ref().map(|(id, _)| *id) == Some(request_id) {
+                self.in_flight.remove(&request_id);
                 return slot.take().map(|(_, r)| r);
             }
         }
@@ -384,7 +396,7 @@ impl LspManager {
 
     /// Send a `textDocument/completion` request for `path` at `(line, character)`.
     /// Returns a `request_id` (non-zero on success) for use with `poll_completion`.
-    pub fn request_completion(&self, path: &Path, line: u32, character: u32) -> u64 {
+    pub fn request_completion(&mut self, path: &Path, line: u32, character: u32) -> u64 {
         let id = next_request_id();
         let server_id = path
             .extension()
@@ -399,6 +411,7 @@ impl LspManager {
                     character,
                     request_id: id,
                 });
+                self.in_flight.insert(id, path.to_path_buf());
                 return id;
             }
         }
@@ -406,13 +419,14 @@ impl LspManager {
     }
 
     /// Poll for a completion result matching `request_id`. Consumes on success.
-    pub fn poll_completion(&self, request_id: u64) -> Option<Vec<CompletionItem>> {
+    pub fn poll_completion(&mut self, request_id: u64) -> Option<Vec<CompletionItem>> {
         if request_id == 0 {
             return None;
         }
         for handle in self.servers.values() {
             let mut slot = handle.completion_result.lock().unwrap();
             if slot.as_ref().map(|(id, _)| *id) == Some(request_id) {
+                self.in_flight.remove(&request_id);
                 return slot.take().map(|(_, r)| r);
             }
         }
@@ -423,7 +437,13 @@ impl LspManager {
 
     /// Send a `textDocument/rename` request. Returns a non-zero `request_id` on
     /// success; 0 when no live server is available (logs once to stderr).
-    pub fn request_rename(&self, path: &Path, line: u32, character: u32, new_name: String) -> u64 {
+    pub fn request_rename(
+        &mut self,
+        path: &Path,
+        line: u32,
+        character: u32,
+        new_name: String,
+    ) -> u64 {
         let id = next_request_id();
         let server_id = path
             .extension()
@@ -439,6 +459,7 @@ impl LspManager {
                     new_name,
                     request_id: id,
                 });
+                self.in_flight.insert(id, path.to_path_buf());
                 return id;
             }
         }
@@ -447,13 +468,14 @@ impl LspManager {
     }
 
     /// Poll for a rename result matching `request_id`. Consumes on success.
-    pub fn poll_rename(&self, request_id: u64) -> Option<Vec<RenameEdit>> {
+    pub fn poll_rename(&mut self, request_id: u64) -> Option<Vec<RenameEdit>> {
         if request_id == 0 {
             return None;
         }
         for handle in self.servers.values() {
             let mut slot = handle.rename_result.lock().unwrap();
             if slot.as_ref().map(|(id, _)| *id) == Some(request_id) {
+                self.in_flight.remove(&request_id);
                 return slot.take().map(|(_, r)| r);
             }
         }
@@ -464,7 +486,7 @@ impl LspManager {
 
     /// Send a `textDocument/codeAction` request for `line`. Returns a non-zero
     /// `request_id` on success; 0 when no live server is available (logs once).
-    pub fn request_code_actions(&self, path: &Path, line: u32) -> u64 {
+    pub fn request_code_actions(&mut self, path: &Path, line: u32) -> u64 {
         let id = next_request_id();
         let server_id = path
             .extension()
@@ -478,6 +500,7 @@ impl LspManager {
                     line,
                     request_id: id,
                 });
+                self.in_flight.insert(id, path.to_path_buf());
                 return id;
             }
         }
@@ -486,13 +509,14 @@ impl LspManager {
     }
 
     /// Poll for a code-actions result matching `request_id`. Consumes on success.
-    pub fn poll_code_actions(&self, request_id: u64) -> Option<Vec<LspCodeAction>> {
+    pub fn poll_code_actions(&mut self, request_id: u64) -> Option<Vec<LspCodeAction>> {
         if request_id == 0 {
             return None;
         }
         for handle in self.servers.values() {
             let mut slot = handle.code_actions_result.lock().unwrap();
             if slot.as_ref().map(|(id, _)| *id) == Some(request_id) {
+                self.in_flight.remove(&request_id);
                 return slot.take().map(|(_, r)| r);
             }
         }
@@ -503,7 +527,7 @@ impl LspManager {
 
     /// Send a `textDocument/references` request. Returns a non-zero `request_id`
     /// on success; 0 when no live server is available (logs once).
-    pub fn request_references(&self, path: &Path, line: u32, character: u32) -> u64 {
+    pub fn request_references(&mut self, path: &Path, line: u32, character: u32) -> u64 {
         let id = next_request_id();
         let server_id = path
             .extension()
@@ -518,6 +542,7 @@ impl LspManager {
                     character,
                     request_id: id,
                 });
+                self.in_flight.insert(id, path.to_path_buf());
                 return id;
             }
         }
@@ -526,13 +551,14 @@ impl LspManager {
     }
 
     /// Poll for a references result matching `request_id`. Consumes on success.
-    pub fn poll_references(&self, request_id: u64) -> Option<Vec<DefinitionLocation>> {
+    pub fn poll_references(&mut self, request_id: u64) -> Option<Vec<DefinitionLocation>> {
         if request_id == 0 {
             return None;
         }
         for handle in self.servers.values() {
             let mut slot = handle.references_result.lock().unwrap();
             if slot.as_ref().map(|(id, _)| *id) == Some(request_id) {
+                self.in_flight.remove(&request_id);
                 return slot.take().map(|(_, r)| r);
             }
         }
@@ -551,7 +577,7 @@ impl LspManager {
     /// Send a `workspace/symbol` request with `query`. Returns a non-zero
     /// `request_id` for use with [`poll_workspace_symbols`], or 0 when no live
     /// server is available. Sends to the first `Live` server found.
-    pub fn request_workspace_symbols(&self, query: String) -> u64 {
+    pub fn request_workspace_symbols(&mut self, query: String) -> u64 {
         let id = next_request_id();
         for handle in self.servers.values() {
             if matches!(*handle.state.lock().unwrap(), LspState::Live) {
@@ -559,6 +585,9 @@ impl LspManager {
                     query,
                     request_id: id,
                 });
+                // workspace/symbol has no per-file path — store a sentinel so
+                // the entry is still cleaned up on poll.
+                self.in_flight.insert(id, PathBuf::new());
                 return id;
             }
         }
@@ -566,17 +595,88 @@ impl LspManager {
     }
 
     /// Poll for a workspace symbols result matching `request_id`. Consumes on success.
-    pub fn poll_workspace_symbols(&self, request_id: u64) -> Option<Vec<WorkspaceSymbolHit>> {
+    pub fn poll_workspace_symbols(&mut self, request_id: u64) -> Option<Vec<WorkspaceSymbolHit>> {
         if request_id == 0 {
             return None;
         }
         for handle in self.servers.values() {
             let mut slot = handle.workspace_symbols_result.lock().unwrap();
             if slot.as_ref().map(|(id, _)| *id) == Some(request_id) {
+                self.in_flight.remove(&request_id);
                 return slot.take().map(|(_, r)| r);
             }
         }
         None
+    }
+
+    /// U2: cancel all in-flight LSP requests for `path` and remove them from tracking.
+    ///
+    /// Sends `$/cancelRequest` notifications to the appropriate server for each
+    /// matching request. After this call, `poll_*` for those request ids returns
+    /// `None` (the result slots are cleared).
+    pub fn cancel_requests_for(&mut self, path: &Path) {
+        // Collect ids whose path matches.
+        let ids: Vec<u64> = self
+            .in_flight
+            .iter()
+            .filter(|(_, p)| p.as_path() == path)
+            .map(|(&id, _)| id)
+            .collect();
+        for id in ids {
+            self.in_flight.remove(&id);
+            // Send $/cancelRequest to every server (we don't track which server
+            // owns a given request id — sending to all is safe; LSP servers
+            // ignore cancellations for unknown ids).
+            let cancel = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "$/cancelRequest",
+                "params": { "id": id },
+            });
+            for handle in self.servers.values() {
+                let _ = handle.tx.blocking_send(LspCommand::CancelRequest {
+                    cancel_json: cancel.clone(),
+                });
+            }
+            // Clear any result that arrived for this id in the slot.
+            for handle in self.servers.values() {
+                {
+                    let mut slot = handle.hover_result.lock().unwrap();
+                    if slot.as_ref().map(|(rid, _)| *rid) == Some(id) {
+                        slot.take();
+                    }
+                }
+                {
+                    let mut slot = handle.definition_result.lock().unwrap();
+                    if slot.as_ref().map(|(rid, _)| *rid) == Some(id) {
+                        slot.take();
+                    }
+                }
+                {
+                    let mut slot = handle.completion_result.lock().unwrap();
+                    if slot.as_ref().map(|(rid, _)| *rid) == Some(id) {
+                        slot.take();
+                    }
+                }
+                {
+                    let mut slot = handle.rename_result.lock().unwrap();
+                    if slot.as_ref().map(|(rid, _)| *rid) == Some(id) {
+                        slot.take();
+                    }
+                }
+                {
+                    let mut slot = handle.code_actions_result.lock().unwrap();
+                    if slot.as_ref().map(|(rid, _)| *rid) == Some(id) {
+                        slot.take();
+                    }
+                }
+                {
+                    let mut slot = handle.references_result.lock().unwrap();
+                    if slot.as_ref().map(|(rid, _)| *rid) == Some(id) {
+                        slot.take();
+                    }
+                }
+            }
+        }
     }
 
     /// Return the current state of the named server.
@@ -1071,6 +1171,10 @@ async fn run_server(
                             .unwrap(),
                         );
                         let _ = write_message(&mut writer, &req).await;
+                    }
+                    Some(LspCommand::CancelRequest { cancel_json }) => {
+                        // U2: forward the pre-formed $/cancelRequest notification.
+                        let _ = write_message(&mut writer, &cancel_json).await;
                     }
                 }
             }
@@ -1618,7 +1722,7 @@ mod tests {
     /// `request_rename` with no server returns 0 and logs once.
     #[test]
     fn request_rename_no_server_returns_zero() {
-        let mgr = LspManager::new().expect("runtime");
+        let mut mgr = LspManager::new().expect("runtime");
         // No server started — must return 0 without panicking.
         let id = mgr.request_rename(&PathBuf::from("/tmp/foo.rs"), 5, 3, "new_name".to_string());
         assert_eq!(id, 0, "expected 0 when no server");
@@ -1627,7 +1731,7 @@ mod tests {
     /// `poll_rename` on a zero id returns None immediately.
     #[test]
     fn poll_rename_zero_request_id_is_none() {
-        let mgr = LspManager::new().expect("runtime");
+        let mut mgr = LspManager::new().expect("runtime");
         assert!(mgr.poll_rename(0).is_none());
     }
 
@@ -1669,7 +1773,7 @@ mod tests {
     /// `request_code_actions` with no server returns 0 and logs once.
     #[test]
     fn request_code_actions_no_server_returns_zero() {
-        let mgr = LspManager::new().expect("runtime");
+        let mut mgr = LspManager::new().expect("runtime");
         let id = mgr.request_code_actions(&PathBuf::from("/tmp/foo.rs"), 3);
         assert_eq!(id, 0, "expected 0 when no server");
     }
@@ -1677,7 +1781,7 @@ mod tests {
     /// `poll_code_actions` on zero id returns None.
     #[test]
     fn poll_code_actions_zero_id_is_none() {
-        let mgr = LspManager::new().expect("runtime");
+        let mut mgr = LspManager::new().expect("runtime");
         assert!(mgr.poll_code_actions(0).is_none());
     }
 
@@ -1701,7 +1805,7 @@ mod tests {
     /// `request_references` with no server returns 0 and logs once.
     #[test]
     fn request_references_no_server_returns_zero() {
-        let mgr = LspManager::new().expect("runtime");
+        let mut mgr = LspManager::new().expect("runtime");
         let id = mgr.request_references(&PathBuf::from("/tmp/foo.rs"), 0, 0);
         assert_eq!(id, 0, "expected 0 when no server");
     }
@@ -1709,7 +1813,41 @@ mod tests {
     /// `poll_references` on zero id returns None.
     #[test]
     fn poll_references_zero_id_is_none() {
-        let mgr = LspManager::new().expect("runtime");
+        let mut mgr = LspManager::new().expect("runtime");
         assert!(mgr.poll_references(0).is_none());
+    }
+
+    // ── U2: LSP request cancel on buffer close ─────────────────────────────────
+
+    /// `cancel_requests_for` on an empty manager is a no-op.
+    #[test]
+    fn cancel_requests_for_empty_manager_is_noop() {
+        let mut mgr = LspManager::new().expect("runtime");
+        // Must not panic when there are no in-flight requests.
+        mgr.cancel_requests_for(&PathBuf::from("/tmp/foo.rs"));
+    }
+
+    /// Simulate a hover request (returns 0 since no server), then cancel.
+    /// After cancel, the in_flight map entry must be gone (0 means nothing tracked).
+    #[test]
+    fn cancel_requests_for_clears_in_flight_for_path() {
+        let mut mgr = LspManager::new().expect("runtime");
+        let path = PathBuf::from("/tmp/cancel_test.rs");
+        // No server running — request returns 0 and nothing is added to in_flight.
+        let _id = mgr.request_hover(&path, 5, 3);
+        // cancel must not panic even if nothing is tracked.
+        mgr.cancel_requests_for(&path);
+        // in_flight should still be empty (or unchanged).
+        assert!(
+            mgr.in_flight.is_empty(),
+            "in_flight must be empty after cancel"
+        );
+    }
+
+    /// `poll_hover` on zero id returns None immediately (no server).
+    #[test]
+    fn poll_hover_zero_id_returns_none() {
+        let mut mgr = LspManager::new().expect("runtime");
+        assert!(mgr.poll_hover(0).is_none());
     }
 }

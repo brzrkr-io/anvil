@@ -1582,7 +1582,7 @@ impl App {
         let lsp_unavailable = self.lsp_manager.as_ref().is_none_or(|l| !l.any_live());
         let pending_request_id = if !lsp_unavailable && !query.is_empty() {
             self.lsp_manager
-                .as_ref()
+                .as_mut()
                 .map_or(0, |l| l.request_workspace_symbols(query.clone()))
         } else {
             0
@@ -2146,6 +2146,15 @@ impl App {
         buffer_id: anvil_editor::BufferId,
     ) {
         if let Some(tab) = self.tabs.current_mut() {
+            // U2: cancel in-flight LSP requests for this buffer before closing.
+            let closed_uri = tab
+                .editor_panes
+                .get_buffer(buffer_id)
+                .and_then(|b| b.tracked_path())
+                .map(|p| p.to_path_buf());
+            if let (Some(path), Some(lsp)) = (closed_uri.as_deref(), self.lsp_manager.as_mut()) {
+                lsp.cancel_requests_for(path);
+            }
             tab.editor_panes.close_buffer(pane_id, buffer_id);
             // Sync pane.editor_id to the new active buffer.
             if let Some(ep) = tab.editor_panes.get_pane(pane_id) {
@@ -2513,7 +2522,7 @@ impl App {
         let path = path.to_path_buf();
         // Clear any stale popup.
         self.apply_editor_action(EditorAction::HoverRequest);
-        if let Some(lsp) = &self.lsp_manager {
+        if let Some(lsp) = &mut self.lsp_manager {
             let req_id = lsp.request_hover(&path, line, character);
             if req_id != 0 {
                 self.pending_hover = Some((pane_id, req_id));
@@ -2525,6 +2534,26 @@ impl App {
     // ── T1: gutter worker polling ─────────────────────────────────────────────
 
     /// Drain all pending gutter results and install each into the matching buffer.
+    /// U1: parse the syntax tree of one `syntax_pending` buffer per tick.
+    ///
+    /// Searches all tabs for the first buffer with `syntax_pending = true`,
+    /// runs `SyntaxLayer::parse`, clears the flag, and marks the app dirty so
+    /// the context bar indicator is removed. One buffer per tick keeps the UI
+    /// at 60 fps even for multi-MB files (tree-sitter parses ~5 MB/s).
+    fn poll_syntax_pending(&mut self) {
+        'outer: for tab in self.tabs.tabs.iter_mut() {
+            for (_bid, buf) in tab.editor_panes.buffers_mut() {
+                if buf.syntax_pending {
+                    let text = buf.to_text();
+                    buf.syntax.parse(&text);
+                    buf.syntax_pending = false;
+                    self.dirty = true;
+                    break 'outer;
+                }
+            }
+        }
+    }
+
     fn poll_gutter_results(&mut self) {
         while let Ok(GutterResult { buffer_id, gutter }) = self.gutter_rx.try_recv() {
             let mut found = false;
@@ -2687,7 +2716,9 @@ impl App {
         let Some((pane_id, req_id)) = self.pending_hover else {
             return;
         };
-        let Some(lsp) = &self.lsp_manager else { return };
+        let Some(lsp) = &mut self.lsp_manager else {
+            return;
+        };
         if let Some(result) = lsp.poll_hover(req_id) {
             self.pending_hover = None;
             // Capture the anchor position from the pane's current cursor.
@@ -2727,7 +2758,7 @@ impl App {
         let line = ep.cursors[0].pos.line as u32;
         let character = ep.cursors[0].pos.col as u32;
         let path = path.to_path_buf();
-        if let Some(lsp) = &self.lsp_manager {
+        if let Some(lsp) = &mut self.lsp_manager {
             let req_id = lsp.request_definition(&path, line, character);
             if req_id != 0 {
                 self.pending_definition = Some((pane_id, req_id));
@@ -2740,7 +2771,9 @@ impl App {
         let Some((pane_id, req_id)) = self.pending_definition else {
             return;
         };
-        let Some(lsp) = &self.lsp_manager else { return };
+        let Some(lsp) = &mut self.lsp_manager else {
+            return;
+        };
         if let Some(locs) = lsp.poll_definition(req_id) {
             self.pending_definition = None;
             // Pick the first location (TODO(anvil-tier3-17-picker): show picker for multi).
@@ -2791,7 +2824,7 @@ impl App {
         let line = ep.cursors[0].pos.line as u32;
         let character = ep.cursors[0].pos.col as u32;
         let path = path.to_path_buf();
-        if let Some(lsp) = &self.lsp_manager {
+        if let Some(lsp) = &mut self.lsp_manager {
             let req_id = lsp.request_completion(&path, line, character);
             if req_id != 0 {
                 self.pending_completion = Some((pane_id, req_id));
@@ -2806,7 +2839,7 @@ impl App {
         };
         let items = self
             .lsp_manager
-            .as_ref()
+            .as_mut()
             .and_then(|lsp| lsp.poll_completion(req_id));
         if let Some(items) = items {
             self.pending_completion = None;
@@ -2904,7 +2937,7 @@ impl App {
         let line = ep.cursors[0].pos.line as u32;
         let character = ep.cursors[0].pos.col as u32;
         let path = path.to_path_buf();
-        if let Some(lsp) = &self.lsp_manager {
+        if let Some(lsp) = &mut self.lsp_manager {
             let req_id = lsp.request_rename(&path, line, character, new_name);
             if req_id != 0 {
                 self.pending_rename = Some((pane_id, req_id));
@@ -2919,7 +2952,7 @@ impl App {
         };
         let edits = self
             .lsp_manager
-            .as_ref()
+            .as_mut()
             .and_then(|lsp| lsp.poll_rename(req_id));
         if let Some(edits) = edits {
             self.pending_rename = None;
@@ -3013,7 +3046,7 @@ impl App {
         };
         let line = ep.cursors[0].pos.line as u32;
         let path = path.to_path_buf();
-        if let Some(lsp) = &self.lsp_manager {
+        if let Some(lsp) = &mut self.lsp_manager {
             let req_id = lsp.request_code_actions(&path, line);
             if req_id != 0 {
                 self.pending_code_actions = Some((pane_id, req_id));
@@ -3030,7 +3063,7 @@ impl App {
         };
         let actions = self
             .lsp_manager
-            .as_ref()
+            .as_mut()
             .and_then(|lsp| lsp.poll_code_actions(req_id));
         if let Some(actions) = actions {
             self.pending_code_actions = None;
@@ -3082,7 +3115,7 @@ impl App {
         let line = ep.cursors[0].pos.line as u32;
         let character = ep.cursors[0].pos.col as u32;
         let path = path.to_path_buf();
-        if let Some(lsp) = &self.lsp_manager {
+        if let Some(lsp) = &mut self.lsp_manager {
             let req_id = lsp.request_references(&path, line, character);
             if req_id != 0 {
                 self.pending_references = Some((pane_id, req_id));
@@ -3099,7 +3132,7 @@ impl App {
         };
         let locs = self
             .lsp_manager
-            .as_ref()
+            .as_mut()
             .and_then(|lsp| lsp.poll_references(req_id));
         if let Some(locs) = locs {
             self.pending_references = None;
@@ -3132,7 +3165,7 @@ impl App {
                 if !q.is_empty() && !search.lsp_unavailable {
                     let id = self
                         .lsp_manager
-                        .as_ref()
+                        .as_mut()
                         .map_or(0, |l| l.request_workspace_symbols(q));
                     if let Some(ref mut s) = self.workspace_symbol_search {
                         s.pending_request_id = id;
@@ -3146,7 +3179,7 @@ impl App {
         };
         let hits = self
             .lsp_manager
-            .as_ref()
+            .as_mut()
             .and_then(|lsp| lsp.poll_workspace_symbols(req_id));
         if let Some(hits) = hits {
             if let Some(ref mut s) = self.workspace_symbol_search {
@@ -3867,7 +3900,7 @@ impl App {
             // NE15: context-bar editor segment reads from the focused native
             // editor pane's buffer (path basename). No modified flag yet —
             // Buffer has no dirty-since-save tracking.
-            let editor_ctx_name: Option<String> = self.tabs.current().and_then(|tab| {
+            let editor_ctx_name: Option<(String, bool)> = self.tabs.current().and_then(|tab| {
                 let id = tab.focused_id();
                 let pane = tab.editor_panes.get_pane(id)?;
                 let buf = tab.editor_panes.get_buffer(pane.buffer_id)?;
@@ -3879,12 +3912,13 @@ impl App {
                         .to_string(),
                     None => "[scratch]".to_string(),
                 };
-                Some(name)
+                Some((name, buf.syntax_pending))
             });
-            let editor_ctx = editor_ctx_name.as_deref().map(|name| {
+            let editor_ctx = editor_ctx_name.as_ref().map(|(name, syntax_pending)| {
                 anvil_render::context_bar::ContextBarEditor {
-                    name,
+                    name: name.as_str(),
                     modified: false,
+                    syntax_pending: *syntax_pending,
                 }
             });
             anvil_render::draw_context_bar(
@@ -5152,6 +5186,12 @@ impl App {
                             .get_buffer(buffer_id)
                             .and_then(|b| b.tracked_path())
                             .map(|p| p.to_path_buf());
+                        // U2: cancel in-flight LSP requests for this buffer.
+                        if let (Some(path), Some(lsp)) =
+                            (closed_path.as_deref(), self.lsp_manager.as_mut())
+                        {
+                            lsp.cancel_requests_for(path);
+                        }
                         tab.editor_panes.close_buffer(pane_id, buffer_id);
                         let new_bid = tab.editor_panes.get_pane(pane_id).map(|ep| ep.buffer_id);
                         if let Some(pane) = tab.registry.get_mut(pane_id) {
@@ -6654,6 +6694,10 @@ impl AppHandler for AppShell {
             }
         }
 
+        // U1: async syntax parse — process one syntax_pending buffer per tick so
+        // large files (> 256 KB) don't freeze the UI at open time.
+        app.poll_syntax_pending();
+
         // T1: poll gutter worker results — install GitGutter into the buffer.
         app.poll_gutter_results();
         // T2: poll blame worker results and drive the blame popup.
@@ -6722,7 +6766,7 @@ impl AppHandler for AppShell {
                                 if let Some(buf) = tab.editor_panes.get_buffer(ep.buffer_id) {
                                     if let Some(path) = buf.tracked_path() {
                                         let path = path.to_path_buf();
-                                        if let Some(lsp) = &app.lsp_manager {
+                                        if let Some(lsp) = &mut app.lsp_manager {
                                             let req_id = lsp.request_hover(
                                                 &path,
                                                 buf_pos.line as u32,
@@ -8632,6 +8676,12 @@ impl AppHandler for AppShell {
                             .get_buffer(h.buffer_id)
                             .and_then(|b| b.tracked_path())
                             .map(|p| p.to_path_buf());
+                        // U2: cancel in-flight LSP requests for this buffer.
+                        if let (Some(path), Some(lsp)) =
+                            (closed_path.as_deref(), app.lsp_manager.as_mut())
+                        {
+                            lsp.cancel_requests_for(path);
+                        }
                         let _new_active = tab.editor_panes.close_buffer(h.pane_id, h.buffer_id);
                         // Sync pane.editor_id to whatever is now active.
                         if let Some(ep) = tab.editor_panes.get_pane(h.pane_id) {
