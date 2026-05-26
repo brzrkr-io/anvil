@@ -435,4 +435,81 @@ mod tests {
             }
         }
     }
+
+    // ── P1: F-tier — sidebar width × ui_scale matrix ──────────────────────────
+    //
+    // Exercises `for_mode_with_left_dock_w` for all combinations of
+    // `left_dock_w_pt ∈ {180, 240, 300, 400, 500, 600}` and
+    // `ui_scale ∈ {1.0, 1.5, 2.0}`.  Each combo asserts three invariants:
+    //   (a) left_dock.w  == left_dock_w_pt * scale * ui_scale  (for Ide mode)
+    //       but NOTE: left_dock.w uses only `scale`, NOT `ui_scale`
+    //       (ui_scale only affects top_h per the implementation)
+    //       — so invariant (a) is: left_dock.w == left_dock_w_pt * scale
+    //   (b) pane_area.x  == left_dock.x + left_dock.w
+    //   (c) pane_area.w  == inner.w - left_dock.w - right_dock.w  (clamped ≥ MIN_W)
+
+    fn left_dock_combo(left_dock_w_pt: f64, ui_scale: f64) -> Areas {
+        let scale = 1.0; // Retina scale; keep at 1.0 to isolate ui_scale
+        let docks = Docks::for_mode_with_left_dock_w(
+            LayoutMode::Ide,
+            scale,
+            metrics(10),
+            false, // hud_visible
+            BOTTOM_H,
+            true, // left_dock_visible
+            left_dock_w_pt,
+            ui_scale,
+        );
+        docks.compute_areas(INNER, MIN_W, MIN_H)
+    }
+
+    #[test]
+    fn f_tier_left_dock_w_eq_pt_times_scale() {
+        let scale = 1.0_f64;
+        for &w_pt in &[180.0_f64, 240.0, 300.0, 400.0, 500.0, 600.0] {
+            for &ui in &[1.0_f64, 1.5, 2.0] {
+                let areas = left_dock_combo(w_pt, ui);
+                let expected = w_pt * scale;
+                assert!(
+                    (areas.left_dock.w - expected).abs() < 1e-9,
+                    "left_dock.w mismatch at w_pt={w_pt} ui_scale={ui}: \
+                     got {}, expected {expected}",
+                    areas.left_dock.w
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn f_tier_pane_x_eq_left_dock_right_edge() {
+        for &w_pt in &[180.0_f64, 240.0, 300.0, 400.0, 500.0, 600.0] {
+            for &ui in &[1.0_f64, 1.5, 2.0] {
+                let areas = left_dock_combo(w_pt, ui);
+                let expected = areas.left_dock.x + areas.left_dock.w;
+                assert!(
+                    (areas.pane_area.x - expected).abs() < 1e-9,
+                    "pane_area.x mismatch at w_pt={w_pt} ui_scale={ui}: \
+                     got {}, expected {expected}",
+                    areas.pane_area.x
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn f_tier_pane_w_eq_inner_minus_docks() {
+        for &w_pt in &[180.0_f64, 240.0, 300.0, 400.0, 500.0, 600.0] {
+            for &ui in &[1.0_f64, 1.5, 2.0] {
+                let areas = left_dock_combo(w_pt, ui);
+                let unclamped = INNER.w - areas.left_dock.w - areas.right_dock.w;
+                let expected = unclamped.max(MIN_W);
+                assert!(
+                    (areas.pane_area.w - expected).abs() < 1e-9,
+                    "pane_area.w mismatch at w_pt={w_pt} ui_scale={ui}: \
+                     got {}, expected {expected} (unclamped {unclamped})",
+                    areas.pane_area.w
+                );
+            }
+        }
+    }
 }
