@@ -203,7 +203,7 @@ impl Tab {
                 Box::new(PaneNode::Leaf(editor_id)),
                 Box::new(PaneNode::Leaf(terminal_id)),
             ],
-            ratios: vec![0.94, 0.06],
+            ratios: vec![0.72, 0.28],
         });
         self.tree.focused = editor_id;
         Some(editor_id)
@@ -273,7 +273,7 @@ impl Tab {
                     Box::new(PaneNode::Leaf(editor_id)),
                     Box::new(PaneNode::Leaf(terminal_id)),
                 ],
-                ratios: vec![0.94, 0.06],
+                ratios: vec![0.72, 0.28],
             })
         } else {
             PaneNode::Leaf(editor_id)
@@ -688,8 +688,17 @@ mod tests {
         );
         let editor_rect = entries.iter().find(|e| e.id == editor_id).unwrap().rect;
         let terminal_rect = entries.iter().find(|e| e.id == terminal_id).unwrap().rect;
-        assert!(editor_rect.h > 850.0);
-        assert!(terminal_rect.h < 130.0);
+        // 0.72/0.28 split: editor ≈ 720, terminal ≈ 280.
+        assert!(
+            editor_rect.h > 650.0 && editor_rect.h < 800.0,
+            "editor_rect.h={}",
+            editor_rect.h
+        );
+        assert!(
+            terminal_rect.h > 200.0 && terminal_rect.h < 350.0,
+            "terminal_rect.h={}",
+            terminal_rect.h
+        );
     }
 
     // ── TabManager::current / current_mut ─────────────────────────────────────

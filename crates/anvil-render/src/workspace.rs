@@ -274,11 +274,10 @@ fn draw_terminal_drawer_chrome(
         return;
     }
 
-    // Solid panel base under the terminal viewport — consistent surface that
-    // recedes behind the editor. Top separator is always hairline (structure,
-    // not state).
-    raster.fill_pixel_rect(rect.x, rect.y, rect.w, rect.h, theme.panel);
-    raster.fill_pixel_rect_alpha(rect.x, rect.y, rect.w, 1.0, theme.hairline, 0.68);
+    // Top separator is the only chrome — a 1px hairline between editor and
+    // drawer. The viewport (drawn earlier) carries the terminal cells; don't
+    // overdraw them with a panel fill.
+    raster.fill_pixel_rect_alpha(rect.x, rect.y, rect.w, 1.0, theme.hairline, 0.92);
 }
 
 /// Height of the per-pane editor buffer tab strip in device pixels.
@@ -884,7 +883,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_drawer_chrome_uses_calm_mineral_active_rule_not_ember() {
+    fn terminal_drawer_chrome_paints_top_hairline_only() {
         let m = metrics();
         let mut r = Raster::new(220, 90);
         let mut painter = StubPainter::default();
@@ -901,16 +900,20 @@ mod tests {
 
         let top_px = pixel_at(&r, 20, 12);
         let body_px = pixel_at(&r, 20, 40);
-        assert_ne!(
-            top_px, theme.accent_ember,
-            "active drawer rule must not use Ember"
-        );
-        assert_ne!(
+        // Top row must have moved off raw black — hairline is painted there.
+        assert_ne!(top_px, [0, 0, 0], "top hairline must paint");
+        // Body must remain whatever the viewport painted under us (here:
+        // the test's clear background). The drawer chrome no longer overdraws
+        // the terminal cells with a panel fill.
+        assert_eq!(
             body_px,
             [0, 0, 0],
-            "drawer body should lift off raw terminal black"
+            "drawer body must NOT be overdrawn — viewport cells must pass through"
         );
-        assert_ne!(body_px, theme.accent_ember, "drawer body must stay neutral");
+        assert_ne!(
+            top_px, theme.accent_ember,
+            "drawer hairline must not use Ember accent"
+        );
     }
 
     /// Native editor panes reserve a chrome strip before drawing buffer content.
