@@ -95,8 +95,8 @@ pub struct WindowCfg {
 impl Default for WindowCfg {
     fn default() -> Self {
         WindowCfg {
-            width: 1024.0,
-            height: 640.0,
+            width: 1440.0,
+            height: 900.0,
         }
     }
 }

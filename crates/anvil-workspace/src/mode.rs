@@ -104,7 +104,7 @@ impl Docks {
             }
             LayoutMode::Ide => Docks {
                 left_w: if left_dock_visible {
-                    260.0 * scale
+                    300.0 * scale
                 } else {
                     0.0
                 },

@@ -120,16 +120,15 @@ pub struct OutlineRow {
 // ── Row geometry ──────────────────────────────────────────────────────────────
 
 /// Height of a section header row in pixels (fixed; chrome font sized).
-const HEADER_H: f64 = 28.0;
+const HEADER_H: f64 = 32.0;
 
 /// Height of a content row in pixels.
 ///
-/// 22px matches the IDE redesign spec (§5, 2026-05-24-ide-redesign.md),
-/// VS Code, and Zed — compact operational layout.
-const ROW_H: f64 = 22.0;
+/// 28px gives a roomy tree that reads as IDE chrome rather than terminal grid.
+const ROW_H: f64 = 28.0;
 
 /// Horizontal padding inside the dock.
-const PAD_X: f64 = 10.0;
+const PAD_X: f64 = 14.0;
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
