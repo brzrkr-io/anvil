@@ -279,6 +279,13 @@ pub enum EditorAction {
     CodeActionsDown,
     /// Dismiss the code-actions popup without applying.
     CodeActionsDismiss,
+    // ── Tier-K selection (K6) ─────────────────────────────────────────────────
+    /// Cmd+L: select the cursor's current line (col 0 → end-of-line).
+    ///
+    /// If the selection is already line-aligned (anchor.col == 0 and the cursor
+    /// is at end-of-line), extend the selection down by one more line so that
+    /// repeated Cmd+L grows the selection one line at a time.
+    SelectLine,
 }
 
 /// Maximum number of open buffers tracked per pane. When the limit is
@@ -2120,6 +2127,37 @@ impl EditorPaneRegistry {
                 false
             }
 
+            // ── Tier-K selection (K6) ────────────────────────────────────
+            EditorAction::SelectLine => {
+                let buf = self.buffers.get(&buffer_id).unwrap();
+                let last_line = buf.line_count().saturating_sub(1);
+                let pane = self.panes.get(&pane_id).unwrap();
+                let anchor = pane.cursors[0].anchor;
+                let pos = pane.cursors[0].pos;
+                // Detect "already line-aligned": anchor at col 0 and cursor at
+                // end-of-line. Extend by one line in that case.
+                let cur_line = pos.line;
+                let cur_end_col = line_grapheme_len(buf, cur_line);
+                let line_aligned = anchor.col == 0 && pos.col == cur_end_col && cur_end_col > 0;
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                if line_aligned && cur_line < last_line {
+                    // Extend head to end of the next line.
+                    let next_line = cur_line + 1;
+                    let next_end_col = line_grapheme_len(buf, next_line);
+                    pane.cursors[0].pos = Position {
+                        line: next_line,
+                        col: next_end_col,
+                    };
+                } else {
+                    // Fresh select: anchor at col 0, pos at end-of-line.
+                    let line = pos.line.min(last_line);
+                    let end_col = line_grapheme_len(buf, line);
+                    pane.cursors[0].anchor = Position { line, col: 0 };
+                    pane.cursors[0].pos = Position { line, col: end_col };
+                }
+                false
+            }
+
             // ── Tier-H toggles ────────────────────────────────────────────
             EditorAction::ToggleSoftWrap => {
                 let pane = self.panes.get_mut(&pane_id).unwrap();
@@ -2692,6 +2730,44 @@ mod tests {
         assert_eq!(pane.cursors[0].anchor, Position { line: 0, col: 0 });
         // pos should be at last line.
         assert!(pane.cursors[0].pos.line > 0);
+    }
+
+    // ── K6: SelectLine ───────────────────────────────────────────────────────
+
+    #[test]
+    fn select_line_selects_current_line_from_col0_to_end() {
+        // Cursor on line 1 col 2; SelectLine should anchor at (1,0) and pos at (1,5).
+        let (mut reg, pid) = make_reg_with_text("hello\nworld\nfoo\n");
+        {
+            let pane = reg.get_pane_mut(pid).unwrap();
+            pane.cursors[0].pos = Position { line: 1, col: 2 };
+            pane.cursors[0].anchor = Position { line: 1, col: 2 };
+        }
+        let mut clip = None;
+        reg.apply(pid, EditorAction::SelectLine, &mut clip);
+        let pane = reg.get_pane(pid).unwrap();
+        assert_eq!(pane.cursors[0].anchor, Position { line: 1, col: 0 });
+        assert_eq!(pane.cursors[0].pos, Position { line: 1, col: 5 }); // "world" = 5
+    }
+
+    #[test]
+    fn select_line_repeated_extends_down_one_line() {
+        // First Cmd+L selects line 0 ("hello"). Second Cmd+L should extend to
+        // end of line 1 ("world").
+        let (mut reg, pid) = make_reg_with_text("hello\nworld\nfoo\n");
+        let mut clip = None;
+        // First SelectLine.
+        reg.apply(pid, EditorAction::SelectLine, &mut clip);
+        {
+            let pane = reg.get_pane(pid).unwrap();
+            assert_eq!(pane.cursors[0].anchor, Position { line: 0, col: 0 });
+            assert_eq!(pane.cursors[0].pos, Position { line: 0, col: 5 });
+        }
+        // Second SelectLine — selection is line-aligned, so extend to line 1.
+        reg.apply(pid, EditorAction::SelectLine, &mut clip);
+        let pane = reg.get_pane(pid).unwrap();
+        assert_eq!(pane.cursors[0].anchor, Position { line: 0, col: 0 }); // anchor stays
+        assert_eq!(pane.cursors[0].pos, Position { line: 1, col: 5 }); // extends to end of "world"
     }
 
     #[test]

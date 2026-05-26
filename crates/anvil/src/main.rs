@@ -4034,9 +4034,10 @@ impl App {
                 self.dirty = true;
                 return true;
             }
-            // Cmd+L → GoToLine (legacy binding: no-op placeholder)
+            // Cmd+L → SelectLine (K6): select cursor's line; repeated calls extend down.
             if lch == 'l' && !mods.shift && !mods.control && !mods.option {
-                // No-op: use Cmd+G instead.
+                self.apply_editor_action(EditorAction::SelectLine);
+                self.dirty = true;
                 return true;
             }
             // Cmd+K → start two-stroke chord (H1/H2); Cmd+K K → HoverRequest (NE10).
