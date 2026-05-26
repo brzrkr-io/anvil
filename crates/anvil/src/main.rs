@@ -59,7 +59,7 @@ use anvil_editor::Position as EditorPosition;
 use anvil_render::cheatsheet::draw as draw_cheatsheet;
 use anvil_render::draw::CursorConfig;
 use anvil_render::raster::Raster;
-use anvil_render::searchbar::draw_search_bar;
+// draw_search_bar is re-exported via draw_search_bar_with_replace; unused direct import removed.
 use anvil_render::tabbar::{TabBarHitKind, TabBarHits, draw_tab_bar};
 use anvil_render::workspace::{DIVIDER_PX, draw_workspace, draw_workspace_chrome};
 use anvil_render::{
@@ -707,6 +707,15 @@ pub struct App {
     /// Global UI scale multiplier. Applied on top of `window_scale` to font
     /// pixel size and dock geometry. Cmd+= zooms in, Cmd+- zooms out, Cmd+0 resets.
     ui_scale: f64,
+
+    // ── Goto-line overlay (item 11) ───────────────────────────────────────────
+    /// When `Some`, the goto-line input overlay is open. The string is the
+    /// text typed so far (e.g. "42" or "42,8").
+    goto_line_input: Option<String>,
+
+    // ── Find+replace active-row flag (item 9) ─────────────────────────────────
+    /// `true` when the replace row of the search bar has keyboard focus.
+    replace_row_active: bool,
 
     // ── Explorer focus + keyboard nav (items 4, 5) ────────────────────────────
     /// Which surface has keyboard focus for routing ↑↓→←/Enter/Esc.
@@ -1686,6 +1695,47 @@ impl App {
     /// Compute the pixel (rel_x, rel_y) of `loc` relative to the focused
     /// native editor pane's draw rect.  Returns `None` if no native editor pane
     /// is focused or the mouse is outside the pane area.
+    /// Return the buffer line to toggle a fold for if `(rel_x, rel_y)` (device
+    /// pixels relative to the focused native editor pane's top-left) is a click
+    /// inside the last gutter column on a line that starts a foldable range.
+    ///
+    /// Returns `None` if not a gutter click or no fold range at that line.
+    fn gutter_click_fold_line(&self, rel_x: f64, rel_y: f64) -> Option<usize> {
+        let tab = self.tabs.current()?;
+        let id = tab.focused_id();
+        let pane = tab.editor_panes.get_pane(id)?;
+        let buf = tab.editor_panes.get_buffer(pane.buffer_id)?;
+        let cw = self.font.metrics.cell_w;
+        let ch = self.font.metrics.cell_h;
+        let line_count = buf.line_count().max(1);
+        let digit_cols = line_count.to_string().len();
+        let git_gutter_cols = if buf.git_gutter.is_some() { 2 } else { 0 };
+        let gutter_cols = digit_cols + 2 + git_gutter_cols;
+        let gutter_w = gutter_cols as f64 * cw;
+        // Click must be within the gutter's last column.
+        let last_col_x = (gutter_cols as f64 - 1.0) * cw;
+        if rel_x < last_col_x || rel_x >= gutter_w {
+            return None;
+        }
+        // Determine which buffer line was clicked.
+        let vrow = (rel_y / ch).floor() as usize;
+        let scroll_line = pane.scroll_pos.floor() as usize;
+        let line_idx = scroll_line + vrow;
+        if line_idx >= line_count {
+            return None;
+        }
+        // Check if this line starts a foldable range.
+        let fold_ranges = anvil_editor::derive_fold_ranges(buf.syntax());
+        if fold_ranges
+            .iter()
+            .any(|fr| fr.start == line_idx && fr.end > line_idx)
+        {
+            Some(line_idx)
+        } else {
+            None
+        }
+    }
+
     fn native_editor_rel_px(&self, loc: MouseLocation) -> Option<(f64, f64)> {
         let (rx, ry) = self.view_pt_to_raster_px(loc);
         let tab = self.tabs.current()?;
@@ -2581,7 +2631,7 @@ impl App {
                 let id = tab.focused_id();
                 tab.editor_panes.get_pane(id)?.search.as_ref()
             });
-            draw_search_bar(
+            anvil_render::searchbar::draw_search_bar_with_replace(
                 &mut self.raster,
                 chrome_painter,
                 chrome_metrics,
@@ -2590,6 +2640,7 @@ impl App {
                 chrome_bot,
                 scale,
                 editor_search,
+                self.replace_row_active,
             );
         } else {
             let clock = local_hhmm();
@@ -2650,6 +2701,44 @@ impl App {
                 &mut self.hud_hits,
                 &self.hud_section_order,
                 &mut self.hud_section_hits,
+            );
+        }
+
+        // ── Project-wide search overlay (item 10) ────────────────────────────
+        if self.project_search.visible {
+            let cw = self.font.metrics.cell_w;
+            let chrome_top = self.chrome_top_px();
+            let chrome_bot = self.chrome_bottom_px();
+            draw_project_search_overlay(
+                &mut self.raster,
+                chrome_painter,
+                chrome_metrics,
+                &self.theme,
+                &self.project_search,
+                dw as f64,
+                dh as f64,
+                chrome_top,
+                chrome_bot,
+                cw,
+                ch,
+            );
+        }
+
+        // ── Goto-line overlay (item 11) ───────────────────────────────────────
+        if let Some(ref input) = self.goto_line_input {
+            let cw = self.font.metrics.cell_w;
+            let chrome_top = self.chrome_top_px();
+            draw_goto_line_overlay(
+                &mut self.raster,
+                chrome_painter,
+                chrome_metrics,
+                &self.theme,
+                input,
+                dw as f64,
+                dh as f64,
+                chrome_top,
+                cw,
+                ch,
             );
         }
 
@@ -3111,9 +3200,32 @@ impl App {
                 self.dirty = true;
                 return true;
             }
-            // Cmd+L → GoToLine (interactive prompt deferred to future phase; no-op)
+            // Cmd+G → GoToLine overlay (item 11)
+            if lch == 'g' && !mods.shift && !mods.control && !mods.option {
+                if self.goto_line_input.is_none() {
+                    self.goto_line_input = Some(String::new());
+                    self.dirty = true;
+                }
+                return true;
+            }
+            // Cmd+Opt+F → Find+Replace (item 9)
+            if lch == 'f' && !mods.shift && !mods.control && mods.option {
+                self.search_open = true;
+                self.apply_editor_action(EditorAction::FindReplaceOpen);
+                self.resize_all_tabs();
+                self.dirty = true;
+                self.force_full_redraw = true;
+                return true;
+            }
+            // Cmd+D → AddNextOccurrence (item 12)
+            if lch == 'd' && !mods.shift && !mods.control && !mods.option {
+                self.apply_editor_action(EditorAction::AddNextOccurrence);
+                self.dirty = true;
+                return true;
+            }
+            // Cmd+L → GoToLine (legacy binding: no-op placeholder)
             if lch == 'l' && !mods.shift && !mods.control && !mods.option {
-                // No-op: GoToLine requires an input modal (NE future).
+                // No-op: use Cmd+G instead.
                 return true;
             }
             // Cmd+K → HoverRequest (NE10)
@@ -4140,11 +4252,164 @@ impl AppHandler for AppShell {
             return;
         }
 
+        // ── Project search overlay key handling (item 10) ────────────────────
+        if self.app.project_search.visible {
+            match event.key {
+                KeyInput::Escape => {
+                    self.app.project_search.close();
+                    self.app.dirty = true;
+                }
+                KeyInput::Enter => {
+                    // Open the selected hit in the native editor.
+                    if let Some(hit) = self.app.project_search.current_hit() {
+                        let path = hit.path.clone();
+                        let line = hit.line.saturating_sub(1);
+                        self.app.project_search.close();
+                        self.app.open_path_in_native_editor(&path);
+                        self.app.apply_editor_action(EditorAction::GoToLine(line));
+                    }
+                    self.app.dirty = true;
+                }
+                KeyInput::Up => {
+                    self.app.project_search.select_prev();
+                    self.app.dirty = true;
+                }
+                KeyInput::Down => {
+                    self.app.project_search.select_next();
+                    self.app.dirty = true;
+                }
+                KeyInput::Backspace => {
+                    let mut q = self.app.project_search.query.clone();
+                    let mut bytes = q.as_bytes().to_vec();
+                    while !bytes.is_empty() && (bytes[bytes.len() - 1] & 0xC0) == 0x80 {
+                        bytes.pop();
+                    }
+                    bytes.pop();
+                    q = String::from_utf8_lossy(&bytes).into_owned();
+                    let root = std::path::PathBuf::from(&self.app.local_ctx.cwd);
+                    self.app.project_search.scan(&q, &root);
+                    self.app.dirty = true;
+                }
+                KeyInput::Char(ch) => {
+                    let q = format!("{}{}", self.app.project_search.query, ch);
+                    let root = std::path::PathBuf::from(&self.app.local_ctx.cwd);
+                    self.app.project_search.scan(&q, &root);
+                    self.app.dirty = true;
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // ── Goto-line overlay (item 11) ──────────────────────────────────────
+        if self.app.goto_line_input.is_some() {
+            match event.key {
+                KeyInput::Escape => {
+                    self.app.goto_line_input = None;
+                    self.app.dirty = true;
+                }
+                KeyInput::Enter => {
+                    let input = self.app.goto_line_input.take().unwrap_or_default();
+                    // Parse NNN or NNN,CCC
+                    let mut parts = input.splitn(2, ',');
+                    if let Some(line_str) = parts.next() {
+                        if let Ok(n) = line_str.trim().parse::<usize>() {
+                            let line = n.saturating_sub(1); // 1-indexed input
+                            self.app.apply_editor_action(EditorAction::GoToLine(line));
+                            self.app.dirty = true;
+                        }
+                    }
+                    self.app.dirty = true;
+                }
+                KeyInput::Backspace => {
+                    if let Some(ref mut s) = self.app.goto_line_input {
+                        let mut bytes = s.as_bytes().to_vec();
+                        bytes.pop();
+                        *s = String::from_utf8_lossy(&bytes).into_owned();
+                    }
+                    self.app.dirty = true;
+                }
+                KeyInput::Char(ch) => {
+                    if ch.is_ascii_digit() || ch == ',' {
+                        if let Some(ref mut s) = self.app.goto_line_input {
+                            s.push(ch);
+                        }
+                    }
+                    self.app.dirty = true;
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // ── Find+replace row tab-switching (item 9) ──────────────────────────
+        // When search is open and the focused pane is a native editor, Tab
+        // switches focus between the find and replace rows.
+        if self.app.search_open && self.app.focused_is_native_editor() && event.key == KeyInput::Tab
+        {
+            self.app.replace_row_active = !self.app.replace_row_active;
+            self.app.dirty = true;
+            return;
+        }
+
         // Search bar handling.
         if self.app.search_open {
             // NE11: when a native editor pane has search open, route to editor
             // search actions instead of the terminal search path.
             if self.app.focused_is_native_editor() {
+                // Replace row is active: type into the replace string.
+                if self.app.replace_row_active {
+                    match event.key {
+                        KeyInput::Escape => {
+                            self.app.replace_row_active = false;
+                            self.app.close_search();
+                        }
+                        KeyInput::Enter => {
+                            self.app.apply_editor_action(EditorAction::ReplaceOne);
+                            self.app.dirty = true;
+                        }
+                        KeyInput::Backspace => {
+                            let cur = self
+                                .app
+                                .tabs
+                                .current()
+                                .and_then(|tab| {
+                                    let id = tab.focused_id();
+                                    let s = tab.editor_panes.get_pane(id)?.search.as_ref()?;
+                                    s.replace_input.clone()
+                                })
+                                .unwrap_or_default();
+                            let mut bytes = cur.into_bytes();
+                            while !bytes.is_empty() && (bytes[bytes.len() - 1] & 0xC0) == 0x80 {
+                                bytes.pop();
+                            }
+                            bytes.pop();
+                            let new_r = String::from_utf8_lossy(&bytes).into_owned();
+                            self.app
+                                .apply_editor_action(EditorAction::SetReplaceInput(new_r));
+                            self.app.dirty = true;
+                        }
+                        KeyInput::Char(ch) => {
+                            let cur = self
+                                .app
+                                .tabs
+                                .current()
+                                .and_then(|tab| {
+                                    let id = tab.focused_id();
+                                    let s = tab.editor_panes.get_pane(id)?.search.as_ref()?;
+                                    s.replace_input.clone()
+                                })
+                                .unwrap_or_default();
+                            let new_r = format!("{cur}{ch}");
+                            self.app
+                                .apply_editor_action(EditorAction::SetReplaceInput(new_r));
+                            self.app.dirty = true;
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
+                // Find row is active (default).
                 match event.key {
                     KeyInput::Escape => self.app.close_search(),
                     KeyInput::Enter => {
@@ -5067,6 +5332,17 @@ impl AppHandler for AppShell {
                     }
                     app.snap_anim();
                     app.dirty = true;
+                }
+            }
+        }
+
+        // Native editor gutter click → toggle fold (item 13).
+        if app.focused_is_native_editor() && !mods.command {
+            if let Some((rel_x, rel_y)) = app.native_editor_rel_px(loc) {
+                if let Some(fold_line) = app.gutter_click_fold_line(rel_x, rel_y) {
+                    app.apply_editor_action(EditorAction::ToggleFold(fold_line));
+                    app.dirty = true;
+                    return;
                 }
             }
         }
@@ -6074,6 +6350,158 @@ fn all_pane_ids_in_tree(tab: &Tab) -> Vec<PaneId> {
         .collect()
 }
 
+// ── Overlay render helpers (items 10, 11) ────────────────────────────────────
+
+/// Draw the project-wide search overlay (item 10).
+///
+/// A centered panel with one input row and up to N result rows.
+#[allow(clippy::too_many_arguments)]
+fn draw_project_search_overlay(
+    raster: &mut anvil_render::raster::Raster,
+    painter: &mut dyn anvil_render::raster::GlyphPainter,
+    metrics: anvil_render::raster::FontMetrics,
+    theme: &anvil_theme::Theme,
+    ps: &anvil_workspace::project_search::ProjectSearch,
+    dw: f64,
+    dh: f64,
+    chrome_top: f64,
+    chrome_bot: f64,
+    cw: f64,
+    ch: f64,
+) {
+    let max_results = 20usize;
+    let panel_rows = 1 + ps.hits.len().min(max_results) + 1; // input + results + padding
+    let panel_h = panel_rows as f64 * ch + ch;
+    let panel_w = (dw * 0.6).min(dw - 4.0 * cw).max(20.0 * cw);
+    let panel_x = ((dw - panel_w) * 0.5).max(0.0);
+    let panel_y = (chrome_top + (dh - chrome_top - chrome_bot - panel_h) * 0.2).max(chrome_top);
+
+    // Panel background + border.
+    raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
+    raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.hairline);
+    raster.fill_pixel_rect(
+        panel_x,
+        panel_y + panel_h - 1.0,
+        panel_w,
+        1.0,
+        theme.hairline,
+    );
+    raster.fill_pixel_rect(panel_x, panel_y, 1.0, panel_h, theme.hairline);
+    raster.fill_pixel_rect(
+        panel_x + panel_w - 1.0,
+        panel_y,
+        1.0,
+        panel_h,
+        theme.hairline,
+    );
+
+    // Row 0: "search: " + query + cursor.
+    let pad_x = 2.0 * cw;
+    let row0_y = panel_y + 0.5 * ch;
+    let prefix = "search: ";
+    let mut x = panel_x + pad_x;
+    for c in prefix.chars() {
+        if x + cw > panel_x + panel_w - pad_x {
+            break;
+        }
+        raster.glyph_at(painter, metrics, x, row0_y, c as u32, theme.text_muted);
+        x += cw;
+    }
+    for c in ps.query.chars() {
+        if x + cw > panel_x + panel_w - pad_x {
+            break;
+        }
+        raster.glyph_at(painter, metrics, x, row0_y, c as u32, theme.foreground);
+        x += cw;
+    }
+    // Cursor block.
+    raster.fill_pixel_rect(x, panel_y + 2.0, cw, ch - 4.0, theme.accent_bright);
+
+    // Separator.
+    raster.fill_pixel_rect(panel_x, panel_y + ch, panel_w, 1.0, theme.hairline);
+
+    // Result rows.
+    for (i, hit) in ps.hits.iter().take(max_results).enumerate() {
+        let row_y = panel_y + (i + 1) as f64 * ch + 0.5 * ch;
+        let is_selected = i == ps.selected;
+        if is_selected {
+            raster.fill_pixel_rect_alpha(
+                panel_x,
+                panel_y + (i + 1) as f64 * ch,
+                panel_w,
+                ch,
+                theme.accent,
+                0.12,
+            );
+        }
+        // Format: "path:line  preview"
+        let path_name = hit.path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+        let row_text = format!("{}:{} {}", path_name, hit.line, hit.preview);
+        let mut rx = panel_x + pad_x;
+        for c in row_text.chars() {
+            if rx + cw > panel_x + panel_w - pad_x {
+                break;
+            }
+            let color = if is_selected {
+                theme.foreground
+            } else {
+                theme.text_muted
+            };
+            raster.glyph_at(painter, metrics, rx, row_y, c as u32, color);
+            rx += cw;
+        }
+    }
+}
+
+/// Draw the goto-line overlay (item 11).
+///
+/// A small centered panel with a single input row.
+#[allow(clippy::too_many_arguments)]
+fn draw_goto_line_overlay(
+    raster: &mut anvil_render::raster::Raster,
+    painter: &mut dyn anvil_render::raster::GlyphPainter,
+    metrics: anvil_render::raster::FontMetrics,
+    theme: &anvil_theme::Theme,
+    input: &str,
+    dw: f64,
+    _dh: f64,
+    chrome_top: f64,
+    cw: f64,
+    ch: f64,
+) {
+    let panel_w = 24.0 * cw;
+    let panel_h = ch + 8.0;
+    let panel_x = ((dw - panel_w) * 0.5).max(0.0);
+    let panel_y = chrome_top + 4.0 * ch;
+
+    raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
+    raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent);
+    raster.fill_pixel_rect(panel_x, panel_y + panel_h - 1.0, panel_w, 1.0, theme.accent);
+    raster.fill_pixel_rect(panel_x, panel_y, 1.0, panel_h, theme.accent);
+    raster.fill_pixel_rect(panel_x + panel_w - 1.0, panel_y, 1.0, panel_h, theme.accent);
+
+    let glyph_y = panel_y + 4.0;
+    let prefix = "line: ";
+    let pad_x = 1.5 * cw;
+    let mut x = panel_x + pad_x;
+    for c in prefix.chars() {
+        if x + cw > panel_x + panel_w - pad_x {
+            break;
+        }
+        raster.glyph_at(painter, metrics, x, glyph_y, c as u32, theme.text_muted);
+        x += cw;
+    }
+    for c in input.chars() {
+        if x + cw > panel_x + panel_w - pad_x {
+            break;
+        }
+        raster.glyph_at(painter, metrics, x, glyph_y, c as u32, theme.foreground);
+        x += cw;
+    }
+    // Cursor.
+    raster.fill_pixel_rect(x, panel_y + 2.0, cw, panel_h - 4.0, theme.accent_bright);
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 fn main() -> Result<()> {
@@ -6449,6 +6877,8 @@ fn main() -> Result<()> {
         explorer_rename: None,
         explorer_new_item: None,
         explorer_delete_confirm: None,
+        goto_line_input: None,
+        replace_row_active: false,
     };
 
     // -- AppKitApp: builds the window, view, timer ----------------------------
