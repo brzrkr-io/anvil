@@ -2,13 +2,15 @@
 //!
 //! Vertical 60/40 split: Explorer (top) and Outline (bottom).
 //! v1: top-level dir listing only; no click handling, no scrolling.
+//! v2 (item 7): nested directory expansion; `expanded_dirs` keyed by absolute
+//!    path; `child_snapshots` holds per-directory listings loaded on demand.
 //!
 //! Section heights:
 //!   explorer_h = rect.h * 0.60   (includes header row)
 //!   outline_h  = rect.h * 0.40   (includes header row)
 
-use std::collections::HashSet;
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use anvil_theme::Theme;
 use anvil_workspace::layout::Rect;
@@ -18,6 +20,9 @@ use crate::raster::{FontMetrics, GlyphPainter, Raster};
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExplorerHit {
     Header,
+    /// Visible row index (0-based, across all rendered rows including nested
+    /// children). Look up the absolute path and is_dir flag in
+    /// [`LeftDockHits::visible_rows`].
     Row(usize),
 }
 
@@ -33,14 +38,23 @@ pub struct LeftDockHit {
     pub kind: LeftDockHitKind,
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+/// Hit map returned by [`draw_left_dock_with_scroll`].
+///
+/// `hits` is the spatial hit-test list; `visible_rows` is a parallel list
+/// mapping each `ExplorerHit::Row(i)` → `(absolute_path, is_dir)` so the
+/// caller can dispatch open/toggle by path without re-walking the tree.
+#[derive(Debug, Clone, Default)]
 pub struct LeftDockHits {
     pub hits: Vec<LeftDockHit>,
+    /// Parallel to `ExplorerHit::Row(i)` — maps the visible row index to its
+    /// absolute path and is_dir flag.  Index 0 = first content row rendered.
+    pub visible_rows: Vec<(PathBuf, bool)>,
 }
 
 impl LeftDockHits {
     pub fn clear(&mut self) {
         self.hits.clear();
+        self.visible_rows.clear();
     }
 
     pub fn at(&self, x: f64, y: f64) -> Option<&LeftDockHitKind> {
@@ -127,6 +141,9 @@ const PAD_X: f64 = 10.0;
 /// - `snapshot`: the latest directory listing; `None` means "waiting for cwd".
 /// - `outline`: `None` = not yet ready (shows placeholder text); `Some(&[])` = no
 ///   symbols; `Some(rows)` = symbol list.
+///
+/// This simplified overload passes empty expansion state and is used by unit
+/// tests that only care about the flat listing.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_left_dock(
     raster: &mut Raster,
@@ -150,6 +167,7 @@ pub fn draw_left_dock(
         0,
         None,
         &HashSet::new(),
+        &HashMap::new(),
         0.0,
     )
 }
@@ -166,7 +184,8 @@ pub fn draw_left_dock_with_scroll(
     rect: Rect,
     explorer_scroll_offset: usize,
     hovered_row: Option<usize>,
-    expanded_dirs: &HashSet<usize>,
+    expanded_dirs: &HashSet<PathBuf>,
+    child_snapshots: &HashMap<PathBuf, DirSnapshot>,
     scroll_indicator_alpha: f32,
 ) -> LeftDockHits {
     let mut hits = LeftDockHits::default();
@@ -228,6 +247,7 @@ pub fn draw_left_dock_with_scroll(
         explorer_scroll_offset,
         hovered_row,
         expanded_dirs,
+        child_snapshots,
         scroll_indicator_alpha,
         explorer_rect,
         &mut hits,
@@ -246,6 +266,13 @@ pub fn draw_left_dock_with_scroll(
 
 // ── Explorer section ──────────────────────────────────────────────────────────
 
+/// Maximum nesting depth to render. Guards against pathological trees blowing
+/// up the render loop.
+const MAX_RENDER_DEPTH: usize = 32;
+
+/// Indent per depth level in device pixels.
+const INDENT_PX: f64 = 16.0;
+
 #[allow(clippy::too_many_arguments)]
 fn draw_explorer_section(
     raster: &mut Raster,
@@ -256,7 +283,8 @@ fn draw_explorer_section(
     active_file_path: Option<&Path>,
     scroll_offset: usize,
     hovered_row: Option<usize>,
-    expanded_dirs: &HashSet<usize>,
+    expanded_dirs: &HashSet<PathBuf>,
+    child_snapshots: &HashMap<PathBuf, DirSnapshot>,
     scroll_indicator_alpha: f32,
     rect: Rect,
     hits: &mut LeftDockHits,
@@ -345,18 +373,31 @@ fn draw_explorer_section(
             );
         }
         Some(snap) => {
+            // Build the flat ordered list of all visible rows by walking the
+            // tree top-down: root entries, then recursively expanded children.
+            let mut all_rows: Vec<(PathBuf, bool, usize)> = Vec::new(); // (path, is_dir, depth)
+            collect_visible_rows(
+                snap,
+                &PathBuf::from(&snap.root),
+                0,
+                expanded_dirs,
+                child_snapshots,
+                &mut all_rows,
+            );
+
             let available_rows = (content_h / ROW_H).floor() as usize;
-            let total_entries = snap.entries.len();
-            let first = scroll_offset.min(total_entries.saturating_sub(available_rows));
-            for (visible_i, entry) in snap
-                .entries
-                .iter()
-                .enumerate()
-                .skip(first)
-                .take(available_rows)
+            let total_rows = all_rows.len();
+            let first = scroll_offset.min(total_rows.saturating_sub(available_rows));
+
+            for (slot_i, (path, is_dir, depth)) in
+                all_rows.iter().enumerate().skip(first).take(available_rows)
             {
-                let row_i = visible_i - first;
+                // slot_i is the absolute index in `all_rows`; row_i is the screen slot.
+                let row_i = slot_i - first;
                 let row_top = content_y_start + row_i as f64 * ROW_H;
+
+                // The visible row index reported in the hit is `slot_i` so that
+                // `visible_rows[slot_i]` gives back the path.
                 hits.hits.push(LeftDockHit {
                     rect: Rect {
                         x: rect.x,
@@ -364,11 +405,12 @@ fn draw_explorer_section(
                         w: rect.w,
                         h: ROW_H.min((content_y_start + content_h - row_top).max(0.0)),
                     },
-                    kind: LeftDockHitKind::Explorer(ExplorerHit::Row(visible_i)),
+                    kind: LeftDockHitKind::Explorer(ExplorerHit::Row(slot_i)),
                 });
+
                 let glyph_y = row_top + ((ROW_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
 
-                let selected = !entry.is_dir && is_active_entry(snap, entry, active_file_path);
+                let selected = !is_dir && active_file_path == Some(path.as_path());
                 let row_x = rect.x + 6.0;
                 let row_w = (rect.w - 12.0).max(0.0);
                 if selected {
@@ -387,7 +429,7 @@ fn draw_explorer_section(
                         (ROW_H - 4.0).max(0.0),
                         theme.accent_primary,
                     );
-                } else if hovered_row == Some(visible_i) {
+                } else if hovered_row == Some(slot_i) {
                     // Hover: solid panel fill, no left marker.
                     raster.fill_pixel_rect(
                         row_x,
@@ -398,18 +440,20 @@ fn draw_explorer_section(
                     );
                 }
 
-                // Item 7: directory chevron toggles ▸/▾ based on expanded_dirs.
-                let (icon, label, color) = if entry.is_dir {
-                    let chevron = if expanded_dirs.contains(&visible_i) {
+                // Indent offset for nested entries.
+                let indent = *depth as f64 * INDENT_PX;
+
+                // Directory chevron toggles ▸/▾ based on expanded_dirs.
+                let (icon, color) = if *is_dir {
+                    let chevron = if expanded_dirs.contains(path) {
                         "▾"
                     } else {
                         "▸"
                     };
-                    (chevron, entry.name.clone(), theme.text_subtle)
+                    (chevron, theme.text_subtle)
                 } else {
                     (
                         "◇",
-                        entry.name.clone(),
                         if selected {
                             theme.foreground
                         } else {
@@ -418,6 +462,10 @@ fn draw_explorer_section(
                     )
                 };
 
+                let icon_x = rect.x + PAD_X + indent;
+                let label_x = icon_x + cell_w * 2.0;
+                let max_x = rect.x + rect.w - PAD_X;
+
                 draw_text_run(
                     raster,
                     painter,
@@ -425,38 +473,41 @@ fn draw_explorer_section(
                     icon,
                     if selected {
                         theme.accent_primary
-                    } else if entry.is_dir {
+                    } else if *is_dir {
                         theme.text_subtle
                     } else {
                         theme.hairline
                     },
-                    rect.x + PAD_X,
+                    icon_x,
                     glyph_y,
-                    rect.x + PAD_X + cell_w,
+                    icon_x + cell_w,
                 );
 
-                // Truncate label to fit available width.
-                let max_chars = ((rect.w - PAD_X * 2.0 - cell_w * 2.0) / cell_w).floor() as usize;
-                let truncated = truncate_name(&label, max_chars);
+                // Name: entry filename only (not full path).
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                let max_chars = ((max_x - label_x) / cell_w).floor().max(0.0) as usize;
+                let truncated = truncate_name(name, max_chars);
 
                 draw_text_run(
-                    raster,
-                    painter,
-                    metrics,
-                    &truncated,
-                    color,
-                    rect.x + PAD_X + cell_w * 2.0,
-                    glyph_y,
-                    rect.x + rect.w - PAD_X,
+                    raster, painter, metrics, &truncated, color, label_x, glyph_y, max_x,
                 );
             }
 
+            // Populate visible_rows — one entry per row in all_rows (not just
+            // rendered ones) so that `ExplorerHit::Row(slot_i)` indexes into it.
+            // We populate all of them up-front so the index is stable.
+            if hits.visible_rows.is_empty() {
+                for (path, is_dir, _depth) in &all_rows {
+                    hits.visible_rows.push((path.clone(), *is_dir));
+                }
+            }
+
             // Item 8: scroll thumb — only when content overflows the dock.
-            if total_entries > available_rows && scroll_indicator_alpha > 0.0 {
-                let thumb_h = ((available_rows as f64 / total_entries as f64) * content_h)
+            if total_rows > available_rows && scroll_indicator_alpha > 0.0 {
+                let thumb_h = ((available_rows as f64 / total_rows as f64) * content_h)
                     .max(20.0)
                     .min(content_h);
-                let max_scroll = (total_entries - available_rows) as f64;
+                let max_scroll = (total_rows - available_rows) as f64;
                 let thumb_top =
                     content_y_start + (first as f64 / max_scroll) * (content_h - thumb_h);
                 let thumb_x = rect.x + rect.w - 3.0;
@@ -473,14 +524,39 @@ fn draw_explorer_section(
     }
 }
 
-fn is_active_entry(snap: &DirSnapshot, entry: &DirEntry, active_file_path: Option<&Path>) -> bool {
-    let Some(active) = active_file_path else {
-        return false;
-    };
-    if active.file_name().and_then(|name| name.to_str()) != Some(entry.name.as_str()) {
-        return false;
+/// Recursively collect the flat, ordered list of visible rows for the tree
+/// walk. Appends `(absolute_path, is_dir, depth)` for each entry that should
+/// be rendered. Respects `expanded_dirs` and `child_snapshots`.
+///
+/// `snap` is the snapshot for the directory at `dir_path`. Depth is capped at
+/// [`MAX_RENDER_DEPTH`] to prevent stack or render blowup on pathological trees.
+fn collect_visible_rows(
+    snap: &DirSnapshot,
+    dir_path: &Path,
+    depth: usize,
+    expanded_dirs: &HashSet<PathBuf>,
+    child_snapshots: &HashMap<PathBuf, DirSnapshot>,
+    out: &mut Vec<(PathBuf, bool, usize)>,
+) {
+    if depth >= MAX_RENDER_DEPTH {
+        return;
     }
-    active.parent() == Some(Path::new(&snap.root))
+    for entry in &snap.entries {
+        let abs = dir_path.join(&entry.name);
+        out.push((abs.clone(), entry.is_dir, depth));
+        if entry.is_dir && expanded_dirs.contains(&abs) {
+            if let Some(child_snap) = child_snapshots.get(&abs) {
+                collect_visible_rows(
+                    child_snap,
+                    &abs,
+                    depth + 1,
+                    expanded_dirs,
+                    child_snapshots,
+                    out,
+                );
+            }
+        }
+    }
 }
 
 // ── Outline section ───────────────────────────────────────────────────────────
@@ -860,6 +936,7 @@ mod tests {
             1,
             None,
             &HashSet::new(),
+            &HashMap::new(),
             0.0,
         );
 
@@ -1005,6 +1082,7 @@ mod tests {
                 0,
                 Some(0), // hover row 0
                 &HashSet::new(),
+                &HashMap::new(),
                 0.0,
             );
             // Row 0 occupies y=[HEADER_H, HEADER_H+ROW_H) = [28, 50).
@@ -1036,6 +1114,7 @@ mod tests {
                 0,
                 Some(0), // hover row 0 as well
                 &HashSet::new(),
+                &HashMap::new(),
                 0.0,
             );
             // Left-rail pixel (x=rect.x+6=6, inside 2px rail) should be accent_primary.
@@ -1261,6 +1340,7 @@ mod tests {
                 0,
                 None,
                 &HashSet::new(),
+                &HashMap::new(),
                 0.0,
             )
         };
@@ -1281,6 +1361,7 @@ mod tests {
                 5,
                 None,
                 &HashSet::new(),
+                &HashMap::new(),
                 0.0,
             )
         };
@@ -1305,6 +1386,157 @@ mod tests {
         assert_ne!(
             hit_at_0, hit_at_5,
             "scroll offset must change which entry is rendered at a given pixel row"
+        );
+    }
+
+    /// Expanding a directory shows its children indented below it.
+    /// visible_rows must contain the child entries after the parent.
+    #[test]
+    fn expanded_dir_shows_children_in_visible_rows() {
+        let m = metrics();
+        let th = theme();
+        let mut r = Raster::new(800, 800);
+        let mut p = StubPainter::default();
+
+        let root_snap = DirSnapshot {
+            root: "/project".to_string(),
+            entries: vec![
+                DirEntry {
+                    name: "src".to_string(),
+                    is_dir: true,
+                },
+                DirEntry {
+                    name: "Cargo.toml".to_string(),
+                    is_dir: false,
+                },
+            ],
+        };
+        let src_snap = DirSnapshot {
+            root: "/project/src".to_string(),
+            entries: vec![
+                DirEntry {
+                    name: "main.rs".to_string(),
+                    is_dir: false,
+                },
+                DirEntry {
+                    name: "lib.rs".to_string(),
+                    is_dir: false,
+                },
+            ],
+        };
+        let src_path = PathBuf::from("/project/src");
+
+        let mut expanded = HashSet::new();
+        expanded.insert(src_path.clone());
+        let mut children = HashMap::new();
+        children.insert(src_path, src_snap);
+
+        let hits = draw_left_dock_with_scroll(
+            &mut r,
+            &mut p,
+            m,
+            &th,
+            Some(&root_snap),
+            None,
+            None,
+            dock_rect(),
+            0,
+            None,
+            &expanded,
+            &children,
+            0.0,
+        );
+
+        // visible_rows should be: [/project/src (dir), /project/src/main.rs, /project/src/lib.rs, /project/Cargo.toml]
+        assert_eq!(
+            hits.visible_rows.len(),
+            4,
+            "root has 2 entries; expanded src adds 2 children"
+        );
+        assert_eq!(hits.visible_rows[0], (PathBuf::from("/project/src"), true));
+        assert_eq!(
+            hits.visible_rows[1],
+            (PathBuf::from("/project/src/main.rs"), false)
+        );
+        assert_eq!(
+            hits.visible_rows[2],
+            (PathBuf::from("/project/src/lib.rs"), false)
+        );
+        assert_eq!(
+            hits.visible_rows[3],
+            (PathBuf::from("/project/Cargo.toml"), false)
+        );
+
+        // There should be 4 row hits (+ 1 header hit = 5 total).
+        let row_hits: Vec<_> = hits
+            .hits
+            .iter()
+            .filter(|h| matches!(h.kind, LeftDockHitKind::Explorer(ExplorerHit::Row(_))))
+            .collect();
+        assert_eq!(row_hits.len(), 4, "4 visible rows: dir + 2 children + file");
+    }
+
+    /// collect_visible_rows respects depth limit.
+    #[test]
+    fn collect_visible_rows_depth_cap() {
+        // Build a chain 35 levels deep (exceeds MAX_RENDER_DEPTH=32).
+        fn make_chain(depth: usize, name: &str) -> DirSnapshot {
+            if depth == 0 {
+                DirSnapshot {
+                    root: name.to_string(),
+                    entries: vec![],
+                }
+            } else {
+                DirSnapshot {
+                    root: name.to_string(),
+                    entries: vec![DirEntry {
+                        name: "sub".to_string(),
+                        is_dir: true,
+                    }],
+                }
+            }
+        }
+
+        let root_path = PathBuf::from("/r");
+        let root_snap = make_chain(1, "/r");
+        let mut expanded = HashSet::new();
+        let mut children = HashMap::new();
+
+        // Build 35 levels: /r/sub, /r/sub/sub, ...
+        let mut cur = root_path.clone();
+        for i in 0..35 {
+            let child = cur.join("sub");
+            expanded.insert(child.clone());
+            let child_str = child.to_string_lossy().into_owned();
+            let snap = if i < 34 {
+                DirSnapshot {
+                    root: child_str,
+                    entries: vec![DirEntry {
+                        name: "sub".to_string(),
+                        is_dir: true,
+                    }],
+                }
+            } else {
+                DirSnapshot {
+                    root: child_str,
+                    entries: vec![],
+                }
+            };
+            children.insert(child.clone(), snap);
+            cur = child;
+        }
+
+        let mut out = Vec::new();
+        collect_visible_rows(&root_snap, &root_path, 0, &expanded, &children, &mut out);
+
+        // Should collect at most MAX_RENDER_DEPTH=32 levels deep; anything beyond is dropped.
+        // Root has 1 entry (/r/sub at depth 0), then /r/sub has 1 child at depth 1, etc.
+        // At depth 32 the recursion stops, so at most 33 rows (depths 0..=32).
+        assert!(
+            out.len() <= MAX_RENDER_DEPTH + 1,
+            "depth cap should limit rows to at most {}, got {}",
+            MAX_RENDER_DEPTH + 1,
+            out.len()
         );
     }
 }

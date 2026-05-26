@@ -78,6 +78,38 @@ pub fn spawn_fs_worker() -> (mpsc::SyncSender<PathBuf>, mpsc::Receiver<DirSnapsh
     (req_tx, snap_rx)
 }
 
+/// Spawn a worker that loads child directories on demand.
+///
+/// - `tx`: main thread sends a `PathBuf` for each directory that should be
+///   expanded for the first time.
+/// - `rx`: main thread drains `(PathBuf, DirSnapshot)` pairs — the requested
+///   dir plus its listing.  The key is the dir path so the caller can store the
+///   snapshot in `child_snapshots`.
+pub fn spawn_child_fs_worker() -> (
+    mpsc::SyncSender<PathBuf>,
+    mpsc::Receiver<(PathBuf, DirSnapshot)>,
+) {
+    let (req_tx, req_rx) = mpsc::sync_channel::<PathBuf>(32);
+    let (snap_tx, snap_rx) = mpsc::sync_channel::<(PathBuf, DirSnapshot)>(32);
+
+    std::thread::Builder::new()
+        .name("anvil-child-fs-worker".to_string())
+        .spawn(move || {
+            loop {
+                let path = match req_rx.recv() {
+                    Ok(p) => p,
+                    Err(_) => return,
+                };
+                // Drain extras; no debounce needed — each path is unique per expand.
+                let snap = read_dir_snapshot(&path);
+                let _ = snap_tx.try_send((path, snap));
+            }
+        })
+        .expect("failed to spawn anvil-child-fs-worker thread");
+
+    (req_tx, snap_rx)
+}
+
 /// Read the top-level entries of `root` and return a [`DirSnapshot`].
 /// On IO error returns an empty snapshot (honest empty state).
 fn read_dir_snapshot(root: &PathBuf) -> DirSnapshot {

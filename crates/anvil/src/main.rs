@@ -589,7 +589,13 @@ pub struct App {
     // -- filesystem worker (left dock, ID3) ---
     fs_tx: mpsc::SyncSender<PathBuf>,
     fs_rx: mpsc::Receiver<fs_worker::DirSnapshot>,
+    /// Worker for child-directory expansions. Keyed by absolute path so that
+    /// results survive root-snapshot refreshes.
+    child_fs_tx: mpsc::SyncSender<PathBuf>,
+    child_fs_rx: mpsc::Receiver<(PathBuf, fs_worker::DirSnapshot)>,
     fs_snapshot: Option<LeftDockSnapshot>,
+    /// Per-directory child snapshots, populated lazily on first expand.
+    child_snapshots: HashMap<PathBuf, LeftDockSnapshot>,
     /// Last file opened through the IDE explorer/native-editor open path.
     /// Used to keep the explorer row visually selected.
     active_explorer_file: Option<PathBuf>,
@@ -599,9 +605,9 @@ pub struct App {
     /// The explorer row index currently under the cursor (for hover highlight).
     /// `None` when the cursor is outside the dock.
     hovered_explorer_row: Option<usize>,
-    /// Set of entry indices (in the current DirSnapshot) that are expanded.
-    /// Cleared whenever the root DirSnapshot changes.
-    expanded_dirs: HashSet<usize>,
+    /// Set of absolute paths of directories that are expanded in the Explorer.
+    /// Keyed by PathBuf so identity survives re-snapshots and depth changes.
+    expanded_dirs: HashSet<PathBuf>,
     /// Alpha for the Explorer scroll thumb (Item 8). Driven by a decay timer.
     /// 1.0 immediately after a scroll event; decays to 0 after 600ms hold + 200ms fade.
     scroll_indicator_alpha: f32,
@@ -1108,6 +1114,7 @@ impl App {
             });
             self.explorer_scroll_offset = 0;
             self.expanded_dirs.clear();
+            self.child_snapshots.clear();
             self.active_explorer_file = None;
             self.dirty = true;
             return;
@@ -1749,6 +1756,7 @@ impl App {
         while let Ok(snap) = self.fs_rx.try_recv() {
             self.explorer_scroll_offset = 0;
             self.expanded_dirs.clear();
+            self.child_snapshots.clear();
             self.fs_snapshot = Some(LeftDockSnapshot {
                 root: snap.root.to_string_lossy().into_owned(),
                 entries: snap
@@ -1760,6 +1768,25 @@ impl App {
                     })
                     .collect(),
             });
+            self.dirty = true;
+        }
+
+        // Drain child-directory snapshots loaded on demand.
+        while let Ok((dir_path, snap)) = self.child_fs_rx.try_recv() {
+            self.child_snapshots.insert(
+                dir_path,
+                LeftDockSnapshot {
+                    root: snap.root.to_string_lossy().into_owned(),
+                    entries: snap
+                        .entries
+                        .into_iter()
+                        .map(|e| anvil_render::LeftDockEntry {
+                            name: e.name,
+                            is_dir: e.is_dir,
+                        })
+                        .collect(),
+                },
+            );
             self.dirty = true;
         }
         if self.layout_mode == LayoutMode::Ide {
@@ -2197,6 +2224,7 @@ impl App {
                     self.explorer_scroll_offset,
                     self.hovered_explorer_row,
                     &self.expanded_dirs,
+                    &self.child_snapshots,
                     self.scroll_indicator_alpha,
                 );
             } else {
@@ -3874,24 +3902,24 @@ impl AppHandler for AppShell {
                         }
                     }
                     ExplorerHit::Row(idx) => {
-                        let is_dir = app
-                            .fs_snapshot
-                            .as_ref()
-                            .and_then(|s| s.entries.get(idx))
-                            .map(|e| e.is_dir)
-                            .unwrap_or(false);
-                        if is_dir {
-                            // Item 7: toggle expand/collapse; do not open in editor.
-                            if app.expanded_dirs.contains(&idx) {
-                                app.expanded_dirs.remove(&idx);
+                        // Look up the absolute path and is_dir via visible_rows
+                        // populated by the last draw call.
+                        if let Some((path, is_dir)) =
+                            app.left_dock_hits.visible_rows.get(idx).cloned()
+                        {
+                            if is_dir {
+                                // Toggle expand/collapse.
+                                if app.expanded_dirs.contains(&path) {
+                                    app.expanded_dirs.remove(&path);
+                                } else {
+                                    // Load children if not already cached.
+                                    if !app.child_snapshots.contains_key(&path) {
+                                        let _ = app.child_fs_tx.try_send(path.clone());
+                                    }
+                                    app.expanded_dirs.insert(path);
+                                }
+                                app.dirty = true;
                             } else {
-                                app.expanded_dirs.insert(idx);
-                            }
-                            app.dirty = true;
-                        } else if let Some(snapshot) = app.fs_snapshot.clone() {
-                            if let Some(path) =
-                                explorer_path_for_hit(&snapshot, ExplorerHit::Row(idx))
-                            {
                                 app.open_path_in_native_editor(&path);
                             }
                         }
@@ -5081,6 +5109,8 @@ fn main() -> Result<()> {
 
     // -- Filesystem worker (ID3) -----------------------------------------------
     let (fs_tx, fs_rx) = fs_worker::spawn_fs_worker();
+    // Child-directory worker: loads individual dirs on expand.
+    let (child_fs_tx, child_fs_rx) = fs_worker::spawn_child_fs_worker();
 
     // -- Theme ----------------------------------------------------------------
     let system_dark = system_is_dark();
@@ -5208,7 +5238,10 @@ fn main() -> Result<()> {
         kube_rx,
         fs_tx,
         fs_rx,
+        child_fs_tx,
+        child_fs_rx,
         fs_snapshot: None,
+        child_snapshots: HashMap::new(),
         active_explorer_file: None,
         explorer_scroll_offset: 0,
         hovered_explorer_row: None,
