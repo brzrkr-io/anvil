@@ -1845,4 +1845,34 @@ mod tests {
             Position { line: 0, col: 0 }
         );
     }
+
+    // ── Item 20: detach_buffer_removes_from_source_pane ───────────────────────
+    // This test exercises the close_buffer path that `App::detach_buffer_to_new_window`
+    // calls.  No new window is spawned; the test verifies the buffer is removed
+    // from the source pane so the stub API surface is correct.
+    #[test]
+    fn detach_buffer_removes_from_source_pane() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("main.rs");
+        std::fs::write(&path, "fn main() {}").unwrap();
+
+        let pane_id: PaneId = 42;
+        let mut reg = EditorPaneRegistry::default();
+        reg.new_pane(pane_id);
+        let buffer_id = reg.open_path_as_tab(pane_id, &path).unwrap();
+
+        // Simulate what detach_buffer_to_new_window does: close the buffer.
+        let _new_active = reg.close_buffer(pane_id, buffer_id);
+
+        // The detached buffer is gone from the registry.
+        assert!(
+            reg.get_buffer(buffer_id).is_none(),
+            "detached buffer must be removed from the source pane's registry"
+        );
+        // Pane still exists (scratch buffer created automatically).
+        assert!(
+            reg.get_pane(pane_id).is_some(),
+            "source pane must survive after detach"
+        );
+    }
 }
