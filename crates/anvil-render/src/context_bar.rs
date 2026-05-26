@@ -103,6 +103,18 @@ pub fn draw_context_bar(
             );
             rx -= 8.0;
         }
+        // ↑N ↓M ahead/behind chip (S3).
+        if local.git_ahead > 0 || local.git_behind > 0 {
+            let ab_label = match (local.git_ahead, local.git_behind) {
+                (a, 0) => format!("\u{2191}{a}"),
+                (0, b) => format!("\u{2193}{b}"),
+                (a, b) => format!("\u{2191}{a} \u{2193}{b}"),
+            };
+            rx = draw_chip_right(
+                raster, painter, metrics, theme, &ab_label, rx, by, bar_h, false,
+            );
+            rx -= 8.0;
+        }
         let branch = if local.branch.is_empty() {
             "main"
         } else {
@@ -531,6 +543,75 @@ mod tests {
         assert!(
             chars.contains(&'…'),
             "expected ellipsis in overflowing path, got {chars:?}"
+        );
+    }
+
+    // S3: ahead/behind chip rendered when ahead > 0.
+    #[test]
+    fn ahead_behind_chip_rendered() {
+        let m = font_metrics();
+        let th = theme();
+        let mut r = Raster::new(800, 100);
+        let mut p = StubPainter::default();
+
+        let local = LocalContext {
+            git: GitState::Ok,
+            branch: "main".to_string(),
+            git_ahead: 3,
+            git_behind: 1,
+            ..LocalContext::default()
+        };
+        draw_context_bar(&mut r, &mut p, m, &th, &local, None, bar_rect());
+
+        let chars: Vec<char> = p
+            .calls
+            .iter()
+            .filter_map(|(cp, _)| char::from_u32(*cp))
+            .collect();
+        // '↑' = U+2191, '↓' = U+2193
+        assert!(
+            chars.contains(&'\u{2191}'),
+            "expected ↑ in ahead/behind chip, got {chars:?}"
+        );
+        assert!(
+            chars.contains(&'\u{2193}'),
+            "expected ↓ in ahead/behind chip, got {chars:?}"
+        );
+        assert!(
+            chars.contains(&'3'),
+            "expected ahead count '3', got {chars:?}"
+        );
+    }
+
+    // S3: no ahead/behind chip when both are zero.
+    #[test]
+    fn no_ahead_behind_chip_when_zero() {
+        let m = font_metrics();
+        let th = theme();
+        let mut r = Raster::new(800, 100);
+        let mut p = StubPainter::default();
+
+        let local = LocalContext {
+            git: GitState::Ok,
+            branch: "main".to_string(),
+            git_ahead: 0,
+            git_behind: 0,
+            ..LocalContext::default()
+        };
+        draw_context_bar(&mut r, &mut p, m, &th, &local, None, bar_rect());
+
+        let chars: Vec<char> = p
+            .calls
+            .iter()
+            .filter_map(|(cp, _)| char::from_u32(*cp))
+            .collect();
+        assert!(
+            !chars.contains(&'\u{2191}'),
+            "no ↑ chip when ahead==0, got {chars:?}"
+        );
+        assert!(
+            !chars.contains(&'\u{2193}'),
+            "no ↓ chip when behind==0, got {chars:?}"
         );
     }
 

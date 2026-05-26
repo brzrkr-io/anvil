@@ -766,9 +766,9 @@ pub struct App {
     // -- filesystem worker (left dock, ID3) ---
     fs_tx: mpsc::SyncSender<PathBuf>,
     fs_rx: mpsc::Receiver<fs_worker::DirSnapshot>,
-    /// Sends the current `show_hidden_files` flag to the fs worker so the
-    /// next snapshot respects the toggle (Q56).
-    fs_hidden_tx: mpsc::SyncSender<bool>,
+    /// Sends the current filter flags to the fs worker so the next snapshot
+    /// respects both the hidden-files (Q56) and gitignore (S1) toggles.
+    fs_hidden_tx: mpsc::SyncSender<fs_worker::FilterFlags>,
     /// Worker for child-directory expansions. Receiver kept so async
     /// re-snapshots (e.g. on watch events) can still drain results; sender
     /// retired because explorer click reads synchronously now.
@@ -957,6 +957,11 @@ pub struct App {
     /// When true, the Explorer and fs worker include dot-prefix entries.
     /// Toggled by Cmd+Shift+.; persisted in session JSON.
     show_hidden_files: bool,
+
+    // ── Show-gitignored-files toggle (S1) ─────────────────────────────────────
+    /// When false (default), entries matching `.gitignore` are hidden.
+    /// Toggled by Cmd+K Cmd+I.
+    show_gitignored_files: bool,
 
     // ── Closed-tab history (Q16) ──────────────────────────────────────────────
     /// Paths of recently closed editor buffers (most-recent at back). Cap 20.
@@ -1771,7 +1776,7 @@ impl App {
                                 if !self.child_snapshots.contains_key(&cur) {
                                     let child_snap = fs_worker::read_dir_snapshot_fast(
                                         &cur,
-                                        self.show_hidden_files,
+                                        self.filter_flags(),
                                     );
                                     self.child_snapshots.insert(
                                         cur.clone(),
@@ -1827,8 +1832,16 @@ impl App {
         (content_h / row_h).floor() as usize
     }
 
+    /// Build the current [`fs_worker::FilterFlags`] from the toggle fields.
+    fn filter_flags(&self) -> fs_worker::FilterFlags {
+        fs_worker::FilterFlags {
+            show_hidden: self.show_hidden_files,
+            show_gitignored: self.show_gitignored_files,
+        }
+    }
+
     /// Rebuild `fs_snapshot` synchronously from the current root using the
-    /// current `show_hidden_files` flag. Called after toggling Q56.
+    /// current filter flags. Called after toggling Q56 or S1.
     fn refresh_fs_snapshot(&mut self) {
         let root = match &self.fs_snapshot {
             Some(s) => PathBuf::from(&s.root),
@@ -1837,7 +1850,8 @@ impl App {
                 Err(_) => return,
             },
         };
-        let snap = fs_worker::read_dir_snapshot_fast(&root, self.show_hidden_files);
+        let flags = self.filter_flags();
+        let snap = fs_worker::read_dir_snapshot_fast(&root, flags);
         self.fs_snapshot = Some(LeftDockSnapshot {
             root: snap.root.to_string_lossy().into_owned(),
             entries: snap
@@ -4778,8 +4792,8 @@ impl App {
             // Q56: Cmd+Shift+. → toggle hidden files in Explorer.
             if ch == '.' && mods.shift && !mods.control && !mods.option {
                 self.show_hidden_files = !self.show_hidden_files;
-                // Notify the fs worker of the new flag.
-                let _ = self.fs_hidden_tx.try_send(self.show_hidden_files);
+                // Notify the fs worker of the new flags.
+                let _ = self.fs_hidden_tx.try_send(self.filter_flags());
                 // Refresh snapshot immediately so Explorer updates this frame.
                 self.refresh_fs_snapshot();
                 self.dirty = true;
@@ -6974,6 +6988,15 @@ impl AppHandler for AppShell {
                 }
                 return;
             }
+            // S1: Cmd+K I → toggle gitignored-files visibility in Explorer.
+            if matches!(event.key, KeyInput::Char('i') | KeyInput::Char('I')) {
+                self.app.show_gitignored_files = !self.app.show_gitignored_files;
+                let flags = self.app.filter_flags();
+                let _ = self.app.fs_hidden_tx.try_send(flags);
+                self.app.refresh_fs_snapshot();
+                self.app.dirty = true;
+                return;
+            }
             if self.app.focused_is_native_editor() {
                 match event.key {
                     KeyInput::Char('w') | KeyInput::Char('W') => {
@@ -7222,7 +7245,7 @@ impl AppHandler for AppShell {
                                 if !self.app.child_snapshots.contains_key(&path) {
                                     let snap = fs_worker::read_dir_snapshot_fast(
                                         &path,
-                                        self.app.show_hidden_files,
+                                        self.app.filter_flags(),
                                     );
                                     self.app.child_snapshots.insert(
                                         path.clone(),
@@ -7309,7 +7332,7 @@ impl AppHandler for AppShell {
                                     if !self.app.child_snapshots.contains_key(&path) {
                                         let snap = fs_worker::read_dir_snapshot_fast(
                                             &path,
-                                            self.app.show_hidden_files,
+                                            self.app.filter_flags(),
                                         );
                                         self.app.child_snapshots.insert(
                                             path.clone(),
@@ -7450,12 +7473,11 @@ impl AppHandler for AppShell {
                                 }
                                 // Re-snapshot the parent directory.
                                 let parent_pb = parent.to_path_buf();
+                                let flags = self.app.filter_flags();
                                 if let Some(parent_snap) = self.app.child_snapshots.get_mut(parent)
                                 {
-                                    let new_snap = fs_worker::read_dir_snapshot_fast(
-                                        &parent_pb,
-                                        self.app.show_hidden_files,
-                                    );
+                                    let new_snap =
+                                        fs_worker::read_dir_snapshot_fast(&parent_pb, flags);
                                     *parent_snap = LeftDockSnapshot {
                                         root: new_snap.root.to_string_lossy().into_owned(),
                                         entries: new_snap
@@ -7470,10 +7492,8 @@ impl AppHandler for AppShell {
                                     };
                                 } else if let Some(snap) = &mut self.app.fs_snapshot {
                                     let root_pb = PathBuf::from(&snap.root);
-                                    let new_snap = fs_worker::read_dir_snapshot_fast(
-                                        &root_pb,
-                                        self.app.show_hidden_files,
-                                    );
+                                    let new_snap =
+                                        fs_worker::read_dir_snapshot_fast(&root_pb, flags);
                                     *snap = LeftDockSnapshot {
                                         root: new_snap.root.to_string_lossy().into_owned(),
                                         entries: new_snap
@@ -7530,10 +7550,8 @@ impl AppHandler for AppShell {
                             eprintln!("anvil: create {}: {e}", if is_dir { "dir" } else { "file" });
                         } else {
                             // Re-snapshot the parent.
-                            let new_snap = fs_worker::read_dir_snapshot_fast(
-                                &parent,
-                                self.app.show_hidden_files,
-                            );
+                            let new_snap =
+                                fs_worker::read_dir_snapshot_fast(&parent, self.app.filter_flags());
                             let snap = LeftDockSnapshot {
                                 root: new_snap.root.to_string_lossy().into_owned(),
                                 entries: new_snap
@@ -7588,12 +7606,10 @@ impl AppHandler for AppShell {
                         self.app.selected_explorer_row = None;
                         // Re-snapshot the parent.
                         if let Some(parent) = path.parent() {
+                            let flags = self.app.filter_flags();
                             if let Some(root_snap) = &mut self.app.fs_snapshot {
                                 let root_pb = PathBuf::from(&root_snap.root.clone());
-                                let new_snap = fs_worker::read_dir_snapshot_fast(
-                                    &root_pb,
-                                    self.app.show_hidden_files,
-                                );
+                                let new_snap = fs_worker::read_dir_snapshot_fast(&root_pb, flags);
                                 *root_snap = LeftDockSnapshot {
                                     root: new_snap.root.to_string_lossy().into_owned(),
                                     entries: new_snap
@@ -8107,7 +8123,7 @@ impl AppHandler for AppShell {
                                     if !app.child_snapshots.contains_key(&path) {
                                         let snap = fs_worker::read_dir_snapshot_fast(
                                             &path,
-                                            app.show_hidden_files,
+                                            app.filter_flags(),
                                         );
                                         app.child_snapshots.insert(
                                             path.clone(),
@@ -11207,7 +11223,13 @@ fn main() -> Result<()> {
         child_fs_tx,
         child_fs_rx,
         fs_snapshot: std::env::current_dir().ok().map(|cwd| {
-            let snap = fs_worker::read_dir_snapshot_fast(&cwd, false);
+            let snap = fs_worker::read_dir_snapshot_fast(
+                &cwd,
+                fs_worker::FilterFlags {
+                    show_hidden: false,
+                    show_gitignored: false,
+                },
+            );
             LeftDockSnapshot {
                 root: snap.root.to_string_lossy().into_owned(),
                 entries: snap
@@ -11277,6 +11299,7 @@ fn main() -> Result<()> {
         lsp_failed_toasted: HashSet::new(),
         search_bar_hits: anvil_render::searchbar::SearchBarArrowHits::default(),
         show_hidden_files: false,
+        show_gitignored_files: false,
         closed_tabs: std::collections::VecDeque::new(),
         language_picker: None,
         open_folder_input: None,
