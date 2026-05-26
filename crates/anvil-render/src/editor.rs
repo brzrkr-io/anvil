@@ -56,6 +56,8 @@ pub struct RenderDiagnostic {
     /// Zero-indexed buffer line this diagnostic applies to.
     pub line: usize,
     pub severity: RenderSeverity,
+    /// Short human-readable summary (e.g. "expected u32, found &str").
+    pub message: String,
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -409,6 +411,65 @@ pub fn draw_editor_into(
             raster.glyph_at(painter, metrics, gx, row_y, '▸' as u32, theme.text_muted);
         }
         let _ = painted; // suppress dead-code lint
+
+        // ── End-of-line diagnostic label (R1) ────────────────────────────────
+        // Render the worst-severity diagnostic message right-aligned after the
+        // line text, in the severity color blended at α=0.7 over the surface.
+        // Truncate with `…` when the message would overlap the line content.
+        if let Some(sev) = row_diag {
+            // Collect the message for the worst-severity diagnostic on this line.
+            let msg: Option<String> = diagnostics
+                .iter()
+                .filter(|d| d.line == line_idx && d.severity == sev)
+                .map(|d| d.message.clone())
+                .next();
+            if let Some(raw_msg) = msg {
+                // Blend severity color at α=0.7 over surface.
+                let sc = severity_color(sev, theme);
+                let bg = theme.surface;
+                let label_color = [
+                    (sc[0] as f32 * 0.7 + bg[0] as f32 * 0.3) as u8,
+                    (sc[1] as f32 * 0.7 + bg[1] as f32 * 0.3) as u8,
+                    (sc[2] as f32 * 0.7 + bg[2] as f32 * 0.3) as u8,
+                ];
+                // Right edge of content area.
+                let right_edge = rect.x + rect.w;
+                // How many columns are available for the label, starting from the
+                // column after the line text (or after the overflow marker).
+                let text_end_col = if overflow {
+                    content_cols + col_offset
+                } else {
+                    graphemes.len().max(col_offset) - col_offset.min(graphemes.len())
+                };
+                let text_end_x = rect.x + gutter_w + text_end_col as f64 * cw;
+                // Gap: at least 2 cells between line end and label.
+                let label_start_x = text_end_x + 2.0 * cw;
+                let available_w = right_edge - label_start_x;
+                if available_w > cw {
+                    // How many chars fit?
+                    let max_chars = (available_w / cw).floor() as usize;
+                    let (display_msg, truncated) = if raw_msg.chars().count() <= max_chars {
+                        (raw_msg.as_str().to_owned(), false)
+                    } else if max_chars > 1 {
+                        let s: String = raw_msg.chars().take(max_chars - 1).collect();
+                        (format!("{s}…"), true)
+                    } else {
+                        (String::new(), true)
+                    };
+                    let _ = truncated;
+                    if !display_msg.is_empty() {
+                        // Right-align: paint from label_start_x.
+                        for (i, ch_g) in display_msg.chars().enumerate() {
+                            let gx = label_start_x + i as f64 * cw;
+                            if gx + cw > right_edge {
+                                break;
+                            }
+                            raster.glyph_at(painter, metrics, gx, row_y, ch_g as u32, label_color);
+                        }
+                    }
+                }
+            }
+        }
 
         // ── Fold chevron in gutter (item 13) ──────────────────────────────────
         // Paint ▾ (open) or ▸ (folded) in the last gutter column for lines that
@@ -1371,6 +1432,7 @@ mod tests {
         let diag = vec![RenderDiagnostic {
             line: 0,
             severity: RenderSeverity::Error,
+            message: "expected u32".to_string(),
         }];
 
         draw_editor_into(
@@ -1394,6 +1456,69 @@ mod tests {
         assert_eq!(
             px, theme.failure,
             "gutter stripe at x=2,y=row0_mid should be failure color, got {px:?}"
+        );
+    }
+
+    // ── draw_editor_diagnostic_eol_label_painted ─────────────────────────────
+
+    /// EOL diagnostic label: glyphs from the message must appear in the painter
+    /// output when a diagnostic is supplied. They should NOT appear in plain
+    /// foreground (they use a blended severity color).
+    #[test]
+    fn draw_editor_diagnostic_eol_label_painted() {
+        // Wide pane so there is room for the label after the line text.
+        let buf = Buffer::from_text("x\n");
+        let pane = make_pane(1);
+        let m = metrics();
+        let wide = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 800.0,
+            h: 200.0,
+        };
+        let mut raster = Raster::new(800, 200);
+        raster.clear(MINERAL_DARK.background);
+        let mut painter = CapturePainter::default();
+        let theme = MINERAL_DARK;
+
+        let diag = vec![RenderDiagnostic {
+            line: 0,
+            severity: RenderSeverity::Error,
+            message: "expected u32".to_string(),
+        }];
+
+        draw_editor_into(
+            &mut raster,
+            &mut painter,
+            &pane,
+            &buf,
+            m,
+            &theme,
+            wide,
+            &diag,
+            None,
+            false,
+            0.0,
+            0.0,
+        );
+
+        // 'e' and 'u' should be present (from "expected u32").
+        let all_cps: Vec<u32> = painter.calls.iter().map(|(cp, _)| *cp).collect();
+        assert!(
+            all_cps.contains(&('e' as u32)),
+            "diagnostic label 'e' must be painted; calls: {all_cps:?}"
+        );
+        // None of the label glyphs should appear in plain foreground.
+        let fg_cps: Vec<u32> = painter
+            .calls
+            .iter()
+            .filter(|(_, fg)| *fg == theme.foreground)
+            .map(|(cp, _)| *cp)
+            .collect();
+        // 'p' from "expected" should not be in foreground (line text is just "x").
+        assert!(
+            !fg_cps.contains(&('p' as u32)),
+            "'p' must not be foreground color (only appears in label); fg_cps: {fg_cps:?}"
         );
     }
 

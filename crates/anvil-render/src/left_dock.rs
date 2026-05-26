@@ -197,6 +197,7 @@ pub fn draw_left_dock(
         &HashMap::new(),
         0.0,
         1.0,
+        None,
     )
 }
 
@@ -216,6 +217,8 @@ pub fn draw_left_dock_with_scroll(
     child_snapshots: &HashMap<PathBuf, DirSnapshot>,
     scroll_indicator_alpha: f32,
     ui_scale: f64,
+    // R3: active filter string; `None` = no filter.
+    explorer_filter: Option<&str>,
 ) -> LeftDockHits {
     let mut hits = LeftDockHits::default();
     if rect.w <= 0.0 || rect.h <= 0.0 {
@@ -306,6 +309,7 @@ pub fn draw_left_dock_with_scroll(
         explorer_rect,
         &mut hits,
         &rm,
+        explorer_filter,
     );
     draw_outline_section(
         raster,
@@ -482,6 +486,7 @@ fn draw_explorer_section(
     rect: Rect,
     hits: &mut LeftDockHits,
     rm: &RowMetrics,
+    explorer_filter: Option<&str>,
 ) {
     let cell_w = metrics.cell_w;
     let cell_h = metrics.cell_h;
@@ -500,12 +505,19 @@ fn draw_explorer_section(
         },
         kind: LeftDockHitKind::Explorer(ExplorerHit::Header),
     });
-    let (header_label, header_meta): (&str, String) = match snapshot {
-        Some(snap) if !snap.root.is_empty() => {
+    let (header_label, header_meta): (&str, String) = match (explorer_filter, snapshot) {
+        (Some(f), _) => ("EXPLORER", format!("[{f}]")),
+        (None, Some(snap)) if !snap.root.is_empty() => {
             let basename = snap.root.rsplit('/').next().unwrap_or(&snap.root);
             ("EXPLORER", basename.to_string())
         }
         _ => ("EXPLORER", String::new()),
+    };
+    // R3: filter chip color — highlight the meta in accent when filter is active.
+    let meta_color = if explorer_filter.is_some() {
+        theme.accent_bright
+    } else {
+        theme.text_subtle
     };
 
     let header_y = rect.y + ((header_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
@@ -526,7 +538,7 @@ fn draw_explorer_section(
             painter,
             metrics,
             &header_meta,
-            theme.text_subtle,
+            meta_color,
             rect.x + rect.w - pad_x - meta_w,
             header_y,
             rect.x + rect.w - pad_x,
@@ -575,14 +587,53 @@ fn draw_explorer_section(
             // tree top-down: root entries, then recursively expanded children.
             // Also collect last-sibling flags per row for branch glyph rendering.
             let mut all_rows: Vec<(PathBuf, bool, usize)> = Vec::new(); // (path, is_dir, depth)
+            // R3: when a filter is active, expand ALL directories so we can search
+            // across the full tree. Use a temporary set that contains every dir path.
+            let filter_expanded: HashSet<PathBuf>;
+            let effective_expanded: &HashSet<PathBuf> = if explorer_filter.is_some() {
+                filter_expanded = collect_all_dirs(snap, child_snapshots);
+                &filter_expanded
+            } else {
+                expanded_dirs
+            };
             collect_visible_rows(
                 snap,
                 &PathBuf::from(&snap.root),
                 0,
-                expanded_dirs,
+                effective_expanded,
                 child_snapshots,
                 &mut all_rows,
             );
+            // R3: filter rows — keep file rows whose basename matches and dir rows
+            // that are ancestors of at least one matching file.
+            if let Some(f) = explorer_filter {
+                let f_low = f.to_lowercase();
+                // Determine which file rows match.
+                let file_matches: HashSet<usize> = all_rows
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (p, is_dir, _))| {
+                        !is_dir
+                            && p.file_name()
+                                .and_then(|n| n.to_str())
+                                .map(|n| n.to_lowercase().contains(&f_low))
+                                .unwrap_or(false)
+                    })
+                    .map(|(i, _)| i)
+                    .collect();
+                // Build the set of ancestor paths of matching rows.
+                let mut keep_paths: HashSet<PathBuf> = HashSet::new();
+                for i in &file_matches {
+                    let path = &all_rows[*i].0;
+                    keep_paths.insert(path.clone());
+                    let mut p = path.as_path();
+                    while let Some(par) = p.parent() {
+                        keep_paths.insert(par.to_path_buf());
+                        p = par;
+                    }
+                }
+                all_rows.retain(|(p, _, _)| keep_paths.contains(p));
+            }
 
             // Compute is_last_sibling per row at each depth level.
             // Row i is the last sibling at depth d when no later row at the same
@@ -867,6 +918,38 @@ fn collect_visible_rows(
             }
         }
     }
+}
+
+/// R3: collect the absolute paths of all known directories in the tree.
+/// Used to build a "expand everything" set for filter mode.
+fn collect_all_dirs(
+    snap: &DirSnapshot,
+    child_snapshots: &HashMap<PathBuf, DirSnapshot>,
+) -> HashSet<PathBuf> {
+    let mut out = HashSet::new();
+    fn recurse(
+        snap: &DirSnapshot,
+        dir_path: &Path,
+        child_snapshots: &HashMap<PathBuf, DirSnapshot>,
+        out: &mut HashSet<PathBuf>,
+        depth: usize,
+    ) {
+        if depth >= MAX_RENDER_DEPTH {
+            return;
+        }
+        for entry in &snap.entries {
+            if entry.is_dir {
+                let abs = dir_path.join(&entry.name);
+                out.insert(abs.clone());
+                if let Some(child_snap) = child_snapshots.get(&abs) {
+                    recurse(child_snap, &abs, child_snapshots, out, depth + 1);
+                }
+            }
+        }
+    }
+    let root = PathBuf::from(&snap.root);
+    recurse(snap, &root, child_snapshots, &mut out, 0);
+    out
 }
 
 // ── Outline section ───────────────────────────────────────────────────────────
@@ -1309,6 +1392,7 @@ mod tests {
             &HashMap::new(),
             0.0,
             1.0,
+            None,
         );
 
         assert_eq!(
@@ -1478,6 +1562,7 @@ mod tests {
                 &HashMap::new(),
                 0.0,
                 1.0,
+                None,
             );
             // Row 0 occupies y=[header_h, header_h+row_h) = [32, 60).
             // The fill rect is row_top+2 .. row_top+row_h-2 = [34, 58).
@@ -1511,6 +1596,7 @@ mod tests {
                 &HashMap::new(),
                 0.0,
                 1.0,
+                None,
             );
             // Left-rail pixel (x=rect.x+6=6, inside 2px rail) should be accent_primary.
             // Row 0 fill starts at row_top+2 = 28+2 = 30. Sample y=38.
@@ -1741,6 +1827,7 @@ mod tests {
                 &HashMap::new(),
                 0.0,
                 1.0,
+                None,
             )
         };
 
@@ -1763,6 +1850,7 @@ mod tests {
                 &HashMap::new(),
                 0.0,
                 1.0,
+                None,
             )
         };
 
@@ -1848,6 +1936,7 @@ mod tests {
             &children,
             0.0,
             1.0,
+            None,
         );
 
         // visible_rows should be: [/project/src (dir), /project/src/main.rs, /project/src/lib.rs, /project/Cargo.toml]
@@ -2008,6 +2097,7 @@ mod tests {
             &children,
             0.0,
             1.0,
+            None,
         );
 
         // The test rigs glyph positions by recording every (codepoint, color) pair.
@@ -2111,6 +2201,7 @@ mod tests {
             &HashMap::new(),
             0.0,
             1.0,
+            None,
         );
         assert!(hits.hits.is_empty(), "dock < 60pt must be fully hidden");
     }
@@ -2158,6 +2249,7 @@ mod tests {
             &HashMap::new(),
             0.0,
             1.0,
+            None,
         );
         // No EXPLORER header hit in icons-only mode.
         let header_hits: Vec<_> = hits
@@ -2209,6 +2301,120 @@ mod tests {
         assert!(
             !badge_calls.is_empty(),
             "modified-file badge 'M' must render in attention color"
+        );
+    }
+
+    // ── R3: explorer_filter hides non-matching rows ───────────────────────────
+
+    /// When a filter is active, only file rows whose basename case-insensitively
+    /// contains the filter string (and their ancestor dirs) should appear in
+    /// `visible_rows`. Non-matching files are hidden.
+    #[test]
+    fn explorer_filter_hides_non_matching_rows() {
+        let m = metrics();
+        let th = theme();
+        let mut r = Raster::new(800, 800);
+        let mut p = StubPainter::default();
+
+        let snap = DirSnapshot {
+            root: "/project".to_string(),
+            entries: vec![
+                DirEntry {
+                    name: "main.rs".to_string(),
+                    is_dir: false,
+                },
+                DirEntry {
+                    name: "lib.rs".to_string(),
+                    is_dir: false,
+                },
+                DirEntry {
+                    name: "README.md".to_string(),
+                    is_dir: false,
+                },
+            ],
+            git_marks: Default::default(),
+        };
+
+        // Filter "main" — only main.rs should appear.
+        let hits = draw_left_dock_with_scroll(
+            &mut r,
+            &mut p,
+            m,
+            &th,
+            Some(&snap),
+            None,
+            None,
+            dock_rect(),
+            0,
+            None,
+            &HashSet::new(),
+            &HashMap::new(),
+            0.0,
+            1.0,
+            Some("main"),
+        );
+
+        assert_eq!(
+            hits.visible_rows.len(),
+            1,
+            "filter 'main' must leave only main.rs visible; got {:?}",
+            hits.visible_rows
+        );
+        assert!(
+            hits.visible_rows[0]
+                .0
+                .to_str()
+                .unwrap_or("")
+                .ends_with("main.rs"),
+            "the single visible row must be main.rs"
+        );
+    }
+
+    /// When filter is empty string, all rows should still be visible.
+    #[test]
+    fn explorer_filter_none_shows_all_rows() {
+        let m = metrics();
+        let th = theme();
+        let mut r = Raster::new(800, 800);
+        let mut p = StubPainter::default();
+
+        let snap = DirSnapshot {
+            root: "/project".to_string(),
+            entries: vec![
+                DirEntry {
+                    name: "a.rs".to_string(),
+                    is_dir: false,
+                },
+                DirEntry {
+                    name: "b.rs".to_string(),
+                    is_dir: false,
+                },
+            ],
+            git_marks: Default::default(),
+        };
+
+        let hits = draw_left_dock_with_scroll(
+            &mut r,
+            &mut p,
+            m,
+            &th,
+            Some(&snap),
+            None,
+            None,
+            dock_rect(),
+            0,
+            None,
+            &HashSet::new(),
+            &HashMap::new(),
+            0.0,
+            1.0,
+            None,
+        );
+
+        assert_eq!(
+            hits.visible_rows.len(),
+            2,
+            "no filter: all 2 rows must be visible"
         );
     }
 }

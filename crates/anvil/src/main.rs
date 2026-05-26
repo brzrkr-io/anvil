@@ -970,6 +970,61 @@ pub struct App {
     // ── Open-folder overlay (Q19) ─────────────────────────────────────────────
     /// When `Some`, the Cmd+K Cmd+O open-folder path-input overlay is open.
     open_folder_input: Option<String>,
+
+    // ── Explorer tooltip (R2) ─────────────────────────────────────────────────
+    /// Row index + time the hover started (for 500ms delay).
+    explorer_hover_row: Option<(usize, Instant)>,
+    /// Cached metadata (size in bytes, mtime as Duration since UNIX epoch) for
+    /// the currently-hovered file. Key is the path, value is (size, mtime_secs).
+    /// Cleared when hover row changes. Valid for ~5 s.
+    explorer_hover_meta: Option<(PathBuf, u64, u64)>,
+
+    // ── Explorer filter (R3) ──────────────────────────────────────────────────
+    /// Active filter string typed by the user when Explorer is focused.
+    explorer_filter: Option<String>,
+}
+
+// ── R2: tooltip helpers ───────────────────────────────────────────────────────
+
+/// Format a byte count as a human-readable string: "12.4 KB", "3.2 MB", etc.
+fn humanize_bytes(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+/// Format a UNIX timestamp (seconds) as a relative time string.
+/// Uses the current UNIX time from `std::time::SystemTime`.
+fn relative_time(mtime_secs: u64) -> String {
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if mtime_secs > now_secs {
+        return "just now".to_string();
+    }
+    let delta = now_secs - mtime_secs;
+    if delta < 60 {
+        "just now".to_string()
+    } else if delta < 3600 {
+        let m = delta / 60;
+        format!("{m} minute{} ago", if m == 1 { "" } else { "s" })
+    } else if delta < 86400 {
+        let h = delta / 3600;
+        format!("{h} hour{} ago", if h == 1 { "" } else { "s" })
+    } else {
+        let d = delta / 86400;
+        format!("{d} day{} ago", if d == 1 { "" } else { "s" })
+    }
 }
 
 // ── App helpers ───────────────────────────────────────────────────────────────
@@ -3367,6 +3422,7 @@ impl App {
                                                         anvil_render::RenderSeverity::Hint
                                                     }
                                                 },
+                                                message: d.message.clone(),
                                             })
                                             .collect();
                                         map.insert(pid, render_diags);
@@ -3552,6 +3608,7 @@ impl App {
                     &self.child_snapshots,
                     self.scroll_indicator_alpha,
                     self.ui_scale,
+                    self.explorer_filter.as_deref(),
                 );
             } else {
                 self.left_dock_hits.clear();
@@ -3963,6 +4020,82 @@ impl App {
                     ch_c as u32,
                     self.theme.foreground,
                 );
+            }
+        }
+
+        // ── R2: Explorer file tooltip ─────────────────────────────────────────
+        // Shown after 500ms steady hover over a file row (not a dir).
+        if let Some((ref tip_path, size, mtime_secs)) = self.explorer_hover_meta.clone() {
+            // Find the hit rect for this row to position the tooltip.
+            if let Some((row_idx, _)) = self.explorer_hover_row {
+                let row_rect = self
+                    .left_dock_hits
+                    .hits
+                    .iter()
+                    .find(|h| {
+                        h.kind
+                            == anvil_render::LeftDockHitKind::Explorer(
+                                anvil_render::ExplorerHit::Row(row_idx),
+                            )
+                    })
+                    .map(|h| h.rect);
+                if let Some(rr) = row_rect {
+                    let basename = tip_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    let size_str = humanize_bytes(size);
+                    let mtime_str = relative_time(mtime_secs);
+                    // Three lines: basename (foreground), size, mtime (text_subtle).
+                    let lines: [(&str, [u8; 3]); 3] = [
+                        (basename, self.theme.foreground),
+                        (&size_str, self.theme.text_subtle),
+                        (&mtime_str, self.theme.text_subtle),
+                    ];
+                    let max_len = lines
+                        .iter()
+                        .map(|(s, _)| s.chars().count())
+                        .max()
+                        .unwrap_or(0);
+                    let metrics = self.font.metrics;
+                    let pad = 8.0 * self.ui_scale;
+                    let tip_w = max_len as f64 * metrics.cell_w + pad * 2.0;
+                    let tip_h = lines.len() as f64 * metrics.cell_h + pad * 2.0;
+                    // Position: to the right of the dock row.
+                    let tip_x = rr.x + rr.w + 4.0 * self.ui_scale;
+                    let tip_y = rr.y;
+                    // Clamp to raster.
+                    let tip_x = tip_x.max(0.0).min(dw as f64 - tip_w);
+                    let tip_y = tip_y.max(0.0).min(dh as f64 - tip_h);
+                    // Background.
+                    self.raster
+                        .fill_pixel_rect(tip_x, tip_y, tip_w, tip_h, self.theme.panel);
+                    // 1px hairline border.
+                    self.raster
+                        .fill_pixel_rect(tip_x, tip_y, tip_w, 1.0, self.theme.hairline);
+                    self.raster.fill_pixel_rect(
+                        tip_x,
+                        tip_y + tip_h - 1.0,
+                        tip_w,
+                        1.0,
+                        self.theme.hairline,
+                    );
+                    self.raster
+                        .fill_pixel_rect(tip_x, tip_y, 1.0, tip_h, self.theme.hairline);
+                    self.raster.fill_pixel_rect(
+                        tip_x + tip_w - 1.0,
+                        tip_y,
+                        1.0,
+                        tip_h,
+                        self.theme.hairline,
+                    );
+                    // Text lines.
+                    for (row, (text, color)) in lines.iter().enumerate() {
+                        let gy = tip_y + pad + row as f64 * metrics.cell_h;
+                        for (i, c) in text.chars().enumerate() {
+                            let gx = tip_x + pad + i as f64 * metrics.cell_w;
+                            self.raster
+                                .glyph_at(chrome_painter, metrics, gx, gy, c as u32, *color);
+                        }
+                    }
+                }
             }
         }
 
@@ -6111,6 +6244,34 @@ impl AppHandler for AppShell {
         // O1: poll for pending workspace symbol responses and debounce re-requests.
         app.poll_workspace_symbols_result();
 
+        // R2: Explorer tooltip — resolve file metadata after 500ms steady hover.
+        {
+            const EXPLORER_HOVER_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+            let now = Instant::now();
+            if let Some((row_idx, since)) = app.explorer_hover_row {
+                if now.duration_since(since) >= EXPLORER_HOVER_DELAY
+                    && app.explorer_hover_meta.is_none()
+                {
+                    // Resolve path — must be a file row (not a dir).
+                    if let Some((path, false)) =
+                        app.left_dock_hits.visible_rows.get(row_idx).cloned()
+                    {
+                        if let Ok(meta) = std::fs::metadata(&path) {
+                            let size = meta.len();
+                            let mtime = meta
+                                .modified()
+                                .ok()
+                                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0);
+                            app.explorer_hover_meta = Some((path, size, mtime));
+                            app.dirty = true;
+                        }
+                    }
+                }
+            }
+        }
+
         // Item 15: hover-mouse debounce — fire hover request after 400ms dwell.
         {
             const HOVER_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(400);
@@ -7117,6 +7278,25 @@ impl AppHandler for AppShell {
                     return;
                 }
                 KeyInput::Enter => {
+                    // R3: when filter is active and only one file matches, open it.
+                    if self.app.explorer_filter.is_some() {
+                        let file_rows: Vec<PathBuf> = self
+                            .app
+                            .left_dock_hits
+                            .visible_rows
+                            .iter()
+                            .filter(|(_, is_dir)| !is_dir)
+                            .map(|(p, _)| p.clone())
+                            .collect();
+                        if file_rows.len() == 1 {
+                            let path = file_rows.into_iter().next().unwrap();
+                            self.app.explorer_filter = None;
+                            self.app.open_path_in_native_editor(&path);
+                            self.app.active_explorer_file = Some(path);
+                            self.app.dirty = true;
+                            return;
+                        }
+                    }
                     if let Some(idx) = cur {
                         if let Some((path, is_dir)) =
                             self.app.left_dock_hits.visible_rows.get(idx).cloned()
@@ -7161,9 +7341,15 @@ impl AppHandler for AppShell {
                     return;
                 }
                 KeyInput::Escape => {
-                    self.app.selected_explorer_row = None;
-                    self.app.focus_target = FocusTarget::Editor;
-                    self.app.dirty = true;
+                    if self.app.explorer_filter.is_some() {
+                        // R3: Esc clears the filter first; second Esc exits Explorer focus.
+                        self.app.explorer_filter = None;
+                        self.app.dirty = true;
+                    } else {
+                        self.app.selected_explorer_row = None;
+                        self.app.focus_target = FocusTarget::Editor;
+                        self.app.dirty = true;
+                    }
                     return;
                 }
                 // F2: enter rename mode (item 6).
@@ -7202,6 +7388,31 @@ impl AppHandler for AppShell {
                             self.app.dirty = true;
                         }
                     }
+                    return;
+                }
+                // R3: Backspace removes last filter char.
+                KeyInput::Backspace
+                    if !event.mods.command && self.app.explorer_filter.is_some() =>
+                {
+                    let f = self.app.explorer_filter.get_or_insert_with(String::new);
+                    f.pop();
+                    if f.is_empty() {
+                        self.app.explorer_filter = None;
+                    }
+                    self.app.dirty = true;
+                    return;
+                }
+                // R3: Printable char starts or extends the filter.
+                KeyInput::Char(ch)
+                    if !event.mods.command
+                        && !event.mods.control
+                        && (ch.is_alphanumeric() || ch == '_' || ch == '-' || ch == '.') =>
+                {
+                    self.app
+                        .explorer_filter
+                        .get_or_insert_with(String::new)
+                        .push(ch);
+                    self.app.dirty = true;
                     return;
                 }
                 _ => {}
@@ -8518,6 +8729,8 @@ impl AppHandler for AppShell {
             });
             if new_hover != app.hovered_explorer_row {
                 app.hovered_explorer_row = new_hover;
+                app.explorer_hover_row = new_hover.map(|i| (i, Instant::now()));
+                app.explorer_hover_meta = None;
                 app.dirty = true;
             }
 
@@ -8849,6 +9062,9 @@ impl AppHandler for AppShell {
         });
         if new_hover != app.hovered_explorer_row {
             app.hovered_explorer_row = new_hover;
+            // R2: reset hover tooltip state when row changes.
+            app.explorer_hover_row = new_hover.map(|i| (i, Instant::now()));
+            app.explorer_hover_meta = None;
             app.dirty = true;
         }
 
@@ -11064,6 +11280,9 @@ fn main() -> Result<()> {
         closed_tabs: std::collections::VecDeque::new(),
         language_picker: None,
         open_folder_input: None,
+        explorer_hover_row: None,
+        explorer_hover_meta: None,
+        explorer_filter: None,
     };
 
     // -- AppKitApp: builds the window, view, timer ----------------------------
@@ -11669,5 +11888,32 @@ mod tests {
             "expired toast must be removed; 1 live toast remains"
         );
         assert_eq!(q.front().unwrap().text, "new");
+    }
+
+    // ── R2: humanize_bytes ────────────────────────────────────────────────────
+
+    #[test]
+    fn humanize_bytes_formats_sizes_correctly() {
+        assert_eq!(humanize_bytes(0), "0 B");
+        assert_eq!(humanize_bytes(1023), "1023 B");
+        assert_eq!(humanize_bytes(1024), "1.0 KB");
+        assert_eq!(humanize_bytes(12700), "12.4 KB");
+        assert_eq!(humanize_bytes(1024 * 1024), "1.0 MB");
+        assert_eq!(humanize_bytes(1024 * 1024 * 1024), "1.0 GB");
+    }
+
+    // ── R2: relative_time ─────────────────────────────────────────────────────
+
+    #[test]
+    fn relative_time_formats_deltas_correctly() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        assert_eq!(relative_time(now), "just now");
+        assert_eq!(relative_time(now - 30), "just now");
+        assert_eq!(relative_time(now - 90), "1 minute ago");
+        assert_eq!(relative_time(now - 7200), "2 hours ago");
+        assert_eq!(relative_time(now - 3 * 86400), "3 days ago");
     }
 }
