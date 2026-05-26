@@ -217,6 +217,18 @@ impl Default for Keybindings {
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
+// ── EditorCfg ─────────────────────────────────────────────────────────────────
+
+/// Editor-specific configuration options.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct EditorCfg {
+    /// When `true`, automatically save dirty editor buffers when the window
+    /// loses focus (`windowDidResignKey`).  Silent — errors are logged to
+    /// stderr.  Default: `false`.
+    pub save_on_blur: bool,
+}
+
 /// Top-level configuration. Every field is optional in TOML; missing fields
 /// keep their defaults.
 #[derive(Clone, Debug, Deserialize)]
@@ -233,6 +245,7 @@ pub struct Config {
     pub keybindings: Keybindings,
     pub shell_integration: bool,
     pub prompt: PromptCfg,
+    pub editor: EditorCfg,
 }
 
 impl Default for Config {
@@ -248,6 +261,7 @@ impl Default for Config {
             keybindings: Keybindings::default(),
             shell_integration: true,
             prompt: PromptCfg::default(),
+            editor: EditorCfg::default(),
         }
     }
 }

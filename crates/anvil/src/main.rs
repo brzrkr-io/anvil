@@ -793,6 +793,12 @@ pub struct App {
     /// text typed so far (e.g. "42" or "42,8").
     goto_line_input: Option<String>,
 
+    // ── Save-as overlay (tier-J J2) ───────────────────────────────────────────
+    /// When `Some`, the save-as path-input overlay is open.  The string is the
+    /// file path typed so far.
+    /// TODO(anvil-tierJ-J2-nspanel): replace with NSSavePanel.
+    save_as_input: Option<String>,
+
     // ── Find+replace active-row flag (item 9) ─────────────────────────────────
     /// `true` when the replace row of the search bar has keyboard focus.
     replace_row_active: bool,
@@ -3328,6 +3334,24 @@ impl App {
             );
         }
 
+        // ── Save-as overlay (tier-J J2) ───────────────────────────────────────
+        if let Some(ref input) = self.save_as_input {
+            let cw = self.font.metrics.cell_w;
+            let chrome_top = self.chrome_top_px();
+            draw_save_as_overlay(
+                &mut self.raster,
+                chrome_painter,
+                chrome_metrics,
+                &self.theme,
+                input,
+                dw as f64,
+                dh as f64,
+                chrome_top,
+                cw,
+                ch,
+            );
+        }
+
         // ── LSP rename overlay (item 24) ──────────────────────────────────────
         if let Some(ref input) = self.lsp_rename_input {
             let cw = self.font.metrics.cell_w;
@@ -3928,6 +3952,31 @@ impl App {
             if lch == 's' && !mods.shift && !mods.control && !mods.option {
                 self.apply_editor_action(EditorAction::Save);
                 self.dirty = true;
+                return true;
+            }
+            // Cmd+Shift+S → Save As (inline overlay)
+            // TODO(anvil-tierJ-J2-nspanel): replace inline overlay with NSSavePanel.
+            if lch == 's' && mods.shift && !mods.control && !mods.option {
+                if self.save_as_input.is_none() {
+                    // Pre-fill with the current buffer's tracked path or "".
+                    let prefill: String = if let Some(tab) = self.tabs.current() {
+                        let focused = tab.focused_id();
+                        if let Some(ep) = tab.editor_panes.get_pane(focused) {
+                            let buf_id = ep.buffer_id;
+                            tab.editor_panes
+                                .get_buffer(buf_id)
+                                .and_then(|b| b.tracked_path())
+                                .map(|p| p.to_string_lossy().into_owned())
+                                .unwrap_or_default()
+                        } else {
+                            String::new()
+                        }
+                    } else {
+                        String::new()
+                    };
+                    self.save_as_input = Some(prefill);
+                    self.dirty = true;
+                }
                 return true;
             }
             // Cmd+Z → Undo, Cmd+Shift+Z → Redo
@@ -5630,6 +5679,38 @@ impl AppHandler for AppShell {
                         if let Some(ref mut s) = self.app.goto_line_input {
                             s.push(ch);
                         }
+                    }
+                    self.app.dirty = true;
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // ── Save-as overlay (tier-J J2) ──────────────────────────────────────
+        if self.app.save_as_input.is_some() {
+            match event.key {
+                KeyInput::Escape => {
+                    self.app.save_as_input = None;
+                    self.app.dirty = true;
+                }
+                KeyInput::Enter => {
+                    let path_str = self.app.save_as_input.take().unwrap_or_default();
+                    if !path_str.is_empty() {
+                        let new_path = std::path::PathBuf::from(&path_str);
+                        self.app.apply_editor_action(EditorAction::SaveAs(new_path));
+                    }
+                    self.app.dirty = true;
+                }
+                KeyInput::Backspace => {
+                    if let Some(ref mut s) = self.app.save_as_input {
+                        s.pop();
+                    }
+                    self.app.dirty = true;
+                }
+                KeyInput::Char(ch) if !event.mods.command => {
+                    if let Some(ref mut s) = self.app.save_as_input {
+                        s.push(ch);
                     }
                     self.app.dirty = true;
                 }
@@ -7731,6 +7812,24 @@ impl AppHandler for AppShell {
     }
     fn focus_lost(&mut self) {
         self.app.focused = false;
+        // J1: save-on-blur — skip if any rename/new-file modal is active.
+        if self.app.config.editor.save_on_blur
+            && self.app.explorer_rename.is_none()
+            && self.app.lsp_rename_input.is_none()
+            && self.app.save_as_input.is_none()
+        {
+            for tab in self.app.tabs.tabs.iter_mut() {
+                for (_buf_id, buf) in tab.editor_panes.buffers_mut() {
+                    if buf.is_dirty() {
+                        if let Some(path) = buf.tracked_path().map(|p| p.to_path_buf()) {
+                            if let Err(e) = buf.save(&path) {
+                                eprintln!("anvil: save-on-blur failed ({}): {e}", path.display());
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
     fn should_terminate(&mut self) -> bool {
         self.app.shutdown();
@@ -8395,6 +8494,59 @@ fn draw_lsp_rename_overlay(
         x += cw;
     }
     for c in input.chars() {
+        if x + cw > panel_x + panel_w - pad_x {
+            break;
+        }
+        raster.glyph_at(painter, metrics, x, glyph_y, c as u32, theme.foreground);
+        x += cw;
+    }
+    raster.fill_pixel_rect(x, panel_y + 2.0, cw, panel_h - 4.0, theme.accent_bright);
+}
+
+// ── Save-as overlay draw (tier-J J2) ─────────────────────────────────────────
+
+/// Draw the save-as path-input overlay — same chrome as goto-line.
+/// TODO(anvil-tierJ-J2-nspanel): replace with NSSavePanel.
+#[allow(clippy::too_many_arguments)]
+fn draw_save_as_overlay(
+    raster: &mut anvil_render::raster::Raster,
+    painter: &mut dyn anvil_render::raster::GlyphPainter,
+    metrics: anvil_render::raster::FontMetrics,
+    theme: &anvil_theme::Theme,
+    input: &str,
+    dw: f64,
+    _dh: f64,
+    chrome_top: f64,
+    cw: f64,
+    ch: f64,
+) {
+    let panel_w = 60.0 * cw;
+    let panel_h = ch + 8.0;
+    let panel_x = ((dw - panel_w) * 0.5).max(0.0);
+    let panel_y = chrome_top + 4.0 * ch;
+
+    raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
+    raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent);
+    raster.fill_pixel_rect(panel_x, panel_y + panel_h - 1.0, panel_w, 1.0, theme.accent);
+    raster.fill_pixel_rect(panel_x, panel_y, 1.0, panel_h, theme.accent);
+    raster.fill_pixel_rect(panel_x + panel_w - 1.0, panel_y, 1.0, panel_h, theme.accent);
+
+    let glyph_y = panel_y + 4.0;
+    let prefix = "save as: ";
+    let pad_x = 1.5 * cw;
+    let mut x = panel_x + pad_x;
+    for c in prefix.chars() {
+        if x + cw > panel_x + panel_w - pad_x {
+            break;
+        }
+        raster.glyph_at(painter, metrics, x, glyph_y, c as u32, theme.text_muted);
+        x += cw;
+    }
+    // Show only the tail of a long path so the cursor end is always visible.
+    let visible_cols = ((panel_w - pad_x * 2.0 - prefix.len() as f64 * cw) / cw).floor() as usize;
+    let chars: Vec<char> = input.chars().collect();
+    let start = chars.len().saturating_sub(visible_cols);
+    for &c in &chars[start..] {
         if x + cw > panel_x + panel_w - pad_x {
             break;
         }
@@ -9178,6 +9330,7 @@ fn main() -> Result<()> {
         explorer_new_item: None,
         explorer_delete_confirm: None,
         goto_line_input: None,
+        save_as_input: None,
         replace_row_active: false,
         file_watch_rx,
         file_watch_tx: file_watch_work_tx,

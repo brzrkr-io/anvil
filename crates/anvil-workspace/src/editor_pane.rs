@@ -158,6 +158,9 @@ pub enum EditorAction {
         extend: bool,
     },
     Save,
+    /// Save buffer to a new path and update `tracked_path`.
+    /// TODO(anvil-tierJ-J2-nspanel): replace inline overlay with NSSavePanel.
+    SaveAs(std::path::PathBuf),
     Undo,
     Redo,
     Copy,
@@ -638,6 +641,12 @@ impl EditorPaneRegistry {
         self.buffers.get_mut(&buffer_id)
     }
 
+    /// Iterate all buffers mutably — used by save-on-blur (tier-J J1) and
+    /// similar "enumerate all open files" operations.
+    pub fn buffers_mut(&mut self) -> impl Iterator<Item = (BufferId, &mut Buffer)> {
+        self.buffers.iter_mut().map(|(k, v)| (*k, v))
+    }
+
     /// Find and return a mutable reference to a `Buffer` that tracks `path`
     /// (item 24, rename edits). Returns `None` if no open buffer matches.
     pub fn find_buffer_for_path(&mut self, path: &std::path::Path) -> Option<&mut Buffer> {
@@ -1092,6 +1101,18 @@ impl EditorPaneRegistry {
                     }
                 } else {
                     eprintln!("anvil: editor save: no tracked path (file-open is NE7+ scope)");
+                }
+                false
+            }
+
+            // ── SaveAs ──────────────────────────────────────────────────────
+            // Write contents to `new_path`, update tracked_path, refresh
+            // syntax/git associations.
+            // TODO(anvil-tierJ-J2-nspanel): replace inline overlay with NSSavePanel.
+            EditorAction::SaveAs(new_path) => {
+                let buf = self.buffers.get_mut(&buffer_id).unwrap();
+                if let Err(e) = buf.save(&new_path) {
+                    eprintln!("anvil: save-as failed ({}): {e}", new_path.display());
                 }
                 false
             }
