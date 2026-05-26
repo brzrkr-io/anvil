@@ -68,6 +68,8 @@ pub struct EditorTabHit {
 ///                        `LspManager::diagnostics_for` by `main.rs`. Empty map is fine.
 ///   hovered_editor_tab — currently hovered `(PaneId, BufferId)` for `×` show-on-hover.
 ///   editor_tab_hits    — output: cleared and repopulated with tab-strip click regions.
+///   ui_scale           — logical zoom multiplier (separate from Retina window_scale).
+///                        Pass `1.0` when no zoom is configured.
 ///
 /// After this function returns, raster.origin_x and raster.origin_y are both 0.
 #[allow(clippy::too_many_arguments)]
@@ -90,6 +92,7 @@ pub fn draw_workspace(
     diag_by_pane: &HashMap<PaneId, Vec<RenderDiagnostic>>,
     hovered_editor_tab: Option<(PaneId, BufferId)>,
     editor_tab_hits: &mut Vec<EditorTabHit>,
+    ui_scale: f64,
 ) {
     editor_tab_hits.clear();
     let entries = tree.layout(inner, div_px);
@@ -206,6 +209,7 @@ pub fn draw_workspace(
                         editor_tab_hits,
                         ep,
                         editor_pane_count > 1,
+                        ui_scale,
                     );
                     draw_editor_into(
                         raster,
@@ -295,27 +299,29 @@ fn draw_terminal_drawer_chrome(
     raster.fill_pixel_rect_alpha(rect.x, rect.y, rect.w, 1.0, theme.hairline, 0.92);
 }
 
-/// Height of the per-pane editor buffer tab strip in device pixels.
+/// Height of the per-pane editor buffer tab strip in device pixels (base, before ui_scale).
 const EDITOR_TABS_H: f64 = 34.0;
-/// Height of the slim breadcrumb row below the tab strip (item 18).
+/// Height of the slim breadcrumb row below the tab strip (item 18, base before ui_scale).
 const EDITOR_BREADCRUMB_H: f64 = 22.0;
-/// Height of the per-pane editor status bar at the bottom of the editor pane (item 8).
+/// Height of the per-pane editor status bar at the bottom of the editor pane (item 8, base).
 const EDITOR_STATUS_H: f64 = 26.0;
-/// Minimum per-tab width: ~6 chars + padding.
+/// Minimum per-tab width base (scaled by ui_scale at runtime).
 const TAB_MIN_W: f64 = 80.0;
-/// Maximum per-tab width: ~24 chars + padding.
+/// Maximum per-tab width base (scaled by ui_scale at runtime).
 const TAB_MAX_W: f64 = 240.0;
-/// Horizontal padding inside each tab (leading side).
+/// Horizontal padding inside each tab (leading side, base).
 const TAB_PAD_L: f64 = 10.0;
-/// Space reserved on the right for the `×` close glyph.
+/// Space reserved on the right for the `×` close glyph (base).
 const TAB_CLOSE_W: f64 = 20.0;
 
 /// Draw the per-pane multi-buffer tab strip, status bar, and return the editor body rect.
 ///
 /// Paints `open_buffers` as horizontal tabs with `active_buffer_id` highlighted.
-/// Also paints a 26px status bar at the bottom of the pane (item 8).
+/// Also paints a status bar at the bottom of the pane (item 8, scaled by `ui_scale`).
 /// Paints a 2px left-edge focus ring when focused and `multi_pane` is true (item 14).
 /// Writes hit regions (tab-body + close button per tab) into `hits_out`.
+///
+/// `ui_scale` is the logical zoom multiplier; pass `1.0` for no zoom.
 #[allow(clippy::too_many_arguments)]
 fn draw_editor_chrome(
     raster: &mut Raster,
@@ -332,11 +338,18 @@ fn draw_editor_chrome(
     hits_out: &mut Vec<EditorTabHit>,
     ep: &EditorPane,
     multi_pane: bool,
+    ui_scale: f64,
 ) -> Rect {
     let tabs_h = EDITOR_TABS_H.min(rect.h.max(0.0));
     if tabs_h <= 0.0 || rect.w <= 0.0 {
         return rect;
     }
+
+    // Scale tab geometry constants by ui_scale (A2).
+    let tab_min_w = TAB_MIN_W * ui_scale;
+    let tab_max_w = TAB_MAX_W * ui_scale;
+    let tab_pad_l = TAB_PAD_L * ui_scale;
+    let tab_close_w = TAB_CLOSE_W * ui_scale;
 
     // Background: solid surface for the whole pane, graphite strip for tab row.
     raster.fill_pixel_rect(rect.x, rect.y, rect.w, rect.h, theme.surface);
@@ -375,16 +388,16 @@ fn draw_editor_chrome(
             let label = buffer_label(editor_panes, bid);
             // label chars + dirty dot (1 char) + padding + close button
             let char_w = (label.chars().count() + 2) as f64 * metrics.cell_w;
-            (char_w + TAB_PAD_L + TAB_CLOSE_W + 8.0).clamp(TAB_MIN_W, TAB_MAX_W)
+            (char_w + tab_pad_l + tab_close_w + 8.0 * ui_scale).clamp(tab_min_w, tab_max_w)
         })
         .collect();
 
-    // If total width exceeds available, scale all tabs down proportionally.
+    // If total width exceeds available, scale all tabs down proportionally (A2).
     let total_w: f64 = tab_widths.iter().sum();
     if total_w > available_w && total_w > 0.0 {
         let scale = available_w / total_w;
         for w in &mut tab_widths {
-            *w = (*w * scale).max(TAB_MIN_W.min(available_w / tab_count as f64));
+            *w = (*w * scale).max(tab_min_w.min(available_w / tab_count as f64));
         }
     }
 
@@ -392,6 +405,8 @@ fn draw_editor_chrome(
     let mut cursor_x = rect.x;
     for (i, &bid) in open_buffers.iter().enumerate() {
         let tab_w = tab_widths[i];
+        // Clip label to tab width (A2: text_max_x prevents overflow).
+        let text_max_x = cursor_x + tab_w - tab_close_w - 4.0;
         let is_active = bid == active_buffer_id;
         let is_hovered = hovered_buffer == Some(bid);
         let tab_rect = crate::raster::PixelRect {
@@ -413,14 +428,24 @@ fn draw_editor_chrome(
             is_hovered,
             pane_id,
             hits_out,
+            tab_pad_l,
+            tab_close_w,
+            text_max_x,
         );
 
         cursor_x += tab_w;
     }
 
-    // ── Breadcrumb row (item 18) ──────────────────────────────────────────────
+    // ── Breadcrumb row (item 18 / A3) ─────────────────────────────────────────
+    // Compute segments BEFORE reserving space. If empty, crumb_h stays 0.
+    let cursor_line = ep.cursors[0].pos.line;
+    let segments = breadcrumb_segments_at_line(editor_panes, active_buffer_id, cursor_line);
     let remaining_after_tabs = (rect.h - tabs_h).max(0.0);
-    let crumb_h = EDITOR_BREADCRUMB_H.min(remaining_after_tabs);
+    let crumb_h = if segments.is_empty() {
+        0.0
+    } else {
+        EDITOR_BREADCRUMB_H.min(remaining_after_tabs)
+    };
     if crumb_h > 0.0 {
         let crumb_rect = Rect {
             x: rect.x,
@@ -428,13 +453,12 @@ fn draw_editor_chrome(
             w: rect.w,
             h: crumb_h,
         };
-        let cursor_line = ep.cursors[0].pos.line;
-        let segments = breadcrumb_segments_at_line(editor_panes, active_buffer_id, cursor_line);
         draw_breadcrumb_row(raster, painter, metrics, theme, crumb_rect, &segments);
     }
 
-    // ── Status bar (item 8) ───────────────────────────────────────────────────
-    let status_h = EDITOR_STATUS_H.min((rect.h - tabs_h - crumb_h).max(0.0));
+    // ── Status bar (item 8 / A5) ──────────────────────────────────────────────
+    let status_h_base = EDITOR_STATUS_H * ui_scale;
+    let status_h = status_h_base.min((rect.h - tabs_h - crumb_h).max(0.0));
     if status_h > 0.0 {
         let buf = editor_panes.get_buffer(active_buffer_id);
         draw_editor_status_bar(
@@ -569,6 +593,8 @@ fn draw_breadcrumb_row(
 }
 
 /// Draw a single buffer tab and emit hit rects.
+///
+/// `tab_pad_l`, `tab_close_w`, and `text_max_x` are pre-scaled by the caller.
 #[allow(clippy::too_many_arguments)]
 fn draw_buffer_tab(
     raster: &mut Raster,
@@ -582,6 +608,9 @@ fn draw_buffer_tab(
     is_hovered: bool,
     pane_id: PaneId,
     hits_out: &mut Vec<EditorTabHit>,
+    tab_pad_l: f64,
+    tab_close_w: f64,
+    text_max_x: f64,
 ) {
     // Tab background.
     if is_active {
@@ -630,20 +659,29 @@ fn draw_buffer_tab(
     } else {
         0.0
     };
-    let text_x = tab.x + TAB_PAD_L + dot_w;
-    let text_max_x = tab.x + tab.w - TAB_CLOSE_W - 4.0;
+    let text_x = tab.x + tab_pad_l + dot_w;
     let text_y = tab.y + ((tab.h - metrics.cell_h) * 0.5).max(0.0);
 
     if is_dirty {
         // 7×7 accent dot, vertically centered.
-        let dot_x = tab.x + TAB_PAD_L;
+        let dot_x = tab.x + tab_pad_l;
         let dot_y = tab.y + (tab.h * 0.5 - 3.5).max(0.0);
         raster.fill_pixel_rect(dot_x, dot_y, 7.0, 7.0, theme.accent_primary);
     }
 
-    // Label text.
+    // Label text — clipped to text_max_x (A2: prevents label overflow).
     let mut gx = text_x;
-    for ch in label.chars() {
+    let label_chars: Vec<char> = label.chars().collect();
+    let max_chars = ((text_max_x - text_x) / metrics.cell_w).floor().max(0.0) as usize;
+    // Truncate with ellipsis when label doesn't fit.
+    let display: std::borrow::Cow<str> = if label_chars.len() > max_chars && max_chars > 0 {
+        let cut = max_chars.saturating_sub(1);
+        let s: String = label_chars[..cut].iter().collect();
+        std::borrow::Cow::Owned(format!("{s}\u{2026}"))
+    } else {
+        std::borrow::Cow::Borrowed(&label)
+    };
+    for ch in display.chars() {
         if gx + metrics.cell_w > text_max_x {
             break;
         }
@@ -652,7 +690,7 @@ fn draw_buffer_tab(
     }
 
     // Tab body hit rect (excludes the close button area).
-    let close_x = tab.x + tab.w - TAB_CLOSE_W;
+    let close_x = tab.x + tab.w - tab_close_w;
     hits_out.push(EditorTabHit {
         pane_id,
         buffer_id,
@@ -667,7 +705,7 @@ fn draw_buffer_tab(
 
     // Close `×` glyph: shown on active tab and on hovered tab.
     if is_active || is_hovered {
-        let close_glyph_x = close_x + (TAB_CLOSE_W - metrics.cell_w) * 0.5;
+        let close_glyph_x = close_x + (tab_close_w - metrics.cell_w) * 0.5;
         let close_glyph_y = tab.y + ((tab.h - metrics.cell_h) * 0.5).max(0.0);
         raster.glyph_at(
             painter,
@@ -690,7 +728,7 @@ fn draw_buffer_tab(
             rect: crate::raster::PixelRect {
                 x: close_x,
                 y: tab.y,
-                w: TAB_CLOSE_W,
+                w: tab_close_w,
                 h: tab.h,
             },
         });
@@ -980,6 +1018,7 @@ mod tests {
             &HashMap::new(),
             None,
             &mut tab_hits,
+            1.0,
         );
 
         assert_eq!(r.origin_x, 0.0, "origin_x must be reset to 0");
@@ -1059,6 +1098,7 @@ mod tests {
             &HashMap::new(),
             None,
             &mut tab_hits,
+            1.0,
         );
 
         // Gutter center: pane1_w = (inner.w - TEST_DIV) * 0.5
@@ -1188,6 +1228,7 @@ mod tests {
             &mut hits,
             ep,
             false, // multi_pane (single pane — no focus ring)
+            1.0,   // ui_scale
         );
 
         assert_eq!(pixel_at(&r, 12, 12), theme.accent_primary);
@@ -1256,6 +1297,7 @@ mod tests {
             &HashMap::new(),
             None,
             &mut tab_hits,
+            1.0,
         );
 
         // Focused pane (id1) is the left half of inner.
@@ -1338,6 +1380,7 @@ mod tests {
             &HashMap::new(),
             None,
             &mut tab_hits,
+            1.0,
         );
         // "hello world" starts with 'h' — expect glyph calls.
         assert!(!painter.calls.is_empty());
@@ -1379,6 +1422,7 @@ mod tests {
             &mut hits,
             ep,
             false,
+            1.0, // ui_scale
         );
         // Body rect must not extend to the bottom of the pane (status bar reserves bottom).
         let body_bottom = content.y + content.h;
@@ -1434,6 +1478,7 @@ mod tests {
                 &mut hits,
                 ep,
                 false, // multi_pane=false
+                1.0,   // ui_scale
             );
             // Left edge (x=10) must NOT be accent_primary in single-pane mode.
             let mid_y = (rect.y + rect.h * 0.5) as usize;
@@ -1469,6 +1514,7 @@ mod tests {
                 &mut hits,
                 ep,
                 true, // multi_pane=true
+                1.0,  // ui_scale
             );
             let mid_y = (rect.y + rect.h * 0.5) as usize;
             let px = pixel_at(&r, rect.x as usize, mid_y);
@@ -1535,6 +1581,130 @@ mod tests {
         assert!(
             segs.is_empty(),
             "plain text buffer must have no breadcrumbs; got {segs:?}"
+        );
+    }
+
+    // ── A2: tab strip does not overflow at 2× ui_scale ───────────────────────
+
+    /// A2: at 2x ui_scale with 5 tabs in a narrow pane, each drawn tab width
+    /// must be ≤ pane_w / tab_count and no tab must overflow the pane.
+    #[test]
+    fn tab_strip_no_overflow_at_2x_ui_scale() {
+        use anvil_workspace::editor_pane::EditorPaneRegistry;
+        let m = metrics();
+        let theme = anvil_theme::MINERAL_DARK;
+        // Narrow pane: 300px wide, 5 tabs (each a scratch buffer, label = "scratch").
+        let pane_w = 300.0_f64;
+        let rect = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: pane_w,
+            h: 200.0,
+        };
+        let mut ep_reg = EditorPaneRegistry::default();
+        // Create 5 scratch panes.
+        let bids: Vec<_> = (0..5).map(|i| ep_reg.new_pane(i + 1)).collect();
+
+        let mut r = Raster::new(400, 300);
+        r.clear(theme.background);
+        let mut painter = StubPainter::default();
+        let ep = ep_reg.get_pane(1).unwrap();
+        let mut hits = Vec::new();
+
+        draw_editor_chrome(
+            &mut r,
+            &mut painter,
+            &ep_reg,
+            bids[0],
+            &bids,
+            m,
+            &theme,
+            rect,
+            false,
+            None,
+            1,
+            &mut hits,
+            ep,
+            false,
+            2.0, // 2x ui_scale
+        );
+
+        // Each tab body hit must be ≤ pane_w / tab_count (with 1px rounding slack).
+        let tab_body_hits: Vec<_> = hits.iter().filter(|h| !h.is_close).collect();
+        let max_allowed = pane_w / bids.len() as f64;
+        for hit in &tab_body_hits {
+            assert!(
+                hit.rect.w <= max_allowed + 1.0,
+                "tab width {} exceeds allowed {max_allowed} at 2x scale",
+                hit.rect.w
+            );
+        }
+        // No tab must extend past the pane right edge.
+        for hit in &tab_body_hits {
+            assert!(
+                hit.rect.x + hit.rect.w <= pane_w + 1.0,
+                "tab overflows pane: right edge {} > pane_w {pane_w}",
+                hit.rect.x + hit.rect.w
+            );
+        }
+        // Verify we got the right number of tab hits (5 body hits).
+        assert_eq!(
+            tab_body_hits.len(),
+            bids.len(),
+            "must have one body hit per tab"
+        );
+    }
+
+    // ── A3: breadcrumb row hides when segments are empty ─────────────────────
+
+    /// A3: pane with no breadcrumb segments has editor body rect equal to
+    /// full pane height minus tab strip only (breadcrumb reserves 0 height).
+    #[test]
+    fn editor_body_rect_full_height_minus_tabs_when_no_breadcrumbs() {
+        use anvil_workspace::editor_pane::EditorPaneRegistry;
+        let m = metrics();
+        let theme = anvil_theme::MINERAL_DARK;
+        let rect = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 400.0,
+            h: 200.0,
+        };
+        let mut ep_reg = EditorPaneRegistry::default();
+        // Scratch buffer with no language — breadcrumb_segments_at_line returns empty.
+        let bid = ep_reg.new_pane(1);
+        let ep = ep_reg.get_pane(1).unwrap();
+        let open_bufs = vec![bid];
+        let mut hits = Vec::new();
+        let mut r = Raster::new(500, 300);
+        r.clear(theme.background);
+        let mut painter = StubPainter::default();
+
+        let content = draw_editor_chrome(
+            &mut r,
+            &mut painter,
+            &ep_reg,
+            bid,
+            &open_bufs,
+            m,
+            &theme,
+            rect,
+            false,
+            None,
+            1,
+            &mut hits,
+            ep,
+            false,
+            1.0,
+        );
+
+        // With no breadcrumbs: content.y == rect.y + EDITOR_TABS_H.
+        let expected_y = rect.y + EDITOR_TABS_H;
+        assert!(
+            (content.y - expected_y).abs() < 1.0,
+            "A3: empty breadcrumbs must not reserve vertical space; \
+             content.y={} expected≈{expected_y}",
+            content.y
         );
     }
 }

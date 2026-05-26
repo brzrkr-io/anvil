@@ -90,11 +90,17 @@ impl Docks {
             chrome_bottom_px,
             left_dock_visible,
             300.0,
+            1.0,
         )
     }
 
     /// Like `for_mode_with_left_dock` but accepts a caller-supplied sidebar width
-    /// in logical points (item 13: drag-resize).
+    /// in logical points (item 13: drag-resize) and a `ui_scale` zoom multiplier.
+    ///
+    /// `ui_scale` is applied on top of `scale` (Retina) for the IDE top bar height
+    /// so the context strip grows/shrinks with the user's zoom level (A4).
+    /// Pass `1.0` for no zoom.
+    #[allow(clippy::too_many_arguments)]
     pub fn for_mode_with_left_dock_w(
         mode: LayoutMode,
         scale: f64,
@@ -103,6 +109,7 @@ impl Docks {
         chrome_bottom_px: f64,
         left_dock_visible: bool,
         left_dock_w_pt: f64,
+        ui_scale: f64,
     ) -> Self {
         let cw = metrics.cell_w;
         // Must match the actual HUD paint width in main.rs::render_frame:
@@ -132,9 +139,9 @@ impl Docks {
                 },
                 right_w: if hud_visible { hud_w } else { 0.0 },
                 // 28pt context strip below the chrome tab row: IDE chip,
-                // project path, git chips. Matches the topbar in the Option A
-                // sketch (`sketches/native-editor-directions/index.html`).
-                top_h: 28.0 * scale,
+                // project path, git chips.  Scaled by both `scale` (Retina)
+                // and `ui_scale` (user zoom) so the bar grows/shrinks with zoom (A4).
+                top_h: 28.0 * scale * ui_scale,
                 bottom_h: chrome_bottom_px,
             },
         }
@@ -337,6 +344,40 @@ mod tests {
     fn ide_top_bar_h_scales_linearly() {
         let d2 = Docks::for_mode(LayoutMode::Ide, 2.0, metrics(10), false, BOTTOM_H);
         assert_eq!(d2.top_h, 56.0, "top_h must scale linearly");
+    }
+
+    /// A4: top_h must also scale with ui_scale (separate from Retina window_scale).
+    #[test]
+    fn ide_top_bar_h_scales_with_ui_scale() {
+        let base = Docks::for_mode_with_left_dock_w(
+            LayoutMode::Ide,
+            1.0,
+            metrics(10),
+            false,
+            BOTTOM_H,
+            true,
+            300.0,
+            1.0,
+        );
+        let zoomed = Docks::for_mode_with_left_dock_w(
+            LayoutMode::Ide,
+            1.0,
+            metrics(10),
+            false,
+            BOTTOM_H,
+            true,
+            300.0,
+            1.5,
+        );
+        assert!(
+            (base.top_h - 28.0).abs() < 1e-9,
+            "base top_h at ui_scale=1 must be 28pt"
+        );
+        assert!(
+            (zoomed.top_h - 42.0).abs() < 1e-9,
+            "zoomed top_h at ui_scale=1.5 must be 42pt; got {}",
+            zoomed.top_h
+        );
     }
 
     #[test]

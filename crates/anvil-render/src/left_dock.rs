@@ -1783,6 +1783,117 @@ mod tests {
         );
     }
 
+    /// A1: top-level rows (depth 0) must not emit any tree connector glyph.
+    /// A nested row at depth 1 must emit a connector.
+    #[test]
+    fn top_level_rows_have_no_connector_glyph() {
+        const CONNECTORS: &[u32] = &[
+            '\u{2514}' as u32, // └
+            '\u{251C}' as u32, // ├
+            '\u{2502}' as u32, // │
+        ];
+
+        let m = metrics();
+        let th = theme();
+
+        // Build: root has one dir (src) and one file (main.rs).
+        // Expanding src to show one child (lib.rs) at depth 1.
+        let root_snap = DirSnapshot {
+            root: "/p".to_string(),
+            entries: vec![
+                DirEntry {
+                    name: "src".to_string(),
+                    is_dir: true,
+                },
+                DirEntry {
+                    name: "main.rs".to_string(),
+                    is_dir: false,
+                },
+            ],
+            git_marks: Default::default(),
+        };
+        let src_snap = DirSnapshot {
+            root: "/p/src".to_string(),
+            entries: vec![DirEntry {
+                name: "lib.rs".to_string(),
+                is_dir: false,
+            }],
+            git_marks: Default::default(),
+        };
+        let src_path = PathBuf::from("/p/src");
+        let mut expanded = HashSet::new();
+        expanded.insert(src_path.clone());
+        let mut children = HashMap::new();
+        children.insert(src_path, src_snap);
+
+        // Draw with expansion.
+        let mut r = Raster::new(800, 800);
+        let mut p = StubPainter::default();
+        draw_left_dock_with_scroll(
+            &mut r,
+            &mut p,
+            m,
+            &th,
+            Some(&root_snap),
+            None,
+            None,
+            dock_rect(),
+            0,
+            None,
+            &expanded,
+            &children,
+            0.0,
+            1.0,
+        );
+
+        // The test rigs glyph positions by recording every (codepoint, color) pair.
+        // We check that glyphs recorded before the first nested row's glyph_y contain
+        // no connector codepoints.
+        //
+        // Simpler: count connector glyphs. Top-level rows (slot 0 = "src" at depth 0,
+        // slot 2 = "main.rs" at depth 0) must contribute zero connectors.
+        // Slot 1 = "lib.rs" at depth 1 MUST have at least one connector.
+        //
+        // Because StubPainter records all glyphs in order, we can reason about counts:
+        // - depth-0 rows add 0 connectors each.
+        // - depth-1 row adds ≥1 connector.
+        // So total connectors == connectors from depth-1 rows only.
+        let connector_count = p
+            .glyphs
+            .iter()
+            .filter(|(cp, _)| CONNECTORS.contains(cp))
+            .count();
+
+        // There is exactly 1 depth-1 row (lib.rs), so at least 1 connector expected.
+        assert!(
+            connector_count >= 1,
+            "depth-1 row must emit at least one connector glyph"
+        );
+
+        // Now draw without expansion (all rows at depth 0). Zero connectors expected.
+        let mut r2 = Raster::new(800, 800);
+        let mut p2 = StubPainter::default();
+        draw_left_dock(
+            &mut r2,
+            &mut p2,
+            m,
+            &th,
+            Some(&root_snap),
+            None,
+            None,
+            dock_rect(),
+        );
+        let connector_count_flat = p2
+            .glyphs
+            .iter()
+            .filter(|(cp, _)| CONNECTORS.contains(cp))
+            .count();
+        assert_eq!(
+            connector_count_flat, 0,
+            "top-level rows (depth 0) must emit NO connector glyphs; got {connector_count_flat}"
+        );
+    }
+
     /// Item 9: file_icon returns extension-appropriate glyphs.
     #[test]
     fn file_icon_returns_extension_glyphs() {

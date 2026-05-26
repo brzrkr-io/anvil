@@ -858,6 +858,7 @@ impl App {
             self.chrome_bottom_px(),
             self.left_dock_visible,
             self.left_dock_w_pt * self.ui_scale,
+            self.ui_scale,
         )
         .compute_areas(
             self.window_inner(),
@@ -1359,6 +1360,7 @@ impl App {
             self.chrome_bottom_px(),
             self.left_dock_visible,
             self.left_dock_w_pt * self.ui_scale,
+            self.ui_scale,
         )
         .compute_areas(
             self.window_inner(),
@@ -2587,6 +2589,7 @@ impl App {
                     &diag_by_pane,
                     self.hovered_editor_tab,
                     &mut self.editor_tab_hits,
+                    self.ui_scale,
                 );
             }
         } else {
@@ -2639,6 +2642,7 @@ impl App {
                 self.chrome_bottom_px(),
                 self.left_dock_visible,
                 self.left_dock_w_pt,
+                self.ui_scale,
             )
             .compute_areas(self.window_inner(), metrics.cell_w, metrics.cell_h);
             // NE15: context-bar editor segment reads from the focused native
@@ -5489,11 +5493,11 @@ impl AppHandler for AppShell {
         }
 
         // Sidebar right-edge resize handle (item 13).
-        // Hit zone: ±SIDEBAR_DRAG_HIT_PX of the dock right edge in device px.
+        // Hit zone: ±SIDEBAR_DRAG_HIT_PX logical pt, scaled by ui_scale (A6).
         if app.left_dock_visible && app.layout_mode == LayoutMode::Ide {
             let (rx, _ry) = app.view_pt_to_raster_px(loc);
             let edge_x = app.left_dock_w_pt * app.window_scale;
-            if (rx - edge_x).abs() <= SIDEBAR_DRAG_HIT_PX {
+            if (rx - edge_x).abs() <= SIDEBAR_DRAG_HIT_PX * app.ui_scale {
                 app.sidebar_drag_active = true;
                 app.dirty = true;
                 return;
@@ -5501,12 +5505,12 @@ impl AppHandler for AppShell {
         }
 
         // IDE editor/drawer horizontal divider (item 13b).
-        // Hit zone: ±4 device px of the divider y between editor and drawer panes.
+        // Hit zone: ±4 logical pt, scaled by ui_scale (A6).
         {
-            const DRAWER_DRAG_HIT_PX: f64 = 4.0;
+            const DRAWER_DRAG_HIT_PT: f64 = 4.0;
             let (_rx, ry) = app.view_pt_to_raster_px(loc);
             if let Some(div_y) = app.ide_drawer_divider_y() {
-                if (ry - div_y).abs() <= DRAWER_DRAG_HIT_PX {
+                if (ry - div_y).abs() <= DRAWER_DRAG_HIT_PT * app.ui_scale {
                     app.drawer_drag_active = true;
                     app.dirty = true;
                     return;
