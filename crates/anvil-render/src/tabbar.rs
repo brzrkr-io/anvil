@@ -171,9 +171,16 @@ pub fn draw_tab_bar(
             // 1px vertical hairlines — left and right edges.
             raster.fill_pixel_rect(x, 0.0, 1.0, chrome_top_px - 1.0, theme.hairline);
             raster.fill_pixel_rect(x + tw - 1.0, 0.0, 1.0, chrome_top_px - 1.0, theme.hairline);
-            // Full-width accent rule.
-            let rule_y = chrome_top_px - 4.0;
-            raster.fill_pixel_rect(x, rule_y, tw, 3.0, theme.accent_bright);
+            // 2px accent rule inset 4pt from each edge.
+            let inset = 4.0 * window_scale;
+            let rule_y = chrome_top_px - 3.0;
+            raster.fill_pixel_rect(
+                x + inset,
+                rule_y,
+                tw - 2.0 * inset,
+                2.0,
+                theme.accent_primary,
+            );
         } else {
             // Inactive tab: 1px left-edge hairline so adjacent tabs have a
             // sharp dividing line. Right edge is provided by the next tab's

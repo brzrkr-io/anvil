@@ -90,7 +90,7 @@ pub fn draw_editor_into(
 
     // ── Background: native editor surface, not terminal canvas ────────────────
     raster.fill_pixel_rect(rect.x, rect.y, rect.w, rect.h, theme.surface);
-    raster.fill_pixel_rect(rect.x, rect.y, gutter_w, rect.h, theme.charcoal);
+    raster.fill_pixel_rect(rect.x, rect.y, gutter_w, rect.h, theme.graphite);
     raster.fill_pixel_rect(rect.x + gutter_w - 1.0, rect.y, 1.0, rect.h, theme.hairline);
 
     // Available content columns to the right of the gutter.

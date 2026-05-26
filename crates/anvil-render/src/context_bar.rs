@@ -50,21 +50,11 @@ pub fn draw_context_bar(
     let by = rect.y;
     let cell_h = metrics.cell_h;
 
-    // Direction A native/window bar: traffic dots, IDE chip, path, compact
-    // context chips. It should read as editor chrome, not a right-HUD header.
-    raster.fill_pixel_rect(bx, by, bar_w, bar_h, [0x0f, 0x0d, 0x0b]);
-    raster.fill_pixel_rect_alpha(bx, by, bar_w, bar_h, theme.accent_ember, 0.025);
-    raster.fill_pixel_rect_alpha(bx, by + bar_h - 1.0, bar_w, 1.0, theme.accent_bright, 0.22);
+    raster.fill_pixel_rect(bx, by, bar_w, bar_h, theme.graphite);
+    raster.fill_pixel_rect(bx, by + bar_h - 1.0, bar_w, 1.0, theme.hairline);
 
     let glyph_y = by + ((bar_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
-    let mid_y = by + bar_h * 0.5;
-    let mut x = bx + 12.0;
-
-    for color in [[0xe5, 0x6b, 0x5e], [0xd6, 0x9a, 0x45], [0x5b, 0xa9, 0x77]] {
-        raster.fill_pixel_rect(x, mid_y - 5.0, 10.0, 10.0, color);
-        x += 17.0;
-    }
-    x += 6.0;
+    let mut x = bx + 12.0 + 80.0;
 
     x = draw_chip(raster, painter, metrics, theme, "IDE", x, by, bar_h, true) + 10.0;
 
