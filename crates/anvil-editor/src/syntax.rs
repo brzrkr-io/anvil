@@ -232,6 +232,157 @@ impl Default for SyntaxLayer {
     }
 }
 
+// ── Outline derivation (NE9 / item 19) ───────────────────────────────────────
+
+/// Symbol kind as returned by `derive_outline_rows`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutlineSymbolKind {
+    Function,
+    Impl,
+    Struct,
+    Enum,
+    Trait,
+    Other,
+}
+
+/// A single symbol entry produced by [`derive_outline_rows`].
+#[derive(Debug, Clone)]
+pub struct OutlineSymbol {
+    pub kind: OutlineSymbolKind,
+    /// Display name (identifier token, or best-effort text).
+    pub name: String,
+    /// 0-based line number in the buffer.
+    pub line: usize,
+}
+
+/// Walk the syntax tree for the top-level named declarations in `layer` and
+/// return them as a flat list.  Falls back to a line-regex scan when no tree
+/// is available (e.g. non-Rust buffers where the tree-sitter grammar isn't
+/// loaded).
+///
+/// Capped at 500 nodes for performance.
+pub fn derive_outline_rows(layer: &SyntaxLayer, text: &str) -> Vec<OutlineSymbol> {
+    const NODE_CAP: usize = 500;
+
+    // Tree-sitter path: walk the tree looking for named declaration nodes.
+    if let Some(tree) = &layer.tree {
+        let mut results = Vec::new();
+        let mut stack: Vec<tree_sitter::Node<'_>> = vec![tree.root_node()];
+        let mut visited = 0usize;
+
+        while let Some(node) = stack.pop() {
+            visited += 1;
+            if visited > NODE_CAP {
+                break;
+            }
+
+            let kind = node.kind();
+            let sym_kind = match kind {
+                "function_item" => Some(OutlineSymbolKind::Function),
+                "impl_item" => Some(OutlineSymbolKind::Impl),
+                "struct_item" => Some(OutlineSymbolKind::Struct),
+                "enum_item" => Some(OutlineSymbolKind::Enum),
+                "trait_item" => Some(OutlineSymbolKind::Trait),
+                _ => None,
+            };
+
+            if let Some(sk) = sym_kind {
+                // Extract the name from the first "name" or "type_identifier" child.
+                let name = node
+                    .child_by_field_name("name")
+                    .and_then(|n| text.get(n.byte_range()))
+                    .unwrap_or(kind)
+                    .to_string();
+                let line = node.start_position().row;
+                results.push(OutlineSymbol {
+                    kind: sk,
+                    name,
+                    line,
+                });
+                // Don't recurse into declaration bodies — top-level only.
+                continue;
+            }
+
+            // Push children in reverse so we visit left-to-right.
+            for i in (0..node.child_count()).rev() {
+                if let Some(child) = node.child(i) {
+                    stack.push(child);
+                }
+            }
+        }
+
+        if !results.is_empty() {
+            return results;
+        }
+    }
+
+    // Regex-fallback path: scan text lines for fn/struct/impl/enum/trait.
+    let mut results = Vec::new();
+    for (line_idx, line) in text.lines().enumerate() {
+        if results.len() >= NODE_CAP {
+            break;
+        }
+        let trimmed = line.trim_start();
+        let (sym_kind, prefix) = if trimmed.starts_with("pub fn ")
+            || trimmed.starts_with("fn ")
+            || trimmed.starts_with("async fn ")
+            || trimmed.starts_with("pub async fn ")
+        {
+            let prefix = if trimmed.starts_with("pub async fn ") {
+                "pub async fn "
+            } else if trimmed.starts_with("async fn ") {
+                "async fn "
+            } else if trimmed.starts_with("pub fn ") {
+                "pub fn "
+            } else {
+                "fn "
+            };
+            (OutlineSymbolKind::Function, prefix)
+        } else if trimmed.starts_with("pub struct ") || trimmed.starts_with("struct ") {
+            let prefix = if trimmed.starts_with("pub struct ") {
+                "pub struct "
+            } else {
+                "struct "
+            };
+            (OutlineSymbolKind::Struct, prefix)
+        } else if trimmed.starts_with("impl ") {
+            (OutlineSymbolKind::Impl, "impl ")
+        } else if trimmed.starts_with("pub enum ") || trimmed.starts_with("enum ") {
+            let prefix = if trimmed.starts_with("pub enum ") {
+                "pub enum "
+            } else {
+                "enum "
+            };
+            (OutlineSymbolKind::Enum, prefix)
+        } else if trimmed.starts_with("pub trait ") || trimmed.starts_with("trait ") {
+            let prefix = if trimmed.starts_with("pub trait ") {
+                "pub trait "
+            } else {
+                "trait "
+            };
+            (OutlineSymbolKind::Trait, prefix)
+        } else {
+            continue;
+        };
+
+        // Take the identifier up to the first whitespace or '{' or '<' or '('.
+        let rest = &trimmed[prefix.len()..];
+        let name: String = rest
+            .chars()
+            .take_while(|&c| c != ' ' && c != '{' && c != '<' && c != '(' && c != '\n')
+            .collect();
+        if name.is_empty() {
+            continue;
+        }
+        results.push(OutlineSymbol {
+            kind: sym_kind,
+            name,
+            line: line_idx,
+        });
+    }
+    results
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -383,5 +534,55 @@ mod tests {
             layer.visible_cache.borrow().is_none(),
             "invalidate must clear the cache"
         );
+    }
+
+    // ── Item 19: outline derivation ───────────────────────────────────────────
+
+    #[test]
+    fn derive_outline_rows_tree_sitter_finds_rust_fn() {
+        let src = "pub fn hello() {}\nfn world() {}\n";
+        let mut layer = SyntaxLayer::new();
+        layer.set_language_from_path(&path("lib.rs"));
+        layer.parse(src);
+
+        let rows = super::derive_outline_rows(&layer, src);
+        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert!(
+            names.contains(&"hello"),
+            "outline must contain 'hello'; got {names:?}"
+        );
+        assert!(
+            names.contains(&"world"),
+            "outline must contain 'world'; got {names:?}"
+        );
+    }
+
+    #[test]
+    fn derive_outline_rows_fallback_regex_finds_struct() {
+        // No tree (no set_language_from_path call) → regex path.
+        let src = "struct Foo {}\nimpl Foo {}\n";
+        let layer = SyntaxLayer::new();
+        let rows = super::derive_outline_rows(&layer, src);
+        let kinds: Vec<super::OutlineSymbolKind> = rows.iter().map(|r| r.kind).collect();
+        assert!(
+            kinds.contains(&super::OutlineSymbolKind::Struct),
+            "fallback must find Struct; got {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&super::OutlineSymbolKind::Impl),
+            "fallback must find Impl; got {kinds:?}"
+        );
+    }
+
+    #[test]
+    fn derive_outline_rows_records_line_numbers() {
+        let src = "fn first() {}\n\nfn second() {}\n";
+        let mut layer = SyntaxLayer::new();
+        layer.set_language_from_path(&path("a.rs"));
+        layer.parse(src);
+        let rows = super::derive_outline_rows(&layer, src);
+        assert_eq!(rows.len(), 2, "expected 2 symbols; got {rows:?}");
+        assert_eq!(rows[0].line, 0, "first fn is on line 0");
+        assert_eq!(rows[1].line, 2, "second fn is on line 2");
     }
 }

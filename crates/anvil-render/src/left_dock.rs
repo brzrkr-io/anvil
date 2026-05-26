@@ -121,6 +121,8 @@ pub struct OutlineRow {
     pub kind: OutlineKind,
     /// Nesting depth (0 = top-level). Used to compute left indent.
     pub depth: u8,
+    /// 0-based buffer line this symbol starts on. Used by outline-click to jump cursor.
+    pub line: usize,
 }
 
 // ── Row geometry ──────────────────────────────────────────────────────────────
@@ -1333,11 +1335,13 @@ mod tests {
                 name: "my_fn".to_string(),
                 kind: OutlineKind::Function,
                 depth: 0,
+                line: 0,
             },
             OutlineRow {
                 name: "MyStruct".to_string(),
                 kind: OutlineKind::Struct,
                 depth: 0,
+                line: 5,
             },
         ];
         draw_left_dock(&mut r, &mut p, m, &th, None, None, Some(&rows), dock_rect());
