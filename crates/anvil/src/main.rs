@@ -490,6 +490,22 @@ pub struct DeleteConfirm {
     pub name: String,
 }
 
+// ── LSP references overlay (item 26) ─────────────────────────────────────────
+
+/// One row in the references panel.
+struct ReferencesRow {
+    path: PathBuf,
+    line: u32,
+    col: u32,
+}
+
+/// State for the references overlay panel (item 26).
+struct LspReferencesOverlay {
+    rows: Vec<ReferencesRow>,
+    /// Currently selected row (keyboard nav).
+    selected: usize,
+}
+
 // ── App ───────────────────────────────────────────────────────────────────────
 
 /// The whole application state.  Implements [`AppHandler`] via [`AppShell`].
@@ -727,6 +743,23 @@ pub struct App {
     pending_definition: Option<(PaneId, u64)>,
     /// In-flight completion request: `(pane_id, request_id)`. Polled each tick.
     pending_completion: Option<(PaneId, u64)>,
+    /// In-flight rename request: `(pane_id, request_id)`. Polled each tick (item 24).
+    pending_rename: Option<(PaneId, u64)>,
+    /// In-flight code-actions request: `(pane_id, request_id)`. Polled each tick (item 25).
+    pending_code_actions: Option<(PaneId, u64)>,
+    /// In-flight references request: `(pane_id, request_id)`. Polled each tick (item 26).
+    pending_references: Option<(PaneId, u64)>,
+    /// Workspace edits from the last code-actions response, indexed by action order (item 25).
+    /// Each entry is the flat list of rename edits for that action (may be empty for commands).
+    code_actions_pending_edits: Vec<Vec<anvil_editor::RenameEdit>>,
+
+    // ── LSP rename overlay (item 24) ──────────────────────────────────────────
+    /// When `Some`, the LSP rename overlay is open. Contains the text input.
+    lsp_rename_input: Option<String>,
+
+    // ── LSP references overlay (item 26) ──────────────────────────────────────
+    /// When `Some`, the references overlay is open.
+    lsp_references: Option<LspReferencesOverlay>,
 
     // ── UI scale (item 1) ──────────────────────────────────────────────────────
     /// Global UI scale multiplier. Applied on top of `window_scale` to font
@@ -2039,6 +2072,298 @@ impl App {
         }
     }
 
+    // ── LSP rename (item 24) ──────────────────────────────────────────────────
+
+    /// Extract the word under the primary cursor of the focused pane.
+    fn word_under_cursor(&self) -> String {
+        let Some(tab) = self.tabs.current() else {
+            return String::new();
+        };
+        let pane_id = tab.focused_id();
+        let Some(ep) = tab.editor_panes.get_pane(pane_id) else {
+            return String::new();
+        };
+        let Some(buf) = tab.editor_panes.get_buffer(ep.buffer_id) else {
+            return String::new();
+        };
+        let pos = ep.cursors[0].pos;
+        let line_text = buf.line(pos.line).to_string();
+        // Extract contiguous word chars (alphanumeric + '_') around the cursor col.
+        let chars: Vec<char> = line_text.chars().collect();
+        let col = pos.col.min(chars.len());
+        let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
+        let start = (0..col)
+            .rev()
+            .take_while(|&i| is_word_char(chars[i]))
+            .last()
+            .unwrap_or(col);
+        let end = (col..chars.len())
+            .take_while(|&i| is_word_char(chars[i]))
+            .last()
+            .map(|i| i + 1)
+            .unwrap_or(col);
+        chars[start..end].iter().collect()
+    }
+
+    /// Open the LSP rename overlay (F2 in editor body, item 24).
+    fn open_lsp_rename_overlay(&mut self) {
+        let word = self.word_under_cursor();
+        if let Some(lsp) = &self.lsp_manager {
+            // Check a live server exists; if not, log and bail.
+            let has_server = self.tabs.current().and_then(|t| {
+                let ep = t.editor_panes.get_pane(t.focused_id())?;
+                let buf = t.editor_panes.get_buffer(ep.buffer_id)?;
+                let path = buf.tracked_path()?;
+                let ext = path.extension()?.to_str()?;
+                let lang = anvil_editor::language_id_for_ext(ext)?;
+                let sid = anvil_editor::server_id_for_language(lang)?;
+                Some(lsp.state_of(sid))
+            });
+            if !matches!(has_server, Some(anvil_editor::LspState::Live)) {
+                eprintln!("anvil-lsp: rename unavailable (no LSP)");
+                return;
+            }
+        } else {
+            eprintln!("anvil-lsp: rename unavailable (no LSP)");
+            return;
+        }
+        self.lsp_rename_input = Some(word);
+        self.dirty = true;
+    }
+
+    /// Send the rename request and apply the workspace edit (item 24).
+    fn commit_lsp_rename(&mut self, new_name: String) {
+        let Some(tab) = self.tabs.current() else {
+            return;
+        };
+        let pane_id = tab.focused_id();
+        let Some(ep) = tab.editor_panes.get_pane(pane_id) else {
+            return;
+        };
+        let Some(buf) = tab.editor_panes.get_buffer(ep.buffer_id) else {
+            return;
+        };
+        let Some(path) = buf.tracked_path() else {
+            return;
+        };
+        let line = ep.cursors[0].pos.line as u32;
+        let character = ep.cursors[0].pos.col as u32;
+        let path = path.to_path_buf();
+        if let Some(lsp) = &self.lsp_manager {
+            let req_id = lsp.request_rename(&path, line, character, new_name);
+            if req_id != 0 {
+                self.pending_rename = Some((pane_id, req_id));
+            }
+        }
+    }
+
+    /// Poll for a rename result and apply the workspace edits (item 24).
+    fn poll_rename_result(&mut self) {
+        let Some((_pane_id, req_id)) = self.pending_rename else {
+            return;
+        };
+        let edits = self
+            .lsp_manager
+            .as_ref()
+            .and_then(|lsp| lsp.poll_rename(req_id));
+        if let Some(edits) = edits {
+            self.pending_rename = None;
+            self.apply_rename_edits(edits);
+        }
+    }
+
+    /// Apply a set of `RenameEdit`s to their respective buffers (item 24).
+    ///
+    /// Files not currently open are loaded temporarily, edited, and saved.
+    /// Files already open in a buffer are edited in-place.
+    fn apply_rename_edits(&mut self, edits: Vec<anvil_editor::RenameEdit>) {
+        use std::collections::HashMap as EditsMap;
+        // Group by path so we can apply all edits to a file at once.
+        let mut by_path: EditsMap<PathBuf, Vec<anvil_editor::RenameEdit>> = EditsMap::new();
+        for e in edits {
+            by_path.entry(e.path.clone()).or_default().push(e);
+        }
+        for (path, mut path_edits) in by_path {
+            // Sort in reverse document order so earlier edits don't shift later offsets.
+            path_edits.sort_by(|a, b| {
+                b.start_line
+                    .cmp(&a.start_line)
+                    .then(b.start_col.cmp(&a.start_col))
+            });
+
+            // Try to find a buffer already open for this path.
+            let found_buf = self.tabs.current_mut().and_then(|tab| {
+                // Search open panes for a buffer matching this path.
+                tab.editor_panes.find_buffer_for_path(&path)
+            });
+
+            if let Some(buf) = found_buf {
+                // Apply edits to the live buffer.
+                for e in &path_edits {
+                    buf.replace_range(
+                        anvil_editor::Range {
+                            start: anvil_editor::Position {
+                                line: e.start_line as usize,
+                                col: e.start_col as usize,
+                            },
+                            end: anvil_editor::Position {
+                                line: e.end_line as usize,
+                                col: e.end_col as usize,
+                            },
+                        },
+                        &e.new_text,
+                    );
+                }
+                self.dirty = true;
+            } else {
+                // File not open: load, edit, save.
+                if let Ok(mut disk_buf) = anvil_editor::Buffer::from_path(&path) {
+                    for e in &path_edits {
+                        disk_buf.replace_range(
+                            anvil_editor::Range {
+                                start: anvil_editor::Position {
+                                    line: e.start_line as usize,
+                                    col: e.start_col as usize,
+                                },
+                                end: anvil_editor::Position {
+                                    line: e.end_line as usize,
+                                    col: e.end_col as usize,
+                                },
+                            },
+                            &e.new_text,
+                        );
+                    }
+                    let _ = disk_buf.save(&path);
+                }
+            }
+        }
+    }
+
+    // ── LSP code actions (item 25) ────────────────────────────────────────────
+
+    /// Trigger a `textDocument/codeAction` request for the cursor's line (Cmd+.).
+    fn trigger_code_actions_request(&mut self) {
+        let Some(tab) = self.tabs.current() else {
+            return;
+        };
+        let pane_id = tab.focused_id();
+        let Some(ep) = tab.editor_panes.get_pane(pane_id) else {
+            return;
+        };
+        let Some(buf) = tab.editor_panes.get_buffer(ep.buffer_id) else {
+            return;
+        };
+        let Some(path) = buf.tracked_path() else {
+            return;
+        };
+        let line = ep.cursors[0].pos.line as u32;
+        let path = path.to_path_buf();
+        if let Some(lsp) = &self.lsp_manager {
+            let req_id = lsp.request_code_actions(&path, line);
+            if req_id != 0 {
+                self.pending_code_actions = Some((pane_id, req_id));
+            }
+        } else {
+            eprintln!("anvil-lsp: code actions unavailable (no LSP)");
+        }
+    }
+
+    /// Poll for a code-actions result and open the popup (item 25).
+    fn poll_code_actions_result(&mut self) {
+        let Some((_pane_id, req_id)) = self.pending_code_actions else {
+            return;
+        };
+        let actions = self
+            .lsp_manager
+            .as_ref()
+            .and_then(|lsp| lsp.poll_code_actions(req_id));
+        if let Some(actions) = actions {
+            self.pending_code_actions = None;
+            if actions.is_empty() {
+                return;
+            }
+            use anvil_workspace::editor_pane::CodeActionEntry;
+            let entries: Vec<CodeActionEntry> = actions
+                .iter()
+                .map(|a| CodeActionEntry {
+                    title: a.title.clone(),
+                })
+                .collect();
+            // Store the flat edits for each action so we can apply on Enter.
+            self.code_actions_pending_edits = actions.into_iter().map(|a| a.edits).collect();
+            self.apply_editor_action(EditorAction::CodeActionsOpen(entries));
+            self.dirty = true;
+        }
+    }
+
+    /// Apply the selected code action's workspace edits (item 25).
+    fn apply_code_action(&mut self, index: usize) {
+        if let Some(edits) = self.code_actions_pending_edits.get(index).cloned() {
+            if !edits.is_empty() {
+                self.apply_rename_edits(edits);
+            }
+        }
+        self.apply_editor_action(EditorAction::CodeActionsDismiss);
+        self.code_actions_pending_edits.clear();
+    }
+
+    // ── LSP references (item 26) ──────────────────────────────────────────────
+
+    /// Trigger a `textDocument/references` request (Shift+F12, item 26).
+    fn trigger_references_request(&mut self) {
+        let Some(tab) = self.tabs.current() else {
+            return;
+        };
+        let pane_id = tab.focused_id();
+        let Some(ep) = tab.editor_panes.get_pane(pane_id) else {
+            return;
+        };
+        let Some(buf) = tab.editor_panes.get_buffer(ep.buffer_id) else {
+            return;
+        };
+        let Some(path) = buf.tracked_path() else {
+            return;
+        };
+        let line = ep.cursors[0].pos.line as u32;
+        let character = ep.cursors[0].pos.col as u32;
+        let path = path.to_path_buf();
+        if let Some(lsp) = &self.lsp_manager {
+            let req_id = lsp.request_references(&path, line, character);
+            if req_id != 0 {
+                self.pending_references = Some((pane_id, req_id));
+            }
+        } else {
+            eprintln!("anvil-lsp: references unavailable (no LSP)");
+        }
+    }
+
+    /// Poll for a references result and open the overlay (item 26).
+    fn poll_references_result(&mut self) {
+        let Some((_pane_id, req_id)) = self.pending_references else {
+            return;
+        };
+        let locs = self
+            .lsp_manager
+            .as_ref()
+            .and_then(|lsp| lsp.poll_references(req_id));
+        if let Some(locs) = locs {
+            self.pending_references = None;
+            if locs.is_empty() {
+                return;
+            }
+            let rows = locs
+                .into_iter()
+                .map(|l| ReferencesRow {
+                    path: l.path,
+                    line: l.line,
+                    col: l.col,
+                })
+                .collect();
+            self.lsp_references = Some(LspReferencesOverlay { rows, selected: 0 });
+            self.dirty = true;
+        }
+    }
+
     /// Apply `action` to the focused native editor pane.
     ///
     /// Writes any Cut/Copy text to the system clipboard.  Marks the app dirty
@@ -2950,6 +3275,42 @@ impl App {
             );
         }
 
+        // ── LSP rename overlay (item 24) ──────────────────────────────────────
+        if let Some(ref input) = self.lsp_rename_input {
+            let cw = self.font.metrics.cell_w;
+            let chrome_top = self.chrome_top_px();
+            draw_lsp_rename_overlay(
+                &mut self.raster,
+                chrome_painter,
+                chrome_metrics,
+                &self.theme,
+                input,
+                dw as f64,
+                dh as f64,
+                chrome_top,
+                cw,
+                ch,
+            );
+        }
+
+        // ── LSP references overlay (item 26) ──────────────────────────────────
+        if let Some(ref refs) = self.lsp_references {
+            let cw = self.font.metrics.cell_w;
+            let chrome_top = self.chrome_top_px();
+            draw_lsp_references_overlay(
+                &mut self.raster,
+                chrome_painter,
+                chrome_metrics,
+                &self.theme,
+                refs,
+                dw as f64,
+                dh as f64,
+                chrome_top,
+                cw,
+                ch,
+            );
+        }
+
         // Cheatsheet overlay.
         if self.cheatsheet_visible {
             let cw = self.font.metrics.cell_w;
@@ -3505,6 +3866,12 @@ impl App {
             // #23: Cmd+Shift+I → format file.
             if lch == 'i' && mods.shift && !mods.control && !mods.option {
                 self.apply_editor_action(EditorAction::FormatFile);
+                self.dirty = true;
+                return true;
+            }
+            // Item 25: Cmd+. → code actions.
+            if ch == '.' && !mods.shift && !mods.control && !mods.option {
+                self.trigger_code_actions_request();
                 self.dirty = true;
                 return true;
             }
@@ -4613,6 +4980,12 @@ impl AppHandler for AppShell {
         app.poll_definition_result();
         // Item 16: poll for pending completion responses each tick.
         app.poll_completion_result();
+        // Item 24: poll for pending rename responses each tick.
+        app.poll_rename_result();
+        // Item 25: poll for pending code-actions responses each tick.
+        app.poll_code_actions_result();
+        // Item 26: poll for pending references responses each tick.
+        app.poll_references_result();
 
         // Item 15: hover-mouse debounce — fire hover request after 400ms dwell.
         {
@@ -4848,6 +5221,83 @@ impl AppHandler for AppShell {
                         }
                     }
                     self.app.dirty = true;
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // ── LSP rename overlay (item 24) ─────────────────────────────────────
+        if self.app.lsp_rename_input.is_some() {
+            match event.key {
+                KeyInput::Escape => {
+                    self.app.lsp_rename_input = None;
+                    self.app.dirty = true;
+                }
+                KeyInput::Enter => {
+                    let new_name = self.app.lsp_rename_input.take().unwrap_or_default();
+                    if !new_name.is_empty() {
+                        self.app.commit_lsp_rename(new_name);
+                    }
+                    self.app.dirty = true;
+                }
+                KeyInput::Backspace => {
+                    if let Some(ref mut s) = self.app.lsp_rename_input {
+                        s.pop();
+                    }
+                    self.app.dirty = true;
+                }
+                KeyInput::Char(ch) if !event.mods.command => {
+                    if let Some(ref mut s) = self.app.lsp_rename_input {
+                        s.push(ch);
+                    }
+                    self.app.dirty = true;
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // ── LSP references overlay (item 26) ──────────────────────────────────
+        if self.app.lsp_references.is_some() {
+            match event.key {
+                KeyInput::Escape => {
+                    self.app.lsp_references = None;
+                    self.app.dirty = true;
+                    return;
+                }
+                KeyInput::Up => {
+                    if let Some(ref mut r) = self.app.lsp_references {
+                        r.selected = r.selected.saturating_sub(1);
+                    }
+                    self.app.dirty = true;
+                    return;
+                }
+                KeyInput::Down => {
+                    if let Some(ref mut r) = self.app.lsp_references {
+                        let n = r.rows.len();
+                        if n > 0 {
+                            r.selected = (r.selected + 1).min(n - 1);
+                        }
+                    }
+                    self.app.dirty = true;
+                    return;
+                }
+                KeyInput::Enter => {
+                    let loc = self
+                        .app
+                        .lsp_references
+                        .as_ref()
+                        .and_then(|r| r.rows.get(r.selected))
+                        .map(|row| (row.path.clone(), row.line));
+                    self.app.lsp_references = None;
+                    if let Some((path, line)) = loc {
+                        self.app.open_path_in_native_editor(&path);
+                        self.app
+                            .apply_editor_action(EditorAction::GoToLine(line as usize));
+                    }
+                    self.app.dirty = true;
+                    return;
                 }
                 _ => {}
             }
@@ -5536,6 +5986,73 @@ impl AppHandler for AppShell {
                         .apply_editor_action(EditorAction::ClearSecondaryCursors);
                     self.app.dirty = true;
                     return;
+                }
+            }
+
+            // Item 24: F2 in editor body → LSP rename overlay.
+            if event.key == KeyInput::F(2) && !event.mods.command {
+                self.app.open_lsp_rename_overlay();
+                return;
+            }
+
+            // Item 26: Shift+F12 → LSP references.
+            if event.key == KeyInput::F(12) && event.mods.shift && !event.mods.command {
+                self.app.trigger_references_request();
+                self.app.dirty = true;
+                return;
+            }
+
+            // Item 25: code-actions popup navigation (↑↓ Enter Esc) when open.
+            let code_actions_open = self
+                .app
+                .tabs
+                .current()
+                .and_then(|t| {
+                    let ep = t.editor_panes.get_pane(t.focused_id())?;
+                    Some(ep.code_actions_popup.is_some())
+                })
+                .unwrap_or(false);
+            if code_actions_open {
+                match event.key {
+                    KeyInput::Up => {
+                        self.app.apply_editor_action(EditorAction::CodeActionsUp);
+                        self.app.dirty = true;
+                        return;
+                    }
+                    KeyInput::Down => {
+                        self.app.apply_editor_action(EditorAction::CodeActionsDown);
+                        self.app.dirty = true;
+                        return;
+                    }
+                    KeyInput::Enter => {
+                        // Get selected index before dismissing.
+                        let idx = self
+                            .app
+                            .tabs
+                            .current()
+                            .and_then(|t| {
+                                let ep = t.editor_panes.get_pane(t.focused_id())?;
+                                Some(ep.code_actions_popup.as_ref()?.selected)
+                            })
+                            .unwrap_or(0);
+                        self.app.apply_code_action(idx);
+                        self.app.dirty = true;
+                        return;
+                    }
+                    KeyInput::Escape => {
+                        self.app
+                            .apply_editor_action(EditorAction::CodeActionsDismiss);
+                        self.app.code_actions_pending_edits.clear();
+                        self.app.dirty = true;
+                        return;
+                    }
+                    _ => {
+                        // Any other key closes the popup.
+                        self.app
+                            .apply_editor_action(EditorAction::CodeActionsDismiss);
+                        self.app.code_actions_pending_edits.clear();
+                        // Fall through to normal handling.
+                    }
                 }
             }
 
@@ -7187,6 +7704,113 @@ fn draw_goto_line_overlay(
     raster.fill_pixel_rect(x, panel_y + 2.0, cw, panel_h - 4.0, theme.accent_bright);
 }
 
+// ── LSP rename overlay draw (item 24) ────────────────────────────────────────
+
+/// Draw the LSP rename input overlay — same chrome as goto-line.
+#[allow(clippy::too_many_arguments)]
+fn draw_lsp_rename_overlay(
+    raster: &mut anvil_render::raster::Raster,
+    painter: &mut dyn anvil_render::raster::GlyphPainter,
+    metrics: anvil_render::raster::FontMetrics,
+    theme: &anvil_theme::Theme,
+    input: &str,
+    dw: f64,
+    _dh: f64,
+    chrome_top: f64,
+    cw: f64,
+    ch: f64,
+) {
+    let panel_w = 30.0 * cw;
+    let panel_h = ch + 8.0;
+    let panel_x = ((dw - panel_w) * 0.5).max(0.0);
+    let panel_y = chrome_top + 5.0 * ch;
+
+    raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
+    raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent);
+    raster.fill_pixel_rect(panel_x, panel_y + panel_h - 1.0, panel_w, 1.0, theme.accent);
+    raster.fill_pixel_rect(panel_x, panel_y, 1.0, panel_h, theme.accent);
+    raster.fill_pixel_rect(panel_x + panel_w - 1.0, panel_y, 1.0, panel_h, theme.accent);
+
+    let glyph_y = panel_y + 4.0;
+    let prefix = "rename: ";
+    let pad_x = 1.5 * cw;
+    let mut x = panel_x + pad_x;
+    for c in prefix.chars() {
+        if x + cw > panel_x + panel_w - pad_x {
+            break;
+        }
+        raster.glyph_at(painter, metrics, x, glyph_y, c as u32, theme.text_muted);
+        x += cw;
+    }
+    for c in input.chars() {
+        if x + cw > panel_x + panel_w - pad_x {
+            break;
+        }
+        raster.glyph_at(painter, metrics, x, glyph_y, c as u32, theme.foreground);
+        x += cw;
+    }
+    raster.fill_pixel_rect(x, panel_y + 2.0, cw, panel_h - 4.0, theme.accent_bright);
+}
+
+// ── LSP references overlay draw (item 26) ────────────────────────────────────
+
+/// Draw the references overlay panel.
+#[allow(clippy::too_many_arguments)]
+fn draw_lsp_references_overlay(
+    raster: &mut anvil_render::raster::Raster,
+    painter: &mut dyn anvil_render::raster::GlyphPainter,
+    metrics: anvil_render::raster::FontMetrics,
+    theme: &anvil_theme::Theme,
+    refs: &LspReferencesOverlay,
+    dw: f64,
+    dh: f64,
+    chrome_top: f64,
+    cw: f64,
+    ch: f64,
+) {
+    const MAX_ROWS: usize = 16;
+    const PANEL_COLS: usize = 60;
+    let show = refs.rows.len().min(MAX_ROWS);
+    if show == 0 {
+        return;
+    }
+    let panel_w = PANEL_COLS as f64 * cw;
+    let panel_h = (show + 1) as f64 * ch; // +1 for header row
+    let panel_x = ((dw - panel_w) * 0.5).max(0.0);
+    let panel_y = (chrome_top + 2.0 * ch).min(dh - panel_h).max(chrome_top);
+
+    // Background + border.
+    raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
+    raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent);
+    raster.fill_pixel_rect(panel_x, panel_y + panel_h - 1.0, panel_w, 1.0, theme.accent);
+    raster.fill_pixel_rect(panel_x, panel_y, 1.0, panel_h, theme.accent);
+    raster.fill_pixel_rect(panel_x + panel_w - 1.0, panel_y, 1.0, panel_h, theme.accent);
+
+    // Header row.
+    let header = format!("references ({} found)", refs.rows.len());
+    let header_y = panel_y;
+    for (ci, c) in header.chars().take(PANEL_COLS - 2).enumerate() {
+        let tx = panel_x + (ci + 1) as f64 * cw;
+        raster.glyph_at(painter, metrics, tx, header_y, c as u32, theme.text_muted);
+    }
+
+    let visible_selected = refs.selected.min(show.saturating_sub(1));
+    for (ri, row) in refs.rows.iter().enumerate().take(show) {
+        let row_y = panel_y + (ri + 1) as f64 * ch;
+        if ri == visible_selected {
+            raster.fill_pixel_rect_alpha(panel_x, row_y, panel_w, ch, theme.accent, 0.18);
+        }
+        // Format: "basename:line"
+        let base = row.path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+        let label = format!("{}:{}:{}", base, row.line + 1, row.col + 1);
+        let label_chars: Vec<char> = label.chars().take(PANEL_COLS - 2).collect();
+        for (ci, &c) in label_chars.iter().enumerate() {
+            let tx = panel_x + (ci + 1) as f64 * cw;
+            raster.glyph_at(painter, metrics, tx, row_y, c as u32, theme.foreground);
+        }
+    }
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 fn main() -> Result<()> {
@@ -7564,6 +8188,12 @@ fn main() -> Result<()> {
         hover_mouse_time: None,
         pending_definition: None,
         pending_completion: None,
+        pending_rename: None,
+        pending_code_actions: None,
+        pending_references: None,
+        code_actions_pending_edits: Vec::new(),
+        lsp_rename_input: None,
+        lsp_references: None,
         ui_scale: 1.0,
         focus_target: FocusTarget::default(),
         selected_explorer_row: None,
