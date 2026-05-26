@@ -259,24 +259,33 @@ pub fn draw_editor_into(
             raster.glyph_at(painter, metrics, gx, row_y, ch_g as u32, theme.text_muted);
         }
 
-        // ── Git gutter glyph (NE13) ───────────────────────────────────────────
+        // ── Git gutter bar (T1) ──────────────────────────────────────────────
+        // 2 px wide vertical bar at the right edge of the gutter (just before
+        // the content area).  Added → verified (green), Modified → attention
+        // (yellow), Removed → failure (red) triangle marker ◢ at the row top.
         if let Some(gg) = gutter {
-            // Glyph in column (digit_cols + 1); column (digit_cols + 2) is gap.
-            let glyph_col = digit_cols + 1;
-            let gx = rect.x + glyph_col as f64 * cw;
             let change = gg
                 .per_line
                 .get(line_idx)
                 .copied()
                 .unwrap_or(GitChange::None);
-            let (cp, color) = match change {
-                GitChange::None => (0u32, theme.text_muted),
-                GitChange::Added => ('+' as u32, theme.verified),
-                GitChange::Modified => ('~' as u32, theme.attention),
-                GitChange::Removed => ('\u{25B4}' as u32, theme.failure), // ▴
-            };
             if change != GitChange::None {
-                raster.glyph_at(painter, metrics, gx, row_y, cp, color);
+                // Bar sits at x = gutter_w - 2 px, full cell height.
+                let bar_x = rect.x + gutter_w - 2.0;
+                let color = match change {
+                    GitChange::None => theme.text_muted, // unreachable
+                    GitChange::Added => theme.verified,
+                    GitChange::Modified => theme.attention,
+                    GitChange::Removed => theme.failure,
+                };
+                if change == GitChange::Removed {
+                    // Triangle marker ◢ painted as a glyph at the top of the bar.
+                    // Place it one column to the left of the bar so it is visible.
+                    let gx = rect.x + (digit_cols as f64) * cw;
+                    raster.glyph_at(painter, metrics, gx, row_y, '\u{25E2}' as u32, color);
+                } else {
+                    raster.fill_pixel_rect(bar_x, row_y, 2.0, ch, color);
+                }
             }
         }
 
@@ -2077,6 +2086,60 @@ mod tests {
         assert!(
             has_tilde,
             "tilde glyphs must be painted below the last buffer line"
+        );
+    }
+
+    // ── T1: git gutter bar renders as fills, not as '+' / '~' glyphs ─────────
+
+    /// Added and Modified lines must NOT paint '+' or '~' glyphs in the gutter;
+    /// the indicator is rendered as a pixel-rect fill (2px bar).
+    #[test]
+    fn git_gutter_bar_does_not_paint_plus_or_tilde_glyphs() {
+        use anvil_editor::{GitChange, GitGutter};
+
+        let buf = Buffer::from_text("line one\nline two\n");
+        let pane = make_pane(1);
+        let mut raster = Raster::new(400, 200);
+        let mut painter = CapturePainter::default();
+        let theme = MINERAL_DARK;
+
+        let gutter = GitGutter {
+            per_line: vec![GitChange::Added, GitChange::Modified],
+        };
+
+        draw_editor_into(
+            &mut raster,
+            &mut painter,
+            &pane,
+            &buf,
+            metrics(),
+            &theme,
+            rect(),
+            &[],
+            Some(&gutter),
+            false,
+            0.0,
+            0.0,
+        );
+
+        // The old glyph approach would paint '+' (0x2B) and '~' (0x7E) in the gutter.
+        // After T1, these must NOT appear as glyph calls for Added/Modified lines.
+        // (The line-number digits '1', '2' are fine; we filter by gutter color.)
+        let plus_in_gutter = painter
+            .calls
+            .iter()
+            .any(|(cp, fg)| *cp == '+' as u32 && *fg == theme.verified);
+        let tilde_in_gutter = painter
+            .calls
+            .iter()
+            .any(|(cp, fg)| *cp == '~' as u32 && *fg == theme.attention);
+        assert!(
+            !plus_in_gutter,
+            "Added lines must use a fill bar, not a '+' glyph"
+        );
+        assert!(
+            !tilde_in_gutter,
+            "Modified lines must use a fill bar, not a '~' glyph"
         );
     }
 }

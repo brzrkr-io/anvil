@@ -133,6 +133,19 @@ struct Toast {
     expires_at: Instant,
 }
 
+// ── Blame popup (T2) ─────────────────────────────────────────────────────────
+
+/// Active git-blame tooltip shown on 800ms hover dwell over an editor line.
+struct BlamePopup {
+    /// Text to show: `<author> · <time> · <hash>` or `Not Committed Yet`.
+    text: String,
+    /// The line the popup is anchored to (0-indexed buffer line).
+    anchor_line: usize,
+    /// Raster-space pixel position of the mouse when the popup was triggered.
+    anchor_x: f64,
+    anchor_y: f64,
+}
+
 // ── Constants ────────────────────────────────────────────────────────────────
 
 /// Uniform inset in device pixels between the window edge and the terminal grid.
@@ -166,6 +179,47 @@ struct GitResult {
 /// Result sent from the recent-files worker to the main thread.
 struct RecentResult {
     files: Vec<String>,
+}
+
+// ── Gutter worker (T1) ──────────────────────────────────────────────────────
+
+/// Request sent to the git-gutter worker.
+struct GutterRequest {
+    buffer_id: anvil_editor::BufferId,
+    path: std::path::PathBuf,
+    text: String,
+}
+
+/// Result returned by the git-gutter worker.
+struct GutterResult {
+    buffer_id: anvil_editor::BufferId,
+    gutter: anvil_editor::GitGutter,
+}
+
+// ── Blame worker (T2) ───────────────────────────────────────────────────────
+
+/// Request sent to the git-blame worker.
+struct BlameRequest {
+    path: std::path::PathBuf,
+    /// 1-indexed line number (git blame -L uses 1-based).
+    line: usize,
+}
+
+/// Parsed blame entry returned by the blame worker.
+struct BlameEntry {
+    author: String,
+    /// Relative human-readable time, e.g. "3 hours ago".
+    time_relative: String,
+    /// Short commit hash (first 7 chars).
+    short_hash: String,
+}
+
+/// Result returned by the git-blame worker.
+struct BlameResult {
+    path: std::path::PathBuf,
+    line: usize,
+    /// `None` means "Not Committed Yet".
+    entry: Option<BlameEntry>,
 }
 
 /// Sent from the file-watcher thread to the main thread when a tracked buffer's
@@ -410,6 +464,103 @@ fn git_head_oneline(cwd: &std::path::Path) -> (String, String) {
     match line.split_once(' ') {
         Some((sha, subject)) => (sha.to_string(), subject.to_string()),
         None => (line.to_string(), String::new()),
+    }
+}
+
+// ── git blame shell-out (T2) ─────────────────────────────────────────────────
+
+/// Run `git blame -L<line>,<line> --porcelain <path>` and parse the first entry.
+///
+/// `line` is 0-indexed (converted to 1-indexed for git).
+/// Returns `None` when git is unavailable, the file is untracked, or the line
+/// has not yet been committed ("0000…" hash).
+fn run_git_blame(path: &std::path::Path, line: usize) -> Option<BlameEntry> {
+    let git_line = line + 1; // git blame uses 1-based lines
+    let dir = path.parent().unwrap_or(std::path::Path::new("."));
+    let output = std::process::Command::new("git")
+        .args([
+            "blame",
+            &format!("-L{git_line},{git_line}"),
+            "--porcelain",
+            &path.to_string_lossy(),
+        ])
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    parse_blame_porcelain(&text)
+}
+
+/// Parse a single entry from `git blame --porcelain` output.
+///
+/// The porcelain format starts with: `<40-char-hash> <orig-line> <final-line> <count>`
+/// Followed by key/value lines until the actual source line (prefixed with `\t`).
+///
+/// Returns `None` when the commit is "not yet committed" (all-zero hash).
+fn parse_blame_porcelain(text: &str) -> Option<BlameEntry> {
+    let mut lines = text.lines();
+    let header = lines.next()?;
+    let hash = header.split_whitespace().next()?;
+    // All-zero hash means uncommitted.
+    if hash.chars().all(|c| c == '0') {
+        return None;
+    }
+    let short_hash = &hash[..hash.len().min(7)];
+
+    let mut author = String::new();
+    let mut author_time: u64 = 0;
+    let mut author_tz = String::from("+0000");
+
+    for line in lines {
+        if line.starts_with('\t') {
+            break; // source line — done
+        }
+        if let Some(val) = line.strip_prefix("author ") {
+            author = val.to_string();
+        } else if let Some(val) = line.strip_prefix("author-time ") {
+            author_time = val.parse().unwrap_or(0);
+        } else if let Some(val) = line.strip_prefix("author-tz ") {
+            author_tz = val.to_string();
+        }
+    }
+
+    let _ = author_tz; // timezone not used in display
+    let time_relative = blame_relative_time(author_time);
+
+    Some(BlameEntry {
+        author,
+        time_relative,
+        short_hash: short_hash.to_string(),
+    })
+}
+
+/// Format a UNIX timestamp as a human-readable relative time string.
+fn blame_relative_time(unix_secs: u64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let secs = now.saturating_sub(unix_secs);
+    if secs < 60 {
+        "just now".to_string()
+    } else if secs < 3600 {
+        let m = secs / 60;
+        format!("{m} min ago")
+    } else if secs < 86400 {
+        let h = secs / 3600;
+        format!("{h} hr ago")
+    } else if secs < 86400 * 30 {
+        let d = secs / 86400;
+        format!("{d} days ago")
+    } else if secs < 86400 * 365 {
+        let mo = secs / (86400 * 30);
+        format!("{mo} mo ago")
+    } else {
+        let y = secs / (86400 * 365);
+        format!("{y} yr ago")
     }
 }
 
@@ -755,6 +906,24 @@ pub struct App {
     // -- git worker ---
     git_tx: mpsc::SyncSender<PathBuf>,
     git_rx: mpsc::Receiver<GitResult>,
+
+    // -- git gutter worker (T1) ---
+    gutter_tx: mpsc::SyncSender<GutterRequest>,
+    gutter_rx: mpsc::Receiver<GutterResult>,
+
+    // -- git blame worker (T2) ---
+    blame_tx: mpsc::SyncSender<BlameRequest>,
+    blame_rx: mpsc::Receiver<BlameResult>,
+    /// Cached blame entries: (path, 0-indexed line) → (entry, received_at).
+    /// TTL is 60 s; entries are evicted lazily on access.
+    blame_cache: std::collections::HashMap<(PathBuf, usize), (Option<BlameEntry>, Instant)>,
+    /// When the cursor has been on the same line for >800ms, this holds the
+    /// dwell target so we know to fire a blame request.
+    /// `(pane_id, buffer_line, dwell_started)`.
+    blame_hover: Option<(PaneId, usize, Instant)>,
+    /// Active blame popup to render this frame.  Set when a blame result
+    /// arrives and the cursor is still on the triggering line.
+    blame_popup: Option<BlamePopup>,
 
     // -- recent-files worker ---
     recent_cwd_tx: mpsc::SyncSender<PathBuf>,
@@ -1911,6 +2080,18 @@ impl App {
                 self.recent_file_list.truncate(50);
                 // Item 27: register this buffer with the file watcher.
                 let _ = self.file_watch_tx.try_send((buffer_id, abs));
+                // T1: request gutter computation on a worker thread.
+                if let Some(tab) = self.tabs.current() {
+                    if let Some(buf) = tab.editor_panes.get_buffer(buffer_id) {
+                        if let Some(p) = buf.tracked_path() {
+                            self.request_gutter_recompute(
+                                buffer_id,
+                                p.to_path_buf(),
+                                buf.to_text(),
+                            );
+                        }
+                    }
+                }
             }
             Err(err) => {
                 eprintln!("anvil: failed to open {}: {err}", path.display());
@@ -2339,6 +2520,165 @@ impl App {
             }
         }
         self.dirty = true;
+    }
+
+    // ── T1: gutter worker polling ─────────────────────────────────────────────
+
+    /// Drain all pending gutter results and install each into the matching buffer.
+    fn poll_gutter_results(&mut self) {
+        while let Ok(GutterResult { buffer_id, gutter }) = self.gutter_rx.try_recv() {
+            let mut found = false;
+            for tab in self.tabs.tabs.iter_mut() {
+                if let Some(buf) = tab.editor_panes.get_buffer_mut(buffer_id) {
+                    buf.git_gutter = Some(gutter);
+                    found = true;
+                    break;
+                }
+            }
+            if found {
+                self.dirty = true;
+            }
+        }
+    }
+
+    /// Send a gutter recompute request for `buffer_id` at `path` with the
+    /// current text snapshot.  Called after a file open or save.
+    fn request_gutter_recompute(
+        &self,
+        buffer_id: anvil_editor::BufferId,
+        path: PathBuf,
+        text: String,
+    ) {
+        let _ = self.gutter_tx.try_send(GutterRequest {
+            buffer_id,
+            path,
+            text,
+        });
+    }
+
+    // ── T2: blame hover logic ─────────────────────────────────────────────────
+
+    /// Track cursor-line dwell.  Called each tick.  After 800ms on the same
+    /// line in a native editor, fires a blame request (if not already cached).
+    fn tick_blame_hover(&mut self) {
+        const BLAME_DWELL: std::time::Duration = std::time::Duration::from_millis(800);
+        const BLAME_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+        let now = Instant::now();
+
+        // Resolve current (pane, line) for the focused native editor.
+        let current_target: Option<(PaneId, usize, PathBuf)> = (|| {
+            let tab = self.tabs.current()?;
+            let pane_id = tab.focused_id();
+            let ep = tab.editor_panes.get_pane(pane_id)?;
+            let buf = tab.editor_panes.get_buffer(ep.buffer_id)?;
+            let path = buf.tracked_path()?.to_path_buf();
+            let line = ep.primary_cursor().pos.line;
+            Some((pane_id, line, path))
+        })();
+
+        let Some((pane_id, cur_line, path)) = current_target else {
+            // Not in a native editor — clear blame state.
+            self.blame_hover = None;
+            self.blame_popup = None;
+            return;
+        };
+
+        // Update or reset the dwell tracker.
+        match self.blame_hover {
+            Some((pid, line, _)) if pid == pane_id && line == cur_line => {
+                // Same line — check if dwell threshold passed.
+                let dwell_since = self.blame_hover.unwrap().2;
+                if now.duration_since(dwell_since) >= BLAME_DWELL {
+                    // Check cache first.
+                    let cache_key = (path.clone(), cur_line);
+                    let cached = self.blame_cache.get(&cache_key).and_then(|(entry, ts)| {
+                        if now.duration_since(*ts) < BLAME_TTL {
+                            Some(entry)
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some(entry) = cached {
+                        // Cache hit — show popup from cache.
+                        let text = match entry {
+                            Some(e) => {
+                                format!("{} · {} · {}", e.author, e.time_relative, e.short_hash)
+                            }
+                            None => "Not Committed Yet".to_string(),
+                        };
+                        if self.blame_popup.as_ref().map(|p| p.anchor_line) != Some(cur_line) {
+                            if let Some(pos) = self.hover_mouse_pos {
+                                self.blame_popup = Some(BlamePopup {
+                                    text,
+                                    anchor_line: cur_line,
+                                    anchor_x: pos.0,
+                                    anchor_y: pos.1,
+                                });
+                                self.dirty = true;
+                            }
+                        }
+                    } else if self.blame_popup.is_none() {
+                        // No cache hit and no popup yet — fire request (once).
+                        let _ = self.blame_tx.try_send(BlameRequest {
+                            path,
+                            line: cur_line,
+                        });
+                        // Advance blame_hover time so we don't spam requests.
+                        self.blame_hover = Some((pane_id, cur_line, now));
+                    }
+                }
+            }
+            _ => {
+                // Line changed — reset dwell, clear popup.
+                self.blame_hover = Some((pane_id, cur_line, now));
+                self.blame_popup = None;
+            }
+        }
+    }
+
+    /// Poll for a blame result, cache it, and update `blame_popup` if the cursor
+    /// is still on the same line.
+    fn poll_blame_result(&mut self) {
+        while let Ok(result) = self.blame_rx.try_recv() {
+            let now = Instant::now();
+            let cache_key = (result.path.clone(), result.line);
+            self.blame_cache.insert(cache_key, (result.entry, now));
+            // Update popup if the cursor is still on this line.
+            let current_line: Option<(usize, (f64, f64))> = (|| {
+                let tab = self.tabs.current()?;
+                let pane_id = tab.focused_id();
+                let ep = tab.editor_panes.get_pane(pane_id)?;
+                let buf = tab.editor_panes.get_buffer(ep.buffer_id)?;
+                let path = buf.tracked_path()?;
+                if path != result.path {
+                    return None;
+                }
+                let line = ep.primary_cursor().pos.line;
+                let pos = self.hover_mouse_pos?;
+                Some((line, pos))
+            })();
+            if let Some((cur_line, pos)) = current_line {
+                if cur_line == result.line {
+                    let entry_opt = self.blame_cache.get(&(result.path, result.line));
+                    if let Some((entry, _)) = entry_opt {
+                        let text = match entry {
+                            Some(e) => {
+                                format!("{} · {} · {}", e.author, e.time_relative, e.short_hash)
+                            }
+                            None => "Not Committed Yet".to_string(),
+                        };
+                        self.blame_popup = Some(BlamePopup {
+                            text,
+                            anchor_line: cur_line,
+                            anchor_x: pos.0,
+                            anchor_y: pos.1,
+                        });
+                        self.dirty = true;
+                    }
+                }
+            }
+        }
     }
 
     /// Poll for a hover result and populate the target pane's `hover_popup` if
@@ -3859,6 +4199,59 @@ impl App {
             );
         }
 
+        // ── T2: git blame tooltip ────────────────────────────────────────────
+        if let Some(ref popup) = self.blame_popup {
+            let metrics = self.font.metrics;
+            let cw = metrics.cell_w;
+            let ch = metrics.cell_h;
+            let pad = 6.0 * self.ui_scale;
+            let chars: Vec<char> = popup.text.chars().collect();
+            let tip_w = chars.len() as f64 * cw + pad * 2.0;
+            let tip_h = ch + pad * 2.0;
+            // Position slightly above-right of the mouse.
+            let tip_x = (popup.anchor_x + 12.0 * self.ui_scale)
+                .min(dw as f64 - tip_w)
+                .max(0.0);
+            let tip_y = (popup.anchor_y - tip_h - 4.0 * self.ui_scale)
+                .min(dh as f64 - tip_h)
+                .max(0.0);
+            // Background.
+            self.raster
+                .fill_pixel_rect(tip_x, tip_y, tip_w, tip_h, self.theme.panel);
+            // 1px hairline border.
+            self.raster
+                .fill_pixel_rect(tip_x, tip_y, tip_w, 1.0, self.theme.hairline);
+            self.raster.fill_pixel_rect(
+                tip_x,
+                tip_y + tip_h - 1.0,
+                tip_w,
+                1.0,
+                self.theme.hairline,
+            );
+            self.raster
+                .fill_pixel_rect(tip_x, tip_y, 1.0, tip_h, self.theme.hairline);
+            self.raster.fill_pixel_rect(
+                tip_x + tip_w - 1.0,
+                tip_y,
+                1.0,
+                tip_h,
+                self.theme.hairline,
+            );
+            // Text.
+            let gy = tip_y + pad;
+            for (i, &c) in chars.iter().enumerate() {
+                let gx = tip_x + pad + i as f64 * cw;
+                self.raster.glyph_at(
+                    chrome_painter,
+                    metrics,
+                    gx,
+                    gy,
+                    c as u32,
+                    self.theme.text_subtle,
+                );
+            }
+        }
+
         // ── Disk-changed banner (item 27) ────────────────────────────────────
         {
             let cw = self.font.metrics.cell_w;
@@ -4600,7 +4993,25 @@ impl App {
                         None
                     };
                 match save_result {
-                    Some(Ok(name)) => self.toast_success(&format!("Saved {name}")),
+                    Some(Ok(name)) => {
+                        self.toast_success(&format!("Saved {name}"));
+                        // T1: request gutter recompute after successful save.
+                        if let Some(tab) = self.tabs.current() {
+                            let id = tab.focused_id();
+                            if let Some(ep) = tab.editor_panes.get_pane(id) {
+                                let buf_id = ep.buffer_id;
+                                if let Some(buf) = tab.editor_panes.get_buffer(buf_id) {
+                                    if let Some(p) = buf.tracked_path() {
+                                        self.request_gutter_recompute(
+                                            buf_id,
+                                            p.to_path_buf(),
+                                            buf.to_text(),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
                     Some(Err(e)) => self.toast_error(&format!("Save failed: {e}")),
                     None => {} // scratch buffer or no path — no toast
                 }
@@ -6242,6 +6653,13 @@ impl AppHandler for AppShell {
                 app.toast_info(&format!("{sid} not in PATH"));
             }
         }
+
+        // T1: poll gutter worker results — install GitGutter into the buffer.
+        app.poll_gutter_results();
+        // T2: poll blame worker results and drive the blame popup.
+        app.poll_blame_result();
+        // T2: blame dwell — fire a blame request after 800ms cursor dwell on a line.
+        app.tick_blame_hover();
 
         // NE10: poll for pending hover responses each tick.
         app.poll_hover_result();
@@ -9296,16 +9714,23 @@ impl AppHandler for AppShell {
             && self.app.lsp_rename_input.is_none()
             && self.app.save_as_input.is_none()
         {
+            let mut gutter_recomputes: Vec<(anvil_editor::BufferId, PathBuf, String)> = Vec::new();
             for tab in self.app.tabs.tabs.iter_mut() {
-                for (_buf_id, buf) in tab.editor_panes.buffers_mut() {
+                for (buf_id, buf) in tab.editor_panes.buffers_mut() {
                     if buf.is_dirty() {
                         if let Some(path) = buf.tracked_path().map(|p| p.to_path_buf()) {
                             if let Err(e) = buf.save(&path) {
                                 eprintln!("anvil: save-on-blur failed ({}): {e}", path.display());
+                            } else {
+                                // T1: queue gutter recompute after save.
+                                gutter_recomputes.push((buf_id, path, buf.to_text()));
                             }
                         }
                     }
                 }
+            }
+            for (buf_id, path, text) in gutter_recomputes {
+                self.app.request_gutter_recompute(buf_id, path, text);
             }
         }
     }
@@ -11008,6 +11433,45 @@ fn main() -> Result<()> {
         }
     });
 
+    // -- Gutter worker (T1) ---------------------------------------------------
+    // Computes GitGutter::compute off the main thread.  The main thread sends
+    // (buffer_id, path, text_snapshot) after a file open or save; results arrive
+    // via gutter_rx and are installed into the buffer's git_gutter field.
+    let (gutter_tx, gutter_work_rx) = mpsc::sync_channel::<GutterRequest>(8);
+    let (gutter_result_tx, gutter_rx) = mpsc::sync_channel::<GutterResult>(8);
+    thread::Builder::new()
+        .name("anvil-gutter-worker".to_string())
+        .spawn(move || {
+            for req in gutter_work_rx {
+                let gutter = anvil_editor::GitGutter::compute(&req.text, &req.path);
+                let _ = gutter_result_tx.try_send(GutterResult {
+                    buffer_id: req.buffer_id,
+                    gutter,
+                });
+            }
+        })
+        .expect("gutter worker spawn");
+
+    // -- Blame worker (T2) ----------------------------------------------------
+    // Runs `git blame -L<line>,<line> --porcelain <file>` off the main thread.
+    // Main thread sends a BlameRequest after 800ms cursor dwell; result arrives
+    // via blame_rx and is cached + shown as a tooltip.
+    let (blame_tx, blame_work_rx) = mpsc::sync_channel::<BlameRequest>(4);
+    let (blame_result_tx, blame_rx) = mpsc::sync_channel::<BlameResult>(4);
+    thread::Builder::new()
+        .name("anvil-blame-worker".to_string())
+        .spawn(move || {
+            for req in blame_work_rx {
+                let entry = run_git_blame(&req.path, req.line);
+                let _ = blame_result_tx.try_send(BlameResult {
+                    path: req.path,
+                    line: req.line,
+                    entry,
+                });
+            }
+        })
+        .expect("blame worker spawn");
+
     // -- Recent-files worker --------------------------------------------------
     // Polls the cwd every 4 s for recently-modified files (top 5 by mtime).
     // The main thread sends updated cwd values via `recent_cwd_tx` (non-blocking
@@ -11214,6 +11678,13 @@ fn main() -> Result<()> {
         editor_mouse_drag_start: None,
         git_tx,
         git_rx,
+        gutter_tx,
+        gutter_rx,
+        blame_tx,
+        blame_rx,
+        blame_cache: std::collections::HashMap::new(),
+        blame_hover: None,
+        blame_popup: None,
         recent_cwd_tx,
         recent_rx,
         kube_rx,
@@ -11938,5 +12409,56 @@ mod tests {
         assert_eq!(relative_time(now - 90), "1 minute ago");
         assert_eq!(relative_time(now - 7200), "2 hours ago");
         assert_eq!(relative_time(now - 3 * 86400), "3 days ago");
+    }
+
+    // ── T2: parse_blame_porcelain ─────────────────────────────────────────────
+
+    #[test]
+    fn parse_blame_porcelain_parses_committed_entry() {
+        // Minimal valid porcelain output for a committed line.
+        let porcelain = "\
+abc1234abc1234abc1234abc1234abc1234abc1234 1 1 1\n\
+author Jane Smith\n\
+author-mail <jane@example.com>\n\
+author-time 1700000000\n\
+author-tz +0000\n\
+committer Jane Smith\n\
+committer-mail <jane@example.com>\n\
+committer-time 1700000000\n\
+committer-tz +0000\n\
+summary Initial commit\n\
+filename src/main.rs\n\
+\tlet x = 1;\n";
+        let entry = parse_blame_porcelain(porcelain).expect("should parse committed entry");
+        assert_eq!(entry.author, "Jane Smith");
+        assert_eq!(entry.short_hash, "abc1234");
+        // time is relative so just assert it's non-empty
+        assert!(!entry.time_relative.is_empty());
+    }
+
+    #[test]
+    fn parse_blame_porcelain_returns_none_for_uncommitted() {
+        // All-zero hash means "Not Committed Yet".
+        let porcelain = "\
+0000000000000000000000000000000000000000 1 1 1\n\
+author Not Committed Yet\n\
+author-mail <not.committed.yet>\n\
+author-time 0\n\
+author-tz +0000\n\
+\tsome line\n";
+        let entry = parse_blame_porcelain(porcelain);
+        assert!(entry.is_none(), "uncommitted hash must return None");
+    }
+
+    #[test]
+    fn blame_relative_time_formats_correctly() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        assert_eq!(blame_relative_time(now), "just now");
+        assert_eq!(blame_relative_time(now - 90), "1 min ago");
+        assert_eq!(blame_relative_time(now - 7200), "2 hr ago");
+        assert_eq!(blame_relative_time(now - 3 * 86400), "3 days ago");
     }
 }

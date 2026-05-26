@@ -329,8 +329,7 @@ impl Buffer {
         // NE8: detect language by extension and do an initial full parse.
         buf.syntax.set_language_from_path(path);
         buf.syntax.parse(&text);
-        // NE13: compute initial git gutter (silent on errors).
-        buf.git_gutter = Some(GitGutter::compute(&text, path));
+        // NE13: git gutter computed off-thread by main.rs gutter worker.
         Ok(buf)
     }
 
@@ -382,9 +381,7 @@ impl Buffer {
         // Snapshot revision so we know the buffer is clean after save (item 27).
         self.saved_revision = self.revisions;
         self.flush_undo_group();
-        // NE13: recompute gutter after save so HEAD-blob comparison stays fresh.
-        let text = self.to_text();
-        self.git_gutter = Some(GitGutter::compute(&text, path));
+        // NE13: git gutter recomputed off-thread by main.rs gutter worker after save.
         Ok(())
     }
 
@@ -542,7 +539,7 @@ impl Buffer {
         self.force_new_group = false;
         self.tracked_mtime = mtime;
         self.syntax.parse(&text);
-        self.git_gutter = Some(GitGutter::compute(&text, &path));
+        // NE13: git gutter recomputed off-thread by main.rs gutter worker on reload.
         Ok(())
     }
 
