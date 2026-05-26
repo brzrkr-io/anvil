@@ -24,7 +24,7 @@ use lsp_types::{
     ClientCapabilities, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, InitializeParams, InitializedParams, PublishDiagnosticsParams,
     TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem, Url,
-    VersionedTextDocumentIdentifier, WorkspaceEdit,
+    VersionedTextDocumentIdentifier, WorkspaceEdit, WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -118,6 +118,10 @@ enum LspCommand {
         character: u32,
         request_id: u64,
     },
+    WorkspaceSymbols {
+        query: String,
+        request_id: u64,
+    },
     Shutdown,
 }
 
@@ -163,6 +167,18 @@ pub struct LspCodeAction {
     pub edits: Vec<RenameEdit>,
 }
 
+// ── Workspace symbol (O1) ─────────────────────────────────────────────────────
+
+/// A single workspace symbol result from `workspace/symbol`.
+#[derive(Debug, Clone)]
+pub struct WorkspaceSymbolHit {
+    pub name: String,
+    /// Short kind label for display, e.g. "fn", "struct", "enum", "trait", "var".
+    pub kind_label: String,
+    pub path: PathBuf,
+    pub line: u32,
+}
+
 // ── Completion item (item 16) ─────────────────────────────────────────────────
 
 /// A single completion item from the LSP server.
@@ -183,6 +199,7 @@ type CompletionSlot = Arc<Mutex<Option<(u64, Vec<CompletionItem>)>>>;
 type RenameSlot = Arc<Mutex<Option<(u64, Vec<RenameEdit>)>>>;
 type CodeActionsSlot = Arc<Mutex<Option<(u64, Vec<LspCodeAction>)>>>;
 type ReferencesSlot = Arc<Mutex<Option<(u64, Vec<DefinitionLocation>)>>>; // reuse DefinitionLocation
+type WorkspaceSymbolsSlot = Arc<Mutex<Option<(u64, Vec<WorkspaceSymbolHit>)>>>;
 
 // ── ServerHandle ─────────────────────────────────────────────────────────────
 
@@ -203,6 +220,8 @@ struct ServerHandle {
     code_actions_result: CodeActionsSlot,
     /// Latest references result (request_id, Vec<DefinitionLocation>) — item 26.
     references_result: ReferencesSlot,
+    /// Latest workspace symbols result (O1).
+    workspace_symbols_result: WorkspaceSymbolsSlot,
 }
 
 // ── LspManager ────────────────────────────────────────────────────────────────
@@ -520,6 +539,46 @@ impl LspManager {
         None
     }
 
+    /// Return `true` if at least one language server is currently `Live`.
+    pub fn any_live(&self) -> bool {
+        self.servers
+            .values()
+            .any(|h| matches!(*h.state.lock().unwrap(), LspState::Live))
+    }
+
+    // ── Workspace symbols (O1) ────────────────────────────────────────────────
+
+    /// Send a `workspace/symbol` request with `query`. Returns a non-zero
+    /// `request_id` for use with [`poll_workspace_symbols`], or 0 when no live
+    /// server is available. Sends to the first `Live` server found.
+    pub fn request_workspace_symbols(&self, query: String) -> u64 {
+        let id = next_request_id();
+        for handle in self.servers.values() {
+            if matches!(*handle.state.lock().unwrap(), LspState::Live) {
+                let _ = handle.tx.blocking_send(LspCommand::WorkspaceSymbols {
+                    query,
+                    request_id: id,
+                });
+                return id;
+            }
+        }
+        0
+    }
+
+    /// Poll for a workspace symbols result matching `request_id`. Consumes on success.
+    pub fn poll_workspace_symbols(&self, request_id: u64) -> Option<Vec<WorkspaceSymbolHit>> {
+        if request_id == 0 {
+            return None;
+        }
+        for handle in self.servers.values() {
+            let mut slot = handle.workspace_symbols_result.lock().unwrap();
+            if slot.as_ref().map(|(id, _)| *id) == Some(request_id) {
+                return slot.take().map(|(_, r)| r);
+            }
+        }
+        None
+    }
+
     /// Return the current state of the named server.
     pub fn state_of(&self, server_id: &'static str) -> LspState {
         self.servers
@@ -621,6 +680,7 @@ fn spawn_server(
     let rename_result: RenameSlot = Arc::new(Mutex::new(None));
     let code_actions_result: CodeActionsSlot = Arc::new(Mutex::new(None));
     let references_result: ReferencesSlot = Arc::new(Mutex::new(None));
+    let workspace_symbols_result: WorkspaceSymbolsSlot = Arc::new(Mutex::new(None));
     let (tx, rx) = mpsc::channel::<LspCommand>(64);
 
     let state_task = Arc::clone(&state);
@@ -631,6 +691,7 @@ fn spawn_server(
     let rename_task = Arc::clone(&rename_result);
     let code_actions_task = Arc::clone(&code_actions_result);
     let references_task = Arc::clone(&references_result);
+    let workspace_symbols_task = Arc::clone(&workspace_symbols_result);
 
     // Resolve the binary before entering the async task so we can report the
     // failure synchronously-ish via the shared state.
@@ -649,6 +710,7 @@ fn spawn_server(
             rename_result,
             code_actions_result,
             references_result,
+            workspace_symbols_result,
         };
     }
 
@@ -669,6 +731,7 @@ fn spawn_server(
             rename_result,
             code_actions_result,
             references_result,
+            workspace_symbols_result,
         };
     }
 
@@ -690,6 +753,7 @@ fn spawn_server(
             rename_task,
             code_actions_task,
             references_task,
+            workspace_symbols_task,
             root_uri,
         )
         .await;
@@ -705,6 +769,7 @@ fn spawn_server(
         rename_result,
         code_actions_result,
         references_result,
+        workspace_symbols_result,
     }
 }
 
@@ -724,6 +789,7 @@ async fn run_server(
     rename_result: RenameSlot,
     code_actions_result: CodeActionsSlot,
     references_result: ReferencesSlot,
+    workspace_symbols_result: WorkspaceSymbolsSlot,
     root_uri: Option<Url>,
 ) {
     let mut child: Child = match tokio::process::Command::new(&binary)
@@ -818,6 +884,7 @@ async fn run_server(
     let rename_clone = Arc::clone(&rename_result);
     let code_actions_clone = Arc::clone(&code_actions_result);
     let references_clone = Arc::clone(&references_result);
+    let workspace_symbols_clone = Arc::clone(&workspace_symbols_result);
     loop {
         tokio::select! {
             biased;
@@ -992,6 +1059,19 @@ async fn run_server(
                         );
                         let _ = write_message(&mut writer, &req).await;
                     }
+                    Some(LspCommand::WorkspaceSymbols { query, request_id }) => {
+                        let req = make_request(
+                            request_id,
+                            lsp_types::request::WorkspaceSymbolRequest::METHOD,
+                            serde_json::to_value(WorkspaceSymbolParams {
+                                query,
+                                work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+                                partial_result_params: lsp_types::PartialResultParams::default(),
+                            })
+                            .unwrap(),
+                        );
+                        let _ = write_message(&mut writer, &req).await;
+                    }
                 }
             }
             // Inbound: message from the server.
@@ -1006,6 +1086,7 @@ async fn run_server(
                         &rename_clone,
                         &code_actions_clone,
                         &references_clone,
+                        &workspace_symbols_clone,
                     ),
                     _ => break,
                 }
@@ -1085,6 +1166,7 @@ fn handle_server_message(
     rename_result: &RenameSlot,
     code_actions_result: &CodeActionsSlot,
     references_result: &ReferencesSlot,
+    workspace_symbols_result: &WorkspaceSymbolsSlot,
 ) {
     // Check if this is a response (has "id" but no "method").
     if msg.get("method").is_none() {
@@ -1146,6 +1228,12 @@ fn handle_server_message(
             let items = parse_completion_result(result);
             if !items.is_empty() {
                 *completion_result.lock().unwrap() = Some((id, items));
+                return;
+            }
+            // Try workspace/symbol response (WorkspaceSymbolResponse or Vec<SymbolInformation>).
+            let ws_hits = parse_workspace_symbol_result(result);
+            if !ws_hits.is_empty() {
+                *workspace_symbols_result.lock().unwrap() = Some((id, ws_hits));
             }
         }
         return;
@@ -1262,6 +1350,68 @@ fn parse_completion_result(result: &Value) -> Vec<CompletionItem> {
             insert_text: ci.insert_text.or(Some(ci.label)),
         })
         .collect()
+}
+
+/// Parse a `workspace/symbol` result into `WorkspaceSymbolHit`s (O1).
+fn parse_workspace_symbol_result(result: &Value) -> Vec<WorkspaceSymbolHit> {
+    if result.is_null() {
+        return Vec::new();
+    }
+    // Try the typed WorkspaceSymbolResponse first (Nested or Flat).
+    if let Ok(resp) = serde_json::from_value::<WorkspaceSymbolResponse>(result.clone()) {
+        return match resp {
+            WorkspaceSymbolResponse::Nested(syms) => syms
+                .into_iter()
+                .filter_map(|s| {
+                    let (path, line) = match s.location {
+                        lsp_types::OneOf::Left(loc) => {
+                            let p = loc.uri.to_file_path().ok()?;
+                            (p, loc.range.start.line)
+                        }
+                        lsp_types::OneOf::Right(wloc) => {
+                            let p = wloc.uri.to_file_path().ok()?;
+                            (p, 0)
+                        }
+                    };
+                    Some(WorkspaceSymbolHit {
+                        name: s.name,
+                        kind_label: symbol_kind_label(s.kind),
+                        path,
+                        line,
+                    })
+                })
+                .collect(),
+            WorkspaceSymbolResponse::Flat(syms) => syms
+                .into_iter()
+                .filter_map(|s| {
+                    let path = s.location.uri.to_file_path().ok()?;
+                    Some(WorkspaceSymbolHit {
+                        name: s.name,
+                        kind_label: symbol_kind_label(s.kind),
+                        path,
+                        line: s.location.range.start.line,
+                    })
+                })
+                .collect(),
+        };
+    }
+    Vec::new()
+}
+
+fn symbol_kind_label(kind: lsp_types::SymbolKind) -> String {
+    match kind {
+        lsp_types::SymbolKind::FUNCTION | lsp_types::SymbolKind::METHOD => "fn",
+        lsp_types::SymbolKind::STRUCT => "struct",
+        lsp_types::SymbolKind::ENUM | lsp_types::SymbolKind::ENUM_MEMBER => "enum",
+        lsp_types::SymbolKind::INTERFACE => "trait",
+        lsp_types::SymbolKind::CLASS => "class",
+        lsp_types::SymbolKind::MODULE | lsp_types::SymbolKind::NAMESPACE => "mod",
+        lsp_types::SymbolKind::VARIABLE | lsp_types::SymbolKind::FIELD => "var",
+        lsp_types::SymbolKind::CONSTANT => "const",
+        lsp_types::SymbolKind::TYPE_PARAMETER => "type",
+        _ => "sym",
+    }
+    .to_string()
 }
 
 /// Flatten a `WorkspaceEdit` into a list of `RenameEdit`s (item 24).

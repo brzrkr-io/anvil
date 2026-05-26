@@ -57,7 +57,7 @@ const SIDEBAR_DRAG_HIT_PX: f64 = 4.0;
 const SIDEBAR_W_MIN_PT: f64 = 180.0;
 const SIDEBAR_W_MAX_PT: f64 = 600.0;
 const EXPLORER_SCROLL_ROWS_PER_WHEEL: usize = 3;
-use anvil_editor::Position as EditorPosition;
+use anvil_editor::{Position as EditorPosition, WorkspaceSymbolHit};
 use anvil_render::cheatsheet::draw as draw_cheatsheet;
 use anvil_render::draw::CursorConfig;
 use anvil_render::raster::Raster;
@@ -435,6 +435,10 @@ struct Keybindings {
     layout_mode_toggle: Option<Chord>,
     left_dock_toggle: Option<Chord>,
     editor_new: Option<Chord>,
+    /// Cmd+T: open workspace symbol search overlay (O1).
+    workspace_symbol_search: Option<Chord>,
+    /// Cmd+R: open buffer symbol search overlay (O2).
+    buffer_symbol_search: Option<Chord>,
 }
 
 impl Keybindings {
@@ -473,6 +477,8 @@ impl Keybindings {
             layout_mode_toggle: parse_chord(&kb.layout_mode_toggle),
             left_dock_toggle: parse_chord(&kb.left_dock_toggle),
             editor_new: parse_chord(&kb.editor_new),
+            workspace_symbol_search: parse_chord("cmd+t"),
+            buffer_symbol_search: parse_chord("cmd+r"),
         }
     }
 }
@@ -529,6 +535,36 @@ struct ReferencesRow {
 struct LspReferencesOverlay {
     rows: Vec<ReferencesRow>,
     /// Currently selected row (keyboard nav).
+    selected: usize,
+}
+
+// ── Symbol search overlays (O1, O2) ──────────────────────────────────────────
+
+/// Workspace symbol search overlay state (Cmd+T / O1).
+struct WorkspaceSymbolSearch {
+    /// Text typed in the input box.
+    query: String,
+    /// Hits from the last `workspace/symbol` request (or "(LSP unavailable)" sentinel).
+    hits: Vec<WorkspaceSymbolHit>,
+    /// Currently selected row.
+    selected: usize,
+    /// In-flight request id; 0 = none.
+    pending_request_id: u64,
+    /// True when LSP is not available (no live server found).
+    lsp_unavailable: bool,
+    /// Debounce: time of the last query change.
+    last_query_change: Option<Instant>,
+}
+
+/// Buffer symbol search overlay state (Cmd+R / O2).
+struct BufferSymbolSearch {
+    /// Filter text typed by the user.
+    query: String,
+    /// All symbols from the active buffer's syntax tree (derive_outline_rows).
+    all_symbols: Vec<anvil_editor::OutlineSymbol>,
+    /// Indices into `all_symbols` that pass the current filter.
+    filtered: Vec<usize>,
+    /// Currently selected row.
     selected: usize,
 }
 
@@ -789,6 +825,12 @@ pub struct App {
     // ── LSP references overlay (item 26) ──────────────────────────────────────
     /// When `Some`, the references overlay is open.
     lsp_references: Option<LspReferencesOverlay>,
+
+    // ── Symbol search overlays (O1, O2) ───────────────────────────────────────
+    /// Cmd+T: workspace symbol search overlay.
+    workspace_symbol_search: Option<WorkspaceSymbolSearch>,
+    /// Cmd+R: buffer symbol search overlay.
+    buffer_symbol_search: Option<BufferSymbolSearch>,
 
     // ── UI scale (item 1) ──────────────────────────────────────────────────────
     /// Global UI scale multiplier. Applied on top of `window_scale` to font
@@ -1249,6 +1291,73 @@ impl App {
         if !q.is_empty() {
             self.project_search.scan(&q, &root);
         }
+        self.dirty = true;
+        self.force_full_redraw = true;
+    }
+
+    /// Open (or re-open) the workspace symbol search overlay (Cmd+T / O1).
+    fn open_workspace_symbol_search(&mut self) {
+        let query = self
+            .workspace_symbol_search
+            .as_ref()
+            .map(|s| s.query.clone())
+            .unwrap_or_default();
+        let lsp_unavailable = self.lsp_manager.as_ref().is_none_or(|l| !l.any_live());
+        let pending_request_id = if !lsp_unavailable && !query.is_empty() {
+            self.lsp_manager
+                .as_ref()
+                .map_or(0, |l| l.request_workspace_symbols(query.clone()))
+        } else {
+            0
+        };
+        self.workspace_symbol_search = Some(WorkspaceSymbolSearch {
+            query,
+            hits: Vec::new(),
+            selected: 0,
+            pending_request_id,
+            lsp_unavailable,
+            last_query_change: None,
+        });
+        self.dirty = true;
+        self.force_full_redraw = true;
+    }
+
+    /// Open (or re-open) the buffer symbol search overlay (Cmd+R / O2).
+    fn open_buffer_symbol_search(&mut self) {
+        let all_symbols = self
+            .tabs
+            .current()
+            .and_then(|tab| {
+                let id = tab.focused_id();
+                let ep = tab.editor_panes.get_pane(id)?;
+                let buf = tab.editor_panes.get_buffer(ep.buffer_id)?;
+                let text = buf.to_text();
+                Some(anvil_editor::derive_outline_rows(buf.syntax(), &text))
+            })
+            .unwrap_or_default();
+        let n = all_symbols.len();
+        let query = self
+            .buffer_symbol_search
+            .as_ref()
+            .map(|s| s.query.clone())
+            .unwrap_or_default();
+        let filtered: Vec<usize> = if query.is_empty() {
+            (0..n).collect()
+        } else {
+            let q = query.to_ascii_lowercase();
+            all_symbols
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.name.to_ascii_lowercase().contains(&q))
+                .map(|(i, _)| i)
+                .collect()
+        };
+        self.buffer_symbol_search = Some(BufferSymbolSearch {
+            query,
+            all_symbols,
+            filtered,
+            selected: 0,
+        });
         self.dirty = true;
         self.force_full_redraw = true;
     }
@@ -2495,6 +2604,45 @@ impl App {
         }
     }
 
+    /// Poll for a pending workspace/symbol result and update the overlay (O1).
+    fn poll_workspace_symbols_result(&mut self) {
+        let Some(ref mut search) = self.workspace_symbol_search else {
+            return;
+        };
+        // Debounce: fire request 200ms after last query change.
+        if let Some(t) = search.last_query_change {
+            if t.elapsed() >= std::time::Duration::from_millis(200) {
+                search.last_query_change = None;
+                let q = search.query.clone();
+                if !q.is_empty() && !search.lsp_unavailable {
+                    let id = self
+                        .lsp_manager
+                        .as_ref()
+                        .map_or(0, |l| l.request_workspace_symbols(q));
+                    if let Some(ref mut s) = self.workspace_symbol_search {
+                        s.pending_request_id = id;
+                    }
+                }
+            }
+        }
+        let req_id = match self.workspace_symbol_search.as_ref() {
+            Some(s) if s.pending_request_id != 0 => s.pending_request_id,
+            _ => return,
+        };
+        let hits = self
+            .lsp_manager
+            .as_ref()
+            .and_then(|lsp| lsp.poll_workspace_symbols(req_id));
+        if let Some(hits) = hits {
+            if let Some(ref mut s) = self.workspace_symbol_search {
+                s.hits = hits;
+                s.selected = 0;
+                s.pending_request_id = 0;
+            }
+            self.dirty = true;
+        }
+    }
+
     /// Apply `action` to the focused native editor pane.
     ///
     /// Writes any Cut/Copy text to the system clipboard.  Marks the app dirty
@@ -3330,6 +3478,21 @@ impl App {
             );
         } else {
             let clock = local_hhmm();
+            let status_mode = {
+                use anvil_render::statusbar::StatusMode;
+                if self.palette.visible
+                    || self.project_search.visible
+                    || self.project_switcher_open
+                    || self.workspace_symbol_search.is_some()
+                    || self.buffer_symbol_search.is_some()
+                {
+                    StatusMode::Picking
+                } else if self.lsp_rename_input.is_some() {
+                    StatusMode::Renaming
+                } else {
+                    StatusMode::Editing
+                }
+            };
             anvil_render::statusbar::draw_status_bar(
                 &mut self.raster,
                 chrome_painter,
@@ -3341,6 +3504,7 @@ impl App {
                 chrome_bot,
                 scale,
                 self.agent_pulse_phase,
+                status_mode,
             );
         }
 
@@ -3474,6 +3638,42 @@ impl App {
                 chrome_metrics,
                 &self.theme,
                 refs,
+                dw as f64,
+                dh as f64,
+                chrome_top,
+                cw,
+                ch,
+            );
+        }
+
+        // ── Workspace symbol search overlay (O1) ─────────────────────────────
+        if let Some(ref wss) = self.workspace_symbol_search {
+            let cw = self.font.metrics.cell_w;
+            let chrome_top = self.chrome_top_px();
+            draw_workspace_symbol_overlay(
+                &mut self.raster,
+                chrome_painter,
+                chrome_metrics,
+                &self.theme,
+                wss,
+                dw as f64,
+                dh as f64,
+                chrome_top,
+                cw,
+                ch,
+            );
+        }
+
+        // ── Buffer symbol search overlay (O2) ────────────────────────────────
+        if let Some(ref bss) = self.buffer_symbol_search {
+            let cw = self.font.metrics.cell_w;
+            let chrome_top = self.chrome_top_px();
+            draw_buffer_symbol_overlay(
+                &mut self.raster,
+                chrome_painter,
+                chrome_metrics,
+                &self.theme,
+                bss,
                 dw as f64,
                 dh as f64,
                 chrome_top,
@@ -4193,7 +4393,15 @@ impl App {
                 self.pending_chord_k = true;
                 return true;
             }
-            // Cmd+R → force-reload the active buffer from disk (item 27).
+            // Cmd+R → buffer symbol search overlay (O2). Takes priority over reload.
+            if kb
+                .buffer_symbol_search
+                .is_some_and(|chord| Self::chord_matches(chord, mods, ch))
+            {
+                self.open_buffer_symbol_search();
+                return true;
+            }
+            // Cmd+R (fallback): force-reload the active buffer from disk (item 27).
             if lch == 'r' && !mods.shift && !mods.control && !mods.option {
                 if let Some(tab) = self.tabs.current_mut() {
                     let pane_id = tab.focused_id();
@@ -4490,6 +4698,10 @@ impl App {
             self.left_dock_visible = true;
             self.spawn_ide_terminal_drawer();
             self.new_native_editor_pane();
+            return true;
+        });
+        test!(kb.workspace_symbol_search, {
+            self.open_workspace_symbol_search();
             return true;
         });
 
@@ -5618,6 +5830,8 @@ impl AppHandler for AppShell {
         app.poll_code_actions_result();
         // Item 26: poll for pending references responses each tick.
         app.poll_references_result();
+        // O1: poll for pending workspace symbol responses and debounce re-requests.
+        app.poll_workspace_symbols_result();
 
         // Item 15: hover-mouse debounce — fire hover request after 400ms dwell.
         {
@@ -6039,6 +6253,159 @@ impl AppHandler for AppShell {
                 _ => {}
             }
             return;
+        }
+
+        // ── Workspace symbol search overlay (O1) ─────────────────────────────
+        if self.app.workspace_symbol_search.is_some() {
+            match event.key {
+                KeyInput::Escape => {
+                    self.app.workspace_symbol_search = None;
+                    self.app.dirty = true;
+                    return;
+                }
+                KeyInput::Up => {
+                    if let Some(ref mut s) = self.app.workspace_symbol_search {
+                        s.selected = s.selected.saturating_sub(1);
+                    }
+                    self.app.dirty = true;
+                    return;
+                }
+                KeyInput::Down => {
+                    if let Some(ref mut s) = self.app.workspace_symbol_search {
+                        let n = s.hits.len();
+                        if n > 0 {
+                            s.selected = (s.selected + 1).min(n - 1);
+                        }
+                    }
+                    self.app.dirty = true;
+                    return;
+                }
+                KeyInput::Enter => {
+                    let loc = self
+                        .app
+                        .workspace_symbol_search
+                        .as_ref()
+                        .and_then(|s| s.hits.get(s.selected))
+                        .map(|h| (h.path.clone(), h.line));
+                    self.app.workspace_symbol_search = None;
+                    if let Some((path, line)) = loc {
+                        self.app.open_path_in_native_editor(&path);
+                        self.app
+                            .apply_editor_action(EditorAction::GoToLine(line as usize));
+                    }
+                    self.app.dirty = true;
+                    return;
+                }
+                KeyInput::Backspace => {
+                    if let Some(ref mut s) = self.app.workspace_symbol_search {
+                        let mut bytes = s.query.as_bytes().to_vec();
+                        while !bytes.is_empty() && (bytes[bytes.len() - 1] & 0xC0) == 0x80 {
+                            bytes.pop();
+                        }
+                        bytes.pop();
+                        s.query = String::from_utf8_lossy(&bytes).into_owned();
+                        s.last_query_change = Some(Instant::now());
+                        s.hits.clear();
+                    }
+                    self.app.dirty = true;
+                    return;
+                }
+                KeyInput::Char(ch) if !event.mods.command => {
+                    if let Some(ref mut s) = self.app.workspace_symbol_search {
+                        s.query.push(ch);
+                        s.last_query_change = Some(Instant::now());
+                        s.hits.clear();
+                    }
+                    self.app.dirty = true;
+                    return;
+                }
+                _ => {
+                    return;
+                }
+            }
+        }
+
+        // ── Buffer symbol search overlay (O2) ─────────────────────────────────
+        if self.app.buffer_symbol_search.is_some() {
+            match event.key {
+                KeyInput::Escape => {
+                    self.app.buffer_symbol_search = None;
+                    self.app.dirty = true;
+                    return;
+                }
+                KeyInput::Up => {
+                    if let Some(ref mut s) = self.app.buffer_symbol_search {
+                        s.selected = s.selected.saturating_sub(1);
+                    }
+                    self.app.dirty = true;
+                    return;
+                }
+                KeyInput::Down => {
+                    if let Some(ref mut s) = self.app.buffer_symbol_search {
+                        let n = s.filtered.len();
+                        if n > 0 {
+                            s.selected = (s.selected + 1).min(n - 1);
+                        }
+                    }
+                    self.app.dirty = true;
+                    return;
+                }
+                KeyInput::Enter => {
+                    let line = self
+                        .app
+                        .buffer_symbol_search
+                        .as_ref()
+                        .and_then(|s| s.filtered.get(s.selected).copied())
+                        .and_then(|idx| {
+                            self.app.buffer_symbol_search.as_ref()?.all_symbols.get(idx)
+                        })
+                        .map(|sym| sym.line);
+                    self.app.buffer_symbol_search = None;
+                    if let Some(line) = line {
+                        self.app.apply_editor_action(EditorAction::GoToLine(line));
+                    }
+                    self.app.dirty = true;
+                    return;
+                }
+                KeyInput::Backspace => {
+                    if let Some(ref mut s) = self.app.buffer_symbol_search {
+                        s.query.pop();
+                        let q = s.query.to_ascii_lowercase();
+                        s.filtered = if q.is_empty() {
+                            (0..s.all_symbols.len()).collect()
+                        } else {
+                            s.all_symbols
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, sym)| sym.name.to_ascii_lowercase().contains(&q))
+                                .map(|(i, _)| i)
+                                .collect()
+                        };
+                        s.selected = 0;
+                    }
+                    self.app.dirty = true;
+                    return;
+                }
+                KeyInput::Char(ch) if !event.mods.command => {
+                    if let Some(ref mut s) = self.app.buffer_symbol_search {
+                        s.query.push(ch);
+                        let q = s.query.to_ascii_lowercase();
+                        s.filtered = s
+                            .all_symbols
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, sym)| sym.name.to_ascii_lowercase().contains(&q))
+                            .map(|(i, _)| i)
+                            .collect();
+                        s.selected = 0;
+                    }
+                    self.app.dirty = true;
+                    return;
+                }
+                _ => {
+                    return;
+                }
+            }
         }
 
         // ── Cmd+K two-stroke chord (H1: soft-wrap, H2: show-whitespace) ─────────
@@ -8917,6 +9284,264 @@ fn draw_lsp_references_overlay(
     }
 }
 
+// ── Workspace symbol search overlay (O1) ─────────────────────────────────────
+
+/// Draw the workspace/symbol search overlay (Cmd+T).
+///
+/// Shows "(LSP unavailable)" when no server is live. Otherwise shows
+/// `hits` with format `kind name · file:line`.
+#[allow(clippy::too_many_arguments)]
+fn draw_workspace_symbol_overlay(
+    raster: &mut anvil_render::raster::Raster,
+    painter: &mut dyn anvil_render::raster::GlyphPainter,
+    metrics: anvil_render::raster::FontMetrics,
+    theme: &anvil_theme::Theme,
+    search: &WorkspaceSymbolSearch,
+    dw: f64,
+    dh: f64,
+    chrome_top: f64,
+    cw: f64,
+    ch: f64,
+) {
+    const MAX_RESULTS: usize = 20;
+    let n_hits = search.hits.len().min(MAX_RESULTS);
+    // Panel height: input row + separator + results (or 1 message row if empty)
+    let result_rows = if n_hits == 0 { 1 } else { n_hits };
+    let panel_h = (1 + result_rows) as f64 * ch + ch * 0.5;
+    let panel_w = (dw * 0.62).min(dw - 4.0 * cw).max(24.0 * cw);
+    let panel_x = ((dw - panel_w) * 0.5).max(0.0);
+    let panel_y = (chrome_top + (dh - chrome_top - panel_h) * 0.2).max(chrome_top);
+    let pad_x = 2.0 * cw;
+
+    // Background + border.
+    raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
+    raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.hairline);
+    raster.fill_pixel_rect(
+        panel_x,
+        panel_y + panel_h - 1.0,
+        panel_w,
+        1.0,
+        theme.hairline,
+    );
+    raster.fill_pixel_rect(panel_x, panel_y, 1.0, panel_h, theme.hairline);
+    raster.fill_pixel_rect(
+        panel_x + panel_w - 1.0,
+        panel_y,
+        1.0,
+        panel_h,
+        theme.hairline,
+    );
+
+    // Input row.
+    let row0_y = panel_y + 0.5 * ch;
+    let prefix = "symbols: ";
+    let mut x = panel_x + pad_x;
+    for c in prefix.chars() {
+        if x + cw > panel_x + panel_w - pad_x {
+            break;
+        }
+        raster.glyph_at(painter, metrics, x, row0_y, c as u32, theme.text_muted);
+        x += cw;
+    }
+    for c in search.query.chars() {
+        if x + cw > panel_x + panel_w - pad_x {
+            break;
+        }
+        raster.glyph_at(painter, metrics, x, row0_y, c as u32, theme.foreground);
+        x += cw;
+    }
+    raster.fill_pixel_rect(x, panel_y + 2.0, cw, ch - 4.0, theme.accent_bright);
+    raster.fill_pixel_rect(panel_x, panel_y + ch, panel_w, 1.0, theme.hairline);
+
+    // Result rows or message.
+    if search.lsp_unavailable {
+        let msg = "(LSP unavailable)";
+        let msg_y = panel_y + ch + 0.5 * ch;
+        let mut mx = panel_x + pad_x;
+        for c in msg.chars() {
+            if mx + cw > panel_x + panel_w - pad_x {
+                break;
+            }
+            raster.glyph_at(painter, metrics, mx, msg_y, c as u32, theme.text_subtle);
+            mx += cw;
+        }
+    } else if n_hits == 0 {
+        let msg = if search.query.is_empty() {
+            "(type to search workspace symbols)"
+        } else {
+            "(no results)"
+        };
+        let msg_y = panel_y + ch + 0.5 * ch;
+        let mut mx = panel_x + pad_x;
+        for c in msg.chars() {
+            if mx + cw > panel_x + panel_w - pad_x {
+                break;
+            }
+            raster.glyph_at(painter, metrics, mx, msg_y, c as u32, theme.text_subtle);
+            mx += cw;
+        }
+    } else {
+        for (i, hit) in search.hits.iter().take(MAX_RESULTS).enumerate() {
+            let row_y = panel_y + (i + 1) as f64 * ch + 0.5 * ch;
+            let is_sel = i == search.selected;
+            if is_sel {
+                raster.fill_pixel_rect_alpha(
+                    panel_x,
+                    panel_y + (i + 1) as f64 * ch,
+                    panel_w,
+                    ch,
+                    theme.accent,
+                    0.12,
+                );
+            }
+            let file = hit.path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+            let row_text = format!(
+                "{} {} \u{00B7} {}:{}",
+                hit.kind_label,
+                hit.name,
+                file,
+                hit.line + 1
+            );
+            let mut rx = panel_x + pad_x;
+            for c in row_text.chars() {
+                if rx + cw > panel_x + panel_w - pad_x {
+                    break;
+                }
+                let color = if is_sel {
+                    theme.foreground
+                } else {
+                    theme.text_muted
+                };
+                raster.glyph_at(painter, metrics, rx, row_y, c as u32, color);
+                rx += cw;
+            }
+        }
+    }
+}
+
+// ── Buffer symbol search overlay (O2) ────────────────────────────────────────
+
+/// Draw the buffer symbol search overlay (Cmd+R).
+///
+/// Filters `OutlineSymbol`s from the active buffer by substring and shows
+/// `kind name · Ln N`.
+#[allow(clippy::too_many_arguments)]
+fn draw_buffer_symbol_overlay(
+    raster: &mut anvil_render::raster::Raster,
+    painter: &mut dyn anvil_render::raster::GlyphPainter,
+    metrics: anvil_render::raster::FontMetrics,
+    theme: &anvil_theme::Theme,
+    search: &BufferSymbolSearch,
+    dw: f64,
+    dh: f64,
+    chrome_top: f64,
+    cw: f64,
+    ch: f64,
+) {
+    const MAX_RESULTS: usize = 20;
+    let n_hits = search.filtered.len().min(MAX_RESULTS);
+    let result_rows = if n_hits == 0 { 1 } else { n_hits };
+    let panel_h = (1 + result_rows) as f64 * ch + ch * 0.5;
+    let panel_w = (dw * 0.55).min(dw - 4.0 * cw).max(24.0 * cw);
+    let panel_x = ((dw - panel_w) * 0.5).max(0.0);
+    let panel_y = (chrome_top + (dh - chrome_top - panel_h) * 0.2).max(chrome_top);
+    let pad_x = 2.0 * cw;
+
+    raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
+    raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.hairline);
+    raster.fill_pixel_rect(
+        panel_x,
+        panel_y + panel_h - 1.0,
+        panel_w,
+        1.0,
+        theme.hairline,
+    );
+    raster.fill_pixel_rect(panel_x, panel_y, 1.0, panel_h, theme.hairline);
+    raster.fill_pixel_rect(
+        panel_x + panel_w - 1.0,
+        panel_y,
+        1.0,
+        panel_h,
+        theme.hairline,
+    );
+
+    // Input row.
+    let row0_y = panel_y + 0.5 * ch;
+    let prefix = "buffer: ";
+    let mut x = panel_x + pad_x;
+    for c in prefix.chars() {
+        if x + cw > panel_x + panel_w - pad_x {
+            break;
+        }
+        raster.glyph_at(painter, metrics, x, row0_y, c as u32, theme.text_muted);
+        x += cw;
+    }
+    for c in search.query.chars() {
+        if x + cw > panel_x + panel_w - pad_x {
+            break;
+        }
+        raster.glyph_at(painter, metrics, x, row0_y, c as u32, theme.foreground);
+        x += cw;
+    }
+    raster.fill_pixel_rect(x, panel_y + 2.0, cw, ch - 4.0, theme.accent_bright);
+    raster.fill_pixel_rect(panel_x, panel_y + ch, panel_w, 1.0, theme.hairline);
+
+    if n_hits == 0 {
+        let msg = if search.all_symbols.is_empty() {
+            "(no symbols in buffer)"
+        } else {
+            "(no matches)"
+        };
+        let msg_y = panel_y + ch + 0.5 * ch;
+        let mut mx = panel_x + pad_x;
+        for c in msg.chars() {
+            if mx + cw > panel_x + panel_w - pad_x {
+                break;
+            }
+            raster.glyph_at(painter, metrics, mx, msg_y, c as u32, theme.text_subtle);
+            mx += cw;
+        }
+    } else {
+        for (i, &sym_idx) in search.filtered.iter().take(MAX_RESULTS).enumerate() {
+            let sym = &search.all_symbols[sym_idx];
+            let row_y = panel_y + (i + 1) as f64 * ch + 0.5 * ch;
+            let is_sel = i == search.selected;
+            if is_sel {
+                raster.fill_pixel_rect_alpha(
+                    panel_x,
+                    panel_y + (i + 1) as f64 * ch,
+                    panel_w,
+                    ch,
+                    theme.accent,
+                    0.12,
+                );
+            }
+            let kind_str = match sym.kind {
+                anvil_editor::OutlineSymbolKind::Function => "fn",
+                anvil_editor::OutlineSymbolKind::Struct => "struct",
+                anvil_editor::OutlineSymbolKind::Enum => "enum",
+                anvil_editor::OutlineSymbolKind::Trait => "trait",
+                anvil_editor::OutlineSymbolKind::Impl => "impl",
+                anvil_editor::OutlineSymbolKind::Other => "sym",
+            };
+            let row_text = format!("{} {} \u{00B7} Ln {}", kind_str, sym.name, sym.line + 1);
+            let mut rx = panel_x + pad_x;
+            for c in row_text.chars() {
+                if rx + cw > panel_x + panel_w - pad_x {
+                    break;
+                }
+                let color = if is_sel {
+                    theme.foreground
+                } else {
+                    theme.text_muted
+                };
+                raster.glyph_at(painter, metrics, rx, row_y, c as u32, color);
+                rx += cw;
+            }
+        }
+    }
+}
+
 // ── Disk-changed banner (item 27) ─────────────────────────────────────────────
 
 /// One-row banner at the top of the editor area warning that the on-disk file
@@ -9686,6 +10311,8 @@ fn main() -> Result<()> {
         code_actions_pending_edits: Vec::new(),
         lsp_rename_input: None,
         lsp_references: None,
+        workspace_symbol_search: None,
+        buffer_symbol_search: None,
         ui_scale: 1.0,
         font_scale: 1.0,
         pending_chord_k: false,

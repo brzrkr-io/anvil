@@ -25,5 +25,6 @@ pub use syntax::{
 // Re-export LSP types used by App and main.rs (NE9, NE10, tier-3).
 pub use lsp::{
     CompletionItem, DefinitionLocation, DiagnosticSeverity, DocumentDiagnostic, HoverResult,
-    LspCodeAction, LspManager, LspState, RenameEdit, language_id_for_ext, server_id_for_language,
+    LspCodeAction, LspManager, LspState, RenameEdit, WorkspaceSymbolHit, language_id_for_ext,
+    server_id_for_language,
 };
