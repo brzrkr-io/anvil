@@ -108,14 +108,11 @@ impl Docks {
                 } else {
                     0.0
                 },
-                // Direction A is editor-first: explorer + editor + bottom drawer.
-                // Keep the right HUD opt-in instead of reserving a permanent
-                // context rail that makes the mock read like direction B.
                 right_w: if hud_visible { hud_w } else { 0.0 },
-                // Keep IDE startup editor-first: no permanent top dashboard band.
-                // Context controls should return as intentional overlays, not
-                // as always-on clutter competing with the editor chrome.
-                top_h: 0.0,
+                // 28pt context strip below the chrome tab row: IDE chip,
+                // project path, git chips. Matches the topbar in the Option A
+                // sketch (`sketches/native-editor-directions/index.html`).
+                top_h: 28.0 * scale,
                 bottom_h: chrome_bottom_px,
             },
         }
@@ -307,14 +304,17 @@ mod tests {
     // ── IDE top bar height ────────────────────────────────────────────────────
 
     #[test]
-    fn ide_top_bar_h_zero_at_1x() {
+    fn ide_top_bar_h_is_28pt_at_1x() {
         let docks = docks_for(LayoutMode::Ide, false);
-        assert_eq!(docks.top_h, 0.0, "Ide top_h must stay hidden by default");
+        assert_eq!(docks.top_h, 28.0, "Ide top_h is a 28pt context strip");
         let areas = docks.compute_areas(INNER, MIN_W, MIN_H);
-        assert_eq!(
-            areas.top_bar.h, 0.0,
-            "top_bar.h must stay hidden by default"
-        );
+        assert_eq!(areas.top_bar.h, 28.0);
+    }
+
+    #[test]
+    fn ide_top_bar_h_scales_linearly() {
+        let d2 = Docks::for_mode(LayoutMode::Ide, 2.0, metrics(10), false, BOTTOM_H);
+        assert_eq!(d2.top_h, 56.0, "top_h must scale linearly");
     }
 
     #[test]

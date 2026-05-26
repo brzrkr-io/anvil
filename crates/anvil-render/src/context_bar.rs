@@ -8,7 +8,7 @@
 use anvil_theme::Theme;
 use anvil_workspace::layout::Rect;
 
-use crate::agent_panel::{GitState, LocalContext, format_cwd};
+use crate::agent_panel::{GitState, LocalContext};
 use crate::raster::{FontMetrics, GlyphPainter, Raster};
 
 /// Editor-segment input for the context bar.
@@ -58,13 +58,20 @@ pub fn draw_context_bar(
 
     x = draw_chip(raster, painter, metrics, theme, "IDE", x, by, bar_h, true) + 10.0;
 
-    let cwd = if local.cwd.is_empty() {
+    let cwd_base = if local.cwd.is_empty() {
         "anvil".to_string()
     } else {
-        format_cwd(&local.cwd)
+        local
+            .cwd
+            .rsplit('/')
+            .find(|s| !s.is_empty())
+            .unwrap_or("anvil")
+            .to_string()
     };
-    let file = editor.as_ref().map(|e| e.name).unwrap_or("native editor");
-    let path = format!("caldera/{cwd} · {file}");
+    let path = match editor.as_ref().map(|e| e.name) {
+        Some(name) => format!("{cwd_base} · {name}"),
+        None => cwd_base,
+    };
     draw_run_clipped(
         raster,
         painter,
