@@ -699,9 +699,16 @@ pub struct App {
     /// debounce so we don't flood the server on every keystroke.
     lsp_last_sync: HashMap<PaneId, Instant>,
 
-    // -- LSP UI (NE10) ---
+    // -- LSP UI (NE10, tier-3) ---
     /// In-flight hover request: `(pane_id, request_id)`. Polled each tick.
     pending_hover: Option<(PaneId, u64)>,
+    /// Mouse-hover debounce for item 15: last position + time for a 400ms hover trigger.
+    hover_mouse_pos: Option<(f64, f64)>,
+    hover_mouse_time: Option<Instant>,
+    /// In-flight definition request: `(pane_id, request_id)`. Polled each tick.
+    pending_definition: Option<(PaneId, u64)>,
+    /// In-flight completion request: `(pane_id, request_id)`. Polled each tick.
+    pending_completion: Option<(PaneId, u64)>,
 
     // ── UI scale (item 1) ──────────────────────────────────────────────────────
     /// Global UI scale multiplier. Applied on top of `window_scale` to font
@@ -1829,6 +1836,124 @@ impl App {
                     });
                 }
             }
+            self.dirty = true;
+        }
+    }
+
+    /// Send a `textDocument/definition` request for the cursor position in `pane_id`
+    /// (item 17).  Stores `(pane_id, request_id)` in `self.pending_definition`.
+    fn trigger_definition_request(&mut self, pane_id: PaneId) {
+        let Some(tab) = self.tabs.current() else {
+            return;
+        };
+        let Some(ep) = tab.editor_panes.get_pane(pane_id) else {
+            return;
+        };
+        let Some(buf) = tab.editor_panes.get_buffer(ep.buffer_id) else {
+            return;
+        };
+        let Some(path) = buf.tracked_path() else {
+            return;
+        };
+        let line = ep.cursors[0].pos.line as u32;
+        let character = ep.cursors[0].pos.col as u32;
+        let path = path.to_path_buf();
+        if let Some(lsp) = &self.lsp_manager {
+            let req_id = lsp.request_definition(&path, line, character);
+            if req_id != 0 {
+                self.pending_definition = Some((pane_id, req_id));
+            }
+        }
+    }
+
+    /// Poll for a definition result and jump the cursor (item 17).
+    fn poll_definition_result(&mut self) {
+        let Some((pane_id, req_id)) = self.pending_definition else {
+            return;
+        };
+        let Some(lsp) = &self.lsp_manager else { return };
+        if let Some(locs) = lsp.poll_definition(req_id) {
+            self.pending_definition = None;
+            // Pick the first location (TODO(anvil-tier3-17-picker): show picker for multi).
+            if let Some(loc) = locs.into_iter().next() {
+                // Look up the current buffer's path.
+                let cur_path: Option<std::path::PathBuf> = self
+                    .tabs
+                    .current()
+                    .and_then(|t| t.editor_panes.get_pane(pane_id))
+                    .and_then(|ep| {
+                        self.tabs
+                            .current()
+                            .and_then(|t| t.editor_panes.get_buffer(ep.buffer_id))
+                    })
+                    .and_then(|b| b.tracked_path())
+                    .map(|p| p.to_path_buf());
+                let same_file = cur_path.as_deref() == Some(&loc.path);
+                if !same_file {
+                    self.open_path_in_native_editor(&loc.path);
+                }
+                self.apply_editor_action(EditorAction::MoveTo {
+                    pos: EditorPosition {
+                        line: loc.line as usize,
+                        col: loc.col as usize,
+                    },
+                    extend: false,
+                });
+                self.dirty = true;
+            }
+        }
+    }
+
+    /// Trigger a completion request for the focused editor pane (item 16).
+    fn trigger_completion_request(&mut self) {
+        let Some(tab) = self.tabs.current() else {
+            return;
+        };
+        let pane_id = tab.focused_id();
+        let Some(ep) = tab.editor_panes.get_pane(pane_id) else {
+            return;
+        };
+        let Some(buf) = tab.editor_panes.get_buffer(ep.buffer_id) else {
+            return;
+        };
+        let Some(path) = buf.tracked_path() else {
+            return;
+        };
+        let line = ep.cursors[0].pos.line as u32;
+        let character = ep.cursors[0].pos.col as u32;
+        let path = path.to_path_buf();
+        if let Some(lsp) = &self.lsp_manager {
+            let req_id = lsp.request_completion(&path, line, character);
+            if req_id != 0 {
+                self.pending_completion = Some((pane_id, req_id));
+            }
+        }
+    }
+
+    /// Poll for a completion result and open the popup (item 16).
+    fn poll_completion_result(&mut self) {
+        let Some((_pane_id, req_id)) = self.pending_completion else {
+            return;
+        };
+        let items = self
+            .lsp_manager
+            .as_ref()
+            .and_then(|lsp| lsp.poll_completion(req_id));
+        if let Some(items) = items {
+            self.pending_completion = None;
+            if items.is_empty() {
+                return;
+            }
+            use anvil_workspace::editor_pane::CompletionEntry;
+            let entries: Vec<CompletionEntry> = items
+                .into_iter()
+                .map(|ci| CompletionEntry {
+                    label: ci.label.clone(),
+                    detail: ci.detail.clone(),
+                    insert_text: ci.insert_text.unwrap_or(ci.label),
+                })
+                .collect();
+            self.apply_editor_action(EditorAction::CompletionOpen(entries));
             self.dirty = true;
         }
     }
@@ -4140,6 +4265,49 @@ impl AppHandler for AppShell {
 
         // NE10: poll for pending hover responses each tick.
         app.poll_hover_result();
+        // Item 17: poll for pending definition responses each tick.
+        app.poll_definition_result();
+        // Item 16: poll for pending completion responses each tick.
+        app.poll_completion_result();
+
+        // Item 15: hover-mouse debounce — fire hover request after 400ms dwell.
+        {
+            const HOVER_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(400);
+            let now = Instant::now();
+            if let (Some(pos), Some(t)) = (app.hover_mouse_pos, app.hover_mouse_time) {
+                if now.duration_since(t) >= HOVER_DEBOUNCE
+                    && app.pending_hover.is_none()
+                    && app.focused_is_native_editor()
+                {
+                    // Convert stored raster px to buffer position.
+                    let loc = MouseLocation { x: pos.0, y: pos.1 };
+                    if let Some(buf_pos) = app.native_editor_pos_at(loc) {
+                        if let Some(tab) = app.tabs.current() {
+                            let pane_id = tab.focused_id();
+                            if let Some(ep) = tab.editor_panes.get_pane(pane_id) {
+                                if let Some(buf) = tab.editor_panes.get_buffer(ep.buffer_id) {
+                                    if let Some(path) = buf.tracked_path() {
+                                        let path = path.to_path_buf();
+                                        if let Some(lsp) = &app.lsp_manager {
+                                            let req_id = lsp.request_hover(
+                                                &path,
+                                                buf_pos.line as u32,
+                                                buf_pos.col as u32,
+                                            );
+                                            if req_id != 0 {
+                                                app.pending_hover = Some((pane_id, req_id));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Clear debounce so we only fire once per dwell.
+                    app.hover_mouse_time = None;
+                }
+            }
+        }
 
         if app.dirty {
             let mut grid_painters = GridPainters {
@@ -4927,6 +5095,63 @@ impl AppHandler for AppShell {
                 }
             }
 
+            // Item 16: Ctrl+Space → trigger completion.
+            if event.key == KeyInput::Char(' ') && event.mods.control && !event.mods.command {
+                self.app.trigger_completion_request();
+                self.app.dirty = true;
+                return;
+            }
+
+            // Item 16: completion popup navigation (↑↓ Enter Esc) when open.
+            let completion_open = self
+                .app
+                .tabs
+                .current()
+                .and_then(|t| {
+                    let ep = t.editor_panes.get_pane(t.focused_id())?;
+                    Some(ep.completion_popup.is_some())
+                })
+                .unwrap_or(false);
+            if completion_open {
+                match event.key {
+                    KeyInput::Up => {
+                        self.app.apply_editor_action(EditorAction::CompletionUp);
+                        self.app.dirty = true;
+                        return;
+                    }
+                    KeyInput::Down => {
+                        self.app.apply_editor_action(EditorAction::CompletionDown);
+                        self.app.dirty = true;
+                        return;
+                    }
+                    KeyInput::Enter => {
+                        self.app.apply_editor_action(EditorAction::CompletionAccept);
+                        self.app.dirty = true;
+                        return;
+                    }
+                    KeyInput::Escape => {
+                        self.app
+                            .apply_editor_action(EditorAction::CompletionDismiss);
+                        self.app.dirty = true;
+                        return;
+                    }
+                    KeyInput::Char(ch) => {
+                        // Insert the char AND filter the popup.
+                        self.app.apply_editor_action(EditorAction::InsertChar(ch));
+                        self.app
+                            .apply_editor_action(EditorAction::CompletionFilter(ch));
+                        self.app.dirty = true;
+                        return;
+                    }
+                    _ => {
+                        // Any other key (Backspace, Tab, etc.) closes the popup.
+                        self.app
+                            .apply_editor_action(EditorAction::CompletionDismiss);
+                        // Fall through to normal handling.
+                    }
+                }
+            }
+
             // NE13: Esc with multi-cursor active → clear secondary cursors.
             if event.key == KeyInput::Escape {
                 let has_secondary = self
@@ -4948,7 +5173,17 @@ impl AppHandler for AppShell {
 
             let action = key_event_to_editor_action(event);
             if let Some(action) = action {
+                // Item 16: autotrigger completion after `.` or `:`.
+                // (We trigger after the second `:` of `::` by checking the last char
+                //  typed — cheap and sufficient for the v1 trigger spec.)
+                let should_trigger = matches!(
+                    &action,
+                    EditorAction::InsertChar('.') | EditorAction::InsertChar(':')
+                );
                 self.app.apply_editor_action(action);
+                if should_trigger && self.app.pending_completion.is_none() {
+                    self.app.trigger_completion_request();
+                }
             }
             return;
         }
@@ -5348,13 +5583,19 @@ impl AppHandler for AppShell {
         }
 
         // Native editor mouse: click → cursor, double → word, triple → line (NE7).
-        // Cmd+click (single) → add secondary cursor (NE13).
+        // Cmd+click (single) → goto definition (item 17; was secondary cursor NE13).
         if app.focused_is_native_editor() {
             if let Some(pos) = app.native_editor_pos_at(loc) {
-                let action = if mods.command && click_count == 1 {
-                    // Cmd+click: add secondary cursor at the hit position.
-                    EditorAction::AddCursorAt(pos)
-                } else if click_count >= 3 {
+                if mods.command && click_count == 1 {
+                    // Item 17: Cmd+click → jump to definition.
+                    // Move cursor to the clicked position first, then fire definition.
+                    app.apply_editor_action(EditorAction::MoveTo { pos, extend: false });
+                    let pane_id = app.tabs.current().map(|t| t.focused_id()).unwrap_or(0);
+                    app.trigger_definition_request(pane_id);
+                    app.dirty = true;
+                    return;
+                }
+                let action = if click_count >= 3 {
                     EditorAction::SelectLineAt(pos)
                 } else if click_count == 2 {
                     EditorAction::SelectWordAt(pos)
@@ -5935,6 +6176,16 @@ impl AppHandler for AppShell {
         if new_editor_hover != app.hovered_editor_tab {
             app.hovered_editor_tab = new_editor_hover;
             app.dirty = true;
+        }
+
+        // Item 15: hover debounce — record position + timestamp when over editor.
+        // The tick loop fires the request after 400ms if the mouse hasn't moved.
+        if app.focused_is_native_editor() {
+            let new_pos = (rx, ry);
+            if app.hover_mouse_pos != Some(new_pos) {
+                app.hover_mouse_pos = Some(new_pos);
+                app.hover_mouse_time = Some(Instant::now());
+            }
         }
     }
 
@@ -6871,6 +7122,10 @@ fn main() -> Result<()> {
         lsp_manager: anvil_editor::LspManager::new(),
         lsp_last_sync: HashMap::new(),
         pending_hover: None,
+        hover_mouse_pos: None,
+        hover_mouse_time: None,
+        pending_definition: None,
+        pending_completion: None,
         ui_scale: 1.0,
         focus_target: FocusTarget::default(),
         selected_explorer_row: None,
