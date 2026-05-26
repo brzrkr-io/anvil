@@ -21,7 +21,9 @@
 
 use unicode_segmentation::UnicodeSegmentation as _;
 
-use anvil_editor::{Buffer, FoldRange, GitChange, GitGutter, SyntaxRole, derive_fold_ranges};
+use anvil_editor::{
+    Buffer, FoldRange, GitChange, GitGutter, IndentStyle, SyntaxRole, derive_fold_ranges,
+};
 use anvil_theme::Theme;
 use anvil_workspace::editor_pane::CodeActionEntry;
 use anvil_workspace::{
@@ -264,6 +266,33 @@ pub fn draw_editor_into(
             }
         }
 
+        // ── Indent guides (N1) ───────────────────────────────────────────────
+        // For each indent stop in the leading whitespace, paint a 1px vertical
+        // line in `text_subtle` α=0.25.  Uses `buffer.indent_style()` for the
+        // indent width; only renders when there is at least one full indent level.
+        {
+            let indent_w = match buffer.indent_style() {
+                IndentStyle::Spaces(n) => n,
+                IndentStyle::Tabs(_) => 4,
+            };
+            if let Some(indent_w) = Some(indent_w).filter(|&w| w > 0) {
+                let line_s = buffer.line(line_idx);
+                let line_str_tmp: String = line_s.chars().collect();
+                let line_content_tmp = line_str_tmp.trim_end_matches('\n').trim_end_matches('\r');
+                let leading_cols = line_content_tmp
+                    .chars()
+                    .take_while(|&c| c == ' ' || c == '\t')
+                    .count();
+                let guide_count = leading_cols.checked_div(indent_w).unwrap_or(0);
+                for k in 1..=guide_count {
+                    let gx = rect.x + gutter_w + (k * indent_w) as f64 * cw;
+                    if gx < rect.x + rect.w {
+                        raster.fill_pixel_rect_alpha(gx, row_y, 1.0, ch, theme.text_subtle, 0.25);
+                    }
+                }
+            }
+        }
+
         // ── Buffer content ────────────────────────────────────────────────────
         let line_byte_start = buffer.line_to_byte(line_idx);
         let line_slice = buffer.line(line_idx);
@@ -408,6 +437,31 @@ pub fn draw_editor_into(
 
         vrow += 1;
         line_idx += 1;
+    }
+
+    // ── Tildes below buffer end (N2) ─────────────────────────────────────────
+    // When the viewport extends past the last buffer line, paint `~` in
+    // `text_subtle` α=0.4 at col 0 of each empty visual row (vim convention).
+    {
+        let tilde_color = {
+            let s = theme.text_subtle;
+            let bg = theme.surface;
+            [
+                (s[0] as f32 * 0.4 + bg[0] as f32 * 0.6) as u8,
+                (s[1] as f32 * 0.4 + bg[1] as f32 * 0.6) as u8,
+                (s[2] as f32 * 0.4 + bg[2] as f32 * 0.6) as u8,
+            ]
+        };
+        // `vrow` and `line_idx` are from the loop above (both set to their
+        // post-loop values via the `while` increment, so `vrow` is the first
+        // empty visual row).
+        let mut tilde_vrow = vrow;
+        while tilde_vrow < visible_rows {
+            let ty = rect.y + tilde_vrow as f64 * ch;
+            let tx = rect.x + gutter_w;
+            raster.glyph_at(painter, metrics, tx, ty, '~' as u32, tilde_color);
+            tilde_vrow += 1;
+        }
     }
 
     // ── Cursor bars — primary + secondary (NE13) ─────────────────────────────
@@ -1742,6 +1796,104 @@ mod tests {
         assert!(
             all_surface,
             "right-edge must stay surface color when scroll_indicator_alpha=0"
+        );
+    }
+
+    // ── N1: indent guides ─────────────────────────────────────────────────────
+
+    /// A buffer indented by 4 spaces (two levels) must produce a pixel at the
+    /// indent-stop x position distinct from the background surface color.
+    /// The guide is a 1px alpha-blended vertical bar in `text_subtle`.
+    #[test]
+    fn indent_guides_painted_at_indent_boundaries() {
+        use crate::raster::pixel_at;
+
+        // "    hello" — 4-space leading indent → one guide at col 4
+        // "        world" — 8-space indent → two guides at col 4 and col 8
+        let buf = Buffer::from_text("    hello\n        world\n");
+        let pane = make_pane(1);
+        let m = metrics();
+        let r = rect();
+
+        // Compute gutter_w for this buffer (2 lines → digit_cols = 1).
+        let gutter_w = (1 + 2) as f64 * m.cell_w; // digit_cols=1, +2 padding
+
+        let mut raster = Raster::new(400, 200);
+        raster.clear([0, 0, 0]);
+        let mut painter = CapturePainter::default();
+
+        draw_editor_into(
+            &mut raster,
+            &mut painter,
+            &pane,
+            &buf,
+            m,
+            &MINERAL_DARK,
+            r,
+            &[],
+            None,
+            false,
+            0.0,
+            0.0,
+        );
+
+        // Guide at col 4 on row 0 (gutter_w + 4 * cell_w).
+        let guide1_x = (gutter_w + 4.0 * m.cell_w) as usize;
+        let guide1_y = (m.cell_h * 0.5) as usize;
+        let px1 = pixel_at(&raster, guide1_x, guide1_y);
+        // The guide blends text_subtle into the surface. Just verify it's not
+        // pure black (our clear color) — the editor draws surface first, then
+        // blends the guide over it.
+        assert_ne!(
+            px1,
+            [0u8, 0, 0],
+            "indent guide pixel at col 4, row 0 must not be blank (got {px1:?})"
+        );
+
+        // Guide at col 8 on row 1 (second indent level).
+        let guide2_x = (gutter_w + 8.0 * m.cell_w) as usize;
+        let guide2_y = (m.cell_h * 1.5) as usize;
+        let px2 = pixel_at(&raster, guide2_x, guide2_y);
+        assert_ne!(
+            px2,
+            [0u8, 0, 0],
+            "indent guide pixel at col 8, row 1 must not be blank (got {px2:?})"
+        );
+    }
+
+    // ── N2: tildes below buffer end ────────────────────────────────────────────
+
+    /// When the buffer has fewer lines than the viewport, `~` glyphs must be
+    /// painted in the empty visual rows below the last line.
+    #[test]
+    fn tildes_painted_below_buffer_end() {
+        // Single-line buffer in a 200px-tall pane → 12 visible rows at 16px
+        // cell_h; all but the first should show `~`.
+        let buf = Buffer::from_text("hello\n");
+        let pane = make_pane(1);
+        let mut raster = Raster::new(400, 200);
+        let mut painter = CapturePainter::default();
+
+        draw_editor_into(
+            &mut raster,
+            &mut painter,
+            &pane,
+            &buf,
+            metrics(),
+            &MINERAL_DARK,
+            rect(),
+            &[],
+            None,
+            false,
+            0.0,
+            0.0,
+        );
+
+        // There must be at least one `~` (codepoint 0x7E) glyph in the output.
+        let has_tilde = painter.calls.iter().any(|(cp, _)| *cp == '~' as u32);
+        assert!(
+            has_tilde,
+            "tilde glyphs must be painted below the last buffer line"
         );
     }
 }

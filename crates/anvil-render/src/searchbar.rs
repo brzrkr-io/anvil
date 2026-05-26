@@ -7,6 +7,21 @@ use anvil_workspace::editor_search::EditorSearch;
 
 use crate::raster::{FontMetrics, GlyphPainter, Raster};
 
+// ── Hit regions for the nav arrows (N4) ──────────────────────────────────────
+
+/// Pixel rects for the ◀ prev and ▶ next buttons painted in the search bar.
+///
+/// Cleared by `draw_search_bar_with_replace` before each frame; populated when
+/// a search is active and there is at least one match.  Consumed by
+/// `mouse_down` in `main.rs` to fire `SearchPrev` / `SearchNext`.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SearchBarArrowHits {
+    /// Hit rect for the ◀ (prev) arrow. Zero-sized when not present.
+    pub prev: [f64; 4], // x, y, w, h
+    /// Hit rect for the ▶ (next) arrow. Zero-sized when not present.
+    pub next: [f64; 4],
+}
+
 /// Draw the search bar as a fixed-pixel strip at the bottom of the raster.
 ///
 /// `chrome_bottom_px` is the strip height (same constant used by the status
@@ -16,7 +31,7 @@ use crate::raster::{FontMetrics, GlyphPainter, Raster};
 ///
 /// Left: "find: " prefix (muted) + query (foreground) + cursor block
 ///       (accent_bright) at the insertion point.
-/// Right: match counter `cur/total` in `text_muted`.
+/// Right: `N of M` counter + ◀ ▶ nav arrows, all in `text_muted`.
 ///
 /// When `editor_search.replace_input` is `Some`, a second row is painted
 /// beneath the first with "replace: " prefix + replace text + two buttons
@@ -48,10 +63,12 @@ pub fn draw_search_bar(
         window_scale,
         editor_search,
         false,
+        &mut SearchBarArrowHits::default(),
     );
 }
 
-/// Variant that accepts `replace_active` to show the cursor in the replace row.
+/// Variant that accepts `replace_active` to show the cursor in the replace row
+/// and outputs nav-arrow hit regions into `hits_out` (N4).
 #[allow(clippy::too_many_arguments)]
 pub fn draw_search_bar_with_replace(
     raster: &mut Raster,
@@ -63,7 +80,9 @@ pub fn draw_search_bar_with_replace(
     window_scale: f64,
     editor_search: Option<&EditorSearch>,
     replace_active: bool,
+    hits_out: &mut SearchBarArrowHits,
 ) {
+    *hits_out = SearchBarArrowHits::default();
     let cell_w = metrics.cell_w;
     let cell_h = metrics.cell_h;
     let total_w = raster.width as f64;
@@ -98,10 +117,18 @@ pub fn draw_search_bar_with_replace(
         (prefix, search.query(), cur, count)
     };
 
-    let counter = format!("{cur}/{count}");
+    // N4: "N of M" label + ◀ ▶ arrows on the right.
+    let counter = if count == 0 {
+        format!("{cur}/{count}")
+    } else {
+        format!("{cur} of {count}")
+    };
 
-    // Right-side reservation: counter + 1-column gap.
-    let reserved_right = (counter.chars().count() + 1) as f64 * cell_w;
+    // Right-side reservation: ▶ + space + ◀ + space + counter + 1-column gap.
+    // Arrows are each 1 cell wide; gap between arrow and counter is 1 cell.
+    let arrow_cols = 2usize; // ◀ + ▶
+    let arrow_gaps = 3usize; // spaces between/around arrows and counter
+    let reserved_right = (counter.chars().count() + arrow_cols + arrow_gaps + 1) as f64 * cell_w;
 
     let right_edge = (total_w - pad_x - reserved_right).max(pad_x);
 
@@ -137,15 +164,47 @@ pub fn draw_search_bar_with_replace(
         );
     }
 
-    // ── Right: match counter ─────────────────────────────────────────────
-    let counter_x = total_w - pad_x - counter.chars().count() as f64 * cell_w;
-    let mut rx = counter_x.max(0.0);
+    // ── Right: nav arrows (N4) + match counter ───────────────────────────────
+    // Layout (right-to-left): pad_x | ▶ | space | ◀ | space | counter | space
+    // ▶ is at the far right (before pad_x), ◀ is one cell to its left.
+    let next_x = total_w - pad_x - cell_w;
+    let prev_x = next_x - cell_w * 2.0; // 1 space gap between arrows
+    let counter_end_x = prev_x - cell_w; // 1 space gap between ◀ and counter
+    let counter_x = (counter_end_x - counter.chars().count() as f64 * cell_w).max(0.0);
+
+    // Counter.
+    let mut rx = counter_x;
     for ch in counter.chars() {
-        if rx + cell_w > total_w {
+        if rx + cell_w > counter_end_x {
             break;
         }
         raster.glyph_at(painter, metrics, rx, glyph_y, ch as u32, theme.text_muted);
         rx += cell_w;
+    }
+
+    // ◀ arrow.
+    if count > 0 && prev_x >= 0.0 {
+        raster.glyph_at(
+            painter,
+            metrics,
+            prev_x,
+            glyph_y,
+            '\u{25C0}' as u32,
+            theme.text_muted,
+        );
+        hits_out.prev = [prev_x, strip_top, cell_w, chrome_bottom_px];
+    }
+    // ▶ arrow.
+    if count > 0 && next_x >= 0.0 {
+        raster.glyph_at(
+            painter,
+            metrics,
+            next_x,
+            glyph_y,
+            '\u{25B6}' as u32,
+            theme.text_muted,
+        );
+        hits_out.next = [next_x, strip_top, cell_w, chrome_bottom_px];
     }
 
     // ── Replace row (item 9) ────────────────────────────────────────────
@@ -326,6 +385,90 @@ mod tests {
         assert!(
             muted.contains(&'f'),
             "expected 'f' from 'find: ' prefix in text_muted, got {muted:?}"
+        );
+    }
+
+    // ── N4: search bar nav arrows ─────────────────────────────────────────────
+
+    /// When there are matches, `draw_search_bar_with_replace` must populate
+    /// non-zero hit rects for both ◀ and ▶ arrows.
+    #[test]
+    fn nav_arrows_hit_rects_populated_when_matches_exist() {
+        use anvil_workspace::editor_search::EditorSearch;
+        use anvil_editor::Buffer;
+
+        let m = metrics();
+        let mut r = Raster::new(400, 200);
+        let mut painter = StubPainter::default();
+        r.clear([0, 0, 0]);
+
+        let search = Search::new();
+        let theme = anvil_theme::MINERAL_DARK;
+
+        // Build an EditorSearch with one match so count > 0.
+        let buf = Buffer::from_text("hello hello\n");
+        let mut es = EditorSearch::new();
+        es.rescan(&buf);
+        es.query = "hello".into();
+        es.rescan(&buf);
+
+        let mut hits = SearchBarArrowHits::default();
+        draw_search_bar_with_replace(
+            &mut r,
+            &mut painter,
+            m,
+            &theme,
+            &search,
+            m.cell_h * 2.0,
+            1.0,
+            Some(&es),
+            false,
+            &mut hits,
+        );
+
+        assert!(
+            hits.prev[2] > 0.0,
+            "prev arrow hit rect must have non-zero width when matches exist"
+        );
+        assert!(
+            hits.next[2] > 0.0,
+            "next arrow hit rect must have non-zero width when matches exist"
+        );
+    }
+
+    /// When there are no matches, arrow hit rects must be zero-sized.
+    #[test]
+    fn nav_arrows_hit_rects_absent_when_no_matches() {
+        let m = metrics();
+        let mut r = Raster::new(400, 200);
+        let mut painter = StubPainter::default();
+        r.clear([0, 0, 0]);
+
+        let search = Search::new();
+        let theme = anvil_theme::MINERAL_DARK;
+        // No editor_search → terminal search with count=0.
+
+        let mut hits = SearchBarArrowHits::default();
+        draw_search_bar_with_replace(
+            &mut r,
+            &mut painter,
+            m,
+            &theme,
+            &search,
+            m.cell_h * 2.0,
+            1.0,
+            None,
+            false,
+            &mut hits,
+        );
+
+        assert_eq!(
+            hits.prev[2], 0.0,
+            "prev arrow hit rect must be zero-sized when count=0"
+        );
+        assert_eq!(
+            hits.next[2], 0.0,
+            "next arrow hit rect must be zero-sized when count=0"
         );
     }
 }

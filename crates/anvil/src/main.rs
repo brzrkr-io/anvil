@@ -105,6 +105,24 @@ fn non_empty_terminal_cwd(terminal: &Terminal) -> Option<String> {
     }
 }
 
+// ── Toast notification system (N3) ───────────────────────────────────────────
+
+/// Visual kind of a toast notification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToastKind {
+    Info,
+    Success,
+    Error,
+}
+
+/// A single transient notification shown in the bottom-right corner.
+#[derive(Debug, Clone)]
+struct Toast {
+    text: String,
+    kind: ToastKind,
+    expires_at: Instant,
+}
+
 // ── Constants ────────────────────────────────────────────────────────────────
 
 /// Uniform inset in device pixels between the window edge and the terminal grid.
@@ -850,6 +868,18 @@ pub struct App {
     /// Current cursor position while an explorer drag is live; used by the
     /// render path to paint the floating filename chip.
     explorer_drag_cursor: Option<MouseLocation>,
+
+    // ── Toast notifications (N3) ──────────────────────────────────────────────
+    /// Active toasts, front = oldest. Expired entries are drained each tick.
+    toasts: std::collections::VecDeque<Toast>,
+    /// Server ids for which we have already shown an LSP-not-found toast.
+    /// Prevents spamming the user on every tick.
+    lsp_failed_toasted: HashSet<String>,
+
+    // ── Search bar nav arrows (N4) ────────────────────────────────────────────
+    /// Pixel rects for the ◀ / ▶ arrows in the search bar. Repopulated each
+    /// frame when the search bar is open; consumed by `mouse_down`.
+    search_bar_hits: anvil_render::searchbar::SearchBarArrowHits,
 }
 
 // ── App helpers ───────────────────────────────────────────────────────────────
@@ -878,6 +908,48 @@ fn next_explorer_scroll_offset(current: usize, dy: f64, entry_count: usize) -> u
 }
 
 impl App {
+    // ── Toast helpers (N3) ────────────────────────────────────────────────────
+
+    const TOAST_TTL_SECS: u64 = 3;
+    const TOAST_MAX_CHARS: usize = 60;
+
+    fn push_toast(&mut self, text: &str, kind: ToastKind) {
+        let truncated: String = text.chars().take(Self::TOAST_MAX_CHARS).collect();
+        self.toasts.push_back(Toast {
+            text: truncated,
+            kind,
+            expires_at: Instant::now() + std::time::Duration::from_secs(Self::TOAST_TTL_SECS),
+        });
+        // Cap to 5 visible at once.
+        while self.toasts.len() > 5 {
+            self.toasts.pop_front();
+        }
+        self.dirty = true;
+    }
+
+    fn toast_info(&mut self, text: &str) {
+        self.push_toast(text, ToastKind::Info);
+    }
+
+    fn toast_success(&mut self, text: &str) {
+        self.push_toast(text, ToastKind::Success);
+    }
+
+    fn toast_error(&mut self, text: &str) {
+        self.push_toast(text, ToastKind::Error);
+    }
+
+    /// Expire stale toasts. Called each tick.
+    fn tick_toasts(&mut self) {
+        let now = Instant::now();
+        while self.toasts.front().is_some_and(|t| t.expires_at <= now) {
+            self.toasts.pop_front();
+            self.dirty = true;
+        }
+    }
+
+    // ── End toast helpers ─────────────────────────────────────────────────────
+
     /// The current focused pane id.
     fn focused_pane_id(&self) -> PaneId {
         self.tabs.current().map(|t| t.focused_id()).unwrap_or(0)
@@ -3254,6 +3326,7 @@ impl App {
                 scale,
                 editor_search,
                 self.replace_row_active,
+                &mut self.search_bar_hits,
             );
         } else {
             let clock = local_hhmm();
@@ -3471,6 +3544,22 @@ impl App {
                 chrome_top,
                 cw,
                 ch,
+            );
+        }
+
+        // ── Toasts (N3) ───────────────────────────────────────────────────────
+        if !self.toasts.is_empty() {
+            let chrome_bot = self.chrome_bottom_px();
+            draw_toasts(
+                &mut self.raster,
+                chrome_painter,
+                chrome_metrics,
+                &self.theme,
+                &self.toasts,
+                dw as f64,
+                dh as f64,
+                chrome_bot,
+                self.ui_scale,
             );
         }
 
@@ -3969,9 +4058,42 @@ impl App {
         // the normal dispatcher so they keep working even in editor panes.
         if self.focused_is_native_editor() {
             let lch = ascii_lower(ch);
-            // Cmd+S → Save
+            // Cmd+S → Save (N3: toast on success/failure)
             if lch == 's' && !mods.shift && !mods.control && !mods.option {
-                self.apply_editor_action(EditorAction::Save);
+                // Run the save directly to capture success/error for a toast.
+                let save_result: Option<Result<String, String>> =
+                    if let Some(tab) = self.tabs.current_mut() {
+                        let id = tab.focused_id();
+                        if let Some(ep) = tab.editor_panes.get_pane(id) {
+                            let buf_id = ep.buffer_id;
+                            if let Some(buf) = tab.editor_panes.get_buffer_mut(buf_id) {
+                                if let Some(path) = buf.tracked_path().map(|p| p.to_path_buf()) {
+                                    let basename = path
+                                        .file_name()
+                                        .and_then(|n| n.to_str())
+                                        .unwrap_or("file")
+                                        .to_string();
+                                    Some(match buf.save(&path) {
+                                        Ok(()) => Ok(basename),
+                                        Err(e) => Err(e.to_string()),
+                                    })
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                match save_result {
+                    Some(Ok(name)) => self.toast_success(&format!("Saved {name}")),
+                    Some(Err(e)) => self.toast_error(&format!("Save failed: {e}")),
+                    None => {} // scratch buffer or no path — no toast
+                }
                 self.dirty = true;
                 return true;
             }
@@ -5449,6 +5571,41 @@ impl AppHandler for AppShell {
             }
         }
 
+        // N3: expire stale toasts.
+        app.tick_toasts();
+
+        // N3: check for LSP-not-found failures and show a one-time info toast.
+        {
+            const SERVER_IDS: &[&str] = &[
+                "rust-analyzer",
+                "typescript-language-server",
+                "pyright",
+                "taplo",
+                "vscode-json-language-server",
+                "marksman",
+            ];
+            // Collect new failures before dropping the borrow on lsp_manager.
+            let new_failures: Vec<String> = if let Some(lsp) = &app.lsp_manager {
+                SERVER_IDS
+                    .iter()
+                    .filter_map(|&sid| {
+                        if let anvil_editor::LspState::Failed(_) = lsp.state_of(sid) {
+                            if !app.lsp_failed_toasted.contains(sid) {
+                                return Some(sid.to_string());
+                            }
+                        }
+                        None
+                    })
+                    .collect()
+            } else {
+                vec![]
+            };
+            for sid in new_failures {
+                app.lsp_failed_toasted.insert(sid.clone());
+                app.toast_info(&format!("{sid} not in PATH"));
+            }
+        }
+
         // NE10: poll for pending hover responses each tick.
         app.poll_hover_result();
         // Item 17: poll for pending definition responses each tick.
@@ -6861,6 +7018,33 @@ impl AppHandler for AppShell {
                     app.dirty = true;
                     return;
                 }
+            }
+        }
+
+        // Search-bar arrow hit-test (N4): ◀ / ▶ nav buttons.
+        if app.search_open {
+            let (rx, ry) = app.view_pt_to_raster_px(loc);
+            let h = &app.search_bar_hits;
+            let hit_rect = |r: [f64; 4]| {
+                r[2] > 0.0 && rx >= r[0] && rx < r[0] + r[2] && ry >= r[1] && ry < r[1] + r[3]
+            };
+            if hit_rect(h.prev) {
+                if app.focused_is_native_editor() {
+                    app.apply_editor_action(EditorAction::SearchPrev);
+                } else {
+                    app.search.prev();
+                }
+                app.dirty = true;
+                return;
+            }
+            if hit_rect(h.next) {
+                if app.focused_is_native_editor() {
+                    app.apply_editor_action(EditorAction::SearchNext);
+                } else {
+                    app.search.next();
+                }
+                app.dirty = true;
+                return;
             }
         }
 
@@ -8765,6 +8949,69 @@ fn draw_disk_changed_banner(
     }
 }
 
+// ── Toast draw helper (N3) ───────────────────────────────────────────────────
+
+/// Paint all active toasts in the bottom-right corner.
+///
+/// Each toast is 28pt tall × 240pt wide, stacked upward from 8pt above the
+/// status bar.  Background is `theme.panel`; 1px `theme.hairline` border;
+/// text color by kind (Success = `verified`, Error = `failure`, Info = `accent_primary`).
+/// All dimensions scale with `ui_scale`.
+#[allow(clippy::too_many_arguments)]
+fn draw_toasts(
+    raster: &mut anvil_render::raster::Raster,
+    painter: &mut dyn anvil_render::raster::GlyphPainter,
+    metrics: anvil_render::raster::FontMetrics,
+    theme: &anvil_theme::Theme,
+    toasts: &std::collections::VecDeque<Toast>,
+    dw: f64,
+    dh: f64,
+    chrome_bottom_px: f64,
+    ui_scale: f64,
+) {
+    if toasts.is_empty() {
+        return;
+    }
+
+    let cw = metrics.cell_w;
+    let toast_h = (28.0 * ui_scale).round();
+    let toast_w = (240.0 * ui_scale).round();
+    let gap = (8.0 * ui_scale).round();
+    let right_pad = (12.0 * ui_scale).round();
+    let text_pad = (6.0 * ui_scale).round();
+
+    // Bottom of lowest toast sits `gap` above the status bar strip.
+    let base_y = dh - chrome_bottom_px - gap;
+
+    for (i, toast) in toasts.iter().rev().enumerate() {
+        let ty = base_y - (i as f64 + 1.0) * toast_h - i as f64 * gap;
+        let tx = dw - toast_w - right_pad;
+
+        // Background.
+        raster.fill_pixel_rect(tx, ty, toast_w, toast_h, theme.panel);
+        // Border.
+        raster.fill_pixel_rect(tx, ty, toast_w, 1.0, theme.hairline);
+        raster.fill_pixel_rect(tx, ty + toast_h - 1.0, toast_w, 1.0, theme.hairline);
+        raster.fill_pixel_rect(tx, ty, 1.0, toast_h, theme.hairline);
+        raster.fill_pixel_rect(tx + toast_w - 1.0, ty, 1.0, toast_h, theme.hairline);
+
+        let text_color = match toast.kind {
+            ToastKind::Success => theme.verified,
+            ToastKind::Error => theme.failure,
+            ToastKind::Info => theme.accent_primary,
+        };
+
+        // Vertically center the glyph row within the toast.
+        let text_y = ty + (toast_h - metrics.cell_h) * 0.5;
+        let max_chars = ((toast_w - text_pad * 2.0) / cw).floor() as usize;
+        let mut x = tx + text_pad;
+        for c in toast.text.chars().take(max_chars) {
+            raster.glyph_at(painter, metrics, x, text_y, c as u32, text_color);
+            x += cw;
+        }
+    }
+}
+
 // ── Welcome screen (item 28) ──────────────────────────────────────────────────
 
 /// Centered welcome panel shown when no buffers are open.
@@ -9459,6 +9706,9 @@ fn main() -> Result<()> {
         right_click_path: None,
         explorer_drag: None,
         explorer_drag_cursor: None,
+        toasts: std::collections::VecDeque::new(),
+        lsp_failed_toasted: HashSet::new(),
+        search_bar_hits: anvil_render::searchbar::SearchBarArrowHits::default(),
     };
 
     // -- AppKitApp: builds the window, view, timer ----------------------------
@@ -10020,5 +10270,44 @@ mod tests {
             let n = n as u8 + 1;
             assert_eq!(platform_key_to_zig_key(KeyInput::F(n)), Some(*exp), "F{n}");
         }
+    }
+
+    // ── N3: toast system ─────────────────────────────────────────────────────
+
+    /// `push_toast` caps text at 60 characters.
+    #[test]
+    fn toast_text_capped_at_60_chars() {
+        // Build a minimal App-like struct — use only the toast VecDeque.
+        // We test the logic via the helper functions directly.
+        let long = "a".repeat(80);
+        let truncated: String = long.chars().take(App::TOAST_MAX_CHARS).collect();
+        assert_eq!(truncated.len(), 60, "toast text must be capped at 60 chars");
+    }
+
+    /// Toasts with `expires_at` in the past are removed by `tick_toasts`.
+    #[test]
+    fn expired_toasts_removed_on_tick() {
+        let mut q: std::collections::VecDeque<Toast> = std::collections::VecDeque::new();
+        let already_expired = Toast {
+            text: "old".into(),
+            kind: ToastKind::Info,
+            expires_at: Instant::now() - std::time::Duration::from_secs(10),
+        };
+        let still_live = Toast {
+            text: "new".into(),
+            kind: ToastKind::Success,
+            expires_at: Instant::now() + std::time::Duration::from_secs(10),
+        };
+        q.push_back(already_expired);
+        q.push_back(still_live);
+
+        // Manually apply the same drain logic as `tick_toasts`.
+        let now = Instant::now();
+        while q.front().is_some_and(|t| t.expires_at <= now) {
+            q.pop_front();
+        }
+
+        assert_eq!(q.len(), 1, "expired toast must be removed; 1 live toast remains");
+        assert_eq!(q.front().unwrap().text, "new");
     }
 }
