@@ -7,10 +7,51 @@
 //!   explorer_h = rect.h * 0.60   (includes header row)
 //!   outline_h  = rect.h * 0.40   (includes header row)
 
+use std::path::Path;
+
 use anvil_theme::Theme;
 use anvil_workspace::layout::Rect;
 
 use crate::raster::{FontMetrics, GlyphPainter, Raster};
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExplorerHit {
+    Header,
+    Row(usize),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum LeftDockHitKind {
+    Explorer(ExplorerHit),
+    Outline(usize),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LeftDockHit {
+    pub rect: Rect,
+    pub kind: LeftDockHitKind,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LeftDockHits {
+    pub hits: Vec<LeftDockHit>,
+}
+
+impl LeftDockHits {
+    pub fn clear(&mut self) {
+        self.hits.clear();
+    }
+
+    pub fn at(&self, x: f64, y: f64) -> Option<&LeftDockHitKind> {
+        self.hits
+            .iter()
+            .find(|hit| {
+                let r = hit.rect;
+                x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h
+            })
+            .map(|hit| &hit.kind)
+    }
+}
 
 /// A single directory entry as produced by `crates/anvil/src/fs_worker.rs`.
 ///
@@ -64,13 +105,13 @@ pub struct OutlineRow {
 // ── Row geometry ──────────────────────────────────────────────────────────────
 
 /// Height of a section header row in pixels (fixed; chrome font sized).
-const HEADER_H: f64 = 22.0;
+const HEADER_H: f64 = 30.0;
 
 /// Height of a content row in pixels.
-const ROW_H: f64 = 20.0;
+const ROW_H: f64 = 24.0;
 
 /// Horizontal padding inside the dock.
-const PAD_X: f64 = 8.0;
+const PAD_X: f64 = 12.0;
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
@@ -89,18 +130,31 @@ pub fn draw_left_dock(
     metrics: FontMetrics,
     theme: &Theme,
     snapshot: Option<&DirSnapshot>,
+    active_file_path: Option<&Path>,
     outline: Option<&[OutlineRow]>,
     rect: Rect,
-) {
+) -> LeftDockHits {
+    let mut hits = LeftDockHits::default();
     if rect.w <= 0.0 || rect.h <= 0.0 {
-        return;
+        return hits;
     }
 
     // ── Background ────────────────────────────────────────────────────────────
+    // Direction A sidebar: a quiet Mineral panel, not a red/brown block. The
+    // Ember wash is only a trace so Explorer reads as a tool rail beside the
+    // editor instead of competing with the file contents.
     raster.fill_pixel_rect(rect.x, rect.y, rect.w, rect.h, theme.charcoal);
+    raster.fill_pixel_rect_alpha(rect.x, rect.y, rect.w, rect.h, theme.accent_ember, 0.02);
 
-    // Right-edge 1px hairline.
-    raster.fill_pixel_rect(rect.x + rect.w - 1.0, rect.y, 1.0, rect.h, theme.hairline);
+    // Right-edge 1px warm hairline.
+    raster.fill_pixel_rect_alpha(
+        rect.x + rect.w - 1.0,
+        rect.y,
+        1.0,
+        rect.h,
+        theme.accent_bright,
+        0.28,
+    );
 
     // ── 60/40 split ───────────────────────────────────────────────────────────
     let explorer_h = (rect.h * 0.60).floor();
@@ -128,35 +182,61 @@ pub fn draw_left_dock(
         theme.hairline,
     );
 
-    draw_explorer_section(raster, painter, metrics, theme, snapshot, explorer_rect);
-    draw_outline_section(raster, painter, metrics, theme, outline, outline_rect);
+    let ui_metrics = metrics;
+    draw_explorer_section(
+        raster,
+        painter,
+        ui_metrics,
+        theme,
+        snapshot,
+        active_file_path,
+        explorer_rect,
+        &mut hits,
+    );
+    draw_outline_section(
+        raster,
+        painter,
+        ui_metrics,
+        theme,
+        outline,
+        outline_rect,
+        &mut hits,
+    );
+    hits
 }
 
 // ── Explorer section ──────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn draw_explorer_section(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
     metrics: FontMetrics,
     theme: &Theme,
     snapshot: Option<&DirSnapshot>,
+    active_file_path: Option<&Path>,
     rect: Rect,
+    hits: &mut LeftDockHits,
 ) {
     let cell_w = metrics.cell_w;
     let cell_h = metrics.cell_h;
 
     // ── Header row ────────────────────────────────────────────────────────────
-    let header_label: String = match snapshot {
+    hits.hits.push(LeftDockHit {
+        rect: Rect {
+            x: rect.x,
+            y: rect.y,
+            w: rect.w,
+            h: HEADER_H.min(rect.h),
+        },
+        kind: LeftDockHitKind::Explorer(ExplorerHit::Header),
+    });
+    let (header_label, header_meta): (&str, String) = match snapshot {
         Some(snap) if !snap.root.is_empty() => {
-            let basename = snap
-                .root
-                .rsplit('/')
-                .next()
-                .unwrap_or(&snap.root)
-                .to_string();
-            format!("EXPLORER \u{00b7} {}", basename)
+            let basename = snap.root.rsplit('/').next().unwrap_or(&snap.root);
+            ("EXPLORER", basename.to_string())
         }
-        _ => "EXPLORER".to_string(),
+        _ => ("EXPLORER", String::new()),
     };
 
     let header_y = rect.y + ((HEADER_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
@@ -164,12 +244,25 @@ fn draw_explorer_section(
         raster,
         painter,
         metrics,
-        &header_label,
-        theme.text_muted,
+        header_label,
+        theme.accent_bright,
         rect.x + PAD_X,
         header_y,
-        rect.x + rect.w,
+        rect.x + rect.w - PAD_X,
     );
+    if !header_meta.is_empty() {
+        let meta_w = header_meta.chars().count() as f64 * cell_w;
+        draw_text_run(
+            raster,
+            painter,
+            metrics,
+            &header_meta,
+            theme.text_subtle,
+            rect.x + rect.w - PAD_X - meta_w,
+            header_y,
+            rect.x + rect.w - PAD_X,
+        );
+    }
     // Hairline under header.
     raster.fill_pixel_rect(rect.x, rect.y + HEADER_H - 1.0, rect.w, 1.0, theme.hairline);
 
@@ -215,16 +308,80 @@ fn draw_explorer_section(
                     break;
                 }
                 let row_top = content_y_start + i as f64 * ROW_H;
+                hits.hits.push(LeftDockHit {
+                    rect: Rect {
+                        x: rect.x,
+                        y: row_top,
+                        w: rect.w,
+                        h: ROW_H.min((content_y_start + content_h - row_top).max(0.0)),
+                    },
+                    kind: LeftDockHitKind::Explorer(ExplorerHit::Row(i)),
+                });
                 let glyph_y = row_top + ((ROW_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
 
-                let (label, color) = if entry.is_dir {
-                    (format!("\u{25b8} {}", entry.name), theme.text_subtle)
+                let selected = !entry.is_dir && is_active_entry(snap, entry, active_file_path);
+                let row_x = rect.x + 6.0;
+                let row_w = (rect.w - 12.0).max(0.0);
+                if selected {
+                    raster.fill_pixel_rect_alpha(
+                        row_x,
+                        row_top + 2.0,
+                        row_w,
+                        (ROW_H - 4.0).max(0.0),
+                        theme.accent_primary,
+                        0.14,
+                    );
+                    raster.fill_pixel_rect(
+                        row_x,
+                        row_top + 4.0,
+                        2.0,
+                        (ROW_H - 8.0).max(0.0),
+                        theme.accent_primary,
+                    );
+                } else if i % 2 == 0 {
+                    raster.fill_pixel_rect_alpha(
+                        row_x,
+                        row_top + 2.0,
+                        row_w,
+                        (ROW_H - 4.0).max(0.0),
+                        theme.surface,
+                        0.05,
+                    );
+                }
+
+                let (icon, label, color) = if entry.is_dir {
+                    ("▸", entry.name.clone(), theme.text_muted)
                 } else {
-                    (entry.name.clone(), theme.text_muted)
+                    (
+                        "◇",
+                        entry.name.clone(),
+                        if selected {
+                            theme.foreground
+                        } else {
+                            theme.text_muted
+                        },
+                    )
                 };
 
+                draw_text_run(
+                    raster,
+                    painter,
+                    metrics,
+                    icon,
+                    if selected {
+                        theme.accent_bright
+                    } else if entry.is_dir {
+                        theme.text_subtle
+                    } else {
+                        theme.hairline
+                    },
+                    rect.x + PAD_X,
+                    glyph_y,
+                    rect.x + PAD_X + cell_w,
+                );
+
                 // Truncate label to fit available width.
-                let max_chars = ((rect.w - PAD_X * 2.0 - cell_w) / cell_w).floor() as usize;
+                let max_chars = ((rect.w - PAD_X * 2.0 - cell_w * 2.0) / cell_w).floor() as usize;
                 let truncated = truncate_name(&label, max_chars);
 
                 draw_text_run(
@@ -233,13 +390,23 @@ fn draw_explorer_section(
                     metrics,
                     &truncated,
                     color,
-                    rect.x + PAD_X,
+                    rect.x + PAD_X + cell_w * 2.0,
                     glyph_y,
                     rect.x + rect.w - PAD_X,
                 );
             }
         }
     }
+}
+
+fn is_active_entry(snap: &DirSnapshot, entry: &DirEntry, active_file_path: Option<&Path>) -> bool {
+    let Some(active) = active_file_path else {
+        return false;
+    };
+    if active.file_name().and_then(|name| name.to_str()) != Some(entry.name.as_str()) {
+        return false;
+    }
+    active.parent() == Some(Path::new(&snap.root))
 }
 
 // ── Outline section ───────────────────────────────────────────────────────────
@@ -251,6 +418,7 @@ fn draw_outline_section(
     theme: &Theme,
     outline: Option<&[OutlineRow]>,
     rect: Rect,
+    hits: &mut LeftDockHits,
 ) {
     let cell_h = metrics.cell_h;
     let cell_w = metrics.cell_w;
@@ -262,7 +430,7 @@ fn draw_outline_section(
         painter,
         metrics,
         "OUTLINE",
-        theme.text_muted,
+        theme.accent_bright,
         rect.x + PAD_X,
         header_y,
         rect.x + rect.w,
@@ -277,14 +445,14 @@ fn draw_outline_section(
 
     match outline {
         None => {
-            // Bridge not Live or first pull pending — existing placeholder text.
+            // Native outline is not ready yet; render calm product copy, not implementation state.
             let row1_y = content_y + ((ROW_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
             draw_text_run(
                 raster,
                 painter,
                 metrics,
-                "Outline unavailable",
-                theme.text_muted,
+                "No symbols yet",
+                theme.text_subtle,
                 rect.x + PAD_X,
                 row1_y,
                 rect.x + rect.w,
@@ -296,7 +464,7 @@ fn draw_outline_section(
                     raster,
                     painter,
                     metrics,
-                    "Requires nvim bridge (BR5)",
+                    "Open a source file",
                     muted_50,
                     rect.x + PAD_X,
                     row2_y,
@@ -325,6 +493,15 @@ fn draw_outline_section(
                     break;
                 }
                 let row_top = content_y + i as f64 * ROW_H;
+                hits.hits.push(LeftDockHit {
+                    rect: Rect {
+                        x: rect.x,
+                        y: row_top,
+                        w: rect.w,
+                        h: ROW_H.min((content_y + content_h - row_top).max(0.0)),
+                    },
+                    kind: LeftDockHitKind::Outline(i),
+                });
                 let glyph_y = row_top + ((ROW_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
 
                 // Indent: 2 cells per depth level.
@@ -485,7 +662,7 @@ mod tests {
             w: 0.0,
             h: 0.0,
         };
-        draw_left_dock(&mut r, &mut p, m, &th, None, None, zero);
+        draw_left_dock(&mut r, &mut p, m, &th, None, None, None, zero);
         // No panic = pass.
     }
 
@@ -497,7 +674,7 @@ mod tests {
         let mut r = Raster::new(800, 800);
         let mut p = StubPainter::default();
 
-        draw_left_dock(&mut r, &mut p, m, &th, None, None, dock_rect());
+        draw_left_dock(&mut r, &mut p, m, &th, None, None, None, dock_rect());
 
         // "Waiting" → 'W' codepoint 87
         let waiting_w: Vec<_> = p
@@ -523,7 +700,7 @@ mod tests {
             root: "/anvil".to_string(),
             entries: vec![],
         };
-        draw_left_dock(&mut r, &mut p, m, &th, Some(&snap), None, dock_rect());
+        draw_left_dock(&mut r, &mut p, m, &th, Some(&snap), None, None, dock_rect());
 
         // "(empty)" → '(' codepoint 40
         let paren: Vec<_> = p
@@ -534,6 +711,44 @@ mod tests {
         assert!(
             !paren.is_empty(),
             "expected '(' in text_muted for empty state"
+        );
+    }
+
+    /// Snapshot with entries → file names appear in text_muted, dirs in text_subtle.
+    #[test]
+    fn explorer_rows_return_click_hits() {
+        let m = metrics();
+        let th = theme();
+        let mut r = Raster::new(800, 800);
+        let mut p = StubPainter::default();
+
+        let snap = DirSnapshot {
+            root: "/anvil".to_string(),
+            entries: vec![
+                DirEntry {
+                    name: "src".to_string(),
+                    is_dir: true,
+                },
+                DirEntry {
+                    name: "main.rs".to_string(),
+                    is_dir: false,
+                },
+            ],
+        };
+
+        let hits = draw_left_dock(&mut r, &mut p, m, &th, Some(&snap), None, None, dock_rect());
+
+        assert_eq!(
+            hits.at(12.0, 18.0),
+            Some(&LeftDockHitKind::Explorer(ExplorerHit::Header))
+        );
+        assert_eq!(
+            hits.at(12.0, 32.0),
+            Some(&LeftDockHitKind::Explorer(ExplorerHit::Row(0)))
+        );
+        assert_eq!(
+            hits.at(12.0, 56.0),
+            Some(&LeftDockHitKind::Explorer(ExplorerHit::Row(1)))
         );
     }
 
@@ -558,7 +773,7 @@ mod tests {
                 },
             ],
         };
-        draw_left_dock(&mut r, &mut p, m, &th, Some(&snap), None, dock_rect());
+        draw_left_dock(&mut r, &mut p, m, &th, Some(&snap), None, None, dock_rect());
 
         // File entry 'm' should appear in text_muted.
         let file_m: Vec<_> = p
@@ -583,7 +798,60 @@ mod tests {
         );
     }
 
-    /// Outline section with `None` shows "Outline unavailable".
+    #[test]
+    fn active_file_path_marks_matching_explorer_row_selected() {
+        let m = metrics();
+        let th = theme();
+        let mut r = Raster::new(800, 800);
+        let mut p = StubPainter::default();
+
+        let snap = DirSnapshot {
+            root: "/anvil/src".to_string(),
+            entries: vec![
+                DirEntry {
+                    name: "editor.rs".to_string(),
+                    is_dir: false,
+                },
+                DirEntry {
+                    name: "main.rs".to_string(),
+                    is_dir: false,
+                },
+            ],
+        };
+
+        draw_left_dock(
+            &mut r,
+            &mut p,
+            m,
+            &th,
+            Some(&snap),
+            Some(Path::new("/anvil/src/main.rs")),
+            None,
+            dock_rect(),
+        );
+
+        let main_m_selected: Vec<_> = p
+            .glyphs
+            .iter()
+            .filter(|(cp, fg)| *cp == 'm' as u32 && *fg == th.foreground)
+            .collect();
+        assert!(
+            !main_m_selected.is_empty(),
+            "expected active file label to use foreground selected color"
+        );
+
+        let editor_e_selected: Vec<_> = p
+            .glyphs
+            .iter()
+            .filter(|(cp, fg)| *cp == 'e' as u32 && *fg == th.foreground)
+            .collect();
+        assert!(
+            editor_e_selected.is_empty(),
+            "selection must come from active_file_path, not a hardcoded editor.rs row"
+        );
+    }
+
+    /// Outline section with `None` shows calm empty-state copy.
     #[test]
     fn outline_unavailable_always_shown() {
         let m = metrics();
@@ -591,34 +859,45 @@ mod tests {
         let mut r = Raster::new(800, 800);
         let mut p = StubPainter::default();
 
-        draw_left_dock(&mut r, &mut p, m, &th, None, None, dock_rect());
+        draw_left_dock(&mut r, &mut p, m, &th, None, None, None, dock_rect());
 
-        // "Outline" → 'O' at 79
-        let o_muted: Vec<_> = p
+        // "No symbols yet" → 'N' in text_subtle.
+        let n_subtle: Vec<_> = p
             .glyphs
             .iter()
-            .filter(|(cp, fg)| *cp == 'O' as u32 && *fg == th.text_muted)
+            .filter(|(cp, fg)| *cp == 'N' as u32 && *fg == th.text_subtle)
             .collect();
-        // There should be at least two 'O' hits: "OUTLINE" header and "Outline unavailable" body.
         assert!(
-            o_muted.len() >= 2,
-            "expected at least 2 'O' glyphs in text_muted (OUTLINE header + body)"
+            !n_subtle.is_empty(),
+            "expected 'N' in text_subtle for calm outline empty state"
         );
     }
 
-    /// Background is painted with charcoal.
+    /// Background is a neutral Mineral panel with only a trace Ember wash.
     #[test]
-    fn background_is_charcoal() {
+    fn background_is_quiet_mineral_sidebar() {
         let m = metrics();
         let th = theme();
         let mut r = Raster::new(800, 800);
         r.clear([0, 0, 0]);
         let mut p = StubPainter::default();
 
-        draw_left_dock(&mut r, &mut p, m, &th, None, None, dock_rect());
+        draw_left_dock(&mut r, &mut p, m, &th, None, None, None, dock_rect());
 
         let px = pixel_at(&r, 50, 400); // middle of dock
-        assert_eq!(px, th.charcoal, "dock background must be charcoal");
+        assert_ne!(
+            px,
+            [27, 18, 13],
+            "sidebar must not regress to red/brown block"
+        );
+        assert!(
+            px[0] >= th.charcoal[0],
+            "trace wash should lift charcoal slightly"
+        );
+        assert!(
+            px[0].saturating_sub(px[2]) <= 12,
+            "sidebar should stay neutral, not heavily red-biased: {px:?}"
+        );
     }
 
     /// `Some(&[])` → "No symbols" row painted in text_subtle.
@@ -629,7 +908,7 @@ mod tests {
         let mut r = Raster::new(800, 800);
         let mut p = StubPainter::default();
 
-        draw_left_dock(&mut r, &mut p, m, &th, None, Some(&[]), dock_rect());
+        draw_left_dock(&mut r, &mut p, m, &th, None, None, Some(&[]), dock_rect());
 
         // "No symbols" → 'N' in text_subtle
         let n_subtle: Vec<_> = p
@@ -663,7 +942,7 @@ mod tests {
                 depth: 0,
             },
         ];
-        draw_left_dock(&mut r, &mut p, m, &th, None, Some(&rows), dock_rect());
+        draw_left_dock(&mut r, &mut p, m, &th, None, None, Some(&rows), dock_rect());
 
         // 'm' from "my_fn" should appear in text_muted.
         let m_muted: Vec<_> = p

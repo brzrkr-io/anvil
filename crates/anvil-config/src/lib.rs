@@ -73,6 +73,18 @@ impl CursorCfg {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StartupLayout {
+    /// Pick IDE mode in project directories and straight-terminal elsewhere.
+    #[default]
+    Auto,
+    /// Force the full editor/explorer IDE surface at startup.
+    Ide,
+    /// Force a straight terminal at startup; Cmd+Shift+E can restore IDE mode.
+    Terminal,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WindowCfg {
@@ -152,8 +164,10 @@ pub struct Keybindings {
     pub agent_approve: String,
     /// Start a new agent run via the task-handoff endpoint.
     pub agent_start: String,
-    /// Cycle layout mode: Terminal → Ide → Codex → Terminal.
+    /// Cycle layout mode: Terminal ↔ Ide.
     pub layout_mode_toggle: String,
+    /// Toggle the left explorer dock while staying in IDE mode.
+    pub left_dock_toggle: String,
     /// Open a new native editor pane (NE15: nvim path removed; this is the
     /// only editor path).
     pub editor_new: String,
@@ -194,6 +208,7 @@ impl Default for Keybindings {
             agent_approve: "cmd+return".into(),
             agent_start: "cmd+shift+return".into(),
             layout_mode_toggle: "cmd+shift+e".into(),
+            left_dock_toggle: "cmd+b".into(),
             editor_new: "cmd+e".into(),
             project_search: "cmd+shift+f".into(),
         }
@@ -213,6 +228,7 @@ pub struct Config {
     pub cursor: CursorCfg,
     pub window: WindowCfg,
     pub theme: String,
+    pub layout_mode: StartupLayout,
     pub theme_overrides: ThemeOverrides,
     pub keybindings: Keybindings,
     pub shell_integration: bool,
@@ -227,6 +243,7 @@ impl Default for Config {
             cursor: CursorCfg::new_default(),
             window: WindowCfg::default(),
             theme: "ember-dark".into(),
+            layout_mode: StartupLayout::Auto,
             theme_overrides: ThemeOverrides::default(),
             keybindings: Keybindings::default(),
             shell_integration: true,
@@ -450,6 +467,7 @@ accent = "#3aa0a8"
         assert_eq!(cfg.cursor.style, CursorStyle::Bar);
         assert!(!cfg.cursor.blink);
         assert_eq!(cfg.theme, "mineral-light");
+        assert_eq!(cfg.layout_mode, StartupLayout::Auto);
         assert_eq!(cfg.theme_overrides.accent.as_deref(), Some("#3aa0a8"));
     }
 
@@ -460,6 +478,23 @@ accent = "#3aa0a8"
         assert_eq!(cfg.font.family, "IBM Plex Mono");
         assert_eq!(cfg.cursor.style, CursorStyle::Block);
         assert_eq!(cfg.theme, "ember-dark");
+        assert_eq!(cfg.layout_mode, StartupLayout::Auto);
+    }
+
+    #[test]
+    fn layout_mode_parses_auto_terminal_and_ide() {
+        assert_eq!(
+            parse_str("layout_mode = \"auto\"").unwrap().layout_mode,
+            StartupLayout::Auto
+        );
+        assert_eq!(
+            parse_str("layout_mode = \"terminal\"").unwrap().layout_mode,
+            StartupLayout::Terminal
+        );
+        assert_eq!(
+            parse_str("layout_mode = \"ide\"").unwrap().layout_mode,
+            StartupLayout::Ide
+        );
     }
 
     #[test]
@@ -502,6 +537,7 @@ height = 1.0
         assert_eq!(cfg.font.family, "IBM Plex Mono");
         assert!(cfg.cursor.blink);
         assert_eq!(cfg.theme, "ember-dark");
+        assert_eq!(cfg.layout_mode, StartupLayout::Auto);
         assert!(cfg.shell_integration);
         assert!(cfg.prompt.enabled);
         assert!(cfg.prompt.transient);
@@ -667,6 +703,12 @@ new_tab = "ctrl+n"
     fn editor_new_default_chord_is_cmd_e() {
         let kb = Keybindings::default();
         assert_eq!(kb.editor_new, "cmd+e");
+    }
+
+    #[test]
+    fn left_dock_toggle_default_chord_is_cmd_b() {
+        let kb = Keybindings::default();
+        assert_eq!(kb.left_dock_toggle, "cmd+b");
     }
 
     #[test]

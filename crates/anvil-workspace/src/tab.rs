@@ -5,7 +5,7 @@
 //! is pure.
 
 use crate::editor_pane::EditorPaneRegistry;
-use crate::layout::{PaneId, PaneTree, SplitDir};
+use crate::layout::{PaneId, PaneNode, PaneTree, Split, SplitDir};
 use crate::pane::PaneRegistry;
 
 /// True when a tab bar should be drawn — only with 2+ tabs (low-profile rule).
@@ -175,6 +175,141 @@ impl Tab {
         debug_assert_eq!(assigned_id, pane_id);
         self.tree.split(dir, pane_id)?;
         Ok(pane_id)
+    }
+
+    /// Promote a terminal-only IDE tab into an editor-first layout: native
+    /// editor on top, terminal retained as a compact bottom drawer.
+    ///
+    /// This is intentionally narrow: it only rewrites a single-terminal root,
+    /// leaving user-created mixed pane layouts untouched.
+    pub fn promote_terminal_to_editor_drawer(&mut self) -> Option<PaneId> {
+        let terminal_id = match self.tree.root.as_ref() {
+            PaneNode::Leaf(id) => *id,
+            PaneNode::Split(_) => return None,
+        };
+        let pane = self.registry.get(terminal_id)?;
+        if pane.terminal.is_none() || pane.editor_id.is_some() {
+            return None;
+        }
+
+        let editor_id = self.registry.peek_next_id();
+        let buffer_id = self.editor_panes.new_pane(editor_id);
+        let assigned_id = self.registry.create_and_register_editor(buffer_id);
+        debug_assert_eq!(assigned_id, editor_id);
+
+        *self.tree.root = PaneNode::Split(Split {
+            dir: SplitDir::Vertical,
+            children: vec![
+                Box::new(PaneNode::Leaf(editor_id)),
+                Box::new(PaneNode::Leaf(terminal_id)),
+            ],
+            ratios: vec![0.94, 0.06],
+        });
+        self.tree.focused = editor_id;
+        Some(editor_id)
+    }
+
+    /// Return the first native editor pane in visual order.
+    pub fn first_editor_pane_id(&self) -> Option<PaneId> {
+        first_leaf_matching(self.tree.root.as_ref(), &self.registry, LeafKind::Editor)
+    }
+
+    /// Return the first terminal pane in visual order.
+    pub fn first_terminal_pane_id(&self) -> Option<PaneId> {
+        first_leaf_matching(self.tree.root.as_ref(), &self.registry, LeafKind::Terminal)
+    }
+
+    /// Collapse a mixed IDE layout back to a single terminal pane.
+    ///
+    /// The first terminal in visual order is preserved, including its PTY-backed
+    /// registry entry. Native editor panes are dropped because terminal mode is a
+    /// clean "straight terminal" surface, not IDE chrome with hidden docks.
+    pub fn normalize_terminal_surface(&mut self) -> Option<PaneId> {
+        let terminal_id = self.first_terminal_pane_id()?;
+        let editor_ids: Vec<PaneId> = self
+            .registry
+            .iter()
+            .filter_map(|(id, pane)| pane.editor_id.is_some().then_some(id))
+            .collect();
+        for id in editor_ids {
+            self.editor_panes.remove_pane(id);
+            self.registry.remove(id);
+        }
+        *self.tree.root = PaneNode::Leaf(terminal_id);
+        self.tree.focused = terminal_id;
+        Some(terminal_id)
+    }
+
+    /// Normalize IDE mode to one primary editor plus, when available, one compact
+    /// bottom terminal drawer. This is intentionally opinionated for IDE mode:
+    /// Cmd+E is "show the editor surface", not "keep splitting scratch panes".
+    pub fn normalize_ide_editor_drawer(&mut self) -> Option<PaneId> {
+        let editor_id = self.first_editor_pane_id();
+        let terminal_id = self.first_terminal_pane_id();
+
+        let editor_id = match editor_id {
+            Some(id) => id,
+            None => return self.promote_terminal_to_editor_drawer(),
+        };
+
+        // Drop duplicate editor panes from the registries. The screenshot failure
+        // mode was three empty editor columns with repeated chrome/status bars;
+        // IDE mode should keep one canonical editor surface until real tab groups
+        // exist.
+        let duplicate_editors: Vec<PaneId> = self
+            .registry
+            .iter()
+            .filter_map(|(id, pane)| (id != editor_id && pane.editor_id.is_some()).then_some(id))
+            .collect();
+        for id in duplicate_editors {
+            self.editor_panes.remove_pane(id);
+            self.registry.remove(id);
+        }
+
+        *self.tree.root = if let Some(terminal_id) = terminal_id {
+            PaneNode::Split(Split {
+                dir: SplitDir::Vertical,
+                children: vec![
+                    Box::new(PaneNode::Leaf(editor_id)),
+                    Box::new(PaneNode::Leaf(terminal_id)),
+                ],
+                ratios: vec![0.94, 0.06],
+            })
+        } else {
+            PaneNode::Leaf(editor_id)
+        };
+        self.tree.focused = editor_id;
+        Some(editor_id)
+    }
+
+    /// Focus an existing editor pane when present; otherwise promote the initial
+    /// terminal into the editor/drawer layout. Repeated Cmd+E also repairs older
+    /// exploded IDE layouts back to a single editor plus compact drawer.
+    pub fn ensure_ide_editor_surface(&mut self) -> Option<PaneId> {
+        self.normalize_ide_editor_drawer()
+    }
+}
+
+#[derive(Clone, Copy)]
+enum LeafKind {
+    Editor,
+    Terminal,
+}
+
+fn first_leaf_matching(
+    node: &PaneNode,
+    registry: &crate::pane::PaneRegistry,
+    kind: LeafKind,
+) -> Option<PaneId> {
+    match node {
+        PaneNode::Leaf(id) => registry.get(*id).and_then(|pane| match kind {
+            LeafKind::Editor => pane.editor_id.map(|_| *id),
+            LeafKind::Terminal => pane.terminal.is_some().then_some(*id),
+        }),
+        PaneNode::Split(split) => split
+            .children
+            .iter()
+            .find_map(|child| first_leaf_matching(child.as_ref(), registry, kind)),
     }
 }
 
@@ -461,6 +596,102 @@ mod tests {
         assert!(tab.editor_panes.get_buffer(ep.buffer_id).is_some());
     }
 
+    #[test]
+    fn tab_promote_terminal_to_editor_drawer_keeps_terminal_and_focuses_editor() {
+        let mut tab = Tab::new_single_pane(80, 24, 0);
+        let terminal_id = tab.focused_id();
+
+        let editor_id = tab
+            .promote_terminal_to_editor_drawer()
+            .expect("single terminal root should promote");
+
+        assert_ne!(editor_id, terminal_id);
+        assert_eq!(tab.focused_id(), editor_id);
+        assert!(
+            tab.registry
+                .get(terminal_id)
+                .and_then(|p| p.terminal())
+                .is_some()
+        );
+        let editor_pane = tab.registry.get(editor_id).expect("editor pane registered");
+        assert!(editor_pane.terminal().is_none());
+        assert!(editor_pane.editor_id.is_some());
+
+        let entries = tab.tree.layout(
+            crate::layout::Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 800.0,
+                h: 600.0,
+            },
+            4.0,
+        );
+        let editor_rect = entries.iter().find(|e| e.id == editor_id).unwrap().rect;
+        let terminal_rect = entries.iter().find(|e| e.id == terminal_id).unwrap().rect;
+        assert!(editor_rect.y < terminal_rect.y);
+        assert!(editor_rect.h > terminal_rect.h);
+    }
+
+    #[test]
+    fn tab_ensure_ide_editor_surface_reuses_existing_editor() {
+        let mut tab = Tab::new_single_pane(80, 24, 0);
+        let editor_id = tab
+            .promote_terminal_to_editor_drawer()
+            .expect("promoted editor");
+        let before = tab.tree.leaf_count();
+
+        let ensured = tab.ensure_ide_editor_surface().expect("existing editor");
+
+        assert_eq!(ensured, editor_id);
+        assert_eq!(tab.focused_id(), editor_id);
+        assert_eq!(tab.tree.leaf_count(), before);
+    }
+
+    #[test]
+    fn tab_ensure_ide_editor_surface_collapses_duplicate_editor_columns() {
+        let mut tab = Tab::new_single_pane(80, 24, 0);
+        let editor_id = tab
+            .promote_terminal_to_editor_drawer()
+            .expect("promoted editor");
+        let terminal_id = tab.first_terminal_pane_id().expect("terminal drawer");
+
+        let second = tab
+            .split_native_editor(crate::layout::SplitDir::Horizontal)
+            .expect("second editor");
+        let third = tab
+            .split_native_editor(crate::layout::SplitDir::Horizontal)
+            .expect("third editor");
+        assert_eq!(tab.tree.leaf_count(), 4);
+        assert!(tab.registry.get(second).is_some());
+        assert!(tab.registry.get(third).is_some());
+
+        let ensured = tab.ensure_ide_editor_surface().expect("normalized editor");
+
+        assert_eq!(ensured, editor_id);
+        assert_eq!(tab.focused_id(), editor_id);
+        assert_eq!(tab.tree.leaf_count(), 2);
+        assert!(tab.registry.get(editor_id).is_some());
+        assert!(tab.registry.get(terminal_id).is_some());
+        assert!(tab.registry.get(second).is_none());
+        assert!(tab.registry.get(third).is_none());
+        assert!(tab.editor_panes.get_pane(second).is_none());
+        assert!(tab.editor_panes.get_pane(third).is_none());
+
+        let entries = tab.tree.layout(
+            crate::layout::Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 1000.0,
+                h: 1000.0,
+            },
+            0.0,
+        );
+        let editor_rect = entries.iter().find(|e| e.id == editor_id).unwrap().rect;
+        let terminal_rect = entries.iter().find(|e| e.id == terminal_id).unwrap().rect;
+        assert!(editor_rect.h > 850.0);
+        assert!(terminal_rect.h < 130.0);
+    }
+
     // ── TabManager::current / current_mut ─────────────────────────────────────
 
     #[test]
@@ -631,6 +862,32 @@ mod tests {
         mgr.prev();
         assert_eq!(mgr.active, 0);
         assert!(!mgr.tabs[0].has_unread);
+    }
+
+    #[test]
+    fn normalize_terminal_surface_collapses_editor_drawer_to_terminal() {
+        let mut tab = Tab::new_single_pane(80, 24, 1000);
+        let terminal_id = tab.focused_id();
+        let editor_id = tab
+            .promote_terminal_to_editor_drawer()
+            .expect("promotion creates editor");
+        assert_ne!(terminal_id, editor_id);
+        assert!(tab.registry.get(editor_id).is_some());
+
+        let focused_terminal = tab
+            .normalize_terminal_surface()
+            .expect("terminal remains available");
+
+        assert_eq!(focused_terminal, terminal_id);
+        assert_eq!(tab.focused_id(), terminal_id);
+        assert!(matches!(tab.tree.root.as_ref(), PaneNode::Leaf(id) if *id == terminal_id));
+        assert!(
+            tab.registry
+                .get(terminal_id)
+                .is_some_and(|pane| pane.terminal.is_some())
+        );
+        assert!(tab.registry.get(editor_id).is_none());
+        assert!(tab.editor_panes.get_pane(editor_id).is_none());
     }
 
     // ── anim_phase / target_phase ─────────────────────────────────────────────

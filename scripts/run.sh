@@ -17,7 +17,15 @@ if [[ "${1:-}" == "--release" ]]; then
 fi
 
 # Build both binaries first so the prompt binary is current before launch.
-cargo build "${PROFILE_FLAGS[@]}" -p anvil -p anvil-prompt
+if [[ ${#PROFILE_FLAGS[@]} -gt 0 ]]; then
+  cargo build "${PROFILE_FLAGS[@]}" -p anvil -p anvil-prompt
+else
+  cargo build -p anvil -p anvil-prompt
+fi
 
 # Launch anvil (no-op rebuild if up to date).
-exec cargo run "${RUN_PROFILE_FLAGS[@]}" -p anvil --bin anvil
+if [[ ${#RUN_PROFILE_FLAGS[@]} -gt 0 ]]; then
+  exec cargo run "${RUN_PROFILE_FLAGS[@]}" -p anvil --bin anvil
+else
+  exec cargo run -p anvil --bin anvil
+fi

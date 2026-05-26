@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 
+use anvil_editor::Buffer;
 use anvil_term::{DirtySet, Search};
 use anvil_theme::Theme;
 use anvil_workspace::{
@@ -125,6 +126,17 @@ pub fn draw_workspace(
                 running_pulse_phase,
             );
 
+            if is_bottom_drawer(&e.rect, &inner, entries.len()) {
+                draw_terminal_drawer_chrome(
+                    raster,
+                    painters.regular,
+                    metrics,
+                    theme,
+                    e.rect,
+                    e.id == focused_id,
+                );
+            }
+
             // Living-scrollback indicator: paint a 4px ember bar at the
             // bottom edge of the pane when the user is scrolled up and new
             // output has arrived below.
@@ -147,6 +159,15 @@ pub fn draw_workspace(
                 if let Some(buf) = editor_panes.get_buffer(ep.buffer_id) {
                     let empty: Vec<RenderDiagnostic> = Vec::new();
                     let diags = diag_by_pane.get(&e.id).map(Vec::as_slice).unwrap_or(&empty);
+                    let editor_rect = draw_editor_chrome(
+                        raster,
+                        painters.regular,
+                        buf,
+                        metrics,
+                        theme,
+                        e.rect,
+                        e.id == focused_id,
+                    );
                     draw_editor_into(
                         raster,
                         painters.regular,
@@ -154,7 +175,7 @@ pub fn draw_workspace(
                         buf,
                         metrics,
                         theme,
-                        e.rect,
+                        editor_rect,
                         diags,
                         buf.git_gutter.as_ref(),
                     );
@@ -180,7 +201,256 @@ pub fn draw_workspace(
     raster.origin_y = 0.0;
 
     // Draw divider hairlines over all pane content (bleed guard).
-    draw_dividers(raster, &entries, div_px, theme, focused_id);
+    draw_dividers(raster, &entries, div_px, theme, focused_id, registry);
+}
+
+fn is_bottom_drawer(rect: &Rect, inner: &Rect, leaf_count: usize) -> bool {
+    leaf_count > 1 && rect.h <= inner.h * 0.40 && rect.y > inner.y + inner.h * 0.45
+}
+
+fn draw_terminal_drawer_chrome(
+    raster: &mut Raster,
+    _painter: &mut dyn crate::raster::GlyphPainter,
+    _metrics: FontMetrics,
+    theme: &Theme,
+    rect: Rect,
+    active: bool,
+) {
+    if rect.w <= 0.0 || rect.h <= 0.0 {
+        return;
+    }
+
+    // The preserved PTY is a secondary IDE drawer, not a second primary
+    // terminal canvas. Wash it toward the Mineral panel stack while keeping
+    // output readable underneath; reserve Ember for actual execution/unseen
+    // output indicators elsewhere.
+    raster.fill_pixel_rect_alpha(rect.x, rect.y, rect.w, rect.h, theme.charcoal, 0.34);
+
+    let cap_h = 18.0_f64.min(rect.h.max(0.0));
+    if cap_h > 0.0 {
+        raster.fill_pixel_rect_alpha(rect.x, rect.y, rect.w, cap_h, theme.surface, 0.18);
+    }
+
+    let top_rule = if active {
+        theme.accent_primary
+    } else {
+        theme.hairline
+    };
+    let top_alpha = if active { 0.48 } else { 0.68 };
+    raster.fill_pixel_rect_alpha(rect.x, rect.y, rect.w, 1.0, top_rule, top_alpha);
+}
+
+fn draw_editor_chrome(
+    raster: &mut Raster,
+    painter: &mut dyn crate::raster::GlyphPainter,
+    buffer: &Buffer,
+    metrics: FontMetrics,
+    theme: &Theme,
+    rect: Rect,
+    active: bool,
+) -> Rect {
+    let tabs_h = 30.0_f64.min(rect.h.max(0.0));
+    // One status bar per editor group looked like repeated terminal chrome in
+    // the failed smoke. Keep editor state in the active tab/chrome until real
+    // file status data exists.
+    let status_h = 0.0_f64;
+    if tabs_h <= 0.0 || rect.w <= 0.0 {
+        return rect;
+    }
+
+    // Native editor chrome should read as IDE structure, not terminal output or
+    // decorative ember. Keep warmth for active state only and use Mineral
+    // graphite/charcoal/hairline tokens for the shell.
+    raster.fill_pixel_rect(rect.x, rect.y, rect.w, rect.h, theme.surface);
+    raster.fill_pixel_rect(rect.x, rect.y, rect.w, tabs_h, theme.graphite);
+    raster.fill_pixel_rect_alpha(
+        rect.x,
+        rect.y + tabs_h - 1.0,
+        rect.w,
+        1.0,
+        theme.hairline,
+        0.92,
+    );
+
+    let filename = buffer
+        .tracked_path()
+        .and_then(|p| p.file_name())
+        .and_then(|name| name.to_str())
+        .unwrap_or("scratch");
+    let dirty_dot = if buffer.revisions > 0 { "●" } else { "" };
+    let lang = buffer.language_id().unwrap_or("plain");
+    let active_title = if dirty_dot.is_empty() {
+        format!("◇ {filename}")
+    } else {
+        format!("{dirty_dot} ◇ {filename}")
+    };
+
+    let tab_w = (active_title.chars().count() as f64 * metrics.cell_w + 42.0).clamp(96.0, 188.0);
+    let _tab_x = draw_editor_tab(
+        raster,
+        painter,
+        metrics,
+        theme,
+        &active_title,
+        Rect {
+            x: rect.x,
+            y: rect.y,
+            w: tab_w,
+            h: tabs_h,
+        },
+        true,
+    );
+
+    let meta = format!("{lang} · native");
+    let meta_w = meta.chars().count() as f64 * metrics.cell_w;
+    if rect.w > tab_w + meta_w + 40.0 {
+        draw_chrome_text(
+            raster,
+            painter,
+            metrics,
+            &meta,
+            theme.text_subtle,
+            Rect {
+                x: rect.x + rect.w - meta_w - 12.0,
+                y: rect.y + ((tabs_h - metrics.cell_h) * 0.5).max(0.0),
+                w: meta_w,
+                h: metrics.cell_h,
+            },
+        );
+    }
+
+    if status_h > 0.0 {
+        let status_y = rect.y + rect.h - status_h;
+        raster.fill_pixel_rect_alpha(rect.x, status_y, rect.w, status_h, [0x0b, 0x0a, 0x09], 0.86);
+        raster.fill_pixel_rect_alpha(rect.x, status_y, rect.w, 1.0, theme.accent_bright, 0.20);
+        let left = "main · rust-analyzer live · native";
+        draw_chrome_text(
+            raster,
+            painter,
+            metrics,
+            left,
+            theme.text_subtle,
+            Rect {
+                x: rect.x + 12.0,
+                y: status_y + ((status_h - metrics.cell_h) * 0.5).max(0.0),
+                w: (rect.w * 0.55).max(0.0),
+                h: metrics.cell_h,
+            },
+        );
+        let right = format!("UTF-8 · {lang}");
+        let right_w = right.chars().count() as f64 * metrics.cell_w;
+        if rect.w > right_w + 28.0 {
+            draw_chrome_text(
+                raster,
+                painter,
+                metrics,
+                &right,
+                theme.text_subtle,
+                Rect {
+                    x: rect.x + rect.w - right_w - 12.0,
+                    y: status_y + ((status_h - metrics.cell_h) * 0.5).max(0.0),
+                    w: right_w,
+                    h: metrics.cell_h,
+                },
+            );
+        }
+    }
+
+    if active {
+        raster.fill_pixel_rect(rect.x, rect.y, rect.w, 1.0, theme.accent_primary);
+    }
+
+    Rect {
+        x: rect.x,
+        y: rect.y + tabs_h,
+        w: rect.w,
+        h: (rect.h - tabs_h - status_h).max(0.0),
+    }
+}
+
+fn draw_editor_tab(
+    raster: &mut Raster,
+    painter: &mut dyn crate::raster::GlyphPainter,
+    metrics: FontMetrics,
+    theme: &Theme,
+    label: &str,
+    tab: Rect,
+    active: bool,
+) -> f64 {
+    let fill = if active {
+        theme.charcoal
+    } else {
+        theme.graphite
+    };
+    raster.fill_pixel_rect(tab.x, tab.y + 5.0, tab.w, (tab.h - 5.0).max(0.0), fill);
+    raster.fill_pixel_rect_alpha(
+        tab.x + tab.w - 1.0,
+        tab.y + 7.0,
+        1.0,
+        (tab.h - 9.0).max(0.0),
+        theme.hairline,
+        0.86,
+    );
+    if active {
+        raster.fill_pixel_rect(tab.x, tab.y, tab.w, 2.0, theme.accent_primary);
+        raster.fill_pixel_rect_alpha(
+            tab.x,
+            tab.y + 5.0,
+            tab.w,
+            tab.h - 5.0,
+            theme.panel_raised,
+            0.16,
+        );
+    }
+
+    let text_x = tab.x + if active { 16.0 } else { 12.0 };
+    if active {
+        raster.fill_pixel_rect_alpha(
+            tab.x + 8.0,
+            tab.y + (tab.h * 0.5 - 3.0).max(0.0),
+            2.0,
+            6.0,
+            theme.accent_primary,
+            0.88,
+        );
+    }
+    draw_chrome_text(
+        raster,
+        painter,
+        metrics,
+        label,
+        if active {
+            theme.foreground
+        } else {
+            theme.text_muted
+        },
+        Rect {
+            x: text_x,
+            y: tab.y + ((tab.h - metrics.cell_h) * 0.5).max(0.0),
+            w: (tab.w - (text_x - tab.x) - 10.0).max(0.0),
+            h: metrics.cell_h,
+        },
+    );
+    tab.x + tab.w
+}
+
+fn draw_chrome_text(
+    raster: &mut Raster,
+    painter: &mut dyn crate::raster::GlyphPainter,
+    metrics: FontMetrics,
+    text: &str,
+    color: [u8; 3],
+    bounds: Rect,
+) {
+    let mut gx = bounds.x;
+    let max_x = bounds.x + bounds.w;
+    for ch in text.chars() {
+        if gx + metrics.cell_w > max_x {
+            break;
+        }
+        raster.glyph_at(painter, metrics, gx, bounds.y, ch as u32, color);
+        gx += metrics.cell_w;
+    }
 }
 
 /// Draw only the chrome portion of the workspace (divider hairlines, focused
@@ -202,12 +472,11 @@ pub fn draw_workspace_chrome(
     focused_id: PaneId,
 ) {
     let entries = tree.layout(inner, div_px);
-    let _ = registry; // registry not needed for chrome-only draw
     // Reset origin (no pane origins needed — we skip viewport drawing).
     raster.origin_x = 0.0;
     raster.origin_y = 0.0;
     // Draw divider hairlines.
-    draw_dividers(raster, &entries, div_px, theme, focused_id);
+    draw_dividers(raster, &entries, div_px, theme, focused_id, registry);
 }
 
 /// Fill divider gutters between all adjacent leaf pairs. Called after all pane
@@ -218,6 +487,7 @@ fn draw_dividers(
     div_px: f64,
     theme: &Theme,
     focused_id: PaneId,
+    registry: &PaneRegistry,
 ) {
     // For each pair of leaves, if they share a boundary (with a gutter between
     // them), fill the gutter rectangle.
@@ -262,20 +532,22 @@ fn draw_dividers(
         }
     }
 
-    // Paint a 1px inset accent border on the focused pane (only when there are
-    // 2+ panes — single-pane layout needs no focus ring).
+    // Paint a single focus cue instead of boxing panes. Full orange rectangles
+    // made the IDE smoke look like a terminal split skeleton; terminal focus is
+    // already represented by the cursor and editor focus by the active tab.
     if entries.len() >= 2 {
         if let Some(e) = entries.iter().find(|e| e.id == focused_id) {
             let r = &e.rect;
-            let c = theme.accent;
-            // Top edge (1px tall, full width).
+            let is_terminal = registry
+                .get(focused_id)
+                .and_then(|pane| pane.terminal())
+                .is_some();
+            let c = if is_terminal {
+                theme.accent
+            } else {
+                theme.hairline
+            };
             raster.fill_pixel_rect(r.x, r.y, r.w, 1.0, c);
-            // Bottom edge.
-            raster.fill_pixel_rect(r.x, r.y + r.h - 1.0, r.w, 1.0, c);
-            // Left edge (inner height, avoids double-painting corners).
-            raster.fill_pixel_rect(r.x, r.y + 1.0, 1.0, r.h - 2.0, c);
-            // Right edge.
-            raster.fill_pixel_rect(r.x + r.w - 1.0, r.y + 1.0, 1.0, r.h - 2.0, c);
         }
     }
 }
@@ -484,6 +756,115 @@ mod tests {
         );
     }
 
+    /// Native editor panes reserve a chrome strip before drawing buffer content.
+    #[test]
+    fn bottom_drawer_detection_only_matches_short_lower_panes() {
+        let inner = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 1000.0,
+            h: 800.0,
+        };
+        assert!(is_bottom_drawer(
+            &Rect {
+                x: 0.0,
+                y: 610.0,
+                w: 1000.0,
+                h: 190.0,
+            },
+            &inner,
+            2,
+        ));
+        assert!(!is_bottom_drawer(
+            &Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 1000.0,
+                h: 800.0,
+            },
+            &inner,
+            1,
+        ));
+        assert!(!is_bottom_drawer(
+            &Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 1000.0,
+                h: 300.0,
+            },
+            &inner,
+            2,
+        ));
+    }
+
+    #[test]
+    fn terminal_drawer_chrome_uses_calm_mineral_active_rule_not_ember() {
+        let m = metrics();
+        let mut r = Raster::new(220, 90);
+        let mut painter = StubPainter::default();
+        let theme = anvil_theme::MINERAL_DARK;
+        r.clear([0, 0, 0]);
+        let rect = Rect {
+            x: 10.0,
+            y: 12.0,
+            w: 180.0,
+            h: 52.0,
+        };
+
+        draw_terminal_drawer_chrome(&mut r, &mut painter, m, &theme, rect, true);
+
+        let top_px = pixel_at(&r, 20, 12);
+        let body_px = pixel_at(&r, 20, 40);
+        assert_ne!(
+            top_px, theme.accent_ember,
+            "active drawer rule must not use Ember"
+        );
+        assert_ne!(
+            body_px,
+            [0, 0, 0],
+            "drawer body should lift off raw terminal black"
+        );
+        assert_ne!(body_px, theme.accent_ember, "drawer body must stay neutral");
+    }
+
+    /// Native editor panes reserve a chrome strip before drawing buffer content.
+    #[test]
+    fn editor_chrome_paints_header_and_offsets_content_rect() {
+        let m = metrics();
+        let mut r = Raster::new(320, 160);
+        let mut painter = StubPainter::default();
+        let theme = anvil_theme::MINERAL_DARK;
+        r.clear(theme.background);
+        let rect = Rect {
+            x: 10.0,
+            y: 12.0,
+            w: 260.0,
+            h: 120.0,
+        };
+        let content = draw_editor_chrome(
+            &mut r,
+            &mut painter,
+            &anvil_editor::Buffer::from_text("hello"),
+            m,
+            &theme,
+            rect,
+            true,
+        );
+
+        assert_eq!(pixel_at(&r, 12, 12), theme.accent_primary);
+        assert_ne!(
+            pixel_at(&r, 12, 16),
+            theme.background,
+            "editor chrome should tint the header away from raw canvas"
+        );
+        assert!(content.y > rect.y, "editor content must be below chrome");
+        assert!(content.h < rect.h, "chrome must reserve vertical space");
+        assert!(
+            !painter.calls.is_empty(),
+            "chrome should draw filename/placeholder text"
+        );
+    }
+
     /// Two-pane: focused pane has a 1px inset accent border; non-focused does not.
     #[test]
     fn focused_pane_has_accent_border() {
@@ -541,21 +922,21 @@ mod tests {
         let pane1_w = (inner.w - DIVIDER_PX) * 0.5;
         let mid_y = (inner.y + inner.h * 0.5) as usize;
 
-        // Left inset edge of focused pane should carry accent.
-        let left_x = inner.x as usize;
-        let px = pixel_at(&r, left_x, mid_y);
-        assert_eq!(
-            px, theme.accent,
-            "focused pane left inset should be accent (x={left_x}, got {px:?})"
-        );
-
-        // Top inset edge of focused pane should carry accent.
+        // Focused pane gets a single top accent cue, not a full orange box.
         let top_y = inner.y as usize;
         let mid_x = (inner.x + pane1_w * 0.5) as usize;
         let px = pixel_at(&r, mid_x, top_y);
         assert_eq!(
             px, theme.accent,
-            "focused pane top inset should be accent (y={top_y}, got {px:?})"
+            "focused pane top cue should be accent (y={top_y}, got {px:?})"
+        );
+
+        // Left edge of focused pane should not be boxed in accent.
+        let left_x = inner.x as usize;
+        let px = pixel_at(&r, left_x, mid_y);
+        assert_ne!(
+            px, theme.accent,
+            "focused pane left edge should not be boxed in accent (x={left_x}, got {px:?})"
         );
 
         // Non-focused pane (id2, right half): its left inset must NOT be accent.

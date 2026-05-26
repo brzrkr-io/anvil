@@ -15,7 +15,7 @@ mod kube;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::thread;
@@ -57,10 +57,10 @@ use anvil_render::searchbar::draw_search_bar;
 use anvil_render::tabbar::{TabBarHitKind, TabBarHits, draw_tab_bar};
 use anvil_render::workspace::{DIVIDER_PX, draw_workspace, draw_workspace_chrome};
 use anvil_render::{
-    CellBatch, FoldedBlocks, GridPainters, LeftDockSnapshot, OutlineRow, draw_left_dock,
-    draw_viewport_gpu,
+    CellBatch, ExplorerHit, FoldedBlocks, GridPainters, LeftDockHitKind, LeftDockHits,
+    LeftDockSnapshot, OutlineRow, draw_left_dock, draw_viewport_gpu,
 };
-use anvil_term::DirtySet;
+use anvil_term::{DirtySet, Terminal};
 use anvil_theme::{Theme, resolve as resolve_theme};
 use anvil_workspace::editor_pane::{
     EditorAction, FontMetrics as EditorFontMetrics, pixel_to_position,
@@ -87,6 +87,15 @@ use objc2_foundation::MainThreadMarker;
 // ── Embedded assets ──────────────────────────────────────────────────────────
 
 const PALETTE_HTML: &str = include_str!("../../../ui/palette/index.html");
+
+fn non_empty_terminal_cwd(terminal: &Terminal) -> Option<String> {
+    let cwd = terminal.cwd_path();
+    if cwd.is_empty() {
+        None
+    } else {
+        Some(cwd.to_string())
+    }
+}
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -193,10 +202,32 @@ fn detect_project_kind(cwd: &std::path::Path) -> Option<String> {
     if cwd.join("package.json").exists() {
         return Some("node".to_string());
     }
+    if cwd.join("pyproject.toml").exists() {
+        return Some("python".to_string());
+    }
+    if cwd.join("go.mod").exists() {
+        return Some("go".to_string());
+    }
     if cwd.join("Makefile").exists() {
         return Some("make".to_string());
     }
+    if cwd.join(".git").is_dir() {
+        return Some("git".to_string());
+    }
     None
+}
+
+fn has_project_marker_in_or_above(cwd: &Path) -> bool {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    for dir in cwd.ancestors() {
+        if detect_project_kind(dir).is_some() {
+            return true;
+        }
+        if home.as_deref() == Some(dir) {
+            break;
+        }
+    }
+    false
 }
 
 /// Walk `cwd` up to depth `max_depth`, collecting (mtime, path) for regular
@@ -369,6 +400,7 @@ struct Keybindings {
     fold_block: Option<Chord>,
     toggle_theme: Option<Chord>,
     layout_mode_toggle: Option<Chord>,
+    left_dock_toggle: Option<Chord>,
     editor_new: Option<Chord>,
 }
 
@@ -406,6 +438,7 @@ impl Keybindings {
             fold_block: parse_chord(&kb.fold_block),
             toggle_theme: parse_chord(&kb.toggle_theme),
             layout_mode_toggle: parse_chord(&kb.layout_mode_toggle),
+            left_dock_toggle: parse_chord(&kb.left_dock_toggle),
             editor_new: parse_chord(&kb.editor_new),
         }
     }
@@ -475,9 +508,11 @@ pub struct App {
     keybindings: Keybindings,
     system_dark: bool,
     window_scale: f64,
-    /// Current layout mode. Defaults to `Terminal`.
+    /// Current layout mode. Defaults to `Terminal` outside project dirs, `Ide` in project dirs.
     /// Set at startup via `ANVIL_LAYOUT_MODE=ide|terminal`.
     layout_mode: LayoutMode,
+    /// Whether the IDE explorer dock is visible; toggled by Cmd+B.
+    left_dock_visible: bool,
 
     // -- UI state ---
     blink_phase: f32,
@@ -498,6 +533,9 @@ pub struct App {
     /// Chrome-row hit regions (tab switches, close ×, + button). Refilled
     /// by `draw_tab_bar` each render; consumed by `mouse_down`.
     tab_bar_hits: TabBarHits,
+    /// Left-dock hit regions (explorer/outline rows). Refilled by
+    /// `draw_left_dock` in Ide mode; consumed before pane hit-testing.
+    left_dock_hits: LeftDockHits,
     /// Clickable regions inside the HUD. Refilled by `draw_right_hud` each
     /// render; consumed by `mouse_down` to dispatch copy / open actions.
     hud_hits: Vec<HudHit>,
@@ -551,6 +589,9 @@ pub struct App {
     fs_tx: mpsc::SyncSender<PathBuf>,
     fs_rx: mpsc::Receiver<fs_worker::DirSnapshot>,
     fs_snapshot: Option<LeftDockSnapshot>,
+    /// Last file opened through the IDE explorer/native-editor open path.
+    /// Used to keep the explorer row visually selected.
+    active_explorer_file: Option<PathBuf>,
     /// Last cwd sent to the fs worker; used to debounce re-sends.
     fs_last_cwd: Option<String>,
 
@@ -591,18 +632,24 @@ impl App {
         self.tabs.current().map(|t| t.focused_id()).unwrap_or(0)
     }
 
-    /// The cwd of the focused pane (OSC 7 path), or `None` if unset.
+    /// The cwd of the focused terminal pane (OSC 7 path), falling back to any
+    /// live terminal in the tab when focus is on a native editor surface.
     fn current_cwd(&self) -> Option<String> {
         let tab = self.tabs.current()?;
-        let id = tab.focused_id();
-        let pane = tab.registry.get(id)?;
-        let terminal = pane.terminal.as_ref()?;
-        let cwd = terminal.cwd_path();
-        if cwd.is_empty() {
-            None
-        } else {
-            Some(cwd.to_string())
+        let focused_id = tab.focused_id();
+        if let Some(cwd) = tab
+            .registry
+            .get(focused_id)
+            .and_then(|pane| pane.terminal.as_ref())
+            .and_then(non_empty_terminal_cwd)
+        {
+            return Some(cwd);
         }
+
+        tab.registry
+            .iter()
+            .filter(|(id, _)| *id != focused_id)
+            .find_map(|(_, pane)| pane.terminal.as_ref().and_then(non_empty_terminal_cwd))
     }
 
     /// Device-pixel dimensions of the content area.
@@ -649,12 +696,13 @@ impl App {
     /// This is the single source of truth for where the terminal grid lives.
     /// Pass this to `PaneTree::layout`, hit-test, and `draw_workspace`.
     fn pane_area_rect(&self) -> Rect {
-        Docks::for_mode(
+        Docks::for_mode_with_left_dock(
             self.layout_mode,
             self.window_scale,
             self.dock_metrics(),
             self.hud_visible,
             self.chrome_bottom_px(),
+            self.left_dock_visible,
         )
         .compute_areas(
             self.window_inner(),
@@ -755,6 +803,22 @@ impl App {
         self.last_blink_opacity = -1.0;
         self.keybindings = Keybindings::from_config(&cfg.keybindings);
         self.config = cfg;
+        self.dirty = true;
+        self.force_full_redraw = true;
+    }
+
+    /// Set the user's theme mode from commands/keybindings.
+    ///
+    /// `ember-dark` and `ember-light` are explicit modes; `system` follows
+    /// macOS appearance via `effective_theme_name`. Keep overrides intact so a
+    /// user's configured accents survive palette switches.
+    fn set_theme_mode(&mut self, mode: &str) {
+        self.config.theme = mode.to_string();
+        let effective = effective_theme_name(self.system_dark, &self.config.theme);
+        self.theme = resolve_theme(effective, &self.config.theme_overrides);
+        if let Some(r) = &mut self.renderer {
+            r.set_clear_color(self.theme.background);
+        }
         self.dirty = true;
         self.force_full_redraw = true;
     }
@@ -955,6 +1019,22 @@ impl App {
             return;
         }
 
+        if self.layout_mode == LayoutMode::Ide {
+            if let Some(new_id) = self
+                .tabs
+                .current_mut()
+                .and_then(|t| t.ensure_ide_editor_surface())
+            {
+                if let Some(tab) = self.tabs.current_mut() {
+                    tab.tree.focused = new_id;
+                }
+                self.resize_all_tabs();
+                self.snap_anim();
+                self.dirty = true;
+                return;
+            }
+        }
+
         let new_id = match self
             .tabs
             .current_mut()
@@ -977,6 +1057,46 @@ impl App {
         self.resize_all_tabs();
         self.snap_anim();
         self.dirty = true;
+    }
+
+    /// Open `path` in a native editor pane. If a terminal pane is focused,
+    /// create a native editor split first so terminal state is not destroyed.
+    fn open_path_in_native_editor(&mut self, path: &Path) {
+        if path.is_dir() {
+            let _ = self.fs_tx.try_send(path.to_path_buf());
+            self.fs_snapshot = Some(LeftDockSnapshot {
+                root: path.to_string_lossy().into_owned(),
+                entries: Vec::new(),
+            });
+            self.active_explorer_file = None;
+            self.dirty = true;
+            return;
+        }
+
+        if !self.focused_is_native_editor() {
+            self.new_native_editor_pane();
+        }
+
+        let Some(tab) = self.tabs.current_mut() else {
+            return;
+        };
+        let pane_id = tab.focused_id();
+        match tab.editor_panes.open_path(pane_id, path) {
+            Ok(buffer_id) => {
+                if let Some(pane) = tab.registry.get_mut(pane_id) {
+                    pane.editor_id = Some(buffer_id);
+                }
+                self.active_explorer_file = Some(path.to_path_buf());
+                self.search_open = false;
+                self.resize_all_tabs();
+                self.snap_anim();
+                self.force_full_redraw = true;
+                self.dirty = true;
+            }
+            Err(err) => {
+                eprintln!("anvil: failed to open {}: {err}", path.display());
+            }
+        }
     }
 
     fn close_focused_pane(&mut self) {
@@ -1740,7 +1860,9 @@ impl App {
         }
 
         let ch = self.font.metrics.cell_h;
-        let eff_hud = self.hud_visible || self.layout_mode == LayoutMode::Ide;
+        // Direction A is editor-first. Do not force the right context/HUD rail
+        // on just because IDE mode is active; keep it opt-in via the HUD toggle.
+        let eff_hud = self.hud_visible;
         let (dw, dh) = self.device_size();
 
         // Pane area: single source of truth from Docks geometry.
@@ -1975,12 +2097,13 @@ impl App {
 
         // Context bar + left dock: Ide mode only.
         if self.layout_mode == LayoutMode::Ide {
-            let areas = Docks::for_mode(
+            let areas = Docks::for_mode_with_left_dock(
                 self.layout_mode,
                 self.window_scale,
                 self.dock_metrics(),
                 self.hud_visible,
                 self.chrome_bottom_px(),
+                self.left_dock_visible,
             )
             .compute_areas(self.window_inner(), metrics.cell_w, metrics.cell_h);
             // NE15: context-bar editor segment reads from the focused native
@@ -2019,15 +2142,22 @@ impl App {
             // not yet feed the left-dock; leave the outline section blank
             // until a follow-up wires `editor_pane.outline`.
             let outline_rows: Option<Vec<OutlineRow>> = None;
-            draw_left_dock(
-                &mut self.raster,
-                chrome_painter,
-                chrome_metrics,
-                &self.theme,
-                self.fs_snapshot.as_ref(),
-                outline_rows.as_deref(),
-                areas.left_dock,
-            );
+            if self.left_dock_visible {
+                self.left_dock_hits = draw_left_dock(
+                    &mut self.raster,
+                    chrome_painter,
+                    chrome_metrics,
+                    &self.theme,
+                    self.fs_snapshot.as_ref(),
+                    self.active_explorer_file.as_deref(),
+                    outline_rows.as_deref(),
+                    areas.left_dock,
+                );
+            } else {
+                self.left_dock_hits.clear();
+            }
+        } else {
+            self.left_dock_hits.clear();
         }
 
         // Bottom strip: search bar when open, otherwise the slim status bar.
@@ -2299,19 +2429,13 @@ impl App {
     fn handle_palette_action(&mut self, action: Action, webview: &Webview) {
         match action {
             Action::ThemeDark => {
-                self.theme = resolve_theme("mineral-dark", &anvil_theme::ThemeOverrides::default());
-                if let Some(r) = &mut self.renderer {
-                    r.set_clear_color(self.theme.background);
-                }
-                self.dirty = true;
+                self.set_theme_mode("ember-dark");
             }
             Action::ThemeLight => {
-                self.theme =
-                    resolve_theme("mineral-light", &anvil_theme::ThemeOverrides::default());
-                if let Some(r) = &mut self.renderer {
-                    r.set_clear_color(self.theme.background);
-                }
-                self.dirty = true;
+                self.set_theme_mode("ember-light");
+            }
+            Action::ThemeSystem => {
+                self.set_theme_mode("system");
             }
             Action::ConfigReload => {
                 if let Some(ref w) = self.watcher {
@@ -2383,11 +2507,19 @@ impl App {
             }
             Action::LayoutTerminal => {
                 self.layout_mode = LayoutMode::Terminal;
+                self.left_dock_visible = false;
+                if let Some(tab) = self.tabs.current_mut() {
+                    tab.normalize_terminal_surface();
+                }
                 self.resize_all_tabs();
                 self.dirty = true;
             }
             Action::LayoutIde => {
                 self.layout_mode = LayoutMode::Ide;
+                self.left_dock_visible = true;
+                if let Some(tab) = self.tabs.current_mut() {
+                    tab.ensure_ide_editor_surface();
+                }
                 self.resize_all_tabs();
                 self.dirty = true;
             }
@@ -2642,15 +2774,8 @@ impl App {
             return true;
         });
         test!(kb.toggle_theme, {
-            self.config.theme = if self.config.theme == "ember-light" {
-                "ember-dark".into()
-            } else {
-                "ember-light".into()
-            };
-            let effective = effective_theme_name(self.system_dark, &self.config.theme);
-            self.theme = resolve_theme(effective, &self.config.theme_overrides);
-            self.force_full_redraw = true;
-            self.dirty = true;
+            let next = next_theme_mode(&self.config.theme);
+            self.set_theme_mode(next);
             return true;
         });
         test!(kb.layout_mode_toggle, {
@@ -2658,12 +2783,36 @@ impl App {
                 LayoutMode::Terminal => LayoutMode::Ide,
                 LayoutMode::Ide => LayoutMode::Terminal,
             };
+            match self.layout_mode {
+                LayoutMode::Terminal => {
+                    self.left_dock_visible = false;
+                    if let Some(tab) = self.tabs.current_mut() {
+                        tab.normalize_terminal_surface();
+                    }
+                }
+                LayoutMode::Ide => {
+                    if let Some(tab) = self.tabs.current_mut() {
+                        tab.ensure_ide_editor_surface();
+                    }
+                    self.left_dock_visible = true;
+                }
+            }
+            self.resize_all_tabs();
+            self.dirty = true;
+            return true;
+        });
+        test!(kb.left_dock_toggle, {
+            self.left_dock_visible = !self.left_dock_visible;
             self.resize_all_tabs();
             self.dirty = true;
             return true;
         });
         test!(kb.editor_new, {
-            // NE15: nvim path removed; Cmd+E opens a native editor pane.
+            // NE15: nvim path removed; Cmd+E opens/focuses the native editor surface.
+            // Direction A treats editor creation as entering the command-deck
+            // IDE surface: Explorer + editor + compact terminal drawer.
+            self.layout_mode = LayoutMode::Ide;
+            self.left_dock_visible = true;
             self.new_native_editor_pane();
             return true;
         });
@@ -3643,6 +3792,30 @@ impl AppHandler for AppShell {
             }
         }
 
+        // Left dock click — explorer rows open folders/files before pane hit-testing.
+        {
+            let (rx, ry) = app.view_pt_to_raster_px(loc);
+            let hit_kind = app.left_dock_hits.at(rx, ry).cloned();
+            if let Some(LeftDockHitKind::Explorer(hit)) = hit_kind {
+                match hit {
+                    ExplorerHit::Header => {
+                        if let Some(snapshot) = app.fs_snapshot.clone() {
+                            app.open_path_in_native_editor(Path::new(&snapshot.root));
+                        }
+                    }
+                    ExplorerHit::Row(idx) => {
+                        if let Some(snapshot) = app.fs_snapshot.clone() {
+                            if let Some(entry) = snapshot.entries.get(idx) {
+                                let path = PathBuf::from(&snapshot.root).join(&entry.name);
+                                app.open_path_in_native_editor(&path);
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+        }
+
         // Chrome row click — use hit rects populated by draw_tab_bar.
         {
             let (rx, ry) = app.view_pt_to_raster_px(loc);
@@ -4495,6 +4668,15 @@ fn effective_theme_name(system_dark: bool, cfg_theme: &str) -> &str {
     }
 }
 
+fn next_theme_mode(cfg_theme: &str) -> &'static str {
+    match cfg_theme {
+        "ember-dark" => "ember-light",
+        "ember-light" => "system",
+        "system" => "ember-dark",
+        _ => "ember-dark",
+    }
+}
+
 fn system_is_dark() -> bool {
     use objc2::msg_send;
     objc2::rc::autoreleasepool(|_pool| {
@@ -4785,10 +4967,26 @@ fn main() -> Result<()> {
         if use_gpu_render { "gpu" } else { "cpu" }
     );
 
-    // -- Layout mode (debug env-var override) ---------------------------------
+    // -- Layout mode -----------------------------------------------------------
+    // Config gives users a durable straight-terminal preference; the env var
+    // remains a debug/test override. `auto` keeps the product default: IDE in
+    // project dirs, terminal elsewhere.
+    let cwd_for_mode = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let auto_layout_mode = || {
+        if has_project_marker_in_or_above(&cwd_for_mode) {
+            LayoutMode::Ide
+        } else {
+            LayoutMode::Terminal
+        }
+    };
     let layout_mode = match std::env::var("ANVIL_LAYOUT_MODE").as_deref() {
         Ok("ide") => LayoutMode::Ide,
-        _ => LayoutMode::Terminal,
+        Ok("terminal") => LayoutMode::Terminal,
+        _ => match config.layout_mode {
+            anvil_config::StartupLayout::Ide => LayoutMode::Ide,
+            anvil_config::StartupLayout::Terminal => LayoutMode::Terminal,
+            anvil_config::StartupLayout::Auto => auto_layout_mode(),
+        },
     };
     eprintln!("anvil: layout_mode = {layout_mode:?}");
 
@@ -4823,6 +5021,10 @@ fn main() -> Result<()> {
         system_dark,
         window_scale,
         layout_mode,
+        // Direction A is editor-first: project/IDE startup should show the
+        // Explorer so file-open state is unmistakable. Users can still hide it
+        // with Cmd+B.
+        left_dock_visible: layout_mode == LayoutMode::Ide,
         blink_phase: 0.0,
         last_blink_opacity: -1.0,
         search: anvil_term::Search::new(),
@@ -4834,6 +5036,7 @@ fn main() -> Result<()> {
         hud_drag_active: false,
         divider_drag: None,
         tab_bar_hits: TabBarHits::default(),
+        left_dock_hits: LeftDockHits::default(),
         hud_hits: Vec::new(),
         hud_section_order: load_hud_section_order()
             .unwrap_or_else(|| SectionId::DEFAULT_ORDER.to_vec()),
@@ -4867,6 +5070,7 @@ fn main() -> Result<()> {
         fs_tx,
         fs_rx,
         fs_snapshot: None,
+        active_explorer_file: None,
         fs_last_cwd: None,
         agent_pulse_phase: 0.0,
         last_agent_pulse_opacity: -1.0,
@@ -5012,6 +5216,17 @@ fn main() -> Result<()> {
 
     // -- Finish building App: install real renderer, correct scale ------------
     let mut real_app = app;
+    if real_app.layout_mode == LayoutMode::Ide {
+        if let Some(editor_id) = real_app
+            .tabs
+            .current_mut()
+            .and_then(|tab| tab.ensure_ide_editor_surface())
+        {
+            if let Some(tab) = real_app.tabs.current_mut() {
+                tab.tree.focused = editor_id;
+            }
+        }
+    }
     real_app.renderer = Some(renderer);
     real_app.window_scale = actual_scale;
     real_app.raster.resize(actual_dw, actual_dh);
@@ -5109,6 +5324,14 @@ mod tests {
         assert_eq!(effective_theme_name(false, "system"), "ember-light");
         assert_eq!(effective_theme_name(true, "ember-light"), "ember-light");
         assert_eq!(effective_theme_name(true, "mineral-light"), "mineral-light");
+    }
+
+    #[test]
+    fn next_theme_mode_cycles_dark_light_system() {
+        assert_eq!(next_theme_mode("ember-dark"), "ember-light");
+        assert_eq!(next_theme_mode("ember-light"), "system");
+        assert_eq!(next_theme_mode("system"), "ember-dark");
+        assert_eq!(next_theme_mode("mineral-dark"), "ember-dark");
     }
 
     #[test]

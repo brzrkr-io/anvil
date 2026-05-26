@@ -229,6 +229,14 @@ impl PaneRegistry {
         self.map.get(&id)
     }
 
+    /// Iterate over registered panes in stable id order.
+    pub fn iter(&self) -> impl Iterator<Item = (PaneId, &Pane)> {
+        let mut panes: Vec<(PaneId, &Pane)> =
+            self.map.iter().map(|(&id, pane)| (id, pane)).collect();
+        panes.sort_by_key(|(id, _)| *id);
+        panes.into_iter()
+    }
+
     /// Look up a pane mutably by id.
     pub fn get_mut(&mut self, id: PaneId) -> Option<&mut Pane> {
         self.map.get_mut(&id)
@@ -276,6 +284,16 @@ mod tests {
         assert!(p.is_folded(10));
         p.toggle_fold(10);
         assert!(!p.is_folded(10));
+    }
+
+    #[test]
+    fn registry_iter_returns_panes_in_id_order() {
+        let mut reg = PaneRegistry::default();
+        let first = reg.create_and_register(80, 24, 0);
+        let second = reg.create_and_register_editor(7);
+
+        let ids: Vec<PaneId> = reg.iter().map(|(id, _)| id).collect();
+        assert_eq!(ids, vec![first, second]);
     }
 
     #[test]

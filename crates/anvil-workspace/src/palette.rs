@@ -7,6 +7,7 @@
 pub enum Action {
     ThemeDark,
     ThemeLight,
+    ThemeSystem,
     ConfigReload,
     ClearScreen,
     ScrollTop,
@@ -37,15 +38,21 @@ pub struct Entry {
 pub const CATALOG: &[Entry] = &[
     Entry {
         id: "theme.dark",
-        title: "Switch to Dark Theme",
+        title: "Switch to Ember Dark",
         subtitle: None,
         action: Action::ThemeDark,
     },
     Entry {
         id: "theme.light",
-        title: "Switch to Light Theme",
+        title: "Switch to Ember Light",
         subtitle: None,
         action: Action::ThemeLight,
+    },
+    Entry {
+        id: "theme.system",
+        title: "Follow System Appearance",
+        subtitle: Some("Use macOS light/dark appearance"),
+        action: Action::ThemeSystem,
     },
     Entry {
         id: "config.reload",
@@ -88,6 +95,18 @@ pub const CATALOG: &[Entry] = &[
         title: "Keyboard Shortcuts",
         subtitle: Some("Show the keyboard shortcut cheatsheet"),
         action: Action::CheatsheetShow,
+    },
+    Entry {
+        id: "layout.mode:terminal",
+        title: "Switch to Straight Terminal",
+        subtitle: Some("Hide IDE chrome and focus the preserved terminal (⌘⇧E)"),
+        action: Action::LayoutTerminal,
+    },
+    Entry {
+        id: "layout.mode:ide",
+        title: "Switch to IDE Surface",
+        subtitle: Some("Show Explorer, native editor, and bottom terminal drawer (⌘⇧E)"),
+        action: Action::LayoutIde,
     },
     Entry {
         id: "editor.new",
@@ -169,8 +188,20 @@ mod tests {
     #[test]
     fn catalog_ids_map_to_actions() {
         assert_eq!(action_for_id("theme.dark"), Some(Action::ThemeDark));
+        assert_eq!(action_for_id("theme.light"), Some(Action::ThemeLight));
+        assert_eq!(action_for_id("theme.system"), Some(Action::ThemeSystem));
         assert_eq!(action_for_id("app.quit"), Some(Action::AppQuit));
         assert_eq!(action_for_id("scroll.top"), Some(Action::ScrollTop));
+    }
+
+    #[test]
+    fn theme_catalog_names_ember_modes_and_system_appearance() {
+        let dark = CATALOG.iter().find(|e| e.id == "theme.dark").unwrap();
+        let light = CATALOG.iter().find(|e| e.id == "theme.light").unwrap();
+        let system = CATALOG.iter().find(|e| e.id == "theme.system").unwrap();
+        assert_eq!(dark.title, "Switch to Ember Dark");
+        assert_eq!(light.title, "Switch to Ember Light");
+        assert_eq!(system.title, "Follow System Appearance");
     }
 
     #[test]

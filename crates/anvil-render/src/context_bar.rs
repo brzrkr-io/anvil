@@ -8,7 +8,7 @@
 use anvil_theme::Theme;
 use anvil_workspace::layout::Rect;
 
-use crate::agent_panel::{LocalContext, format_cwd};
+use crate::agent_panel::{GitState, LocalContext, format_cwd};
 use crate::raster::{FontMetrics, GlyphPainter, Raster};
 
 /// Editor-segment input for the context bar.
@@ -48,118 +48,167 @@ pub fn draw_context_bar(
 
     let bx = rect.x;
     let by = rect.y;
-    let cell_w = metrics.cell_w;
     let cell_h = metrics.cell_h;
 
-    // Background fill.
-    raster.fill_pixel_rect(bx, by, bar_w, bar_h, theme.charcoal);
-    // 1px hairline at the bottom edge.
-    raster.fill_pixel_rect(bx, by + bar_h - 1.0, bar_w, 1.0, theme.hairline);
+    // Direction A native/window bar: traffic dots, IDE chip, path, compact
+    // context chips. It should read as editor chrome, not a right-HUD header.
+    raster.fill_pixel_rect(bx, by, bar_w, bar_h, [0x0f, 0x0d, 0x0b]);
+    raster.fill_pixel_rect_alpha(bx, by, bar_w, bar_h, theme.accent_ember, 0.025);
+    raster.fill_pixel_rect_alpha(bx, by + bar_h - 1.0, bar_w, 1.0, theme.accent_bright, 0.22);
 
-    // Vertical centre for glyph baseline.
     let glyph_y = by + ((bar_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+    let mid_y = by + bar_h * 0.5;
+    let mut x = bx + 12.0;
 
-    let pad_x = 14.0; // matches status bar padding
+    for color in [[0xe5, 0x6b, 0x5e], [0xd6, 0x9a, 0x45], [0x5b, 0xa9, 0x77]] {
+        raster.fill_pixel_rect(x, mid_y - 5.0, 10.0, 10.0, color);
+        x += 17.0;
+    }
+    x += 6.0;
 
-    // Helper: draw a string run, advancing `x`. Clips at bar right edge.
-    let draw_run = |raster: &mut Raster,
-                    painter: &mut dyn GlyphPainter,
-                    s: &str,
-                    color: [u8; 3],
-                    x: &mut f64| {
-        for ch in s.chars() {
-            if *x + cell_w > bx + bar_w {
-                break;
-            }
-            raster.glyph_at(painter, metrics, *x, glyph_y, ch as u32, color);
-            *x += cell_w;
+    x = draw_chip(raster, painter, metrics, theme, "IDE", x, by, bar_h, true) + 10.0;
+
+    let cwd = if local.cwd.is_empty() {
+        "anvil".to_string()
+    } else {
+        format_cwd(&local.cwd)
+    };
+    let file = editor.as_ref().map(|e| e.name).unwrap_or("native editor");
+    let path = format!("caldera/{cwd} · {file}");
+    draw_run_clipped(
+        raster,
+        painter,
+        metrics,
+        &path,
+        theme.text_muted,
+        x,
+        glyph_y,
+        bx + bar_w - 220.0,
+    );
+
+    if local.git != GitState::NoRepo {
+        let mut rx = bx + bar_w - 12.0;
+        let dirty = local.git_dirty > 0 || local.git == GitState::Dirty;
+        let tok = if dirty { "dirty" } else { "clean" };
+        rx = draw_chip_right(raster, painter, metrics, theme, tok, rx, by, bar_h, dirty);
+        rx -= 8.0;
+        if !local.head_short.is_empty() {
+            rx = draw_chip_right(
+                raster,
+                painter,
+                metrics,
+                theme,
+                &local.head_short,
+                rx,
+                by,
+                bar_h,
+                false,
+            );
+            rx -= 8.0;
         }
-    };
-
-    // ── Left section ─────────────────────────────────────────────────────────
-
-    let mut lx = bx + pad_x;
-
-    // Project kind icon glyph.
-    let project_icon: Option<&str> = match local.project_kind.as_deref() {
-        Some("rust") => Some("\u{25b6}"), // ▶  (compact triangle)
-        Some("node") => Some("\u{2022}"), // •
-        Some("make") => Some("\u{25a0}"), // ■
-        Some(_) => Some("\u{25cb}"),      // ○  generic
-        None => None,
-    };
-
-    if let Some(icon) = project_icon {
-        draw_run(raster, painter, icon, theme.text_muted, &mut lx);
-        lx += cell_w * 0.5; // small gap after icon (half-cell)
+        let branch = if local.branch.is_empty() {
+            "main"
+        } else {
+            &local.branch
+        };
+        let branch_label = format!("git {branch}");
+        let _ = draw_chip_right(
+            raster,
+            painter,
+            metrics,
+            theme,
+            &branch_label,
+            rx,
+            by,
+            bar_h,
+            dirty,
+        );
     }
+}
 
-    // cwd basename.
-    if !local.cwd.is_empty() {
-        let cwd = format_cwd(&local.cwd);
-        draw_run(raster, painter, &cwd, theme.text_muted, &mut lx);
-    }
-
-    // " · " separator + git branch (only when branch name is known).
-    if !local.branch.is_empty() && !local.cwd.is_empty() {
-        draw_run(raster, painter, " \u{00b7} ", theme.text_muted, &mut lx);
-
-        let branch_color = if local.git_dirty > 0 {
+#[allow(clippy::too_many_arguments)]
+fn draw_chip(
+    raster: &mut Raster,
+    painter: &mut dyn GlyphPainter,
+    metrics: FontMetrics,
+    theme: &Theme,
+    label: &str,
+    x: f64,
+    by: f64,
+    bar_h: f64,
+    accent: bool,
+) -> f64 {
+    let w = label.chars().count() as f64 * metrics.cell_w + 14.0;
+    let y = by + ((bar_h - 20.0) * 0.5).max(0.0);
+    raster.fill_pixel_rect_alpha(
+        x,
+        y,
+        w,
+        20.0,
+        theme.surface,
+        if accent { 0.34 } else { 0.22 },
+    );
+    raster.fill_pixel_rect_alpha(
+        x,
+        y,
+        w,
+        1.0,
+        theme.accent_bright,
+        if accent { 0.36 } else { 0.16 },
+    );
+    raster.fill_pixel_rect_alpha(x, y + 19.0, w, 1.0, theme.hairline, 0.8);
+    draw_run_clipped(
+        raster,
+        painter,
+        metrics,
+        label,
+        if accent {
             theme.accent
         } else {
             theme.text_subtle
-        };
-        draw_run(raster, painter, &local.branch, branch_color, &mut lx);
-    }
+        },
+        x + 7.0,
+        by + ((bar_h - metrics.cell_h) * 0.5 + metrics.descent * 0.5).max(0.0),
+        x + w - 7.0,
+    );
+    x + w
+}
 
-    // ── Right section ─────────────────────────────────────────────────────────
+#[allow(clippy::too_many_arguments)]
+fn draw_chip_right(
+    raster: &mut Raster,
+    painter: &mut dyn GlyphPainter,
+    metrics: FontMetrics,
+    theme: &Theme,
+    label: &str,
+    right: f64,
+    by: f64,
+    bar_h: f64,
+    accent: bool,
+) -> f64 {
+    let w = label.chars().count() as f64 * metrics.cell_w + 14.0;
+    let x = right - w;
+    draw_chip(raster, painter, metrics, theme, label, x, by, bar_h, accent);
+    x
+}
 
-    // Editor segment: "edit: <name>" or "edit: <name>•" when modified.
-    let editor_owned: Option<String> = editor.as_ref().map(|e| {
-        let suffix = if e.modified { "\u{2022}" } else { "" }; // •
-        format!("edit: {}{}", e.name, suffix)
-    });
-
-    // Build the right string segments.
-    let kube_str: Option<String> = local
-        .kube_context
-        .as_ref()
-        .map(|k| format!("\u{2388} {}", k.cluster)); // ⎈ cluster
-
-    let head_str: Option<&str> = if local.head_short.is_empty() {
-        None
-    } else {
-        Some(&local.head_short)
-    };
-
-    // Assemble right text width for right-alignment.
-    let mut right_parts: Vec<(&str, [u8; 3])> = Vec::new();
-    let editor_str_ref: Option<&str> = editor_owned.as_deref();
-    if let Some(es) = editor_str_ref {
-        right_parts.push((es, theme.text_muted));
-        if kube_str.is_some() || head_str.is_some() {
-            right_parts.push((" \u{00b7} ", theme.text_muted));
+#[allow(clippy::too_many_arguments)]
+fn draw_run_clipped(
+    raster: &mut Raster,
+    painter: &mut dyn GlyphPainter,
+    metrics: FontMetrics,
+    s: &str,
+    color: [u8; 3],
+    mut x: f64,
+    y: f64,
+    max_x: f64,
+) {
+    for ch in s.chars() {
+        if x + metrics.cell_w > max_x {
+            break;
         }
-    }
-    let kube_owned;
-    if let Some(ref ks) = kube_str {
-        kube_owned = ks.clone();
-        right_parts.push((&kube_owned, theme.text_muted));
-        if head_str.is_some() {
-            right_parts.push((" \u{00b7} ", theme.text_muted));
-        }
-    }
-    if let Some(hs) = head_str {
-        right_parts.push((hs, theme.text_subtle));
-    }
-
-    if !right_parts.is_empty() {
-        let total_chars: usize = right_parts.iter().map(|(s, _)| s.chars().count()).sum();
-        let right_text_w = total_chars as f64 * cell_w;
-        let mut rx = (bx + bar_w - pad_x - right_text_w).max(lx);
-        for (s, color) in &right_parts {
-            draw_run(raster, painter, s, *color, &mut rx);
-        }
+        raster.glyph_at(painter, metrics, x, y, ch as u32, color);
+        x += metrics.cell_w;
     }
 }
 
@@ -349,14 +398,14 @@ mod tests {
         };
         draw_context_bar(&mut r, &mut p, m, &th, &local, None, bar_rect());
 
-        // No accent or text_subtle calls (branch is the only user of those on left).
-        let accent_or_subtle = p
+        let rendered: String = p
             .calls
             .iter()
-            .any(|(_, fg)| *fg == th.accent || *fg == th.text_subtle);
+            .filter_map(|(cp, _)| char::from_u32(*cp))
+            .collect();
         assert!(
-            !accent_or_subtle,
-            "no branch data → no accent/subtle glyphs"
+            !rendered.contains("git "),
+            "no repo → no git branch chip, got {rendered:?}"
         );
     }
 
@@ -370,6 +419,7 @@ mod tests {
 
         let local = LocalContext {
             head_short: "abc1234".to_string(),
+            git: GitState::Ok,
             ..LocalContext::default()
         };
         draw_context_bar(&mut r, &mut p, m, &th, &local, None, bar_rect());
@@ -420,9 +470,9 @@ mod tests {
         );
     }
 
-    // Editor segment omitted when None.
+    // Editor segment falls back to a native-editor label when None.
     #[test]
-    fn editor_segment_omitted_when_none() {
+    fn editor_segment_falls_back_when_none() {
         let m = font_metrics();
         let th = theme();
         let mut r = Raster::new(800, 100);
@@ -438,7 +488,15 @@ mod tests {
             bar_rect(),
         );
 
-        // No glyphs should appear (LocalContext is empty; editor is None).
-        assert!(p.calls.is_empty(), "no glyphs expected when editor is None");
+        let muted_chars: Vec<char> = p
+            .calls
+            .iter()
+            .filter(|(_, fg)| *fg == th.text_muted)
+            .filter_map(|(cp, _)| char::from_u32(*cp))
+            .collect();
+        assert!(
+            muted_chars.contains(&'n'),
+            "expected fallback native-editor label in text_muted, got {muted_chars:?}"
+        );
     }
 }

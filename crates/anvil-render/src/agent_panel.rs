@@ -116,7 +116,7 @@ pub enum Placement {
 pub const PANEL_COLS: usize = 36;
 
 /// Width of the docked right-side HUD in terminal columns.
-pub const HUD_COLS: usize = 30;
+pub const HUD_COLS: usize = 26;
 
 /// Dynamic card height: 4 base rows + up to 3 priority rows.
 fn card_rows(snap: &Snapshot) -> usize {
@@ -456,7 +456,7 @@ fn luma(rgb: [u8; 3]) -> f64 {
 
 /// Glass-surface tone set resolved from the current theme.
 /// All color fields are read from the theme; `surface_alpha` varies by
-/// canvas lightness (dark canvas → 0.88, light canvas → 0.72).
+/// canvas lightness (dark canvas → 0.72, light canvas → 0.60).
 struct GlassTones {
     surface: [u8; 3],
     surface_alpha: f32,
@@ -464,12 +464,12 @@ struct GlassTones {
 }
 
 /// Resolve `GlassTones` from `theme`. Luma of `theme.background` determines
-/// whether the dark (0.88) or light (0.72) surface alpha is used.
+/// whether the dark (0.72) or light (0.60) surface alpha is used.
 fn glass_tones_for(theme: &Theme) -> GlassTones {
     let surface_alpha = if luma(theme.background) / 255.0 > 0.5 {
-        0.72_f32
+        0.60_f32
     } else {
-        0.88_f32
+        0.72_f32
     };
     GlassTones {
         surface: theme.panel,

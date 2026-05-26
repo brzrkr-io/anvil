@@ -8,8 +8,9 @@
 //! modal layer or vim plugin can sit as a thin keymap on top.
 
 use std::collections::HashMap;
+use std::path::Path;
 
-use anvil_editor::{Buffer, BufferId, Cursor, Position, Range};
+use anvil_editor::{Buffer, BufferId, Cursor, IoError, Position, Range};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::editor_search::EditorSearch;
@@ -219,6 +220,42 @@ impl EditorPaneRegistry {
         self.panes.insert(pane_id, pane);
         self.buffers.insert(buffer_id, Buffer::new());
         buffer_id
+    }
+
+    /// Load `path` into `pane_id`, replacing that pane's previous buffer.
+    pub fn open_path(&mut self, pane_id: PaneId, path: &Path) -> Result<BufferId, IoError> {
+        let buffer = Buffer::from_path(path)?;
+        let buffer_id = self.next_buffer_id;
+        self.next_buffer_id += 1;
+        let origin = Position { line: 0, col: 0 };
+        let pane = self.panes.entry(pane_id).or_insert_with(|| EditorPane {
+            buffer_id,
+            cursors: vec![Cursor {
+                pos: origin,
+                anchor: origin,
+            }],
+            selection: Selection::default(),
+            scroll_pos: 0.0,
+            scroll_target: 0.0,
+            scroll_vel: 0.0,
+            search: None,
+            hover_popup: None,
+        });
+        let old_buffer_id = pane.buffer_id;
+        pane.buffer_id = buffer_id;
+        pane.cursors = vec![Cursor {
+            pos: origin,
+            anchor: origin,
+        }];
+        pane.selection = Selection::default();
+        pane.scroll_pos = 0.0;
+        pane.scroll_target = 0.0;
+        pane.scroll_vel = 0.0;
+        pane.search = None;
+        pane.hover_popup = None;
+        self.buffers.remove(&old_buffer_id);
+        self.buffers.insert(buffer_id, buffer);
+        Ok(buffer_id)
     }
 
     /// Iterate over all `(PaneId, EditorPane)` pairs in this registry.
@@ -1296,6 +1333,42 @@ mod tests {
     }
 
     // ── Existing registry tests ──────────────────────────────────────────────
+
+    #[test]
+    fn editor_pane_registry_open_path_loads_file_into_existing_pane() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("main.rs");
+        std::fs::write(&path, "fn main() {}\n").unwrap();
+
+        let mut reg = EditorPaneRegistry::default();
+        let old_bid = reg.new_pane(9);
+        let bid = reg.open_path(9, &path).unwrap();
+
+        assert_ne!(bid, old_bid);
+        assert!(reg.get_buffer(old_bid).is_none());
+        assert_eq!(reg.get_pane(9).unwrap().buffer_id, bid);
+        let buffer = reg.get_buffer(bid).unwrap();
+        assert_eq!(buffer.to_text(), "fn main() {}\n");
+        assert_eq!(buffer.tracked_path(), Some(path.as_path()));
+        assert_eq!(
+            reg.get_pane(9).unwrap().cursors[0].pos,
+            Position { line: 0, col: 0 }
+        );
+    }
+
+    #[test]
+    fn editor_pane_registry_open_path_creates_missing_pane() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("README.md");
+        std::fs::write(&path, "# Project\n").unwrap();
+
+        let mut reg = EditorPaneRegistry::default();
+        let bid = reg.open_path(44, &path).unwrap();
+
+        assert_eq!(reg.count(), 1);
+        assert_eq!(reg.get_pane(44).unwrap().buffer_id, bid);
+        assert_eq!(reg.get_buffer(bid).unwrap().to_text(), "# Project\n");
+    }
 
     #[test]
     fn editor_pane_registry_new_pane_returns_buffer_id() {

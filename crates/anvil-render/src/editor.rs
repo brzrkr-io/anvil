@@ -79,9 +79,6 @@ pub fn draw_editor_into(
     let cw = metrics.cell_w;
     let ch = metrics.cell_h;
 
-    // ── Background ────────────────────────────────────────────────────────────
-    raster.fill_pixel_rect(rect.x, rect.y, rect.w, rect.h, theme.background);
-
     // ── Geometry ──────────────────────────────────────────────────────────────
     let line_count = buffer.line_count().max(1);
     // Gutter width: digits needed for highest line number + 2 padding cols.
@@ -90,6 +87,11 @@ pub fn draw_editor_into(
     let git_gutter_cols = if gutter.is_some() { 2 } else { 0 };
     let gutter_cols = digit_cols + 2 + git_gutter_cols;
     let gutter_w = gutter_cols as f64 * cw;
+
+    // ── Background: native editor surface, not terminal canvas ────────────────
+    raster.fill_pixel_rect(rect.x, rect.y, rect.w, rect.h, theme.surface);
+    raster.fill_pixel_rect(rect.x, rect.y, gutter_w, rect.h, theme.charcoal);
+    raster.fill_pixel_rect(rect.x + gutter_w - 1.0, rect.y, 1.0, rect.h, theme.hairline);
 
     // Available content columns to the right of the gutter.
     let content_cols = ((rect.w - gutter_w) / cw).floor() as usize;
@@ -106,6 +108,26 @@ pub fn draw_editor_into(
     // TODO: replace with streaming / viewport-only allocation when buffers
     // exceed typical sizes.
     let full_text = buffer.to_text();
+
+    if buffer.byte_len() == 0 {
+        let hint_x = rect.x + gutter_w + 2.0 * cw;
+        let hint_y = rect.y + 2.0 * ch;
+        let hints = [
+            ("Anvil", theme.text_muted),
+            ("Cmd+P open file", theme.text_subtle),
+            ("Cmd+E new editor", theme.text_subtle),
+        ];
+        for (row, (hint, color)) in hints.iter().enumerate() {
+            let y = hint_y + row as f64 * ch;
+            for (i, ch_g) in hint.chars().enumerate() {
+                let gx = hint_x + i as f64 * cw;
+                if gx + cw > rect.x + rect.w {
+                    break;
+                }
+                raster.glyph_at(painter, metrics, gx, y, ch_g as u32, *color);
+            }
+        }
+    }
 
     // ── Row loop ──────────────────────────────────────────────────────────────
     for vrow in 0..visible_rows {
@@ -436,11 +458,7 @@ mod tests {
     use super::*;
     use anvil_editor::{Buffer, Cursor, Position};
     use anvil_theme::MINERAL_DARK;
-    use anvil_workspace::{
-        editor_pane::EditorPane,
-        layout::Rect,
-        selection::{Selection, SelectionMode},
-    };
+    use anvil_workspace::{editor_pane::EditorPane, layout::Rect, selection::Selection};
 
     use crate::raster::{FontMetrics, GlyphPainter, PixelRect, Raster};
 
@@ -504,10 +522,10 @@ mod tests {
 
     // ── draw_editor_empty_buffer_paints_only_gutter_line_one ─────────────────
 
-    /// An empty buffer renders the gutter line-number "1" and nothing else in
-    /// the content area (no buffer grapheme calls).
+    /// An empty buffer renders the gutter line-number "1" and a muted editor
+    /// placeholder in the content area (not terminal foreground text).
     #[test]
-    fn draw_editor_empty_buffer_paints_only_gutter_line_one() {
+    fn draw_editor_empty_buffer_paints_gutter_and_placeholder() {
         let buf = Buffer::new();
         let pane = make_pane(1);
         let mut raster = Raster::new(400, 200);
@@ -537,7 +555,18 @@ mod tests {
             "gutter must paint '1' for empty buffer, got: {gutter_calls:?}"
         );
 
-        // No foreground calls (empty line has no graphemes).
+        let hint_calls: Vec<_> = painter
+            .calls
+            .iter()
+            .filter(|(_, fg)| *fg == theme.text_subtle)
+            .map(|(cp, _)| *cp)
+            .collect();
+        assert!(
+            hint_calls.contains(&('C' as u32)),
+            "empty buffer must paint command placeholder hints in subtle text, got: {hint_calls:?}"
+        );
+
+        // No foreground calls (empty line has no graphemes and placeholder is subtle).
         let fg_calls: Vec<_> = painter
             .calls
             .iter()

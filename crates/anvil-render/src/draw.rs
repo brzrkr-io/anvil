@@ -2374,10 +2374,10 @@ mod tests {
         use anvil_term::{Attrs, Cell, Color};
         let m = metrics();
         let mut r = Raster::new(200, 120);
-        let mut regular_p = StubPainter::default();
+        let regular_p = StubPainter::default();
         let mut bold_p = StubPainter::default();
-        let mut italic_p = StubPainter::default();
-        let mut bold_italic_p = StubPainter::default();
+        let italic_p = StubPainter::default();
+        let bold_italic_p = StubPainter::default();
         let theme = MINERAL_DARK;
         r.clear(theme.background);
 
@@ -2417,10 +2417,10 @@ mod tests {
         use anvil_term::{Attrs, Cell, Color};
         let m = metrics();
         let mut r = Raster::new(200, 120);
-        let mut regular_p = StubPainter::default();
-        let mut bold_p = StubPainter::default();
+        let regular_p = StubPainter::default();
+        let bold_p = StubPainter::default();
         let mut italic_p = StubPainter::default();
-        let mut bold_italic_p = StubPainter::default();
+        let bold_italic_p = StubPainter::default();
         let theme = MINERAL_DARK;
         r.clear(theme.background);
 

@@ -71,6 +71,17 @@ impl Docks {
         hud_visible: bool,
         chrome_bottom_px: f64,
     ) -> Self {
+        Self::for_mode_with_left_dock(mode, scale, metrics, hud_visible, chrome_bottom_px, true)
+    }
+
+    pub fn for_mode_with_left_dock(
+        mode: LayoutMode,
+        scale: f64,
+        metrics: DockMetrics,
+        hud_visible: bool,
+        chrome_bottom_px: f64,
+        left_dock_visible: bool,
+    ) -> Self {
         let cw = metrics.cell_w;
         // Must match the actual HUD paint width in main.rs::render_frame:
         // surface_w_px = hud_cols * cw + GRID_PAD.
@@ -92,9 +103,19 @@ impl Docks {
                 }
             }
             LayoutMode::Ide => Docks {
-                left_w: 260.0 * scale,
-                right_w: hud_w,
-                top_h: 24.0 * scale,
+                left_w: if left_dock_visible {
+                    260.0 * scale
+                } else {
+                    0.0
+                },
+                // Direction A is editor-first: explorer + editor + bottom drawer.
+                // Keep the right HUD opt-in instead of reserving a permanent
+                // context rail that makes the mock read like direction B.
+                right_w: if hud_visible { hud_w } else { 0.0 },
+                // Keep IDE startup editor-first: no permanent top dashboard band.
+                // Context controls should return as intentional overlays, not
+                // as always-on clutter competing with the editor chrome.
+                top_h: 0.0,
                 bottom_h: chrome_bottom_px,
             },
         }
@@ -286,11 +307,14 @@ mod tests {
     // ── IDE top bar height ────────────────────────────────────────────────────
 
     #[test]
-    fn ide_top_bar_h_24px_at_1x() {
+    fn ide_top_bar_h_zero_at_1x() {
         let docks = docks_for(LayoutMode::Ide, false);
-        assert_eq!(docks.top_h, 24.0, "Ide top_h must be 24px at 1× scale");
+        assert_eq!(docks.top_h, 0.0, "Ide top_h must stay hidden by default");
         let areas = docks.compute_areas(INNER, MIN_W, MIN_H);
-        assert_eq!(areas.top_bar.h, 24.0, "top_bar.h must be 24px at 1× scale");
+        assert_eq!(
+            areas.top_bar.h, 0.0,
+            "top_bar.h must stay hidden by default"
+        );
     }
 
     #[test]

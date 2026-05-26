@@ -35,9 +35,13 @@ height = 640.0    # Initial window height in points. Minimum 150.
 
 # ── Theme ─────────────────────────────────────────────────────────────────────
 
-# Built-in themes: "mineral-dark" (default), "mineral-light".
-# "system" selects mineral-dark (reserved for future OS dark/light sync).
-theme = "mineral-dark"
+# Built-in themes: "ember-dark" (default), "ember-light", "mineral-dark", "mineral-light".
+# "system" follows the current macOS light/dark appearance with the Ember pair.
+theme = "ember-dark"
+
+# Startup surface: "auto" picks IDE in project directories and straight terminal elsewhere.
+# Use "terminal" to always start as a clean terminal; Cmd+Shift+E toggles IDE back on.
+layout_mode = "auto"
 
 # Optional per-color overrides applied on top of the chosen base theme.
 # Each field is an optional #rrggbb hex string. Absent fields keep the base
