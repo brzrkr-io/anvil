@@ -450,6 +450,45 @@ impl Keybindings {
     }
 }
 
+// ── Explorer support types (items 4, 6, 7, 8) ────────────────────────────────
+
+/// Which surface has keyboard focus for key routing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum FocusTarget {
+    #[default]
+    Editor,
+    Explorer,
+    Terminal,
+}
+
+/// Inline rename state for an Explorer row (item 6).
+pub struct RenameState {
+    /// Absolute path of the entry being renamed.
+    pub old_path: PathBuf,
+    /// Current text in the rename input field (starts as the basename).
+    pub input: String,
+    /// Explorer row index (slot_i from `visible_rows`).
+    pub row_idx: usize,
+}
+
+/// Ghost-row creation state for new-file / new-folder (item 7).
+pub struct NewItemState {
+    /// Directory in which the new entry will be created.
+    pub parent_dir: PathBuf,
+    /// Current text typed by the user (empty on open).
+    pub input: String,
+    /// True → create directory; false → create file.
+    pub is_dir: bool,
+}
+
+/// Pending delete confirmation state (item 8).
+pub struct DeleteConfirm {
+    /// Absolute path of the item to delete.
+    pub path: PathBuf,
+    /// Human-readable name (basename) shown in the modal.
+    pub name: String,
+}
+
 // ── App ───────────────────────────────────────────────────────────────────────
 
 /// The whole application state.  Implements [`AppHandler`] via [`AppShell`].
@@ -663,6 +702,30 @@ pub struct App {
     // -- LSP UI (NE10) ---
     /// In-flight hover request: `(pane_id, request_id)`. Polled each tick.
     pending_hover: Option<(PaneId, u64)>,
+
+    // ── UI scale (item 1) ──────────────────────────────────────────────────────
+    /// Global UI scale multiplier. Applied on top of `window_scale` to font
+    /// pixel size and dock geometry. Cmd+= zooms in, Cmd+- zooms out, Cmd+0 resets.
+    ui_scale: f64,
+
+    // ── Explorer focus + keyboard nav (items 4, 5) ────────────────────────────
+    /// Which surface has keyboard focus for routing ↑↓→←/Enter/Esc.
+    focus_target: FocusTarget,
+    /// The Explorer row index selected by keyboard navigation.  Drives arrow-key
+    /// navigation and Enter/→/← dispatch.
+    selected_explorer_row: Option<usize>,
+
+    // ── Inline rename (item 6) ────────────────────────────────────────────────
+    /// Active rename state for the Explorer row being renamed.
+    explorer_rename: Option<RenameState>,
+
+    // ── New file / folder (item 7) ────────────────────────────────────────────
+    /// Active ghost-row state for new-file / new-folder creation.
+    explorer_new_item: Option<NewItemState>,
+
+    // ── Delete confirm (item 8) ────────────────────────────────────────────────
+    /// Pending delete confirmation (name and absolute path of the row to delete).
+    explorer_delete_confirm: Option<DeleteConfirm>,
 }
 
 // ── App helpers ───────────────────────────────────────────────────────────────
@@ -777,7 +840,7 @@ impl App {
             self.hud_visible,
             self.chrome_bottom_px(),
             self.left_dock_visible,
-            self.left_dock_w_pt,
+            self.left_dock_w_pt * self.ui_scale,
         )
         .compute_areas(
             self.window_inner(),
@@ -815,16 +878,16 @@ impl App {
         Some(divider_y)
     }
 
-    /// Fixed chrome-top strip height in device pixels (Option D: 36pt).
+    /// Fixed chrome-top strip height in device pixels (Option D: 36pt × ui_scale).
     /// The terminal viewport starts at y = chrome_top_px.
     fn chrome_top_px(&self) -> f64 {
-        36.0 * self.window_scale
+        36.0 * self.window_scale * self.ui_scale
     }
 
-    /// Fixed bottom status-bar strip height in device pixels (Option D: 24pt).
+    /// Fixed bottom status-bar strip height in device pixels (Option D: 24pt × ui_scale).
     /// Anchored to the window's bottom edge.
     fn chrome_bottom_px(&self) -> f64 {
-        24.0 * self.window_scale
+        24.0 * self.window_scale * self.ui_scale
     }
 
     /// Snap cursor + scroll animation state to current terminal values.
@@ -1218,6 +1281,83 @@ impl App {
 
     /// Open `path` in a native editor pane. If a terminal pane is focused,
     /// create a native editor split first so terminal state is not destroyed.
+    /// Item 5: sync `active_explorer_file` to the current focused editor buffer's
+    /// tracked path.  Called after every active-buffer change (tab switch, file
+    /// open, Cmd+P pick).
+    fn sync_active_explorer_file(&mut self) {
+        let path = self.tabs.current().and_then(|tab| {
+            let pid = tab.focused_id();
+            let ep = tab.editor_panes.get_pane(pid)?;
+            let buf = tab.editor_panes.get_buffer(ep.buffer_id)?;
+            buf.tracked_path().map(|p| p.to_path_buf())
+        });
+        if let Some(path) = path {
+            // Ensure the file's directory chain is expanded so the row is
+            // visible in the Explorer (item 5).
+            if let Some(snap) = &self.fs_snapshot {
+                let root = PathBuf::from(&snap.root);
+                if let Ok(rel) = path.strip_prefix(&root) {
+                    let mut cur = root.clone();
+                    for component in rel.components() {
+                        cur = cur.join(component);
+                        if cur != path {
+                            // This is an intermediate directory; expand it.
+                            if !self.expanded_dirs.contains(&cur) {
+                                if !self.child_snapshots.contains_key(&cur) {
+                                    let child_snap = fs_worker::read_dir_snapshot_fast(&cur);
+                                    self.child_snapshots.insert(
+                                        cur.clone(),
+                                        LeftDockSnapshot {
+                                            root: child_snap.root.to_string_lossy().into_owned(),
+                                            entries: child_snap
+                                                .entries
+                                                .into_iter()
+                                                .map(|e| anvil_render::left_dock::DirEntry {
+                                                    name: e.name,
+                                                    is_dir: e.is_dir,
+                                                })
+                                                .collect(),
+                                            git_marks: child_snap.git_marks,
+                                        },
+                                    );
+                                }
+                                self.expanded_dirs.insert(cur.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            self.active_explorer_file = Some(path);
+        }
+    }
+
+    /// Estimate how many Explorer rows are visible in the current layout.
+    /// Used for keyboard scroll-into-view (item 4).
+    fn explorer_visible_rows(&self) -> usize {
+        let areas = Docks::for_mode_with_left_dock_w(
+            self.layout_mode,
+            self.window_scale,
+            self.dock_metrics(),
+            self.hud_visible,
+            self.chrome_bottom_px(),
+            self.left_dock_visible,
+            self.left_dock_w_pt * self.ui_scale,
+        )
+        .compute_areas(
+            self.window_inner(),
+            self.font.metrics.cell_w,
+            self.font.metrics.cell_h,
+        );
+        let explorer_h = areas.left_dock.h * 0.60;
+        let header_h = (32.0 * self.ui_scale).round();
+        let content_h = (explorer_h - header_h).max(0.0);
+        let row_h = (28.0 * self.ui_scale).round();
+        if row_h <= 0.0 {
+            return 1;
+        }
+        (content_h / row_h).floor() as usize
+    }
+
     fn open_path_in_native_editor(&mut self, path: &Path) {
         if path.is_dir() {
             let _ = self.fs_tx.try_send(path.to_path_buf());
@@ -2401,6 +2541,13 @@ impl App {
                 Some(rows)
             });
             if self.left_dock_visible {
+                // Keyboard nav: show selected_explorer_row as the hover highlight
+                // when explorer has focus (item 4).
+                let effective_hover = if self.focus_target == FocusTarget::Explorer {
+                    self.selected_explorer_row.or(self.hovered_explorer_row)
+                } else {
+                    self.hovered_explorer_row
+                };
                 self.left_dock_hits = draw_left_dock_with_scroll(
                     &mut self.raster,
                     chrome_painter,
@@ -2411,10 +2558,11 @@ impl App {
                     outline_rows.as_deref(),
                     areas.left_dock,
                     self.explorer_scroll_offset,
-                    self.hovered_explorer_row,
+                    effective_hover,
                     &self.expanded_dirs,
                     &self.child_snapshots,
                     self.scroll_indicator_alpha,
+                    self.ui_scale,
                 );
             } else {
                 self.left_dock_hits.clear();
@@ -2886,6 +3034,39 @@ impl App {
     fn handle_cmd_chord(&mut self, mods: Modifiers, ch: char, webview: &Webview) -> bool {
         let kb = self.keybindings; // Copy
 
+        // ── Explorer Cmd shortcuts (item 7: Cmd+N new file/folder) ────────────
+        if self.focus_target == FocusTarget::Explorer {
+            let lch = ascii_lower(ch);
+            if lch == 'n' && !mods.shift && !mods.control && !mods.option {
+                // New file in the current directory (root or selected dir).
+                let parent_dir = if let Some(idx) = self.selected_explorer_row {
+                    self.left_dock_hits
+                        .visible_rows
+                        .get(idx)
+                        .and_then(|(p, is_dir)| {
+                            if *is_dir {
+                                Some(p.clone())
+                            } else {
+                                p.parent().map(|pp| pp.to_path_buf())
+                            }
+                        })
+                } else {
+                    self.fs_snapshot
+                        .as_ref()
+                        .map(|snap| PathBuf::from(&snap.root))
+                };
+                if let Some(dir) = parent_dir {
+                    self.explorer_new_item = Some(NewItemState {
+                        parent_dir: dir,
+                        input: String::new(),
+                        is_dir: mods.shift, // Cmd+Shift+N → new folder
+                    });
+                    self.dirty = true;
+                    return true;
+                }
+            }
+        }
+
         // ── Native editor pane Cmd shortcuts (NE6) ────────────────────────────
         // When a native editor pane is focused, claim Cmd+S/Z/C/X/V/A/L first.
         // Other Cmd chords (tab, split, palette, search, etc.) fall through to
@@ -3285,18 +3466,97 @@ pub struct AppShell {
 }
 
 impl AppShell {
-    /// Cmd+/Cmd-/Cmd0 chord: zoom in, out, or reset the font size.
+    /// Cmd+=/Cmd+-/Cmd+0 chord: zoom in, out, or reset the global UI scale (item 1).
+    ///
+    /// Adjusts `ui_scale` rather than `font_size_pt` so that dock geometry,
+    /// chrome heights, and fonts all scale together.
     fn handle_zoom_chord(&mut self, ch: char) {
         match ch {
-            '=' | '+' => self.bump_font_size(1.0),
-            '-' => self.bump_font_size(-1.0),
+            '=' | '+' => self.bump_ui_scale(0.1),
+            '-' => self.bump_ui_scale(-0.1),
             '0' => {
-                // Reset to default 15 pt (matches startup config default).
-                let delta = 15.0 - self.app.font_size_pt;
-                self.bump_font_size(delta);
+                let delta = 1.0 - self.app.ui_scale;
+                self.bump_ui_scale(delta);
             }
             _ => {}
         }
+    }
+
+    /// Adjust `ui_scale` by `delta`, rebuild fonts, and force a full redraw.
+    ///
+    /// Clamps `ui_scale` to [0.6, 2.5].  Fonts are rebuilt at
+    /// `font_size_pt * window_scale * ui_scale` so everything scales together.
+    fn bump_ui_scale(&mut self, delta: f64) {
+        let new_scale = (self.app.ui_scale + delta).clamp(0.6, 2.5);
+        if (new_scale - self.app.ui_scale).abs() < 0.01 {
+            return;
+        }
+        self.app.ui_scale = new_scale;
+        // Rebuild font at the new effective pixel size.
+        let pixel_size = self.app.font_size_pt * self.app.window_scale * self.app.ui_scale;
+        let names: Vec<&str> = vec![
+            "BlexMono Nerd Font Mono",
+            self.app.font_family.as_str(),
+            "SFMono-Regular",
+            "Menlo",
+        ];
+        let Ok(new_font) = Font::init_first_available(&names, pixel_size)
+            .or_else(|_| Font::init("Menlo", pixel_size))
+        else {
+            eprintln!("anvil: font reinit failed at ui_scale={new_scale}; keeping current");
+            return;
+        };
+        let new_bold =
+            Font::init_face(&names, pixel_size, FontFace::Bold, true).unwrap_or_else(|_| {
+                Font::init_first_available(&names, pixel_size)
+                    .or_else(|_| Font::init("Menlo", pixel_size))
+                    .expect("fallback must be available")
+            });
+        let new_italic = Font::init_face(&names, pixel_size, FontFace::Italic, true)
+            .unwrap_or_else(|_| {
+                Font::init_first_available(&names, pixel_size)
+                    .or_else(|_| Font::init("Menlo", pixel_size))
+                    .expect("fallback must be available")
+            });
+        let new_bold_italic = Font::init_face(&names, pixel_size, FontFace::BoldItalic, true)
+            .unwrap_or_else(|_| {
+                Font::init_first_available(&names, pixel_size)
+                    .or_else(|_| Font::init("Menlo", pixel_size))
+                    .expect("fallback must be available")
+            });
+
+        let old_font = std::mem::replace(&mut self.app.font, Box::new(new_font));
+        let old_bold = std::mem::replace(&mut self.app.bold_font, Box::new(new_bold));
+        let old_italic = std::mem::replace(&mut self.app.italic_font, Box::new(new_italic));
+        let old_bold_italic =
+            std::mem::replace(&mut self.app.bold_italic_font, Box::new(new_bold_italic));
+
+        // SAFETY: same lifetime-extension pattern as `AppShell::new`.
+        self.painter = unsafe {
+            let font_ref: &'static Font = &*(self.app.font.as_ref() as *const Font);
+            anvil_platform::font::CoreTextPainter::new(font_ref)
+        };
+        self.bold_painter = unsafe {
+            let font_ref: &'static Font = &*(self.app.bold_font.as_ref() as *const Font);
+            anvil_platform::font::CoreTextPainter::new(font_ref)
+        };
+        self.italic_painter = unsafe {
+            let font_ref: &'static Font = &*(self.app.italic_font.as_ref() as *const Font);
+            anvil_platform::font::CoreTextPainter::new(font_ref)
+        };
+        self.bold_italic_painter = unsafe {
+            let font_ref: &'static Font = &*(self.app.bold_italic_font.as_ref() as *const Font);
+            anvil_platform::font::CoreTextPainter::new(font_ref)
+        };
+
+        drop(old_font);
+        drop(old_bold);
+        drop(old_italic);
+        drop(old_bold_italic);
+
+        self.app.resize_all_tabs();
+        self.app.force_full_redraw = true;
+        self.app.dirty = true;
     }
 
     /// Rebuild the font at a new point size and recreate the dependent
@@ -3304,6 +3564,7 @@ impl AppShell {
     ///
     /// Clamps to [8.0, 48.0] pt — below 8 pt cell metrics collapse, above
     /// 48 pt the glyph atlas balloons and one cell barely fits a word.
+    #[allow(dead_code)]
     fn bump_font_size(&mut self, delta_pt: f64) {
         let new_pt = (self.app.font_size_pt + delta_pt).clamp(8.0, 48.0);
         if (new_pt - self.app.font_size_pt).abs() < 0.01 {
@@ -3980,6 +4241,396 @@ impl AppHandler for AppShell {
             return;
         }
 
+        // ── Explorer keyboard nav (item 4) ───────────────────────────────────
+        // When the Explorer has focus and no modal is active, handle arrow keys,
+        // Enter, Esc.  Falls through when not in Explorer focus.
+        if self.app.focus_target == FocusTarget::Explorer
+            && self.app.explorer_rename.is_none()
+            && self.app.explorer_new_item.is_none()
+            && self.app.explorer_delete_confirm.is_none()
+        {
+            let total = self.app.left_dock_hits.visible_rows.len();
+            let cur = self.app.selected_explorer_row;
+            match event.key {
+                KeyInput::Up => {
+                    let next = match cur {
+                        None if total > 0 => Some(total - 1),
+                        Some(i) => Some(i.saturating_sub(1)),
+                        None => None,
+                    };
+                    self.app.selected_explorer_row = next;
+                    // Scroll into view.
+                    if let Some(idx) = next {
+                        let available = self.app.explorer_visible_rows();
+                        if idx < self.app.explorer_scroll_offset {
+                            self.app.explorer_scroll_offset = idx;
+                        } else if idx >= self.app.explorer_scroll_offset + available {
+                            self.app.explorer_scroll_offset = idx.saturating_sub(available - 1);
+                        }
+                    }
+                    self.app.dirty = true;
+                    return;
+                }
+                KeyInput::Down => {
+                    let next = match cur {
+                        None if total > 0 => Some(0),
+                        Some(i) => Some((i + 1).min(total.saturating_sub(1))),
+                        None => None,
+                    };
+                    self.app.selected_explorer_row = next;
+                    if let Some(idx) = next {
+                        let available = self.app.explorer_visible_rows();
+                        if idx < self.app.explorer_scroll_offset {
+                            self.app.explorer_scroll_offset = idx;
+                        } else if idx >= self.app.explorer_scroll_offset + available {
+                            self.app.explorer_scroll_offset = idx.saturating_sub(available - 1);
+                        }
+                    }
+                    self.app.dirty = true;
+                    return;
+                }
+                KeyInput::Right => {
+                    if let Some(idx) = cur {
+                        if let Some((path, is_dir)) =
+                            self.app.left_dock_hits.visible_rows.get(idx).cloned()
+                        {
+                            if is_dir && !self.app.expanded_dirs.contains(&path) {
+                                // Expand dir.
+                                if !self.app.child_snapshots.contains_key(&path) {
+                                    let snap = fs_worker::read_dir_snapshot_fast(&path);
+                                    self.app.child_snapshots.insert(
+                                        path.clone(),
+                                        LeftDockSnapshot {
+                                            root: snap.root.to_string_lossy().into_owned(),
+                                            entries: snap
+                                                .entries
+                                                .into_iter()
+                                                .map(|e| anvil_render::left_dock::DirEntry {
+                                                    name: e.name,
+                                                    is_dir: e.is_dir,
+                                                })
+                                                .collect(),
+                                            git_marks: snap.git_marks,
+                                        },
+                                    );
+                                }
+                                self.app.expanded_dirs.insert(path);
+                                self.app.dirty = true;
+                            }
+                        }
+                    }
+                    return;
+                }
+                KeyInput::Left => {
+                    if let Some(idx) = cur {
+                        if let Some((path, is_dir)) =
+                            self.app.left_dock_hits.visible_rows.get(idx).cloned()
+                        {
+                            if is_dir && self.app.expanded_dirs.contains(&path) {
+                                // Collapse expanded dir.
+                                self.app.expanded_dirs.remove(&path);
+                                self.app.dirty = true;
+                            } else {
+                                // Move focus to parent dir: find the row whose
+                                // path is the parent of this path.
+                                if let Some(parent) = path.parent() {
+                                    let parent_pb = parent.to_path_buf();
+                                    let parent_idx = self
+                                        .app
+                                        .left_dock_hits
+                                        .visible_rows
+                                        .iter()
+                                        .position(|(p, _)| *p == parent_pb);
+                                    if let Some(pi) = parent_idx {
+                                        self.app.selected_explorer_row = Some(pi);
+                                        self.app.dirty = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return;
+                }
+                KeyInput::Enter => {
+                    if let Some(idx) = cur {
+                        if let Some((path, is_dir)) =
+                            self.app.left_dock_hits.visible_rows.get(idx).cloned()
+                        {
+                            if is_dir {
+                                // Toggle expand.
+                                if self.app.expanded_dirs.contains(&path) {
+                                    self.app.expanded_dirs.remove(&path);
+                                } else {
+                                    if !self.app.child_snapshots.contains_key(&path) {
+                                        let snap = fs_worker::read_dir_snapshot_fast(&path);
+                                        self.app.child_snapshots.insert(
+                                            path.clone(),
+                                            LeftDockSnapshot {
+                                                root: snap.root.to_string_lossy().into_owned(),
+                                                entries: snap
+                                                    .entries
+                                                    .into_iter()
+                                                    .map(|e| anvil_render::left_dock::DirEntry {
+                                                        name: e.name,
+                                                        is_dir: e.is_dir,
+                                                    })
+                                                    .collect(),
+                                                git_marks: snap.git_marks,
+                                            },
+                                        );
+                                    }
+                                    self.app.expanded_dirs.insert(path);
+                                }
+                                self.app.dirty = true;
+                            } else {
+                                self.app.open_path_in_native_editor(&path);
+                                // Item 5: sync active_explorer_file.
+                                self.app.active_explorer_file = Some(path);
+                                self.app.dirty = true;
+                            }
+                        }
+                    }
+                    return;
+                }
+                KeyInput::Escape => {
+                    self.app.selected_explorer_row = None;
+                    self.app.focus_target = FocusTarget::Editor;
+                    self.app.dirty = true;
+                    return;
+                }
+                // F2: enter rename mode (item 6).
+                KeyInput::F(2) => {
+                    if let Some(idx) = cur {
+                        if let Some((path, _)) =
+                            self.app.left_dock_hits.visible_rows.get(idx).cloned()
+                        {
+                            let name = path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("")
+                                .to_string();
+                            self.app.explorer_rename = Some(RenameState {
+                                old_path: path,
+                                input: name,
+                                row_idx: idx,
+                            });
+                            self.app.dirty = true;
+                        }
+                    }
+                    return;
+                }
+                // Delete: confirm delete (item 8).
+                KeyInput::Delete => {
+                    if let Some(idx) = cur {
+                        if let Some((path, _)) =
+                            self.app.left_dock_hits.visible_rows.get(idx).cloned()
+                        {
+                            let name = path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("")
+                                .to_string();
+                            self.app.explorer_delete_confirm = Some(DeleteConfirm { path, name });
+                            self.app.dirty = true;
+                        }
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        // ── Explorer modal key routing (items 6, 7, 8) ───────────────────────
+        // Handle keystrokes for active rename / new-item / delete-confirm modals.
+        if let Some(rename) = &mut self.app.explorer_rename {
+            match event.key {
+                KeyInput::Backspace => {
+                    rename.input.pop();
+                    self.app.dirty = true;
+                    return;
+                }
+                KeyInput::Char(ch) if !event.mods.command => {
+                    rename.input.push(ch);
+                    self.app.dirty = true;
+                    return;
+                }
+                KeyInput::Enter => {
+                    // Commit the rename.
+                    let old_path = rename.old_path.clone();
+                    let new_name = rename.input.clone();
+                    self.app.explorer_rename = None;
+                    if !new_name.is_empty() {
+                        if let Some(parent) = old_path.parent() {
+                            let new_path = parent.join(&new_name);
+                            if let Err(e) = std::fs::rename(&old_path, &new_path) {
+                                eprintln!("anvil: rename failed: {e}");
+                            } else {
+                                // Update active file if it was the renamed file.
+                                if self.app.active_explorer_file.as_deref() == Some(&old_path) {
+                                    self.app.active_explorer_file = Some(new_path);
+                                }
+                                // Re-snapshot the parent directory.
+                                let parent_pb = parent.to_path_buf();
+                                if let Some(parent_snap) = self.app.child_snapshots.get_mut(parent)
+                                {
+                                    let new_snap = fs_worker::read_dir_snapshot_fast(&parent_pb);
+                                    *parent_snap = LeftDockSnapshot {
+                                        root: new_snap.root.to_string_lossy().into_owned(),
+                                        entries: new_snap
+                                            .entries
+                                            .into_iter()
+                                            .map(|e| anvil_render::left_dock::DirEntry {
+                                                name: e.name,
+                                                is_dir: e.is_dir,
+                                            })
+                                            .collect(),
+                                        git_marks: new_snap.git_marks,
+                                    };
+                                } else if let Some(snap) = &mut self.app.fs_snapshot {
+                                    let root_pb = PathBuf::from(&snap.root);
+                                    let new_snap = fs_worker::read_dir_snapshot_fast(&root_pb);
+                                    *snap = LeftDockSnapshot {
+                                        root: new_snap.root.to_string_lossy().into_owned(),
+                                        entries: new_snap
+                                            .entries
+                                            .into_iter()
+                                            .map(|e| anvil_render::left_dock::DirEntry {
+                                                name: e.name,
+                                                is_dir: e.is_dir,
+                                            })
+                                            .collect(),
+                                        git_marks: new_snap.git_marks,
+                                    };
+                                }
+                            }
+                        }
+                    }
+                    self.app.dirty = true;
+                    return;
+                }
+                KeyInput::Escape => {
+                    self.app.explorer_rename = None;
+                    self.app.dirty = true;
+                    return;
+                }
+                _ => return,
+            }
+        }
+
+        if let Some(new_item) = &mut self.app.explorer_new_item {
+            match event.key {
+                KeyInput::Backspace => {
+                    new_item.input.pop();
+                    self.app.dirty = true;
+                    return;
+                }
+                KeyInput::Char(ch) if !event.mods.command => {
+                    new_item.input.push(ch);
+                    self.app.dirty = true;
+                    return;
+                }
+                KeyInput::Enter => {
+                    let parent = new_item.parent_dir.clone();
+                    let name = new_item.input.clone();
+                    let is_dir = new_item.is_dir;
+                    self.app.explorer_new_item = None;
+                    if !name.is_empty() {
+                        let new_path = parent.join(&name);
+                        let result = if is_dir {
+                            std::fs::create_dir(&new_path).map_err(|e| e.to_string())
+                        } else {
+                            std::fs::write(&new_path, b"").map_err(|e| e.to_string())
+                        };
+                        if let Err(e) = result {
+                            eprintln!("anvil: create {}: {e}", if is_dir { "dir" } else { "file" });
+                        } else {
+                            // Re-snapshot the parent.
+                            let new_snap = fs_worker::read_dir_snapshot_fast(&parent);
+                            let snap = LeftDockSnapshot {
+                                root: new_snap.root.to_string_lossy().into_owned(),
+                                entries: new_snap
+                                    .entries
+                                    .into_iter()
+                                    .map(|e| anvil_render::left_dock::DirEntry {
+                                        name: e.name,
+                                        is_dir: e.is_dir,
+                                    })
+                                    .collect(),
+                                git_marks: new_snap.git_marks,
+                            };
+                            if let Some(root_snap) = &mut self.app.fs_snapshot {
+                                if root_snap.root == snap.root {
+                                    *root_snap = snap;
+                                } else {
+                                    self.app.child_snapshots.insert(parent, snap);
+                                }
+                            }
+                        }
+                    }
+                    self.app.dirty = true;
+                    return;
+                }
+                KeyInput::Escape => {
+                    self.app.explorer_new_item = None;
+                    self.app.dirty = true;
+                    return;
+                }
+                _ => return,
+            }
+        }
+
+        if let Some(del) = &self.app.explorer_delete_confirm {
+            let path = del.path.clone();
+            match event.key {
+                KeyInput::Enter => {
+                    self.app.explorer_delete_confirm = None;
+                    let is_dir = path.is_dir();
+                    let result = if is_dir {
+                        std::fs::remove_dir_all(&path).map_err(|e| e.to_string())
+                    } else {
+                        std::fs::remove_file(&path).map_err(|e| e.to_string())
+                    };
+                    if let Err(e) = result {
+                        eprintln!("anvil: delete failed: {e}");
+                    } else {
+                        // Remove from active_explorer_file if it was the deleted file.
+                        if self.app.active_explorer_file.as_deref() == Some(&path) {
+                            self.app.active_explorer_file = None;
+                        }
+                        self.app.selected_explorer_row = None;
+                        // Re-snapshot the parent.
+                        if let Some(parent) = path.parent() {
+                            if let Some(root_snap) = &mut self.app.fs_snapshot {
+                                let root_pb = PathBuf::from(&root_snap.root.clone());
+                                let new_snap = fs_worker::read_dir_snapshot_fast(&root_pb);
+                                *root_snap = LeftDockSnapshot {
+                                    root: new_snap.root.to_string_lossy().into_owned(),
+                                    entries: new_snap
+                                        .entries
+                                        .into_iter()
+                                        .map(|e| anvil_render::left_dock::DirEntry {
+                                            name: e.name,
+                                            is_dir: e.is_dir,
+                                        })
+                                        .collect(),
+                                    git_marks: new_snap.git_marks,
+                                };
+                            }
+                            self.app.child_snapshots.remove(parent);
+                        }
+                    }
+                    self.app.dirty = true;
+                    return;
+                }
+                KeyInput::Escape => {
+                    self.app.explorer_delete_confirm = None;
+                    self.app.dirty = true;
+                    return;
+                }
+                _ => return,
+            }
+        }
+
         // ── Native editor pane keyboard dispatch (NE6) ───────────────────────
         // When a native editor pane is focused, map the event to an EditorAction
         // and apply it instead of writing to a PTY.
@@ -4212,6 +4863,8 @@ impl AppHandler for AppShell {
             let (rx, ry) = app.view_pt_to_raster_px(loc);
             let hit_kind = app.left_dock_hits.at(rx, ry).cloned();
             if let Some(LeftDockHitKind::Explorer(hit)) = hit_kind {
+                // Click on any explorer element sets Explorer focus (item 4).
+                app.focus_target = FocusTarget::Explorer;
                 match hit {
                     ExplorerHit::Header => {
                         if let Some(snapshot) = app.fs_snapshot.clone() {
@@ -4223,6 +4876,8 @@ impl AppHandler for AppShell {
                         }
                     }
                     ExplorerHit::Row(idx) => {
+                        // Track keyboard-nav selection to clicked row (item 4).
+                        app.selected_explorer_row = Some(idx);
                         // Look up the absolute path and is_dir via visible_rows
                         // populated by the last draw call.
                         if let Some((path, is_dir)) =
@@ -4260,6 +4915,8 @@ impl AppHandler for AppShell {
                                 app.dirty = true;
                             } else {
                                 app.open_path_in_native_editor(&path);
+                                // Item 5: sync active_explorer_file after open.
+                                app.active_explorer_file = Some(path);
                             }
                         }
                     }
@@ -4334,6 +4991,8 @@ impl AppHandler for AppShell {
                             pane.editor_id = Some(h.buffer_id);
                         }
                     }
+                    // Item 5: sync active_explorer_file to the newly active buffer.
+                    app.sync_active_explorer_file();
                 }
                 app.force_full_redraw = true;
                 app.dirty = true;
@@ -5784,6 +6443,12 @@ fn main() -> Result<()> {
         lsp_manager: anvil_editor::LspManager::new(),
         lsp_last_sync: HashMap::new(),
         pending_hover: None,
+        ui_scale: 1.0,
+        focus_target: FocusTarget::default(),
+        selected_explorer_row: None,
+        explorer_rename: None,
+        explorer_new_item: None,
+        explorer_delete_confirm: None,
     };
 
     // -- AppKitApp: builds the window, view, timer ----------------------------
