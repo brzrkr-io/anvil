@@ -3490,6 +3490,24 @@ impl App {
                 self.dirty = true;
                 return true;
             }
+            // #18: Cmd+/ → toggle line comment.
+            if ch == '/' && !mods.shift && !mods.control && !mods.option {
+                self.apply_editor_action(EditorAction::ToggleLineComment);
+                self.dirty = true;
+                return true;
+            }
+            // #19: Cmd+Shift+D → duplicate line.
+            if lch == 'd' && mods.shift && !mods.control && !mods.option {
+                self.apply_editor_action(EditorAction::DuplicateLine);
+                self.dirty = true;
+                return true;
+            }
+            // #23: Cmd+Shift+I → format file.
+            if lch == 'i' && mods.shift && !mods.control && !mods.option {
+                self.apply_editor_action(EditorAction::FormatFile);
+                self.dirty = true;
+                return true;
+            }
             // Cmd+\ → split editor pane vertically (new pane to the right).
             // Cmd+Shift+\ → split editor pane horizontally (new pane below).
             if ch == '\\' && !mods.control && !mods.option {
@@ -5478,6 +5496,30 @@ impl AppHandler for AppShell {
                 }
             }
 
+            // #21: Tab on a multi-line selection → indent all selected lines.
+            if event.key == KeyInput::Tab && !event.mods.shift {
+                let has_multiline_selection = self
+                    .app
+                    .tabs
+                    .current()
+                    .and_then(|t| {
+                        let ep = t.editor_panes.get_pane(t.focused_id())?;
+                        let c = &ep.cursors[0];
+                        if c.anchor != c.pos {
+                            let (al, pl) = (c.anchor.line, c.pos.line);
+                            Some(al != pl)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(false);
+                if has_multiline_selection {
+                    self.app.apply_editor_action(EditorAction::IndentSelection);
+                    self.app.dirty = true;
+                    return;
+                }
+            }
+
             // NE13: Esc with multi-cursor active → clear secondary cursors.
             if event.key == KeyInput::Escape {
                 let has_secondary = self
@@ -6788,14 +6830,23 @@ impl AppHandler for AppShell {
 /// Cmd combos are handled separately in `handle_cmd_chord`.
 fn key_event_to_editor_action(event: KeyEvent) -> Option<EditorAction> {
     let shift = event.mods.shift;
+    let opt = event.mods.option;
     Some(match event.key {
         KeyInput::Char(ch) => EditorAction::InsertChar(ch),
-        KeyInput::Enter => EditorAction::InsertNewline,
+        // #16: Enter now uses auto-indent smart newline.
+        KeyInput::Enter => EditorAction::InsertNewlineSmart,
+        // #21: Tab — caller checks selection state and may override with
+        // IndentSelection; plain Tab handled here.
+        // #21: Shift+Tab → DedentSelection.
+        KeyInput::Tab if shift => EditorAction::DedentSelection,
         KeyInput::Tab => EditorAction::InsertTab,
         KeyInput::Backspace => EditorAction::Backspace,
         KeyInput::Delete => EditorAction::Delete,
         KeyInput::Left => EditorAction::MoveLeft { extend: shift },
         KeyInput::Right => EditorAction::MoveRight { extend: shift },
+        // #20: Opt+Up/Down → move line up/down.
+        KeyInput::Up if opt && !shift => EditorAction::MoveLineUp,
+        KeyInput::Down if opt && !shift => EditorAction::MoveLineDown,
         KeyInput::Up => EditorAction::MoveUp { extend: shift },
         KeyInput::Down => EditorAction::MoveDown { extend: shift },
         KeyInput::Home => EditorAction::MoveLineStart { extend: shift },

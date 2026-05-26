@@ -323,7 +323,20 @@ impl Buffer {
     /// Save the buffer to `path` atomically (write `<path>.tmp`, then rename).
     ///
     /// On success, records the path and new on-disk mtime.
+    ///
+    /// When `trim_trailing_whitespace` is `true` (the default), trailing
+    /// whitespace is stripped from every line before writing (#22).
+    /// The rope is **not** mutated; only the on-disk bytes are trimmed.
     pub fn save(&mut self, path: &Path) -> Result<(), IoError> {
+        self.save_with_options(path, true)
+    }
+
+    /// Like [`save`] but allows opting out of trailing-whitespace trimming.
+    pub fn save_with_options(
+        &mut self,
+        path: &Path,
+        trim_trailing_whitespace: bool,
+    ) -> Result<(), IoError> {
         // Build sibling tmp path by appending `.tmp` to the file name.
         // `path.with_extension("tmp")` would mangle multi-suffix names like
         // `archive.tar.gz` into `archive.tar.tmp`.
@@ -336,7 +349,12 @@ impl Buffer {
         let mut tmp_name = file_name.to_os_string();
         tmp_name.push(".tmp");
         let tmp = path.with_file_name(tmp_name);
-        let text = self.to_text();
+        let raw_text = self.to_text();
+        let text = if trim_trailing_whitespace {
+            trim_trailing_whitespace_str(&raw_text)
+        } else {
+            raw_text
+        };
         std::fs::write(&tmp, text.as_bytes())?;
         std::fs::rename(&tmp, path)?;
         let mtime = std::fs::metadata(path)?.modified().ok();
@@ -871,6 +889,29 @@ fn decode_utf16_be(bytes: &[u8]) -> Result<String, IoError> {
     char::decode_utf16(units)
         .collect::<Result<String, _>>()
         .map_err(|_| IoError::Encoding(EncodingError::InvalidUtf8))
+}
+
+// ---------------------------------------------------------------------------
+// Save helpers (#22)
+// ---------------------------------------------------------------------------
+
+/// Strip trailing whitespace from every line in `text`, preserving line
+/// endings. Does not change the line count.
+fn trim_trailing_whitespace_str(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        // Trim trailing spaces/tabs before the newline (or at end-of-string).
+        if let Some(stripped) = line.strip_suffix('\n') {
+            let trimmed = stripped.trim_end_matches([' ', '\t']);
+            out.push_str(trimmed);
+            out.push('\n');
+        } else {
+            // Last line with no trailing newline.
+            let trimmed = line.trim_end_matches([' ', '\t']);
+            out.push_str(trimmed);
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -1458,6 +1499,32 @@ mod tests {
         assert!(
             matches!(result, Err(IoError::Encoding(EncodingError::InvalidUtf8))),
             "expected InvalidUtf8"
+        );
+    }
+
+    // ── #22: trim trailing whitespace on save ────────────────────────────────
+
+    #[test]
+    fn save_trims_trailing_whitespace() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trim.txt");
+        // Buffer has trailing spaces on lines.
+        let mut buf = Buffer::from_text("hello   \nworld  \n");
+        buf.save(&path).unwrap();
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(on_disk, "hello\nworld\n", "save must strip trailing spaces");
+    }
+
+    #[test]
+    fn save_with_trim_false_preserves_trailing_whitespace() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notrim.txt");
+        let mut buf = Buffer::from_text("hello   \n");
+        buf.save_with_options(&path, false).unwrap();
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            on_disk, "hello   \n",
+            "save_with_options(false) must not strip"
         );
     }
 

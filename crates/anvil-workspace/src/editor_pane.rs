@@ -220,6 +220,28 @@ pub enum EditorAction {
     // ── Code folding (item 13) ────────────────────────────────────────────────
     /// Toggle fold at `line` (the line that starts the foldable range).
     ToggleFold(usize),
+    // ── Tier-C power features (#16–#23) ──────────────────────────────────────
+    /// Insert a newline with auto-indent (#16). Copies leading whitespace of
+    /// the prior line; adds one extra indent level when the prior line ends
+    /// with `{`, `(`, or `[`.
+    InsertNewlineSmart,
+    /// Toggle line comment on the current line or all selected lines (#18).
+    /// Uses the language-appropriate marker from `Buffer::language_id()`.
+    ToggleLineComment,
+    /// Duplicate the current line below; cursor moves to the new line (#19).
+    DuplicateLine,
+    /// Swap the current line with the line above (#20).
+    MoveLineUp,
+    /// Swap the current line with the line below (#20).
+    MoveLineDown,
+    /// Indent selected lines by one level; or insert indent at cursor when no
+    /// selection spans multiple lines (#21).
+    IndentSelection,
+    /// Dedent selected lines by one level (#21).
+    DedentSelection,
+    /// Format the active buffer (#23). Falls back to `rustfmt` for Rust files
+    /// when no LSP is connected.
+    FormatFile,
 }
 
 /// Maximum number of open buffers tracked per pane. When the limit is
@@ -574,8 +596,97 @@ impl EditorPaneRegistry {
         match action {
             // ── Insert ───────────────────────────────────────────────────────
             EditorAction::InsertChar(ch) => {
-                // Multi-cursor: collect positions in reverse order (highest
-                // position first) so earlier inserts don't shift later ones.
+                // ── #17 Smart bracket pairs ──────────────────────────────────
+                // Only applies to the primary cursor. Secondary cursors receive
+                // a plain character insert below.
+
+                // Step 1: skip-over a paired closing char that already sits at
+                // the cursor (handles typing `)` after auto-pair inserted `()`).
+                if is_closing_bracket(ch) {
+                    let cursor_pos = {
+                        let pane = self.panes.get(&pane_id).unwrap();
+                        pane.cursors[0].pos
+                    };
+                    let char_at_cursor = {
+                        let buf = self.buffers.get(&buffer_id).unwrap();
+                        let lc = buf.line_to_char(cursor_pos.line);
+                        let line_str: String = buf.line(cursor_pos.line).chars().collect();
+                        let mut char_off = 0usize;
+                        for (gi, g) in line_str.graphemes(true).enumerate() {
+                            if gi == cursor_pos.col {
+                                break;
+                            }
+                            char_off += g.chars().count();
+                        }
+                        buf.char_at(lc + char_off)
+                    };
+                    if char_at_cursor == Some(ch) {
+                        let pane = self.panes.get_mut(&pane_id).unwrap();
+                        let new_pos = advance_col(cursor_pos, 1);
+                        set_cursor(pane, new_pos, false);
+                        return false;
+                    }
+                }
+
+                // Step 2: auto-pair openers.
+                if let Some(close) = bracket_pair_close(ch) {
+                    // Check for selection — wrap it.
+                    let has_selection = {
+                        let pane = self.panes.get(&pane_id).unwrap();
+                        pane.cursors[0].anchor != pane.cursors[0].pos
+                    };
+                    if has_selection {
+                        // Wrap selection: insert open before, close after.
+                        let (start, end) = {
+                            let pane = self.panes.get(&pane_id).unwrap();
+                            selection_range(pane)
+                        };
+                        {
+                            let buf = self.buffers.get_mut(&buffer_id).unwrap();
+                            // Insert close at end first (so start offset is unaffected).
+                            buf.insert_char(end, close);
+                            buf.insert_char(start, ch);
+                        }
+                        // Move cursor to just after the closing char.
+                        let pane = self.panes.get_mut(&pane_id).unwrap();
+                        let new_end = Position {
+                            line: end.line,
+                            col: end.col + 2,
+                        };
+                        pane.cursors[0].anchor = Position {
+                            line: start.line,
+                            col: start.col + 1,
+                        };
+                        pane.cursors[0].pos = new_end;
+                        return true;
+                    }
+                    let cursor_pos = {
+                        let pane = self.panes.get(&pane_id).unwrap();
+                        pane.cursors[0].pos
+                    };
+                    // For ' and " skip auto-pair when previous char is alphanumeric.
+                    let should_pair = if ch == '\'' || ch == '"' || ch == '`' {
+                        let buf = self.buffers.get(&buffer_id).unwrap();
+                        !prev_char_is_alnum(buf, cursor_pos)
+                    } else {
+                        true
+                    };
+                    if should_pair {
+                        // Insert open+close, leave cursor between them.
+                        {
+                            let buf = self.buffers.get_mut(&buffer_id).unwrap();
+                            let mut pair = ch.to_string();
+                            pair.push(close);
+                            buf.insert_str(cursor_pos, &pair);
+                        }
+                        let pane = self.panes.get_mut(&pane_id).unwrap();
+                        let new_pos = advance_col(cursor_pos, 1);
+                        set_cursor(pane, new_pos, false);
+                        return true;
+                    }
+                }
+
+                // ── plain insert (multi-cursor path) ─────────────────────────
                 let cursor_positions: Vec<Position> = {
                     let pane = self.panes.get(&pane_id).unwrap();
                     let mut positions: Vec<Position> = pane.cursors.iter().map(|c| c.pos).collect();
@@ -589,9 +700,7 @@ impl EditorPaneRegistry {
                         buf.insert_char(*pos, ch);
                     }
                 }
-                // Advance each cursor by 1 col (insert_char prepends from
-                // reverse order, so lower cursors are unaffected when walking
-                // from high to low; we advance all cursors uniformly here).
+                // Advance each cursor by 1 col.
                 let pane = self.panes.get_mut(&pane_id).unwrap();
                 for c in &mut pane.cursors {
                     c.pos = advance_col(c.pos, 1);
@@ -1394,6 +1503,375 @@ impl EditorPaneRegistry {
                 false
             }
 
+            // ── #16 Auto-indent on Enter ───────────────────────────────────────
+            EditorAction::InsertNewlineSmart => {
+                let pos = pane.cursors[0].pos;
+                let indent = {
+                    let buf = self.buffers.get(&buffer_id).unwrap();
+                    smart_indent(buf, pos)
+                };
+                {
+                    let buf = self.buffers.get_mut(&buffer_id).unwrap();
+                    // Insert newline + indentation as one edit.
+                    let mut s = String::from('\n');
+                    s.push_str(&indent);
+                    buf.insert_str(pos, &s);
+                }
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                let new_pos = Position {
+                    line: pos.line + 1,
+                    col: indent.graphemes(true).count(),
+                };
+                set_cursor(pane, new_pos, false);
+                true
+            }
+
+            // ── #18 Toggle line comment ────────────────────────────────────────
+            EditorAction::ToggleLineComment => {
+                let (start_line, end_line) = {
+                    let pane = self.panes.get(&pane_id).unwrap();
+                    let (s, e) = selection_range(pane);
+                    if s == e {
+                        (s.line, s.line)
+                    } else {
+                        (s.line, e.line)
+                    }
+                };
+                let marker = {
+                    let buf = self.buffers.get(&buffer_id).unwrap();
+                    comment_marker_for_buffer(buf)
+                };
+                // Determine whether ALL lines are currently commented.
+                let all_commented = {
+                    let buf = self.buffers.get(&buffer_id).unwrap();
+                    (start_line..=end_line).all(|ln| {
+                        let line_str: String = buf.line(ln).chars().collect();
+                        let trimmed = line_str.trim_start();
+                        trimmed.starts_with(marker)
+                    })
+                };
+                // Apply in reverse line order so earlier line edits don't shift
+                // later line positions.
+                for ln in (start_line..=end_line).rev() {
+                    let line_str: String = {
+                        let buf = self.buffers.get(&buffer_id).unwrap();
+                        buf.line(ln).chars().collect()
+                    };
+                    let buf = self.buffers.get_mut(&buffer_id).unwrap();
+                    if all_commented {
+                        // Strip the comment marker (and one space if present).
+                        if let Some(col) = leading_col_of_comment(&line_str, marker) {
+                            let end_col = col
+                                + marker.graphemes(true).count()
+                                + if line_str[leading_byte_offset(&line_str) + marker.len()..]
+                                    .starts_with(' ')
+                                {
+                                    1
+                                } else {
+                                    0
+                                };
+                            buf.delete_range(Range {
+                                start: Position { line: ln, col },
+                                end: Position {
+                                    line: ln,
+                                    col: end_col,
+                                },
+                            });
+                        }
+                    } else {
+                        // Prepend marker + space after leading whitespace.
+                        let insert_col = leading_grapheme_count(&line_str);
+                        let mut s = marker.to_string();
+                        s.push(' ');
+                        buf.insert_str(
+                            Position {
+                                line: ln,
+                                col: insert_col,
+                            },
+                            &s,
+                        );
+                    }
+                }
+                true
+            }
+
+            // ── #19 Duplicate line ─────────────────────────────────────────────
+            EditorAction::DuplicateLine => {
+                let line = pane.cursors[0].pos.line;
+                let col = pane.cursors[0].pos.col;
+                let line_text: String = {
+                    let buf = self.buffers.get(&buffer_id).unwrap();
+                    buf.line(line).chars().collect()
+                };
+                // Ensure line_text ends with a newline; if not, add one.
+                let insert_text = if line_text.ends_with('\n') {
+                    line_text.clone()
+                } else {
+                    let mut s = line_text.clone();
+                    s.push('\n');
+                    s
+                };
+                let insert_len = line_text
+                    .trim_end_matches('\n')
+                    .trim_end_matches('\r')
+                    .graphemes(true)
+                    .count();
+                // Insert the duplicate below the current line.
+                {
+                    let buf = self.buffers.get_mut(&buffer_id).unwrap();
+                    buf.insert_str(
+                        Position {
+                            line: line + 1,
+                            col: 0,
+                        },
+                        &insert_text,
+                    );
+                }
+                let new_pos = Position {
+                    line: line + 1,
+                    col: col.min(insert_len),
+                };
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                set_cursor(pane, new_pos, false);
+                true
+            }
+
+            // ── #20 Move line up / down ────────────────────────────────────────
+            EditorAction::MoveLineUp => {
+                let line = pane.cursors[0].pos.line;
+                if line == 0 {
+                    return false;
+                }
+                let col = pane.cursors[0].pos.col;
+                let (cur_text, prev_text) = {
+                    let buf = self.buffers.get(&buffer_id).unwrap();
+                    let cur: String = buf.line(line).chars().collect();
+                    let prev: String = buf.line(line - 1).chars().collect();
+                    (cur, prev)
+                };
+                // Normalise both lines to end with exactly one newline.
+                let cur_content = normalise_line(&cur_text);
+                let prev_content = normalise_line(&prev_text);
+                // Replace prev_line with cur_content, cur_line with prev_content.
+                {
+                    let buf = self.buffers.get_mut(&buffer_id).unwrap();
+                    // Delete both lines and reinsert swapped. Work from bottom up.
+                    let cur_len = cur_text
+                        .trim_end_matches('\n')
+                        .trim_end_matches('\r')
+                        .graphemes(true)
+                        .count();
+                    let prev_len = prev_text
+                        .trim_end_matches('\n')
+                        .trim_end_matches('\r')
+                        .graphemes(true)
+                        .count();
+                    buf.delete_range(Range {
+                        start: Position { line, col: 0 },
+                        end: Position { line, col: cur_len },
+                    });
+                    // After deleting cur line content, reinsert prev_content there.
+                    buf.insert_str(
+                        Position { line, col: 0 },
+                        prev_content.trim_end_matches('\n').trim_end_matches('\r'),
+                    );
+                    // Now fix prev line.
+                    buf.delete_range(Range {
+                        start: Position {
+                            line: line - 1,
+                            col: 0,
+                        },
+                        end: Position {
+                            line: line - 1,
+                            col: prev_len,
+                        },
+                    });
+                    buf.insert_str(
+                        Position {
+                            line: line - 1,
+                            col: 0,
+                        },
+                        cur_content.trim_end_matches('\n').trim_end_matches('\r'),
+                    );
+                }
+                let new_line_len = normalise_line(&cur_text)
+                    .trim_end_matches('\n')
+                    .trim_end_matches('\r')
+                    .graphemes(true)
+                    .count();
+                let new_pos = Position {
+                    line: line - 1,
+                    col: col.min(new_line_len),
+                };
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                set_cursor(pane, new_pos, false);
+                true
+            }
+            EditorAction::MoveLineDown => {
+                let line = pane.cursors[0].pos.line;
+                let col = pane.cursors[0].pos.col;
+                let last_line = {
+                    let buf = self.buffers.get(&buffer_id).unwrap();
+                    buf.line_count().saturating_sub(1)
+                };
+                if line >= last_line {
+                    return false;
+                }
+                let (cur_text, next_text) = {
+                    let buf = self.buffers.get(&buffer_id).unwrap();
+                    let cur: String = buf.line(line).chars().collect();
+                    let next: String = buf.line(line + 1).chars().collect();
+                    (cur, next)
+                };
+                let cur_content = normalise_line(&cur_text);
+                let next_content = normalise_line(&next_text);
+                {
+                    let buf = self.buffers.get_mut(&buffer_id).unwrap();
+                    let next_len = next_text
+                        .trim_end_matches('\n')
+                        .trim_end_matches('\r')
+                        .graphemes(true)
+                        .count();
+                    let cur_len = cur_text
+                        .trim_end_matches('\n')
+                        .trim_end_matches('\r')
+                        .graphemes(true)
+                        .count();
+                    // Delete next line content first (higher line index).
+                    buf.delete_range(Range {
+                        start: Position {
+                            line: line + 1,
+                            col: 0,
+                        },
+                        end: Position {
+                            line: line + 1,
+                            col: next_len,
+                        },
+                    });
+                    buf.insert_str(
+                        Position {
+                            line: line + 1,
+                            col: 0,
+                        },
+                        cur_content.trim_end_matches('\n').trim_end_matches('\r'),
+                    );
+                    // Now fix current line.
+                    buf.delete_range(Range {
+                        start: Position { line, col: 0 },
+                        end: Position { line, col: cur_len },
+                    });
+                    buf.insert_str(
+                        Position { line, col: 0 },
+                        next_content.trim_end_matches('\n').trim_end_matches('\r'),
+                    );
+                }
+                let new_line_len = normalise_line(&cur_text)
+                    .trim_end_matches('\n')
+                    .trim_end_matches('\r')
+                    .graphemes(true)
+                    .count();
+                let new_pos = Position {
+                    line: line + 1,
+                    col: col.min(new_line_len),
+                };
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                set_cursor(pane, new_pos, false);
+                true
+            }
+
+            // ── #21 Indent / dedent selection ─────────────────────────────────
+            EditorAction::IndentSelection => {
+                let (start_line, end_line) = {
+                    let pane = self.panes.get(&pane_id).unwrap();
+                    let (s, e) = selection_range(pane);
+                    if s == e {
+                        // No selection: fall back to inserting 4 spaces at cursor.
+                        let pos = s;
+                        let buf = self.buffers.get_mut(&buffer_id).unwrap();
+                        buf.insert_str(pos, "    ");
+                        let pane = self.panes.get_mut(&pane_id).unwrap();
+                        let new_pos = advance_col(pos, 4);
+                        set_cursor(pane, new_pos, false);
+                        return true;
+                    }
+                    (s.line, e.line)
+                };
+                for ln in (start_line..=end_line).rev() {
+                    let buf = self.buffers.get_mut(&buffer_id).unwrap();
+                    buf.insert_str(Position { line: ln, col: 0 }, "    ");
+                }
+                // Shift the selection by 4 cols on both ends.
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                pane.cursors[0].anchor.col = pane.cursors[0].anchor.col.saturating_add(4);
+                pane.cursors[0].pos.col = pane.cursors[0].pos.col.saturating_add(4);
+                true
+            }
+            EditorAction::DedentSelection => {
+                let (start_line, end_line) = {
+                    let pane = self.panes.get(&pane_id).unwrap();
+                    let (s, e) = selection_range(pane);
+                    (s.line, e.line)
+                };
+                for ln in (start_line..=end_line).rev() {
+                    let line_str: String = {
+                        let buf = self.buffers.get(&buffer_id).unwrap();
+                        buf.line(ln).chars().collect()
+                    };
+                    let removed = leading_spaces_to_remove(&line_str, 4);
+                    if removed > 0 {
+                        let buf = self.buffers.get_mut(&buffer_id).unwrap();
+                        buf.delete_range(Range {
+                            start: Position { line: ln, col: 0 },
+                            end: Position {
+                                line: ln,
+                                col: removed,
+                            },
+                        });
+                    }
+                }
+                // Adjust cursor and anchor (saturating).
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                pane.cursors[0].anchor.col = pane.cursors[0].anchor.col.saturating_sub(4);
+                pane.cursors[0].pos.col = pane.cursors[0].pos.col.saturating_sub(4);
+                true
+            }
+
+            // ── #23 Format file ────────────────────────────────────────────────
+            EditorAction::FormatFile => {
+                // TODO(anvil-tierC-#23-lsp): when an LSP connection is active,
+                // send textDocument/formatting and apply returned TextEdits.
+                // For now: rustfmt fallback for Rust buffers.
+                let is_rust = self
+                    .buffers
+                    .get(&buffer_id)
+                    .and_then(|b| b.language_id())
+                    .map(|id| id == "rust")
+                    .unwrap_or(false);
+                if is_rust {
+                    let text = self.buffers.get(&buffer_id).unwrap().to_text();
+                    match run_rustfmt(&text) {
+                        Some(formatted) if formatted != text => {
+                            let buf = self.buffers.get_mut(&buffer_id).unwrap();
+                            let last_line = buf.line_count().saturating_sub(1);
+                            let last_col = line_grapheme_len(buf, last_line);
+                            buf.replace_range(
+                                Range {
+                                    start: Position { line: 0, col: 0 },
+                                    end: Position {
+                                        line: last_line,
+                                        col: last_col,
+                                    },
+                                },
+                                &formatted,
+                            );
+                            return true;
+                        }
+                        _ => {}
+                    }
+                }
+                false
+            }
+
             // ── Completion popup (item 16) ─────────────────────────────────────
             EditorAction::CompletionOpen(entries) => {
                 let pane = self.panes.get_mut(&pane_id).unwrap();
@@ -1665,6 +2143,165 @@ fn selection_range(pane: &EditorPane) -> (Position, Position) {
         (a, p)
     } else {
         (p, a)
+    }
+}
+
+// ── Tier-C helper functions ───────────────────────────────────────────────────
+
+/// Return the matching closing bracket for `ch` (#17), or `None` if `ch` is
+/// not an auto-pairable opener.
+fn bracket_pair_close(ch: char) -> Option<char> {
+    match ch {
+        '(' => Some(')'),
+        '[' => Some(']'),
+        '{' => Some('}'),
+        '"' => Some('"'),
+        '\'' => Some('\''),
+        '`' => Some('`'),
+        _ => None,
+    }
+}
+
+/// Return `true` if `ch` is one of the auto-paired closing brackets.
+fn is_closing_bracket(ch: char) -> bool {
+    matches!(ch, ')' | ']' | '}' | '"' | '\'' | '`')
+}
+
+/// Return `true` if the grapheme immediately before `pos` is alphanumeric.
+fn prev_char_is_alnum(buf: &Buffer, pos: Position) -> bool {
+    if pos.col == 0 {
+        return false;
+    }
+    let line_str: String = buf.line(pos.line).chars().collect();
+    let graphemes: Vec<&str> = line_str.graphemes(true).collect();
+    if pos.col > graphemes.len() {
+        return false;
+    }
+    let g = graphemes[pos.col - 1];
+    g.chars().all(|c| c.is_alphanumeric())
+}
+
+/// Compute the indent string to insert after a newline for auto-indent (#16).
+///
+/// Copies the leading whitespace of `line`; if the line (trimmed) ends with
+/// `{`, `(`, or `[`, appends one extra indent level (4 spaces).
+fn smart_indent(buf: &Buffer, pos: Position) -> String {
+    if buf.line_count() == 0 {
+        return String::new();
+    }
+    let line = pos.line.min(buf.line_count().saturating_sub(1));
+    let line_str: String = buf.line(line).chars().collect();
+    // Collect leading whitespace.
+    let leading: String = line_str
+        .chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .collect();
+    // Check whether the trimmed content ends with an opener.
+    let trimmed = line_str
+        .trim_end_matches('\n')
+        .trim_end_matches('\r')
+        .trim_end();
+    if trimmed.ends_with('{') || trimmed.ends_with('(') || trimmed.ends_with('[') {
+        let mut s = leading;
+        s.push_str("    ");
+        s
+    } else {
+        leading
+    }
+}
+
+/// Return the comment marker string for a buffer's language (#18).
+fn comment_marker_for_buffer(buf: &Buffer) -> &'static str {
+    match buf.language_id() {
+        Some("python") | Some("toml") | Some("yaml") | Some("shellscript") | Some("bash") => "#",
+        // HTML/XML block comments are handled separately if needed; use // as default.
+        _ => "//",
+    }
+}
+
+/// Return the grapheme column of the comment marker in a line, or `None`.
+fn leading_col_of_comment(line_str: &str, marker: &str) -> Option<usize> {
+    let graphemes: Vec<&str> = line_str.graphemes(true).collect();
+    // Find the first non-whitespace run that equals the marker.
+    let mut col = 0usize;
+    for g in &graphemes {
+        if *g == " " || *g == "\t" {
+            col += 1;
+        } else {
+            break;
+        }
+    }
+    // Reconstruct the substring starting at col to check for marker.
+    let rest: String = graphemes[col..].iter().copied().collect();
+    if rest.starts_with(marker) {
+        Some(col)
+    } else {
+        None
+    }
+}
+
+/// Byte offset of the first non-whitespace character.
+fn leading_byte_offset(s: &str) -> usize {
+    s.len() - s.trim_start().len()
+}
+
+/// Number of leading grapheme clusters that are whitespace.
+fn leading_grapheme_count(line_str: &str) -> usize {
+    line_str
+        .graphemes(true)
+        .take_while(|g| g.chars().all(|c| c == ' ' || c == '\t'))
+        .count()
+}
+
+/// Normalise a line by stripping trailing `\r`/`\n` and appending `\n`.
+fn normalise_line(s: &str) -> String {
+    let mut out = s.trim_end_matches('\n').trim_end_matches('\r').to_string();
+    out.push('\n');
+    out
+}
+
+/// Count how many leading spaces (up to `indent_width`) can be removed (#21).
+fn leading_spaces_to_remove(line_str: &str, indent_width: usize) -> usize {
+    let mut removed = 0;
+    for g in line_str.graphemes(true) {
+        if removed >= indent_width {
+            break;
+        }
+        if g == " " {
+            removed += 1;
+        } else if g == "\t" {
+            removed += 1;
+            break;
+        } else {
+            break;
+        }
+    }
+    removed
+}
+
+/// Run `rustfmt` on `text` and return the formatted output, or `None` on error.
+///
+/// Uses `--emit stdout --edition 2021`. A missing binary or non-zero exit is
+/// treated as a silent no-op (logged once to stderr).
+fn run_rustfmt(text: &str) -> Option<String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("rustfmt")
+        .args(["--emit", "stdout", "--edition", "2021"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        let _ = stdin.write_all(text.as_bytes());
+    }
+    let output = child.wait_with_output().ok()?;
+    if output.status.success() {
+        String::from_utf8(output.stdout).ok()
+    } else {
+        eprintln!("anvil: rustfmt exited non-zero; format skipped");
+        None
     }
 }
 
@@ -2314,6 +2951,242 @@ mod tests {
         assert!(
             reg.get_pane(pane_id).is_some(),
             "source pane must survive after detach"
+        );
+    }
+
+    // ── #16 Auto-indent on Enter ─────────────────────────────────────────────
+
+    #[test]
+    fn insert_newline_smart_copies_indent() {
+        // "    hello" — Enter at end should produce "    hello\n    ".
+        let (mut reg, pid) = make_reg_with_text("    hello\n");
+        {
+            let pane = reg.get_pane_mut(pid).unwrap();
+            pane.cursors[0].pos = Position { line: 0, col: 9 };
+            pane.cursors[0].anchor = Position { line: 0, col: 9 };
+        }
+        let mut clip = None;
+        reg.apply(pid, EditorAction::InsertNewlineSmart, &mut clip);
+        let text = buf_text(&reg, pid);
+        // New line should start with 4 spaces.
+        let line1: String = {
+            let bid = reg.get_pane(pid).unwrap().buffer_id;
+            let buf = reg.get_buffer(bid).unwrap();
+            buf.line(1).chars().collect()
+        };
+        assert!(
+            line1.starts_with("    "),
+            "auto-indent must copy leading 4 spaces; got: {:?}",
+            text
+        );
+        // Cursor on line 1, col 4.
+        assert_eq!(reg.get_pane(pid).unwrap().cursors[0].pos.line, 1);
+        assert_eq!(reg.get_pane(pid).unwrap().cursors[0].pos.col, 4);
+    }
+
+    #[test]
+    fn insert_newline_smart_adds_indent_after_open_brace() {
+        let (mut reg, pid) = make_reg_with_text("fn foo() {\n");
+        {
+            let pane = reg.get_pane_mut(pid).unwrap();
+            // Cursor at end of "fn foo() {" (col 10).
+            pane.cursors[0].pos = Position { line: 0, col: 10 };
+            pane.cursors[0].anchor = Position { line: 0, col: 10 };
+        }
+        let mut clip = None;
+        reg.apply(pid, EditorAction::InsertNewlineSmart, &mut clip);
+        let bid = reg.get_pane(pid).unwrap().buffer_id;
+        let buf = reg.get_buffer(bid).unwrap();
+        let line1: String = buf.line(1).chars().collect();
+        // Must have exactly 4 spaces (no prior indent + one extra level).
+        assert!(
+            line1.starts_with("    "),
+            "auto-indent after open brace must add one indent level; got: {:?}",
+            line1
+        );
+        assert_eq!(reg.get_pane(pid).unwrap().cursors[0].pos.col, 4);
+    }
+
+    // ── #17 Smart bracket pairs ──────────────────────────────────────────────
+
+    #[test]
+    fn insert_char_open_paren_auto_pairs() {
+        let (mut reg, pid) = make_reg_with_text("");
+        let mut clip = None;
+        reg.apply(pid, EditorAction::InsertChar('('), &mut clip);
+        let text = buf_text(&reg, pid);
+        // Buffer should contain "()" and cursor at col 1 (between parens).
+        assert!(
+            text.contains("()"),
+            "auto-pair must insert (); got: {:?}",
+            text
+        );
+        assert_eq!(reg.get_pane(pid).unwrap().cursors[0].pos.col, 1);
+    }
+
+    #[test]
+    fn insert_char_closing_bracket_skips_over_paired() {
+        // Type `(` to get `()`, then type `)` — cursor should move to col 2
+        // without inserting a second `)`.
+        let (mut reg, pid) = make_reg_with_text("");
+        let mut clip = None;
+        reg.apply(pid, EditorAction::InsertChar('('), &mut clip);
+        // Buffer is "()", cursor at col 1.
+        reg.apply(pid, EditorAction::InsertChar(')'), &mut clip);
+        let text = buf_text(&reg, pid);
+        // Should still be "()" — no double close.
+        let content = text.trim_end_matches('\n').trim_end_matches('\r');
+        assert_eq!(
+            content, "()",
+            "skip-over must not double-insert; got: {:?}",
+            content
+        );
+        assert_eq!(reg.get_pane(pid).unwrap().cursors[0].pos.col, 2);
+    }
+
+    // ── #18 Toggle line comment ──────────────────────────────────────────────
+
+    #[test]
+    fn toggle_line_comment_adds_marker() {
+        let (mut reg, pid) = make_reg_with_text("let x = 1;\n");
+        let mut clip = None;
+        reg.apply(pid, EditorAction::ToggleLineComment, &mut clip);
+        let text = buf_text(&reg, pid);
+        assert!(
+            text.contains("// let x = 1;"),
+            "comment must be prepended; got: {:?}",
+            text
+        );
+    }
+
+    #[test]
+    fn toggle_line_comment_removes_marker() {
+        let (mut reg, pid) = make_reg_with_text("// let x = 1;\n");
+        let mut clip = None;
+        reg.apply(pid, EditorAction::ToggleLineComment, &mut clip);
+        let text = buf_text(&reg, pid);
+        assert!(
+            !text.contains("//"),
+            "comment marker must be stripped; got: {:?}",
+            text
+        );
+    }
+
+    // ── #19 Duplicate line ───────────────────────────────────────────────────
+
+    #[test]
+    fn duplicate_line_inserts_copy_below() {
+        let (mut reg, pid) = make_reg_with_text("hello\nworld\n");
+        {
+            let pane = reg.get_pane_mut(pid).unwrap();
+            pane.cursors[0].pos = Position { line: 0, col: 2 };
+            pane.cursors[0].anchor = Position { line: 0, col: 2 };
+        }
+        let mut clip = None;
+        reg.apply(pid, EditorAction::DuplicateLine, &mut clip);
+        let bid = reg.get_pane(pid).unwrap().buffer_id;
+        let buf = reg.get_buffer(bid).unwrap();
+        let line0: String = buf.line(0).chars().collect();
+        let line1: String = buf.line(1).chars().collect();
+        assert!(line0.starts_with("hello"), "original line unchanged");
+        assert!(line1.starts_with("hello"), "duplicate must equal original");
+        // Cursor on line 1, same col.
+        assert_eq!(reg.get_pane(pid).unwrap().cursors[0].pos.line, 1);
+        assert_eq!(reg.get_pane(pid).unwrap().cursors[0].pos.col, 2);
+    }
+
+    // ── #20 Move line up/down ────────────────────────────────────────────────
+
+    #[test]
+    fn move_line_up_swaps_with_previous() {
+        let (mut reg, pid) = make_reg_with_text("aaa\nbbb\n");
+        {
+            let pane = reg.get_pane_mut(pid).unwrap();
+            pane.cursors[0].pos = Position { line: 1, col: 0 };
+            pane.cursors[0].anchor = Position { line: 1, col: 0 };
+        }
+        let mut clip = None;
+        reg.apply(pid, EditorAction::MoveLineUp, &mut clip);
+        let bid = reg.get_pane(pid).unwrap().buffer_id;
+        let buf = reg.get_buffer(bid).unwrap();
+        let l0: String = buf.line(0).chars().collect();
+        let l1: String = buf.line(1).chars().collect();
+        assert!(l0.starts_with("bbb"), "bbb must move up; got {:?}", l0);
+        assert!(l1.starts_with("aaa"), "aaa must move down; got {:?}", l1);
+        assert_eq!(reg.get_pane(pid).unwrap().cursors[0].pos.line, 0);
+    }
+
+    #[test]
+    fn move_line_down_swaps_with_next() {
+        let (mut reg, pid) = make_reg_with_text("aaa\nbbb\n");
+        {
+            let pane = reg.get_pane_mut(pid).unwrap();
+            pane.cursors[0].pos = Position { line: 0, col: 0 };
+            pane.cursors[0].anchor = Position { line: 0, col: 0 };
+        }
+        let mut clip = None;
+        reg.apply(pid, EditorAction::MoveLineDown, &mut clip);
+        let bid = reg.get_pane(pid).unwrap().buffer_id;
+        let buf = reg.get_buffer(bid).unwrap();
+        let l0: String = buf.line(0).chars().collect();
+        let l1: String = buf.line(1).chars().collect();
+        assert!(l0.starts_with("bbb"), "bbb must move up; got {:?}", l0);
+        assert!(l1.starts_with("aaa"), "aaa must move down; got {:?}", l1);
+        assert_eq!(reg.get_pane(pid).unwrap().cursors[0].pos.line, 1);
+    }
+
+    // ── #21 Indent / dedent selection ────────────────────────────────────────
+
+    #[test]
+    fn indent_selection_adds_four_spaces_to_each_line() {
+        let (mut reg, pid) = make_reg_with_text("foo\nbar\n");
+        // Select from line 0 col 0 to line 1 col 3.
+        {
+            let pane = reg.get_pane_mut(pid).unwrap();
+            pane.cursors[0].anchor = Position { line: 0, col: 0 };
+            pane.cursors[0].pos = Position { line: 1, col: 3 };
+        }
+        let mut clip = None;
+        reg.apply(pid, EditorAction::IndentSelection, &mut clip);
+        let bid = reg.get_pane(pid).unwrap().buffer_id;
+        let buf = reg.get_buffer(bid).unwrap();
+        let l0: String = buf.line(0).chars().collect();
+        let l1: String = buf.line(1).chars().collect();
+        assert!(
+            l0.starts_with("    foo"),
+            "line 0 must be indented; got {:?}",
+            l0
+        );
+        assert!(
+            l1.starts_with("    bar"),
+            "line 1 must be indented; got {:?}",
+            l1
+        );
+    }
+
+    #[test]
+    fn dedent_selection_removes_leading_spaces() {
+        let (mut reg, pid) = make_reg_with_text("    foo\n    bar\n");
+        {
+            let pane = reg.get_pane_mut(pid).unwrap();
+            pane.cursors[0].anchor = Position { line: 0, col: 0 };
+            pane.cursors[0].pos = Position { line: 1, col: 3 };
+        }
+        let mut clip = None;
+        reg.apply(pid, EditorAction::DedentSelection, &mut clip);
+        let bid = reg.get_pane(pid).unwrap().buffer_id;
+        let buf = reg.get_buffer(bid).unwrap();
+        let l0: String = buf.line(0).chars().collect();
+        let l1: String = buf.line(1).chars().collect();
+        assert!(
+            l0.starts_with("foo"),
+            "line 0 must be dedented; got {:?}",
+            l0
+        );
+        assert!(
+            l1.starts_with("bar"),
+            "line 1 must be dedented; got {:?}",
+            l1
         );
     }
 }
