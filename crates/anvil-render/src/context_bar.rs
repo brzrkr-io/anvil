@@ -72,7 +72,7 @@ pub fn draw_context_bar(
         Some(name) => format!("{cwd_base} · {name}"),
         None => cwd_base,
     };
-    draw_run_clipped(
+    draw_run_ellipsized(
         raster,
         painter,
         metrics,
@@ -206,6 +206,39 @@ fn draw_run_clipped(
         }
         raster.glyph_at(painter, metrics, x, y, ch as u32, color);
         x += metrics.cell_w;
+    }
+}
+
+/// Like `draw_run_clipped` but appends `…` when the string overflows `max_x`.
+#[allow(clippy::too_many_arguments)]
+fn draw_run_ellipsized(
+    raster: &mut Raster,
+    painter: &mut dyn GlyphPainter,
+    metrics: FontMetrics,
+    s: &str,
+    color: [u8; 3],
+    mut x: f64,
+    y: f64,
+    max_x: f64,
+) {
+    let cw = metrics.cell_w;
+    let total_w = s.chars().count() as f64 * cw;
+    if x + total_w <= max_x {
+        // No overflow: paint normally.
+        draw_run_clipped(raster, painter, metrics, s, color, x, y, max_x);
+        return;
+    }
+    // Reserve one cell for the ellipsis.
+    let ellipsis_x = max_x - cw;
+    for ch in s.chars() {
+        if x + cw > ellipsis_x {
+            break;
+        }
+        raster.glyph_at(painter, metrics, x, y, ch as u32, color);
+        x += cw;
+    }
+    if ellipsis_x >= x {
+        raster.glyph_at(painter, metrics, ellipsis_x, y, '…' as u32, color);
     }
 }
 
@@ -464,6 +497,40 @@ mod tests {
         assert!(
             muted_chars.contains(&'f'),
             "expected 'f' from 'foo.rs' in text_muted, got {muted_chars:?}"
+        );
+    }
+
+    // F4: path text longer than available width gets an ellipsis char appended.
+    // Setup: bar_w=400 → max_x = 400 - 220 = 180. IDE chip + margins put the
+    // path start at ~138px. A 10-char path = 80px → fits. A 100-char path
+    // = 800px → overflows → must produce '…'.
+    #[test]
+    fn long_path_gets_ellipsis() {
+        let m = font_metrics(); // cell_w = 8.0
+        let th = theme();
+        let bar = Rect {
+            x: 0.0,
+            y: 36.0,
+            w: 400.0,
+            h: 24.0,
+        };
+        let mut r = Raster::new(400, 100);
+        let mut p = StubPainter::default();
+        // cwd that produces a very long basename after the last '/'.
+        let long_cwd = format!("/home/user/{}", "a".repeat(80));
+        let local = LocalContext {
+            cwd: long_cwd,
+            ..LocalContext::default()
+        };
+        draw_context_bar(&mut r, &mut p, m, &th, &local, None, bar);
+        let chars: Vec<char> = p
+            .calls
+            .iter()
+            .filter_map(|(cp, _)| char::from_u32(*cp))
+            .collect();
+        assert!(
+            chars.contains(&'…'),
+            "expected ellipsis in overflowing path, got {chars:?}"
         );
     }
 

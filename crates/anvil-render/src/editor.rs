@@ -295,6 +295,11 @@ pub fn draw_editor_into(
             // Use the first scalar of the grapheme cluster as the glyph key.
             let cp = g.chars().next().unwrap_or(' ') as u32;
             let gx = rect.x + gutter_w + col as f64 * cw;
+            // F2 guard: skip glyphs outside the pane rect (left or right edge).
+            if gx < rect.x || gx + cw > rect.x + rect.w {
+                grapheme_byte += g.len();
+                continue;
+            }
             raster.glyph_at(painter, metrics, gx, row_y, cp, fg);
             grapheme_byte += g.len();
             painted = col + 1;

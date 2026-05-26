@@ -803,6 +803,9 @@ impl AppKitApp {
             ProtocolObject::from_ref(&*anvil_delegate);
         nsapp.setDelegate(Some(delegate_as_app));
 
+        // F6: enforce minimum window size so layout never collapses.
+        window.setContentMinSize(NSSize::new(640.0, 400.0));
+
         window.center();
         window.makeKeyAndOrderFront(None);
 

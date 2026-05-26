@@ -3070,7 +3070,7 @@ impl App {
                 self.hud_visible,
                 self.chrome_bottom_px(),
                 self.left_dock_visible,
-                self.left_dock_w_pt,
+                self.left_dock_w_pt * self.ui_scale,
                 self.ui_scale,
             )
             .compute_areas(self.window_inner(), metrics.cell_w, metrics.cell_h);
@@ -7435,13 +7435,11 @@ impl AppHandler for AppShell {
         app.dirty = true;
     }
 
-    fn resize(&mut self, width: f64, height: f64, in_live_resize: bool) {
+    fn resize(&mut self, width: f64, height: f64, _in_live_resize: bool) {
         self.app.view_width_pt = width;
         self.app.view_height_pt = height;
         self.app.resize_surface();
-        if !in_live_resize {
-            self.app.resize_all_tabs();
-        }
+        self.app.resize_all_tabs();
         if self.app.palette.visible {
             self.webview.set_frame(width, height);
         }
