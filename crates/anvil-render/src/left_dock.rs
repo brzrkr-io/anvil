@@ -108,7 +108,10 @@ pub struct OutlineRow {
 const HEADER_H: f64 = 30.0;
 
 /// Height of a content row in pixels.
-const ROW_H: f64 = 24.0;
+///
+/// Explorer/outline rows are mouse targets in IDE mode, not terminal cells. Keep
+/// them at a desktop-control size so users do not need pixel-perfect aim.
+const ROW_H: f64 = 32.0;
 
 /// Horizontal padding inside the dock.
 const PAD_X: f64 = 12.0;
@@ -133,6 +136,31 @@ pub fn draw_left_dock(
     active_file_path: Option<&Path>,
     outline: Option<&[OutlineRow]>,
     rect: Rect,
+) -> LeftDockHits {
+    draw_left_dock_with_scroll(
+        raster,
+        painter,
+        metrics,
+        theme,
+        snapshot,
+        active_file_path,
+        outline,
+        rect,
+        0,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn draw_left_dock_with_scroll(
+    raster: &mut Raster,
+    painter: &mut dyn GlyphPainter,
+    metrics: FontMetrics,
+    theme: &Theme,
+    snapshot: Option<&DirSnapshot>,
+    active_file_path: Option<&Path>,
+    outline: Option<&[OutlineRow]>,
+    rect: Rect,
+    explorer_scroll_offset: usize,
 ) -> LeftDockHits {
     let mut hits = LeftDockHits::default();
     if rect.w <= 0.0 || rect.h <= 0.0 {
@@ -190,6 +218,7 @@ pub fn draw_left_dock(
         theme,
         snapshot,
         active_file_path,
+        explorer_scroll_offset,
         explorer_rect,
         &mut hits,
     );
@@ -215,6 +244,7 @@ fn draw_explorer_section(
     theme: &Theme,
     snapshot: Option<&DirSnapshot>,
     active_file_path: Option<&Path>,
+    scroll_offset: usize,
     rect: Rect,
     hits: &mut LeftDockHits,
 ) {
@@ -303,11 +333,16 @@ fn draw_explorer_section(
         }
         Some(snap) => {
             let available_rows = (content_h / ROW_H).floor() as usize;
-            for (i, entry) in snap.entries.iter().enumerate() {
-                if i >= available_rows {
-                    break;
-                }
-                let row_top = content_y_start + i as f64 * ROW_H;
+            let first = scroll_offset.min(snap.entries.len().saturating_sub(available_rows));
+            for (visible_i, entry) in snap
+                .entries
+                .iter()
+                .enumerate()
+                .skip(first)
+                .take(available_rows)
+            {
+                let row_i = visible_i - first;
+                let row_top = content_y_start + row_i as f64 * ROW_H;
                 hits.hits.push(LeftDockHit {
                     rect: Rect {
                         x: rect.x,
@@ -315,7 +350,7 @@ fn draw_explorer_section(
                         w: rect.w,
                         h: ROW_H.min((content_y_start + content_h - row_top).max(0.0)),
                     },
-                    kind: LeftDockHitKind::Explorer(ExplorerHit::Row(i)),
+                    kind: LeftDockHitKind::Explorer(ExplorerHit::Row(visible_i)),
                 });
                 let glyph_y = row_top + ((ROW_H - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
 
@@ -338,7 +373,7 @@ fn draw_explorer_section(
                         (ROW_H - 8.0).max(0.0),
                         theme.accent_primary,
                     );
-                } else if i % 2 == 0 {
+                } else if row_i % 2 == 0 {
                     raster.fill_pixel_rect_alpha(
                         row_x,
                         row_top + 2.0,
@@ -714,7 +749,7 @@ mod tests {
         );
     }
 
-    /// Snapshot with entries → file names appear in text_muted, dirs in text_subtle.
+    /// Snapshot with entries → one header hit + one row hit per visible entry.
     #[test]
     fn explorer_rows_return_click_hits() {
         let m = metrics();
@@ -743,16 +778,92 @@ mod tests {
             Some(&LeftDockHitKind::Explorer(ExplorerHit::Header))
         );
         assert_eq!(
-            hits.at(12.0, 32.0),
+            hits.at(12.0, 36.0),
             Some(&LeftDockHitKind::Explorer(ExplorerHit::Row(0)))
         );
         assert_eq!(
-            hits.at(12.0, 56.0),
+            hits.at(12.0, 68.0),
             Some(&LeftDockHitKind::Explorer(ExplorerHit::Row(1)))
         );
     }
 
+    #[test]
+    fn explorer_rows_have_mouse_sized_full_width_targets() {
+        let m = metrics();
+        let th = theme();
+        let mut r = Raster::new(800, 800);
+        let mut p = StubPainter::default();
+
+        let snap = DirSnapshot {
+            root: "/anvil".to_string(),
+            entries: vec![DirEntry {
+                name: "main.rs".to_string(),
+                is_dir: false,
+            }],
+        };
+
+        let hits = draw_left_dock(&mut r, &mut p, m, &th, Some(&snap), None, None, dock_rect());
+        let row_hit = hits
+            .hits
+            .iter()
+            .find(|hit| hit.kind == LeftDockHitKind::Explorer(ExplorerHit::Row(0)))
+            .expect("row hit region should be emitted for visible explorer row");
+
+        assert!(
+            row_hit.rect.h >= 30.0,
+            "explorer rows must be easy mouse targets, got height {}",
+            row_hit.rect.h
+        );
+        assert!(
+            row_hit.rect.w >= dock_rect().w - 1.0,
+            "explorer row hit should span the full dock width"
+        );
+        assert_eq!(
+            hits.at(
+                row_hit.rect.x + row_hit.rect.w - 2.0,
+                row_hit.rect.y + row_hit.rect.h / 2.0
+            ),
+            Some(&LeftDockHitKind::Explorer(ExplorerHit::Row(0))),
+            "right side of row should be clickable, not just the label"
+        );
+    }
+
     /// Snapshot with entries → file names appear in text_muted, dirs in text_subtle.
+    #[test]
+    fn explorer_scroll_offset_preserves_original_row_indices() {
+        let m = metrics();
+        let th = theme();
+        let mut r = Raster::new(800, 800);
+        let mut p = StubPainter::default();
+
+        let snap = DirSnapshot {
+            root: "/anvil".to_string(),
+            entries: (0..20)
+                .map(|i| DirEntry {
+                    name: format!("file-{i}.rs"),
+                    is_dir: false,
+                })
+                .collect(),
+        };
+
+        let hits = draw_left_dock_with_scroll(
+            &mut r,
+            &mut p,
+            m,
+            &th,
+            Some(&snap),
+            None,
+            None,
+            dock_rect(),
+            1,
+        );
+
+        assert_eq!(
+            hits.at(12.0, 36.0),
+            Some(&LeftDockHitKind::Explorer(ExplorerHit::Row(1)))
+        );
+    }
+
     #[test]
     fn entries_rendered_with_correct_colors() {
         let m = metrics();

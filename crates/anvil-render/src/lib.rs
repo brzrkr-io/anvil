@@ -31,5 +31,6 @@ pub use editor::{RenderDiagnostic, RenderSeverity, draw_editor_into};
 pub use left_dock::{
     DirEntry as LeftDockEntry, DirSnapshot as LeftDockSnapshot, ExplorerHit, LeftDockHit,
     LeftDockHitKind, LeftDockHits, OutlineKind, OutlineRow, draw_left_dock,
+    draw_left_dock_with_scroll,
 };
 pub use raster::{FontMetrics, GlyphPainter, PixelRect, Raster};

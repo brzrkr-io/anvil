@@ -49,6 +49,7 @@ const HUD_COLS_MAX: usize = 80;
 /// down on the HUD's 1px hairline. Wide enough that the user doesn't need
 /// pixel-perfect aim to start a resize.
 const HUD_DRAG_HIT_PX: f64 = 6.0;
+const EXPLORER_SCROLL_ROWS_PER_WHEEL: usize = 3;
 use anvil_editor::Position as EditorPosition;
 use anvil_render::cheatsheet::draw as draw_cheatsheet;
 use anvil_render::draw::CursorConfig;
@@ -58,7 +59,7 @@ use anvil_render::tabbar::{TabBarHitKind, TabBarHits, draw_tab_bar};
 use anvil_render::workspace::{DIVIDER_PX, draw_workspace, draw_workspace_chrome};
 use anvil_render::{
     CellBatch, ExplorerHit, FoldedBlocks, GridPainters, LeftDockHitKind, LeftDockHits,
-    LeftDockSnapshot, OutlineRow, draw_left_dock, draw_viewport_gpu,
+    LeftDockSnapshot, OutlineRow, draw_left_dock_with_scroll, draw_viewport_gpu,
 };
 use anvil_term::{DirtySet, Terminal};
 use anvil_theme::{Theme, resolve as resolve_theme};
@@ -592,6 +593,9 @@ pub struct App {
     /// Last file opened through the IDE explorer/native-editor open path.
     /// Used to keep the explorer row visually selected.
     active_explorer_file: Option<PathBuf>,
+    /// Top visible row in the Explorer. Mouse wheel over the dock adjusts this
+    /// without stealing focus from the active editor/terminal pane.
+    explorer_scroll_offset: usize,
     /// Last cwd sent to the fs worker; used to debounce re-sends.
     fs_last_cwd: Option<String>,
 
@@ -625,6 +629,29 @@ pub struct App {
 }
 
 // ── App helpers ───────────────────────────────────────────────────────────────
+
+fn explorer_path_for_hit(snapshot: &LeftDockSnapshot, hit: ExplorerHit) -> Option<PathBuf> {
+    match hit {
+        ExplorerHit::Header => Some(PathBuf::from(&snapshot.root)),
+        ExplorerHit::Row(idx) => snapshot
+            .entries
+            .get(idx)
+            .map(|entry| PathBuf::from(&snapshot.root).join(&entry.name)),
+    }
+}
+
+fn next_explorer_scroll_offset(current: usize, dy: f64, entry_count: usize) -> usize {
+    if entry_count == 0 || dy == 0.0 {
+        return current.min(entry_count);
+    }
+    if dy > 0.0 {
+        current
+            .saturating_add(EXPLORER_SCROLL_ROWS_PER_WHEEL)
+            .min(entry_count)
+    } else {
+        current.saturating_sub(EXPLORER_SCROLL_ROWS_PER_WHEEL)
+    }
+}
 
 impl App {
     /// The current focused pane id.
@@ -1068,6 +1095,7 @@ impl App {
                 root: path.to_string_lossy().into_owned(),
                 entries: Vec::new(),
             });
+            self.explorer_scroll_offset = 0;
             self.active_explorer_file = None;
             self.dirty = true;
             return;
@@ -1707,6 +1735,7 @@ impl App {
 
         // ID3: drain filesystem worker and send cwd when it changes.
         while let Ok(snap) = self.fs_rx.try_recv() {
+            self.explorer_scroll_offset = 0;
             self.fs_snapshot = Some(LeftDockSnapshot {
                 root: snap.root.to_string_lossy().into_owned(),
                 entries: snap
@@ -2143,7 +2172,7 @@ impl App {
             // until a follow-up wires `editor_pane.outline`.
             let outline_rows: Option<Vec<OutlineRow>> = None;
             if self.left_dock_visible {
-                self.left_dock_hits = draw_left_dock(
+                self.left_dock_hits = draw_left_dock_with_scroll(
                     &mut self.raster,
                     chrome_painter,
                     chrome_metrics,
@@ -2152,6 +2181,7 @@ impl App {
                     self.active_explorer_file.as_deref(),
                     outline_rows.as_deref(),
                     areas.left_dock,
+                    self.explorer_scroll_offset,
                 );
             } else {
                 self.left_dock_hits.clear();
@@ -3798,15 +3828,9 @@ impl AppHandler for AppShell {
             let hit_kind = app.left_dock_hits.at(rx, ry).cloned();
             if let Some(LeftDockHitKind::Explorer(hit)) = hit_kind {
                 match hit {
-                    ExplorerHit::Header => {
+                    ExplorerHit::Header | ExplorerHit::Row(_) => {
                         if let Some(snapshot) = app.fs_snapshot.clone() {
-                            app.open_path_in_native_editor(Path::new(&snapshot.root));
-                        }
-                    }
-                    ExplorerHit::Row(idx) => {
-                        if let Some(snapshot) = app.fs_snapshot.clone() {
-                            if let Some(entry) = snapshot.entries.get(idx) {
-                                let path = PathBuf::from(&snapshot.root).join(&entry.name);
+                            if let Some(path) = explorer_path_for_hit(&snapshot, hit) {
                                 app.open_path_in_native_editor(&path);
                             }
                         }
@@ -4361,6 +4385,25 @@ impl AppHandler for AppShell {
     fn scroll(&mut self, dy: f64, pixel_precise: bool, loc: MouseLocation) {
         let app = &mut self.app;
         if dy == 0.0 {
+            return;
+        }
+
+        // Explorer scroll: when the wheel is over the IDE dock, scroll the file
+        // list itself and do not send scroll to the focused editor/terminal.
+        let (rx, ry) = app.view_pt_to_raster_px(loc);
+        if matches!(
+            app.left_dock_hits.at(rx, ry),
+            Some(LeftDockHitKind::Explorer(_))
+        ) {
+            let entry_count = app
+                .fs_snapshot
+                .as_ref()
+                .map_or(0, |snap| snap.entries.len());
+            let next = next_explorer_scroll_offset(app.explorer_scroll_offset, dy, entry_count);
+            if next != app.explorer_scroll_offset {
+                app.explorer_scroll_offset = next;
+                app.dirty = true;
+            }
             return;
         }
 
@@ -5071,6 +5114,7 @@ fn main() -> Result<()> {
         fs_rx,
         fs_snapshot: None,
         active_explorer_file: None,
+        explorer_scroll_offset: 0,
         fs_last_cwd: None,
         agent_pulse_phase: 0.0,
         last_agent_pulse_opacity: -1.0,
@@ -5301,6 +5345,42 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explorer_hit_paths_resolve_header_rows_and_ignore_missing_rows() {
+        let snap = LeftDockSnapshot {
+            root: "/tmp/project".to_string(),
+            entries: vec![
+                anvil_render::LeftDockEntry {
+                    name: "src".to_string(),
+                    is_dir: true,
+                },
+                anvil_render::LeftDockEntry {
+                    name: "main.rs".to_string(),
+                    is_dir: false,
+                },
+            ],
+        };
+
+        assert_eq!(
+            explorer_path_for_hit(&snap, ExplorerHit::Header),
+            Some(PathBuf::from("/tmp/project"))
+        );
+        assert_eq!(
+            explorer_path_for_hit(&snap, ExplorerHit::Row(1)),
+            Some(PathBuf::from("/tmp/project/main.rs"))
+        );
+        assert_eq!(explorer_path_for_hit(&snap, ExplorerHit::Row(9)), None);
+    }
+
+    #[test]
+    fn explorer_scroll_offset_changes_in_mouse_sized_steps_and_clamps() {
+        assert_eq!(next_explorer_scroll_offset(0, 1.0, 10), 3);
+        assert_eq!(next_explorer_scroll_offset(3, -1.0, 10), 0);
+        assert_eq!(next_explorer_scroll_offset(9, 1.0, 10), 10);
+        assert_eq!(next_explorer_scroll_offset(6, 0.0, 10), 6);
+        assert_eq!(next_explorer_scroll_offset(6, 1.0, 0), 0);
+    }
 
     #[test]
     fn ascii_lower_lowercases_ascii_letters() {
