@@ -589,8 +589,10 @@ pub struct App {
     // -- filesystem worker (left dock, ID3) ---
     fs_tx: mpsc::SyncSender<PathBuf>,
     fs_rx: mpsc::Receiver<fs_worker::DirSnapshot>,
-    /// Worker for child-directory expansions. Keyed by absolute path so that
-    /// results survive root-snapshot refreshes.
+    /// Worker for child-directory expansions. Receiver kept so async
+    /// re-snapshots (e.g. on watch events) can still drain results; sender
+    /// retired because explorer click reads synchronously now.
+    #[allow(dead_code)]
     child_fs_tx: mpsc::SyncSender<PathBuf>,
     child_fs_rx: mpsc::Receiver<(PathBuf, fs_worker::DirSnapshot)>,
     fs_snapshot: Option<LeftDockSnapshot>,
@@ -3922,9 +3924,26 @@ impl AppHandler for AppShell {
                                 if app.expanded_dirs.contains(&path) {
                                     app.expanded_dirs.remove(&path);
                                 } else {
-                                    // Load children if not already cached.
+                                    // Synchronously read the dir on the main
+                                    // thread — top-level dirs are sub-ms and
+                                    // round-tripping through the worker adds
+                                    // a perceptible click→render lag.
                                     if !app.child_snapshots.contains_key(&path) {
-                                        let _ = app.child_fs_tx.try_send(path.clone());
+                                        let snap = fs_worker::read_dir_snapshot(&path);
+                                        app.child_snapshots.insert(
+                                            path.clone(),
+                                            LeftDockSnapshot {
+                                                root: snap.root.to_string_lossy().into_owned(),
+                                                entries: snap
+                                                    .entries
+                                                    .into_iter()
+                                                    .map(|e| anvil_render::left_dock::DirEntry {
+                                                        name: e.name,
+                                                        is_dir: e.is_dir,
+                                                    })
+                                                    .collect(),
+                                            },
+                                        );
                                     }
                                     app.expanded_dirs.insert(path);
                                 }
