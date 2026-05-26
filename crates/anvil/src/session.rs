@@ -46,6 +46,11 @@ pub struct SessionState {
     /// Open buffer paths per pane, keyed by stringified pane id.
     /// Each entry is the ordered list of open file paths for that pane.
     pub open_buffers: Vec<PaneSession>,
+
+    /// Recently-opened workspace directories (item 30).
+    /// Capped at 20; most-recent first.  Persisted across runs.
+    #[serde(default)]
+    pub recent_projects: Vec<PathBuf>,
 }
 
 /// Per-pane buffer state.
@@ -167,6 +172,7 @@ mod tests {
                 paths: vec![PathBuf::from("/home/user/project/src/main.rs")],
                 active_path: Some(PathBuf::from("/home/user/project/src/main.rs")),
             }],
+            recent_projects: vec![PathBuf::from("/home/user/project")],
         };
 
         save_session(cwd, &state);
@@ -207,5 +213,50 @@ mod tests {
         }
         // Must return None (logs to stderr, does not panic).
         assert!(load_session(cwd).is_none());
+    }
+
+    #[test]
+    fn session_recent_projects_round_trip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cwd = dir.path();
+        let state = SessionState {
+            ui_scale: 1.0,
+            left_dock_w_pt: 300.0,
+            layout_mode: "terminal".to_string(),
+            editor_split_ratio: 0.0,
+            expanded_dirs: vec![],
+            open_buffers: vec![],
+            recent_projects: vec![
+                PathBuf::from("/home/user/project-a"),
+                PathBuf::from("/home/user/project-b"),
+            ],
+        };
+        save_session(cwd, &state);
+        let loaded = load_session(cwd).expect("must load");
+        assert_eq!(
+            loaded.recent_projects,
+            vec![
+                PathBuf::from("/home/user/project-a"),
+                PathBuf::from("/home/user/project-b"),
+            ]
+        );
+    }
+
+    #[test]
+    fn session_missing_recent_projects_defaults_to_empty() {
+        // Old session JSON without the `recent_projects` field should
+        // deserialise fine (serde default).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cwd = dir.path();
+        let old_json = r#"{"ui_scale":1.0,"left_dock_w_pt":300.0,"layout_mode":"terminal","editor_split_ratio":0.0,"expanded_dirs":[],"open_buffers":[]}"#;
+        if let Some(path) = session_path(cwd) {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, old_json.as_bytes()).unwrap();
+        }
+        let loaded = load_session(cwd).expect("must load");
+        assert!(
+            loaded.recent_projects.is_empty(),
+            "old session without recent_projects must deserialise to empty vec"
+        );
     }
 }

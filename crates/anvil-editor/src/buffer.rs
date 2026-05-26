@@ -240,6 +240,9 @@ pub struct Buffer {
     /// Git gutter — diff against HEAD (NE13). Recomputed on `from_path` / `save`.
     /// `None` for scratch buffers or files outside a git repo.
     pub git_gutter: Option<GitGutter>,
+    /// The value of `revisions` at the last save (or 0 at load). Used to decide
+    /// whether the buffer is clean when a disk-change event arrives (item 27).
+    pub saved_revision: u64,
 }
 
 impl Buffer {
@@ -255,6 +258,7 @@ impl Buffer {
             force_new_group: false,
             tracked_path: None,
             tracked_mtime: None,
+            saved_revision: 0,
             syntax: SyntaxLayer::new(),
             git_gutter: None,
         }
@@ -272,6 +276,7 @@ impl Buffer {
             force_new_group: false,
             tracked_path: None,
             tracked_mtime: None,
+            saved_revision: 0,
             syntax: SyntaxLayer::new(),
             git_gutter: None,
         }
@@ -360,6 +365,8 @@ impl Buffer {
         let mtime = std::fs::metadata(path)?.modified().ok();
         self.tracked_path = Some(path.to_path_buf());
         self.tracked_mtime = mtime;
+        // Snapshot revision so we know the buffer is clean after save (item 27).
+        self.saved_revision = self.revisions;
         self.flush_undo_group();
         // NE13: recompute gutter after save so HEAD-blob comparison stays fresh.
         let text = self.to_text();
@@ -402,6 +409,47 @@ impl Buffer {
             return false;
         };
         disk_mtime != *tracked
+    }
+
+    /// Returns `true` when the buffer has in-memory edits not yet written to disk.
+    ///
+    /// A fresh load and a successful save both set `saved_revision = revisions`,
+    /// so the buffer is clean immediately after either operation.
+    pub fn is_dirty(&self) -> bool {
+        self.revisions != self.saved_revision
+    }
+
+    /// Reload buffer contents from the tracked path on disk.
+    ///
+    /// Replaces the rope, resets revision tracking, re-parses syntax, and
+    /// recomputes the git gutter.  Returns `Ok(())` on success; returns an
+    /// error if no path is tracked, the file is unreadable, or it exceeds the
+    /// 50 MB limit.  On error the buffer is unchanged.
+    pub fn reload_from_disk(&mut self) -> Result<(), IoError> {
+        let path = self.tracked_path.clone().ok_or_else(|| {
+            IoError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "buffer has no tracked path",
+            ))
+        })?;
+        let meta = std::fs::metadata(&path)?;
+        if meta.len() > 50 * 1024 * 1024 {
+            return Err(IoError::TooLarge);
+        }
+        let bytes = std::fs::read(&path)?;
+        let mtime = meta.modified().ok();
+        let text = decode_bytes(&bytes)?;
+        self.rope = ropey::Rope::from_str(&text);
+        self.revisions = 0;
+        self.saved_revision = 0;
+        self.proposals.clear();
+        self.ghost_text.clear();
+        self.undo_stack = UndoStack::new(DEFAULT_UNDO_CAP);
+        self.force_new_group = false;
+        self.tracked_mtime = mtime;
+        self.syntax.parse(&text);
+        self.git_gutter = Some(GitGutter::compute(&text, &path));
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -938,6 +986,7 @@ impl Buffer {
             force_new_group: false,
             tracked_path: None,
             tracked_mtime: None,
+            saved_revision: 0,
             syntax: SyntaxLayer::new(),
             git_gutter: None,
         }
@@ -1674,5 +1723,71 @@ mod tests {
         b.reject_proposal(0);
         let err = b.accept_proposal(0).unwrap_err();
         assert_eq!(err, ProposalError::NotPending);
+    }
+
+    // ── is_dirty / saved_revision (item 27) ──────────────────────────────────
+
+    #[test]
+    fn buffer_is_dirty_clean_on_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.txt");
+        std::fs::write(&path, b"hello").unwrap();
+        let b = Buffer::from_path(&path).unwrap();
+        assert!(!b.is_dirty(), "buffer loaded from disk must be clean");
+    }
+
+    #[test]
+    fn buffer_is_dirty_after_edit() {
+        let mut b = Buffer::from_text("hello");
+        b.insert_char(pos(0, 5), '!');
+        assert!(b.is_dirty(), "buffer must be dirty after an edit");
+    }
+
+    #[test]
+    fn buffer_is_clean_after_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.txt");
+        std::fs::write(&path, b"hello").unwrap();
+        let mut b = Buffer::from_path(&path).unwrap();
+        b.insert_char(pos(0, 5), '!');
+        assert!(b.is_dirty());
+        b.save(&path).unwrap();
+        assert!(!b.is_dirty(), "buffer must be clean after save");
+    }
+
+    // ── reload_from_disk (item 27) ────────────────────────────────────────────
+
+    #[test]
+    fn reload_from_disk_replaces_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("r.txt");
+        std::fs::write(&path, b"original").unwrap();
+        let mut b = Buffer::from_path(&path).unwrap();
+        // Simulate external write.
+        std::fs::write(&path, b"updated by external tool").unwrap();
+        b.reload_from_disk().unwrap();
+        assert_eq!(b.to_text(), "updated by external tool");
+        assert!(!b.is_dirty(), "reloaded buffer must be clean");
+    }
+
+    #[test]
+    fn reload_from_disk_clears_undo_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("u.txt");
+        std::fs::write(&path, b"abc").unwrap();
+        let mut b = Buffer::from_path(&path).unwrap();
+        b.insert_char(pos(0, 3), 'd');
+        assert_eq!(b.undo_depth(), 1);
+        b.reload_from_disk().unwrap();
+        assert_eq!(b.undo_depth(), 0, "undo history must be cleared on reload");
+    }
+
+    #[test]
+    fn reload_from_disk_no_path_returns_error() {
+        let mut b = Buffer::new();
+        assert!(
+            b.reload_from_disk().is_err(),
+            "reload on scratch buffer must return an error"
+        );
     }
 }

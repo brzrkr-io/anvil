@@ -139,6 +139,13 @@ struct RecentResult {
     files: Vec<String>,
 }
 
+/// Sent from the file-watcher thread to the main thread when a tracked buffer's
+/// on-disk file changes (item 27).
+struct FileWatchEvent {
+    /// The buffer whose backing file changed.
+    buffer_id: anvil_editor::BufferId,
+}
+
 /// Detect locally-listening TCP ports via `lsof`.
 ///
 /// Cached for 2 s to avoid hammering lsof on every HUD tick. Skips ports
@@ -793,6 +800,23 @@ pub struct App {
     // ── Delete confirm (item 8) ────────────────────────────────────────────────
     /// Pending delete confirmation (name and absolute path of the row to delete).
     explorer_delete_confirm: Option<DeleteConfirm>,
+
+    // ── File watcher (item 27) ────────────────────────────────────────────────
+    /// Receiver for disk-change events from the file-watcher thread.
+    file_watch_rx: mpsc::Receiver<FileWatchEvent>,
+    /// Sender for telling the watcher thread about new (buffer_id, path) pairs to watch.
+    file_watch_tx: mpsc::SyncSender<(anvil_editor::BufferId, PathBuf)>,
+    /// Buffers that have changed on disk but have in-memory edits: maps
+    /// buffer_id → path, shown as a banner until the user reloads or dismisses.
+    disk_changed_dirty: HashMap<anvil_editor::BufferId, PathBuf>,
+
+    // ── Recent projects + project switcher (items 28, 30) ────────────────────
+    /// Recently-opened workspace cwds, most-recent first. Cap 20.
+    recent_projects: Vec<PathBuf>,
+    /// Whether the Cmd+Shift+O project-switcher overlay is open.
+    project_switcher_open: bool,
+    /// Currently highlighted row in the project-switcher overlay.
+    project_switcher_sel: usize,
 }
 
 // ── App helpers ───────────────────────────────────────────────────────────────
@@ -1521,8 +1545,10 @@ impl App {
                 // Item 15 (Tier-B): track recent files, deduped, capped at 50.
                 let abs = path.to_path_buf();
                 self.recent_file_list.retain(|p| p != &abs);
-                self.recent_file_list.insert(0, abs);
+                self.recent_file_list.insert(0, abs.clone());
                 self.recent_file_list.truncate(50);
+                // Item 27: register this buffer with the file watcher.
+                let _ = self.file_watch_tx.try_send((buffer_id, abs));
             }
             Err(err) => {
                 eprintln!("anvil: failed to open {}: {err}", path.display());
@@ -3311,6 +3337,71 @@ impl App {
             );
         }
 
+        // ── Disk-changed banner (item 27) ────────────────────────────────────
+        {
+            let cw = self.font.metrics.cell_w;
+            let banner_ch = ch;
+            let focused_bid = self
+                .tabs
+                .current()
+                .and_then(|tab| tab.editor_panes.get_pane(tab.focused_id()))
+                .map(|ep| ep.buffer_id);
+            if let Some(bid) = focused_bid {
+                if self.disk_changed_dirty.contains_key(&bid) {
+                    let chrome_top = self.chrome_top_px();
+                    draw_disk_changed_banner(
+                        &mut self.raster,
+                        chrome_painter,
+                        chrome_metrics,
+                        &self.theme,
+                        dw as f64,
+                        chrome_top,
+                        cw,
+                        banner_ch,
+                    );
+                }
+            }
+        }
+
+        // ── Welcome screen (item 28) ──────────────────────────────────────────
+        if self.should_show_welcome() {
+            let cw = self.font.metrics.cell_w;
+            let chrome_top = self.chrome_top_px();
+            let chrome_bot = self.chrome_bottom_px();
+            draw_welcome_screen(
+                &mut self.raster,
+                chrome_painter,
+                chrome_metrics,
+                &self.theme,
+                dw as f64,
+                dh as f64,
+                chrome_top,
+                chrome_bot,
+                cw,
+                ch,
+                &self.recent_projects,
+            );
+        }
+
+        // ── Project switcher overlay (item 30) ────────────────────────────────
+        if self.project_switcher_open {
+            let cw = self.font.metrics.cell_w;
+            let chrome_top = self.chrome_top_px();
+            draw_project_switcher_overlay(
+                &mut self.raster,
+                chrome_painter,
+                chrome_metrics,
+                &self.theme,
+                &self.recent_projects,
+                self.project_switcher_sel,
+                dw as f64,
+                dh as f64,
+                chrome_top,
+                cw,
+                ch,
+            );
+        }
+
         // Cheatsheet overlay.
         if self.cheatsheet_visible {
             let cw = self.font.metrics.cell_w;
@@ -3835,6 +3926,24 @@ impl App {
                 self.trigger_hover_request();
                 return true;
             }
+            // Cmd+R → force-reload the active buffer from disk (item 27).
+            if lch == 'r' && !mods.shift && !mods.control && !mods.option {
+                if let Some(tab) = self.tabs.current_mut() {
+                    let pane_id = tab.focused_id();
+                    if let Some(ep) = tab.editor_panes.get_pane(pane_id) {
+                        let bid = ep.buffer_id;
+                        if let Some(buf) = tab.editor_panes.get_buffer_mut(bid) {
+                            if let Err(e) = buf.reload_from_disk() {
+                                eprintln!("anvil: Cmd+R reload failed: {e}");
+                            }
+                            self.disk_changed_dirty.remove(&bid);
+                        }
+                    }
+                }
+                self.force_full_redraw = true;
+                self.dirty = true;
+                return true;
+            }
             // Cmd+W → close the active buffer tab (not the whole system tab).
             if lch == 'w' && !mods.shift && !mods.control && !mods.option {
                 if let Some(tab) = self.tabs.current_mut() {
@@ -4151,6 +4260,16 @@ impl App {
             return true;
         }
 
+        // ⌘⇧O — project switcher (item 30).
+        if ascii_lower(ch) == 'o' && mods.shift && !mods.control && !mods.option {
+            if !self.recent_projects.is_empty() {
+                self.project_switcher_open = true;
+                self.project_switcher_sel = 0;
+                self.dirty = true;
+            }
+            return true;
+        }
+
         // ⌘K — command palette.
         if ascii_lower(ch) == 'k' && !mods.shift && !mods.control && !mods.option {
             if self.palette.summon() {
@@ -4307,6 +4426,15 @@ impl App {
             }
         }
 
+        // Item 30: record current cwd as a recent project before saving.
+        let cwd_pb = std::env::current_dir().ok();
+        let mut recent_projects = self.recent_projects.clone();
+        if let Some(cwd) = cwd_pb {
+            recent_projects.retain(|p| p != &cwd);
+            recent_projects.insert(0, cwd);
+            recent_projects.truncate(20);
+        }
+
         session::SessionState {
             ui_scale: self.ui_scale,
             left_dock_w_pt: self.left_dock_w_pt,
@@ -4317,6 +4445,7 @@ impl App {
             editor_split_ratio,
             expanded_dirs: self.expanded_dirs.iter().cloned().collect(),
             open_buffers,
+            recent_projects,
         }
     }
 
@@ -4378,7 +4507,28 @@ impl App {
                 self.open_path_in_native_editor(active);
             }
         }
+        // Item 30: restore recent projects list.
+        if !state.recent_projects.is_empty() {
+            self.recent_projects = state.recent_projects;
+        }
         self.dirty = true;
+    }
+
+    /// Returns `true` when the welcome screen should be displayed.
+    ///
+    /// The welcome screen is shown when the IDE layout is active and the
+    /// current tab has no open buffers in any editor pane (item 28).
+    fn should_show_welcome(&self) -> bool {
+        if self.layout_mode != LayoutMode::Ide {
+            return false;
+        }
+        let Some(tab) = self.tabs.current() else {
+            return false;
+        };
+        // True when no pane has an open buffer.
+        !tab.editor_panes
+            .panes_iter()
+            .any(|(_, ep)| !ep.open_buffers.is_empty())
     }
 }
 
@@ -4666,6 +4816,35 @@ impl AppHandler for AppShell {
                 }
                 app.force_full_redraw = true;
                 app.dirty = true;
+            }
+        }
+
+        // Item 27: drain file-watcher events.
+        while let Ok(ev) = app.file_watch_rx.try_recv() {
+            // Find the buffer in any tab.
+            let mut found = false;
+            'tabs: for tab in app.tabs.tabs.iter_mut() {
+                if let Some(buf) = tab.editor_panes.get_buffer_mut(ev.buffer_id) {
+                    found = true;
+                    if !buf.is_dirty() {
+                        // Clean buffer: silently reload.
+                        if let Err(e) = buf.reload_from_disk() {
+                            eprintln!("anvil: disk reload failed: {e}");
+                        }
+                        app.force_full_redraw = true;
+                        app.dirty = true;
+                    } else {
+                        // Dirty buffer: record for banner display.
+                        if let Some(path) = buf.tracked_path().map(|p| p.to_path_buf()) {
+                            app.disk_changed_dirty.insert(ev.buffer_id, path);
+                        }
+                        app.dirty = true;
+                    }
+                    break 'tabs;
+                }
+            }
+            if !found {
+                // Buffer no longer open; event is stale — ignore.
             }
         }
 
@@ -5179,6 +5358,47 @@ impl AppHandler for AppShell {
                     let q = format!("{}{}", self.app.project_search.query, ch);
                     let root = std::path::PathBuf::from(&self.app.local_ctx.cwd);
                     self.app.project_search.scan(&q, &root);
+                    self.app.dirty = true;
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // ── Project switcher (item 30) ───────────────────────────────────────
+        if self.app.project_switcher_open {
+            match event.key {
+                KeyInput::Escape => {
+                    self.app.project_switcher_open = false;
+                    self.app.dirty = true;
+                }
+                KeyInput::Enter => {
+                    let sel = self.app.project_switcher_sel;
+                    if let Some(path) = self.app.recent_projects.get(sel).cloned() {
+                        self.app.project_switcher_open = false;
+                        self.app.dirty = true;
+                        // Save session before exit.
+                        let cwd_str = self.app.current_cwd().unwrap_or_default();
+                        let state = self.app.build_session_state();
+                        session::save_session(std::path::Path::new(&cwd_str), &state);
+                        // Spawn new Anvil in the chosen directory.
+                        if let Ok(exe) = std::env::current_exe() {
+                            let _ = std::process::Command::new(&exe).current_dir(&path).spawn();
+                        }
+                        terminate_app();
+                    }
+                }
+                KeyInput::Up => {
+                    if self.app.project_switcher_sel > 0 {
+                        self.app.project_switcher_sel -= 1;
+                    }
+                    self.app.dirty = true;
+                }
+                KeyInput::Down => {
+                    let max = self.app.recent_projects.len().saturating_sub(1);
+                    if self.app.project_switcher_sel < max {
+                        self.app.project_switcher_sel += 1;
+                    }
                     self.app.dirty = true;
                 }
                 _ => {}
@@ -7811,9 +8031,289 @@ fn draw_lsp_references_overlay(
     }
 }
 
+// ── Disk-changed banner (item 27) ─────────────────────────────────────────────
+
+/// One-row banner at the top of the editor area warning that the on-disk file
+/// changed while the buffer has unsaved edits.  Press Cmd+R to force-reload.
+#[allow(clippy::too_many_arguments)]
+fn draw_disk_changed_banner(
+    raster: &mut anvil_render::raster::Raster,
+    painter: &mut dyn anvil_render::raster::GlyphPainter,
+    metrics: anvil_render::raster::FontMetrics,
+    theme: &anvil_theme::Theme,
+    dw: f64,
+    chrome_top: f64,
+    cw: f64,
+    ch: f64,
+) {
+    let banner_y = chrome_top;
+    let banner_h = ch + 4.0;
+    raster.fill_pixel_rect(0.0, banner_y, dw, banner_h, theme.panel_raised);
+    raster.fill_pixel_rect(0.0, banner_y + banner_h - 1.0, dw, 1.0, theme.hairline);
+    let msg = "file changed on disk \u{2014} Cmd+R to reload";
+    let pad_x = 12.0;
+    let text_y = banner_y + 2.0;
+    let mut x = pad_x;
+    for c in msg.chars() {
+        if x + cw > dw - pad_x {
+            break;
+        }
+        raster.glyph_at(painter, metrics, x, text_y, c as u32, theme.text_muted);
+        x += cw;
+    }
+}
+
+// ── Welcome screen (item 28) ──────────────────────────────────────────────────
+
+/// Centered welcome panel shown when no buffers are open.
+#[allow(clippy::too_many_arguments)]
+fn draw_welcome_screen(
+    raster: &mut anvil_render::raster::Raster,
+    painter: &mut dyn anvil_render::raster::GlyphPainter,
+    metrics: anvil_render::raster::FontMetrics,
+    theme: &anvil_theme::Theme,
+    dw: f64,
+    dh: f64,
+    chrome_top: f64,
+    chrome_bot: f64,
+    cw: f64,
+    ch: f64,
+    recent_projects: &[PathBuf],
+) {
+    let safe_h = (dh - chrome_top - chrome_bot).max(0.0);
+    let safe_w = dw;
+
+    // Panel dimensions.
+    let panel_w = (40.0 * cw).min(safe_w * 0.8);
+    let panel_h = (12.0 + recent_projects.len().min(5) as f64) * ch;
+    let panel_x = ((safe_w - panel_w) * 0.5).max(0.0);
+    let panel_y = chrome_top + ((safe_h - panel_h) * 0.5).max(0.0);
+
+    // Background fill.
+    raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.panel);
+
+    let pad_x = 2.0 * cw;
+    let max_x = panel_x + panel_w - pad_x;
+
+    // Title "Anvil" in accent_bright.
+    let title = "Anvil";
+    let mut tx = panel_x + pad_x;
+    let title_y = panel_y + ch;
+    for c in title.chars() {
+        if tx + cw > max_x {
+            break;
+        }
+        raster.glyph_at(painter, metrics, tx, title_y, c as u32, theme.accent_bright);
+        tx += cw;
+    }
+
+    // Subtitle.
+    let subtitle = "Native macOS dev environment.";
+    let mut sx = panel_x + pad_x;
+    let sub_y = panel_y + 3.0 * ch;
+    for c in subtitle.chars() {
+        if sx + cw > max_x {
+            break;
+        }
+        raster.glyph_at(painter, metrics, sx, sub_y, c as u32, theme.text_muted);
+        sx += cw;
+    }
+
+    // Action rows.
+    let actions = [
+        ("\u{2318}P  Open file\u{2026}", theme.foreground),
+        ("\u{2318}O  Open folder\u{2026}", theme.foreground),
+        ("\u{2318}N  New file", theme.foreground),
+    ];
+    for (i, (label, color)) in actions.iter().enumerate() {
+        let row_y = panel_y + (5.0 + i as f64) * ch;
+        let mut ax = panel_x + pad_x;
+        for c in label.chars() {
+            if ax + cw > max_x {
+                break;
+            }
+            raster.glyph_at(painter, metrics, ax, row_y, c as u32, *color);
+            ax += cw;
+        }
+    }
+
+    // Recent projects.
+    if !recent_projects.is_empty() {
+        let recent_label_y = panel_y + 9.0 * ch;
+        let rl = "Recent";
+        let mut rlx = panel_x + pad_x;
+        for c in rl.chars() {
+            if rlx + cw > max_x {
+                break;
+            }
+            raster.glyph_at(
+                painter,
+                metrics,
+                rlx,
+                recent_label_y,
+                c as u32,
+                theme.text_subtle,
+            );
+            rlx += cw;
+        }
+        for (ri, proj) in recent_projects.iter().take(5).enumerate() {
+            let row_y = panel_y + (10.0 + ri as f64) * ch;
+            let name = proj
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| proj.to_string_lossy().into_owned());
+            let mut px = panel_x + pad_x + 2.0 * cw;
+            for c in name.chars() {
+                if px + cw > max_x {
+                    break;
+                }
+                raster.glyph_at(painter, metrics, px, row_y, c as u32, theme.text_muted);
+                px += cw;
+            }
+        }
+    }
+
+    // Footer.
+    let footer = concat!("Anvil v", env!("CARGO_PKG_VERSION"));
+    let mut fx = panel_x + pad_x;
+    let footer_y = panel_y + panel_h - ch;
+    for c in footer.chars() {
+        if fx + cw > max_x {
+            break;
+        }
+        raster.glyph_at(painter, metrics, fx, footer_y, c as u32, theme.text_subtle);
+        fx += cw;
+    }
+}
+
+// ── Project switcher overlay (item 30) ────────────────────────────────────────
+
+/// Palette-style overlay listing recently-opened workspace directories.
+#[allow(clippy::too_many_arguments)]
+fn draw_project_switcher_overlay(
+    raster: &mut anvil_render::raster::Raster,
+    painter: &mut dyn anvil_render::raster::GlyphPainter,
+    metrics: anvil_render::raster::FontMetrics,
+    theme: &anvil_theme::Theme,
+    recent_projects: &[PathBuf],
+    selected: usize,
+    dw: f64,
+    _dh: f64,
+    chrome_top: f64,
+    cw: f64,
+    ch: f64,
+) {
+    if recent_projects.is_empty() {
+        return;
+    }
+    let rows = recent_projects.len().min(10);
+    let panel_w = (50.0 * cw).min(dw * 0.7);
+    let header_h = ch + 4.0;
+    let panel_h = header_h + rows as f64 * (ch + 4.0);
+    let panel_x = ((dw - panel_w) * 0.5).max(0.0);
+    let panel_y = chrome_top + 2.0 * ch;
+
+    raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
+    raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent);
+    raster.fill_pixel_rect(panel_x, panel_y + panel_h - 1.0, panel_w, 1.0, theme.accent);
+    raster.fill_pixel_rect(panel_x, panel_y, 1.0, panel_h, theme.accent);
+    raster.fill_pixel_rect(panel_x + panel_w - 1.0, panel_y, 1.0, panel_h, theme.accent);
+
+    // Header label.
+    let header = "Open Recent Project";
+    let pad_x = 1.5 * cw;
+    let header_y = panel_y + 2.0;
+    let mut hx = panel_x + pad_x;
+    for c in header.chars() {
+        if hx + cw > panel_x + panel_w - pad_x {
+            break;
+        }
+        raster.glyph_at(painter, metrics, hx, header_y, c as u32, theme.text_subtle);
+        hx += cw;
+    }
+
+    raster.fill_pixel_rect(panel_x, panel_y + header_h, panel_w, 1.0, theme.hairline);
+
+    // Rows.
+    for (i, proj) in recent_projects.iter().take(rows).enumerate() {
+        let row_y = panel_y + header_h + i as f64 * (ch + 4.0);
+        if i == selected {
+            raster.fill_pixel_rect_alpha(panel_x, row_y, panel_w, ch + 4.0, theme.accent, 0.15);
+        }
+        let name = proj
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| proj.to_string_lossy().into_owned());
+        let path_str = proj.to_string_lossy().into_owned();
+
+        // Basename in foreground.
+        let mut rx = panel_x + pad_x;
+        let glyph_y = row_y + 2.0;
+        let name_max_x = panel_x + panel_w * 0.4;
+        for c in name.chars() {
+            if rx + cw > name_max_x {
+                break;
+            }
+            let color = if i == selected {
+                theme.foreground
+            } else {
+                theme.text_muted
+            };
+            raster.glyph_at(painter, metrics, rx, glyph_y, c as u32, color);
+            rx += cw;
+        }
+
+        // Path in text_subtle.
+        rx = panel_x + panel_w * 0.42;
+        for c in path_str.chars() {
+            if rx + cw > panel_x + panel_w - pad_x {
+                break;
+            }
+            raster.glyph_at(painter, metrics, rx, glyph_y, c as u32, theme.text_subtle);
+            rx += cw;
+        }
+    }
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 fn main() -> Result<()> {
+    // -- Crash reporter (item 29) ─────────────────────────────────────────────
+    // Install before anything else so panics that happen during init are caught.
+    {
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            // Capture full backtrace.
+            let bt = std::backtrace::Backtrace::force_capture();
+            let cwd = std::env::current_dir()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| "<unknown>".to_string());
+            let version = env!("CARGO_PKG_VERSION");
+            let git_rev = option_env!("GIT_REV").unwrap_or("unknown");
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let msg = format!(
+                "anvil version: {version}\ngit rev: {git_rev}\ncwd: {cwd}\n\n{info}\n\n{bt}\n"
+            );
+            // Write to crash file.
+            if let Some(home) = std::env::var_os("HOME") {
+                let mut dir = std::path::PathBuf::from(home);
+                dir.push(".config");
+                dir.push("anvil");
+                dir.push("crashes");
+                let _ = std::fs::create_dir_all(&dir);
+                let filename = format!("crash-{timestamp}.txt");
+                let _ = std::fs::write(dir.join(filename), msg.as_bytes());
+            }
+            // Also print to stderr so the terminal shows it.
+            eprintln!("{msg}");
+            // Delegate to default hook (aborts / prints normal backtrace).
+            default_hook(info);
+        }));
+    }
+
     // -- Config ---------------------------------------------------------------
     let cfg_path = anvil_config::resolve_path();
     let config: Config = match &cfg_path {
@@ -8014,6 +8514,48 @@ fn main() -> Result<()> {
     // Child-directory worker: loads individual dirs on expand.
     let (child_fs_tx, child_fs_rx) = fs_worker::spawn_child_fs_worker();
 
+    // -- File-watcher worker (item 27) ----------------------------------------
+    // Main thread registers (buffer_id, path) pairs via `file_watch_work_tx`.
+    // Worker polls mtime every second and sends `FileWatchEvent` back when a
+    // file has changed.  We use stdlib only — no external `notify` crate needed.
+    let (file_watch_work_tx, file_watch_work_rx) =
+        mpsc::sync_channel::<(anvil_editor::BufferId, PathBuf)>(64);
+    let (file_watch_result_tx, file_watch_rx) = mpsc::channel::<FileWatchEvent>();
+    {
+        use std::collections::HashMap as WMap;
+        use std::time::{Duration, SystemTime};
+        thread::spawn(move || {
+            // watched: buffer_id → (path, last_known_mtime)
+            let mut watched: WMap<anvil_editor::BufferId, (PathBuf, Option<SystemTime>)> =
+                WMap::new();
+            loop {
+                // Drain registration messages (non-blocking).
+                while let Ok((bid, path)) = file_watch_work_rx.try_recv() {
+                    let mtime = std::fs::metadata(&path)
+                        .ok()
+                        .and_then(|m| m.modified().ok());
+                    watched.insert(bid, (path, mtime));
+                }
+                // Poll each watched file for mtime changes.
+                for (&bid, entry) in &mut watched {
+                    let (ref path, ref mut known_mtime) = *entry;
+                    let Ok(meta) = std::fs::metadata(path) else {
+                        continue;
+                    };
+                    let Ok(current_mtime) = meta.modified() else {
+                        continue;
+                    };
+                    let changed = known_mtime.is_none_or(|k| k != current_mtime);
+                    if changed {
+                        *known_mtime = Some(current_mtime);
+                        let _ = file_watch_result_tx.send(FileWatchEvent { buffer_id: bid });
+                    }
+                }
+                thread::sleep(Duration::from_secs(1));
+            }
+        });
+    }
+
     // -- Theme ----------------------------------------------------------------
     let system_dark = system_is_dark();
     let effective_name = effective_theme_name(system_dark, &config.theme);
@@ -8202,6 +8744,12 @@ fn main() -> Result<()> {
         explorer_delete_confirm: None,
         goto_line_input: None,
         replace_row_active: false,
+        file_watch_rx,
+        file_watch_tx: file_watch_work_tx,
+        disk_changed_dirty: HashMap::new(),
+        recent_projects: Vec::new(),
+        project_switcher_open: false,
+        project_switcher_sel: 0,
     };
 
     // -- AppKitApp: builds the window, view, timer ----------------------------
