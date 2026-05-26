@@ -566,6 +566,14 @@ pub struct App {
     sidebar_drag_active: bool,
     /// True while the user is dragging the editor/drawer horizontal divider (item 13b).
     drawer_drag_active: bool,
+    /// Item 8 (Tier-B): whether the IDE bottom drawer is hidden.
+    /// When true the root-split ratio[0] has been forced to 1.0 (editor takes
+    /// 100% of pane area).  The pre-hide ratio is saved in `drawer_saved_ratio`
+    /// so Cmd+J can restore it.
+    drawer_hidden: bool,
+    /// Saved editor-over-drawer ratio, captured before hiding the drawer
+    /// (Tier-B item 8).  Default 0.72.
+    drawer_saved_ratio: f64,
 
     // -- UI state ---
     blink_phase: f32,
@@ -605,6 +613,15 @@ pub struct App {
     /// Set on mouse-down over a tab; cleared on mouse-up.  While set and the
     /// cursor has moved past the threshold, `mouse_dragged` calls `move_tab`.
     tab_drag: Option<(usize, f64)>,
+    /// Item 10 (Tier-B): editor buffer tab drag state.
+    /// `(pane_id, buffer index in open_buffers, mouse-down raster x)`.
+    /// Set on mouse-down on a non-close EditorTabHit; cleared on mouse-up.
+    /// While set and cursor moved >4 logical px, `mouse_dragged` reorders
+    /// `open_buffers` in place.
+    editor_tab_drag: Option<(PaneId, usize, f64)>,
+    /// Item 15 (Tier-B): up to 50 most recently opened file paths.
+    /// Deduped on insert (most-recent at index 0).
+    recent_file_list: Vec<PathBuf>,
     /// Current font point size (logical points, not device pixels). Adjusted
     /// at runtime by Cmd+/Cmd- and re-baked into a fresh `Font` + painter.
     font_size_pt: f64,
@@ -1244,6 +1261,62 @@ impl App {
         }
     }
 
+    /// Item 8 (Tier-B): toggle the IDE bottom terminal drawer.
+    ///
+    /// When visible, saves the current editor/drawer ratio and sets it to 1.0
+    /// so the drawer occupies 0% of the pane area.  When hidden, restores the
+    /// saved ratio.  No-op outside IDE mode or when no vertical root split exists.
+    fn toggle_ide_drawer(&mut self) {
+        if self.layout_mode != LayoutMode::Ide {
+            return;
+        }
+        if self.drawer_hidden {
+            // Reveal: restore saved ratio.
+            let r = self.drawer_saved_ratio.clamp(0.40, 0.95);
+            if let Some(tab) = self.tabs.current_mut() {
+                let root = tab.tree.root.as_mut();
+                if let anvil_workspace::layout::PaneNode::Split(sp) = root {
+                    if sp.dir == SplitDir::Vertical && sp.ratios.len() == 2 {
+                        sp.ratios[0] = r;
+                        sp.ratios[1] = 1.0 - r;
+                    }
+                }
+            }
+            self.drawer_hidden = false;
+        } else {
+            // Hide: capture current ratio then force 1.0 / 0.0.
+            let current_ratio = self
+                .tabs
+                .current()
+                .and_then(|tab| {
+                    let root = &tab.tree.root;
+                    match root.as_ref() {
+                        anvil_workspace::layout::PaneNode::Split(sp)
+                            if sp.dir == SplitDir::Vertical && sp.ratios.len() == 2 =>
+                        {
+                            Some(sp.ratios[0])
+                        }
+                        _ => None,
+                    }
+                })
+                .unwrap_or(0.72);
+            // Only hide if there is actually a split to collapse.
+            if let Some(tab) = self.tabs.current_mut() {
+                let root = tab.tree.root.as_mut();
+                if let anvil_workspace::layout::PaneNode::Split(sp) = root {
+                    if sp.dir == SplitDir::Vertical && sp.ratios.len() == 2 {
+                        self.drawer_saved_ratio = current_ratio;
+                        sp.ratios[0] = 1.0;
+                        sp.ratios[1] = 0.0;
+                        self.drawer_hidden = true;
+                    }
+                }
+            }
+        }
+        self.resize_all_tabs();
+        self.dirty = true;
+    }
+
     /// Open a native editor pane (NE15: sole editor path).  Splits the
     /// focused pane horizontally and registers it as an editor pane — no
     /// PTY is spawned.
@@ -1412,6 +1485,11 @@ impl App {
                 self.snap_anim();
                 self.force_full_redraw = true;
                 self.dirty = true;
+                // Item 15 (Tier-B): track recent files, deduped, capped at 50.
+                let abs = path.to_path_buf();
+                self.recent_file_list.retain(|p| p != &abs);
+                self.recent_file_list.insert(0, abs);
+                self.recent_file_list.truncate(50);
             }
             Err(err) => {
                 eprintln!("anvil: failed to open {}: {err}", path.display());
@@ -3056,6 +3134,39 @@ impl App {
         webview.hide();
     }
 
+    /// Item 15 (Tier-B): show up to 10 most-recently-opened files in the palette.
+    fn send_recent_files_show(&self, webview: &Webview) {
+        let cmds: Vec<BridgeCmd> = self
+            .recent_file_list
+            .iter()
+            .take(10)
+            .map(|p| {
+                let title = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| p.to_string_lossy().into_owned());
+                let subtitle = p.to_string_lossy().into_owned();
+                BridgeCmd {
+                    id: format!("file:open:{}", p.display()),
+                    title,
+                    subtitle: Some(subtitle),
+                }
+            })
+            .collect();
+        let theme_tokens = ThemeTokens {
+            background: format_hex(self.theme.background),
+            foreground: format_hex(self.theme.foreground),
+            accent: format_hex(self.theme.accent),
+        };
+        let outbound = Outbound::Show {
+            commands: cmds,
+            theme: theme_tokens,
+        };
+        if let Ok(json) = bridge_encode(&outbound) {
+            webview.eval_js(&format!("window.anvil.receive({json});"));
+        }
+    }
+
     /// Open the command palette pre-populated with project files (Cmd+P).
     ///
     /// Uses `recent_files_in_dir` to walk the current project root (up to 500
@@ -3469,6 +3580,27 @@ impl App {
         for (i, maybe) in kb.jump.iter().enumerate() {
             if let Some(chord) = maybe {
                 if Self::chord_matches(*chord, mods, ch) {
+                    // Item 9 (Tier-B): when a native editor pane is focused,
+                    // Cmd+1..9 switches to the Nth open buffer tab (0-based index i)
+                    // instead of switching workspace tabs.
+                    if self.focused_is_native_editor() {
+                        if let Some(tab) = self.tabs.current_mut() {
+                            let pid = tab.focused_id();
+                            if let Some(ep) = tab.editor_panes.get_pane(pid) {
+                                let idx = i.min(ep.open_buffers.len().saturating_sub(1));
+                                let bid = ep.open_buffers[idx];
+                                let bid_to_open = bid;
+                                tab.editor_panes.open_buffer(pid, bid_to_open);
+                                if let Some(pane) = tab.registry.get_mut(pid) {
+                                    pane.editor_id = Some(bid_to_open);
+                                }
+                            }
+                        }
+                        self.sync_active_explorer_file();
+                        self.force_full_redraw = true;
+                        self.dirty = true;
+                        return true;
+                    }
                     self.close_search();
                     self.tabs.switch_to(i);
                     self.snap_anim();
@@ -3599,6 +3731,40 @@ impl App {
             self.new_native_editor_pane();
             return true;
         });
+
+        // ⌘J — toggle IDE bottom drawer (Tier-B item 8).
+        if ascii_lower(ch) == 'j' && !mods.shift && !mods.control && !mods.option {
+            self.toggle_ide_drawer();
+            return true;
+        }
+
+        // ⌘, — open Anvil config file (Tier-B item 14).
+        if ch == ',' && !mods.shift && !mods.control && !mods.option {
+            let cfg_path = match anvil_config::resolve_path() {
+                Some(p) => p,
+                None => return true,
+            };
+            // Create a skeleton config if none exists yet.
+            if !cfg_path.exists() {
+                if let Some(parent) = cfg_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::write(&cfg_path, b"# Anvil config\n");
+            }
+            self.layout_mode = LayoutMode::Ide;
+            self.left_dock_visible = true;
+            self.open_path_in_native_editor(&cfg_path);
+            return true;
+        }
+
+        // ⌘⇧E — show recent files in palette (Tier-B item 15).
+        if ascii_lower(ch) == 'e' && mods.shift && !mods.control && !mods.option {
+            if !self.recent_file_list.is_empty() && self.palette.summon() {
+                self.send_recent_files_show(webview);
+                webview.show();
+            }
+            return true;
+        }
 
         // ⌘K — command palette.
         if ascii_lower(ch) == 'k' && !mods.shift && !mods.control && !mods.option {
@@ -5653,6 +5819,18 @@ impl AppHandler for AppShell {
                     }
                     // Item 5: sync active_explorer_file to the newly active buffer.
                     app.sync_active_explorer_file();
+                    // Item 10 (Tier-B): record drag start for buffer tab reorder.
+                    // Resolve the buffer index in open_buffers so mouse_dragged
+                    // can swap without re-scanning hit rects.
+                    if let Some(tab) = app.tabs.current() {
+                        if let Some(ep) = tab.editor_panes.get_pane(h.pane_id) {
+                            if let Some(pos) =
+                                ep.open_buffers.iter().position(|&b| b == h.buffer_id)
+                            {
+                                app.editor_tab_drag = Some((h.pane_id, pos, rx));
+                            }
+                        }
+                    }
                 }
                 app.force_full_redraw = true;
                 app.dirty = true;
@@ -5981,6 +6159,11 @@ impl AppHandler for AppShell {
             app.dirty = true;
         }
 
+        // Editor buffer tab drag: release (Tier-B item 10).
+        if app.editor_tab_drag.take().is_some() {
+            app.dirty = true;
+        }
+
         // Pane divider drag: release.
         if app.divider_drag.is_some() {
             app.divider_drag = None;
@@ -6125,6 +6308,45 @@ impl AppHandler for AppShell {
             if let Some(pos) = app.native_editor_pos_at(loc) {
                 app.apply_editor_action(EditorAction::MoveTo { pos, extend: true });
                 app.dirty = true;
+            }
+            return;
+        }
+
+        // Editor buffer tab reorder drag (Tier-B item 10).
+        // Threshold: 4 logical pixels × ui_scale.
+        if let Some((drag_pane, drag_buf_idx, down_x)) = app.editor_tab_drag {
+            let (rx, _ry) = app.view_pt_to_raster_px(loc);
+            let threshold = 4.0 * app.ui_scale;
+            if (rx - down_x).abs() >= threshold {
+                // Find the editor tab hit zone the cursor is over.
+                let target_buf_hit = app
+                    .editor_tab_hits
+                    .iter()
+                    .find(|h| {
+                        !h.is_close
+                            && h.pane_id == drag_pane
+                            && rx >= h.rect.x
+                            && rx < h.rect.x + h.rect.w
+                    })
+                    .cloned();
+                if let Some(target_h) = target_buf_hit {
+                    if let Some(tab) = app.tabs.current_mut() {
+                        if let Some(ep) = tab.editor_panes.get_pane_mut(drag_pane) {
+                            if let Some(to) = ep
+                                .open_buffers
+                                .iter()
+                                .position(|&b| b == target_h.buffer_id)
+                            {
+                                if drag_buf_idx != to {
+                                    ep.open_buffers.swap(drag_buf_idx, to);
+                                    app.editor_tab_drag = Some((drag_pane, to, down_x));
+                                    app.force_full_redraw = true;
+                                    app.dirty = true;
+                                }
+                            }
+                        }
+                    }
+                }
             }
             return;
         }
@@ -7202,6 +7424,8 @@ fn main() -> Result<()> {
         left_dock_w_pt: 300.0,
         sidebar_drag_active: false,
         drawer_drag_active: false,
+        drawer_hidden: false,
+        drawer_saved_ratio: 0.72,
         blink_phase: 0.0,
         last_blink_opacity: -1.0,
         search: anvil_term::Search::new(),
@@ -7220,6 +7444,8 @@ fn main() -> Result<()> {
         hud_section_hits: Vec::new(),
         hud_section_drag: None,
         tab_drag: None,
+        editor_tab_drag: None,
+        recent_file_list: Vec::new(),
         font_size_pt: font_size_pt_init,
         font_family: font_family.clone(),
         cheatsheet_visible: false,
