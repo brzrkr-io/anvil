@@ -62,6 +62,9 @@ pub struct RenderDiagnostic {
 /// `gutter` is the optional git gutter for the buffer.  Pass `None` for scratch
 /// buffers or when git integration is unavailable.
 ///
+/// `focused` controls whether the cursor-line tint is painted (item 11).
+/// Only the focused pane receives the tint so inactive editors stay quieter.
+///
 /// After this call the raster's `origin_x`/`origin_y` are not changed; callers
 /// are expected to set them before calling (matching the `draw_workspace` pattern).
 #[allow(clippy::too_many_arguments)]
@@ -75,6 +78,7 @@ pub fn draw_editor_into(
     rect: Rect,
     diagnostics: &[RenderDiagnostic],
     gutter: Option<&GitGutter>,
+    focused: bool,
 ) {
     let cw = metrics.cell_w;
     let ch = metrics.cell_h;
@@ -125,6 +129,20 @@ pub fn draw_editor_into(
                     break;
                 }
                 raster.glyph_at(painter, metrics, gx, y, ch_g as u32, *color);
+            }
+        }
+    }
+
+    // ── Cursor-line highlight (item 11) ──────────────────────────────────────
+    // Paint a subtle row tint under the cursor line before drawing any glyphs
+    // so that text renders over the tint.  Only for the focused pane.
+    if focused {
+        let cursor_line = editor_pane.primary_cursor().pos.line;
+        if cursor_line >= scroll_line {
+            let cursor_vrow = cursor_line - scroll_line;
+            if cursor_vrow < visible_rows {
+                let tint_y = rect.y + cursor_vrow as f64 * ch;
+                raster.fill_pixel_rect_alpha(rect.x, tint_y, rect.w, ch, theme.panel, 0.40);
             }
         }
     }
@@ -543,6 +561,7 @@ mod tests {
             rect(),
             &[],
             None,
+            false,
         );
 
         // The gutter should paint the digit '1' in text_muted.
@@ -601,6 +620,7 @@ mod tests {
             rect(),
             &[],
             None,
+            false,
         );
 
         let fg_cps: Vec<u32> = painter
@@ -657,6 +677,7 @@ mod tests {
             r,
             &[],
             None,
+            false,
         );
 
         // Cursor pixel: x = gutter_w + col * cw, y = row * ch (row 5, col 3).
@@ -694,6 +715,7 @@ mod tests {
             rect(),
             &[],
             None,
+            false,
         );
 
         let has_overflow_marker = painter
@@ -731,6 +753,7 @@ mod tests {
             rect(),
             &[],
             None,
+            false,
         );
 
         // Line 3 starts with 'L' followed by '3'. The foreground calls should
@@ -800,6 +823,7 @@ mod tests {
             rect(),
             &[],
             None,
+            false,
         );
 
         // 'f' and 'n' must be painted with the keyword color.
@@ -865,6 +889,7 @@ mod tests {
             r,
             &diag,
             None,
+            false,
         );
 
         // The 4 px gutter stripe is at rect.x=0, row 0.
@@ -909,6 +934,7 @@ mod tests {
             rect(),
             &[],
             None,
+            false,
         );
 
         // 'x', 'y', 'z' must appear in text_subtle calls.
@@ -943,5 +969,88 @@ mod tests {
             !fg_cps.contains(&('x' as u32)),
             "'x' must not be plain foreground; fg_cps: {fg_cps:?}"
         );
+    }
+
+    // ── draw_editor_cursor_line_tint_focused ──────────────────────────────────
+
+    /// Item 11: the cursor-line row is tinted with `theme.panel` at α=0.40 when
+    /// `focused = true`, and NOT tinted when `focused = false`.
+    ///
+    /// We verify by checking that the pixel at the cursor row has been modified
+    /// off the raw surface color in focused mode, and matches raw surface in
+    /// unfocused mode.
+    #[test]
+    fn draw_editor_cursor_line_tint_focused_only() {
+        use crate::raster::pixel_at;
+
+        // 10-line buffer, cursor at line 2.
+        let text: String = (0..10).map(|i| format!("L{i}\n")).collect();
+        let buf = Buffer::from_text(&text);
+        let mut pane = make_pane(1);
+        pane.cursors[0] = anvil_editor::Cursor {
+            pos: anvil_editor::Position { line: 2, col: 0 },
+            anchor: anvil_editor::Position { line: 2, col: 0 },
+        };
+
+        let m = metrics();
+        let r = rect();
+        let theme = MINERAL_DARK;
+
+        // Focused: cursor row should be tinted (not raw `theme.surface`).
+        {
+            let mut raster = Raster::new(400, 200);
+            raster.clear(theme.background);
+            let mut painter = CapturePainter::default();
+            draw_editor_into(
+                &mut raster,
+                &mut painter,
+                &pane,
+                &buf,
+                m,
+                &theme,
+                r,
+                &[],
+                None,
+                true, // focused
+            );
+            // Sample a pixel at the cursor row's y, inside the content area.
+            // Cursor is at vrow=2 (scroll_pos=0), so y = 2 * cell_h.
+            let sample_y = (r.y + 2.0 * m.cell_h + m.cell_h * 0.5) as usize;
+            let sample_x = (r.x + 50.0) as usize; // well into content area
+            let px = pixel_at(&raster, sample_x, sample_y);
+            // The tint blends panel into surface. The result differs from raw
+            // surface. Surface and panel are different colors in MINERAL_DARK.
+            assert_ne!(
+                px, theme.surface,
+                "cursor line must be tinted in focused mode; sample at ({sample_x},{sample_y}) = {px:?}"
+            );
+        }
+
+        // Unfocused: cursor row should remain raw surface (no tint).
+        {
+            let mut raster = Raster::new(400, 200);
+            raster.clear(theme.background);
+            let mut painter = CapturePainter::default();
+            draw_editor_into(
+                &mut raster,
+                &mut painter,
+                &pane,
+                &buf,
+                m,
+                &theme,
+                r,
+                &[],
+                None,
+                false, // unfocused
+            );
+            let sample_y = (r.y + 2.0 * m.cell_h + m.cell_h * 0.5) as usize;
+            let sample_x = (r.x + 50.0) as usize;
+            let px = pixel_at(&raster, sample_x, sample_y);
+            // Without tint, the pixel should be the raw `theme.surface` fill.
+            assert_eq!(
+                px, theme.surface,
+                "cursor line must NOT be tinted in unfocused mode; sample at ({sample_x},{sample_y}) = {px:?}"
+            );
+        }
     }
 }
