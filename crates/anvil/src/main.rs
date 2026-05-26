@@ -58,8 +58,8 @@ use anvil_render::searchbar::draw_search_bar;
 use anvil_render::tabbar::{TabBarHitKind, TabBarHits, draw_tab_bar};
 use anvil_render::workspace::{DIVIDER_PX, draw_workspace, draw_workspace_chrome};
 use anvil_render::{
-    CellBatch, ExplorerHit, FoldedBlocks, GridPainters, LeftDockHitKind, LeftDockHits,
-    LeftDockSnapshot, OutlineRow, draw_left_dock_with_scroll, draw_viewport_gpu,
+    CellBatch, EditorTabHit, ExplorerHit, FoldedBlocks, GridPainters, LeftDockHitKind,
+    LeftDockHits, LeftDockSnapshot, OutlineRow, draw_left_dock_with_scroll, draw_viewport_gpu,
 };
 use anvil_term::{DirtySet, Terminal};
 use anvil_theme::{Theme, resolve as resolve_theme};
@@ -607,6 +607,12 @@ pub struct App {
     /// The explorer row index currently under the cursor (for hover highlight).
     /// `None` when the cursor is outside the dock.
     hovered_explorer_row: Option<usize>,
+    /// The currently hovered buffer tab in the per-pane editor strip.
+    /// `None` when the cursor is not over any editor tab.
+    hovered_editor_tab: Option<(PaneId, anvil_editor::BufferId)>,
+    /// Per-pane editor buffer tab hit regions. Refilled by `draw_workspace`
+    /// each render; consumed by `mouse_down` for tab-switch and close.
+    editor_tab_hits: Vec<EditorTabHit>,
     /// Set of absolute paths of directories that are expanded in the Explorer.
     /// Keyed by PathBuf so identity survives re-snapshots and depth changes.
     expanded_dirs: HashSet<PathBuf>,
@@ -1140,7 +1146,7 @@ impl App {
             return;
         };
         let pane_id = tab.focused_id();
-        match tab.editor_panes.open_path(pane_id, path) {
+        match tab.editor_panes.open_path_as_tab(pane_id, path) {
             Ok(buffer_id) => {
                 if let Some(pane) = tab.registry.get_mut(pane_id) {
                     pane.editor_id = Some(buffer_id);
@@ -2134,6 +2140,8 @@ impl App {
                     dirty_map.as_ref(),
                     self.running_pulse_phase,
                     &diag_by_pane,
+                    self.hovered_editor_tab,
+                    &mut self.editor_tab_hits,
                 );
             }
         } else {
@@ -3958,6 +3966,49 @@ impl AppHandler for AppShell {
             }
         }
 
+        // Editor buffer tab strip click — switch or close a buffer tab.
+        {
+            let (rx, ry) = app.view_pt_to_raster_px(loc);
+            let hit = app
+                .editor_tab_hits
+                .iter()
+                .find(|h| {
+                    rx >= h.rect.x
+                        && rx < h.rect.x + h.rect.w
+                        && ry >= h.rect.y
+                        && ry < h.rect.y + h.rect.h
+                })
+                .cloned();
+            if let Some(h) = hit {
+                if h.is_close {
+                    // Close the buffer. The registry returns None when no
+                    // buffers remain (fall back to scratch — new scratch was
+                    // created inside close_buffer).
+                    if let Some(tab) = app.tabs.current_mut() {
+                        let _new_active = tab.editor_panes.close_buffer(h.pane_id, h.buffer_id);
+                        // Sync pane.editor_id to whatever is now active.
+                        if let Some(ep) = tab.editor_panes.get_pane(h.pane_id) {
+                            let active = ep.buffer_id;
+                            if let Some(pane) = tab.registry.get_mut(h.pane_id) {
+                                pane.editor_id = Some(active);
+                            }
+                        }
+                    }
+                } else {
+                    // Switch to the clicked buffer.
+                    if let Some(tab) = app.tabs.current_mut() {
+                        tab.editor_panes.open_buffer(h.pane_id, h.buffer_id);
+                        if let Some(pane) = tab.registry.get_mut(h.pane_id) {
+                            pane.editor_id = Some(h.buffer_id);
+                        }
+                    }
+                }
+                app.force_full_redraw = true;
+                app.dirty = true;
+                return;
+            }
+        }
+
         // Chrome row click — use hit rects populated by draw_tab_bar.
         {
             let (rx, ry) = app.view_pt_to_raster_px(loc);
@@ -4368,6 +4419,23 @@ impl AppHandler for AppShell {
                 app.hovered_explorer_row = new_hover;
                 app.dirty = true;
             }
+
+            // Update editor tab hover.
+            let new_editor_hover = app
+                .editor_tab_hits
+                .iter()
+                .find(|h| {
+                    !h.is_close
+                        && rx >= h.rect.x
+                        && rx < h.rect.x + h.rect.w
+                        && ry >= h.rect.y
+                        && ry < h.rect.y + h.rect.h
+                })
+                .map(|h| (h.pane_id, h.buffer_id));
+            if new_editor_hover != app.hovered_editor_tab {
+                app.hovered_editor_tab = new_editor_hover;
+                app.dirty = true;
+            }
         }
 
         // Native editor drag-select: extend selection to current pointer (NE7).
@@ -4528,6 +4596,23 @@ impl AppHandler for AppShell {
         });
         if new_hover != app.hovered_explorer_row {
             app.hovered_explorer_row = new_hover;
+            app.dirty = true;
+        }
+
+        // Update which editor buffer tab is hovered (for × show-on-hover).
+        let new_editor_hover = app
+            .editor_tab_hits
+            .iter()
+            .find(|h| {
+                !h.is_close
+                    && rx >= h.rect.x
+                    && rx < h.rect.x + h.rect.w
+                    && ry >= h.rect.y
+                    && ry < h.rect.y + h.rect.h
+            })
+            .map(|h| (h.pane_id, h.buffer_id));
+        if new_editor_hover != app.hovered_editor_tab {
+            app.hovered_editor_tab = new_editor_hover;
             app.dirty = true;
         }
     }
@@ -5287,6 +5372,8 @@ fn main() -> Result<()> {
         active_explorer_file: None,
         explorer_scroll_offset: 0,
         hovered_explorer_row: None,
+        hovered_editor_tab: None,
+        editor_tab_hits: Vec::new(),
         expanded_dirs: HashSet::new(),
         scroll_indicator_alpha: 0.0,
         scroll_indicator_last_scroll: None,

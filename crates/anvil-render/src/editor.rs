@@ -507,6 +507,7 @@ mod tests {
         let origin = Position { line: 0, col: 0 };
         EditorPane {
             buffer_id,
+            open_buffers: vec![buffer_id],
             cursors: vec![Cursor {
                 pos: origin,
                 anchor: origin,

@@ -34,3 +34,4 @@ pub use left_dock::{
     draw_left_dock_with_scroll,
 };
 pub use raster::{FontMetrics, GlyphPainter, PixelRect, Raster};
+pub use workspace::EditorTabHit;

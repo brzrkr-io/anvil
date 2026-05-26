@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 
-use anvil_editor::Buffer;
+use anvil_editor::BufferId;
 use anvil_term::{DirtySet, Search};
 use anvil_theme::Theme;
 use anvil_workspace::{
@@ -31,26 +31,41 @@ use crate::{
 /// the previous 8px read as a structural wall — 2px is the sweet spot.
 pub const DIVIDER_PX: f64 = 2.0;
 
+/// A click region in the per-pane editor buffer tab strip.
+#[derive(Clone, Debug)]
+pub struct EditorTabHit {
+    /// Pane that owns this tab strip.
+    pub pane_id: PaneId,
+    /// The buffer this hit refers to.
+    pub buffer_id: BufferId,
+    /// Whether this click is on the `×` close glyph.
+    pub is_close: bool,
+    /// Hit rect in device pixels (raster-absolute space).
+    pub rect: crate::raster::PixelRect,
+}
+
 /// Draw all panes in `tree` into `raster`, then draw divider hairlines over them.
 ///
 /// Parameters:
-///   raster           — full-window raster bitmap.
-///   tree             — the current tab's pane tree (layout and focused id).
-///   registry         — the pane registry for the current tab.
-///   editor_panes     — registry of native editor panes + buffers.
-///   inner            — device-pixel content area (window minus top-bar and panels).
-///                      y=0 is the top of the raster. Layout is done in this space.
-///   div_px           — divider gutter width in device pixels (use `DIVIDER_PX`).
-///   metrics          — font metrics shared by all panes.
-///   theme            — shared theme for all panes.
-///   search           — active search state, or None.
-///   focused_id       — the pane that receives cursor rendering.
-///   blink_phase      — cursor blink phase [0, 1).
-///   cursor_cfg       — cursor style + blink preference from config.
-///   dirty            — per-pane dirty sets from `Terminal::take_dirty_rows`. When
-///                      `None`, every row of every pane is redrawn (full frame).
-///   diag_by_pane     — per-pane render diagnostics (NE10); translated from
-///                      `LspManager::diagnostics_for` by `main.rs`. Empty map is fine.
+///   raster             — full-window raster bitmap.
+///   tree               — the current tab's pane tree (layout and focused id).
+///   registry           — the pane registry for the current tab.
+///   editor_panes       — registry of native editor panes + buffers.
+///   inner              — device-pixel content area (window minus top-bar and panels).
+///                        y=0 is the top of the raster. Layout is done in this space.
+///   div_px             — divider gutter width in device pixels (use `DIVIDER_PX`).
+///   metrics            — font metrics shared by all panes.
+///   theme              — shared theme for all panes.
+///   search             — active search state, or None.
+///   focused_id         — the pane that receives cursor rendering.
+///   blink_phase        — cursor blink phase [0, 1).
+///   cursor_cfg         — cursor style + blink preference from config.
+///   dirty              — per-pane dirty sets from `Terminal::take_dirty_rows`. When
+///                        `None`, every row of every pane is redrawn (full frame).
+///   diag_by_pane       — per-pane render diagnostics (NE10); translated from
+///                        `LspManager::diagnostics_for` by `main.rs`. Empty map is fine.
+///   hovered_editor_tab — currently hovered `(PaneId, BufferId)` for `×` show-on-hover.
+///   editor_tab_hits    — output: cleared and repopulated with tab-strip click regions.
 ///
 /// After this function returns, raster.origin_x and raster.origin_y are both 0.
 #[allow(clippy::too_many_arguments)]
@@ -71,7 +86,10 @@ pub fn draw_workspace(
     dirty: Option<&HashMap<PaneId, DirtySet>>,
     running_pulse_phase: f32,
     diag_by_pane: &HashMap<PaneId, Vec<RenderDiagnostic>>,
+    hovered_editor_tab: Option<(PaneId, BufferId)>,
+    editor_tab_hits: &mut Vec<EditorTabHit>,
 ) {
+    editor_tab_hits.clear();
     let entries = tree.layout(inner, div_px);
 
     // Draw each leaf.
@@ -159,14 +177,21 @@ pub fn draw_workspace(
                 if let Some(buf) = editor_panes.get_buffer(ep.buffer_id) {
                     let empty: Vec<RenderDiagnostic> = Vec::new();
                     let diags = diag_by_pane.get(&e.id).map(Vec::as_slice).unwrap_or(&empty);
+                    let hovered_bid = hovered_editor_tab
+                        .and_then(|(pid, bid)| if pid == e.id { Some(bid) } else { None });
                     let editor_rect = draw_editor_chrome(
                         raster,
                         painters.regular,
-                        buf,
+                        editor_panes,
+                        ep.buffer_id,
+                        &ep.open_buffers,
                         metrics,
                         theme,
                         e.rect,
                         e.id == focused_id,
+                        hovered_bid,
+                        e.id,
+                        editor_tab_hits,
                     );
                     draw_editor_into(
                         raster,
@@ -256,29 +281,45 @@ fn draw_terminal_drawer_chrome(
     raster.fill_pixel_rect_alpha(rect.x, rect.y, rect.w, 1.0, theme.hairline, 0.68);
 }
 
+/// Height of the per-pane editor buffer tab strip in device pixels.
+const EDITOR_TABS_H: f64 = 34.0;
+/// Minimum per-tab width: ~6 chars + padding.
+const TAB_MIN_W: f64 = 80.0;
+/// Maximum per-tab width: ~24 chars + padding.
+const TAB_MAX_W: f64 = 240.0;
+/// Horizontal padding inside each tab (leading side).
+const TAB_PAD_L: f64 = 10.0;
+/// Space reserved on the right for the `×` close glyph.
+const TAB_CLOSE_W: f64 = 20.0;
+
+/// Draw the per-pane multi-buffer tab strip and return the editor body rect.
+///
+/// Paints `open_buffers` as horizontal tabs with `active_buffer_id` highlighted.
+/// Writes hit regions (tab-body + close button per tab) into `hits_out`.
+#[allow(clippy::too_many_arguments)]
 fn draw_editor_chrome(
     raster: &mut Raster,
     painter: &mut dyn crate::raster::GlyphPainter,
-    buffer: &Buffer,
+    editor_panes: &EditorPaneRegistry,
+    active_buffer_id: BufferId,
+    open_buffers: &[BufferId],
     metrics: FontMetrics,
     theme: &Theme,
     rect: Rect,
-    active: bool,
+    pane_focused: bool,
+    hovered_buffer: Option<BufferId>,
+    pane_id: PaneId,
+    hits_out: &mut Vec<EditorTabHit>,
 ) -> Rect {
-    let tabs_h = 30.0_f64.min(rect.h.max(0.0));
-    // One status bar per editor group looked like repeated terminal chrome in
-    // the failed smoke. Keep editor state in the active tab/chrome until real
-    // file status data exists.
-    let status_h = 0.0_f64;
+    let tabs_h = EDITOR_TABS_H.min(rect.h.max(0.0));
     if tabs_h <= 0.0 || rect.w <= 0.0 {
         return rect;
     }
 
-    // Native editor chrome should read as IDE structure, not terminal output or
-    // decorative ember. Keep warmth for active state only and use Mineral
-    // graphite/charcoal/hairline tokens for the shell.
+    // Background: solid surface for the whole pane, graphite strip for tab row.
     raster.fill_pixel_rect(rect.x, rect.y, rect.w, rect.h, theme.surface);
     raster.fill_pixel_rect(rect.x, rect.y, rect.w, tabs_h, theme.graphite);
+    // Bottom hairline dividing tabs from editor body.
     raster.fill_pixel_rect_alpha(
         rect.x,
         rect.y + tabs_h - 1.0,
@@ -288,188 +329,206 @@ fn draw_editor_chrome(
         0.92,
     );
 
-    let filename = buffer
-        .tracked_path()
-        .and_then(|p| p.file_name())
-        .and_then(|name| name.to_str())
-        .unwrap_or("scratch");
-    let dirty_dot = if buffer.revisions > 0 { "●" } else { "" };
-    let lang = buffer.language_id().unwrap_or("plain");
-    let active_title = if dirty_dot.is_empty() {
-        format!("◇ {filename}")
-    } else {
-        format!("{dirty_dot} ◇ {filename}")
-    };
-
-    let min_tab_w = 8.0 * metrics.cell_w + 24.0;
-    let max_tab_w = 32.0 * metrics.cell_w + 42.0;
-    let tab_w =
-        (active_title.chars().count() as f64 * metrics.cell_w + 42.0).clamp(min_tab_w, max_tab_w);
-    let _tab_x = draw_editor_tab(
-        raster,
-        painter,
-        metrics,
-        theme,
-        &active_title,
-        Rect {
-            x: rect.x,
-            y: rect.y,
-            w: tab_w,
-            h: tabs_h,
-        },
-        true,
-    );
-
-    let meta = format!("{lang} · native");
-    let meta_w = meta.chars().count() as f64 * metrics.cell_w;
-    if rect.w > tab_w + meta_w + 40.0 {
-        draw_chrome_text(
-            raster,
-            painter,
-            metrics,
-            &meta,
-            theme.text_subtle,
-            Rect {
-                x: rect.x + rect.w - meta_w - 12.0,
-                y: rect.y + ((tabs_h - metrics.cell_h) * 0.5).max(0.0),
-                w: meta_w,
-                h: metrics.cell_h,
-            },
-        );
+    // Top accent rule for focused pane (overwrites graphite at y=0).
+    if pane_focused {
+        raster.fill_pixel_rect(rect.x, rect.y, rect.w, 2.0, theme.accent_primary);
     }
 
-    if status_h > 0.0 {
-        let status_y = rect.y + rect.h - status_h;
-        raster.fill_pixel_rect_alpha(rect.x, status_y, rect.w, status_h, [0x0b, 0x0a, 0x09], 0.86);
-        raster.fill_pixel_rect_alpha(rect.x, status_y, rect.w, 1.0, theme.accent_bright, 0.20);
-        let left = "main · rust-analyzer live · native";
-        draw_chrome_text(
-            raster,
-            painter,
-            metrics,
-            left,
-            theme.text_subtle,
-            Rect {
-                x: rect.x + 12.0,
-                y: status_y + ((status_h - metrics.cell_h) * 0.5).max(0.0),
-                w: (rect.w * 0.55).max(0.0),
-                h: metrics.cell_h,
-            },
-        );
-        let right = format!("UTF-8 · {lang}");
-        let right_w = right.chars().count() as f64 * metrics.cell_w;
-        if rect.w > right_w + 28.0 {
-            draw_chrome_text(
-                raster,
-                painter,
-                metrics,
-                &right,
-                theme.text_subtle,
-                Rect {
-                    x: rect.x + rect.w - right_w - 12.0,
-                    y: status_y + ((status_h - metrics.cell_h) * 0.5).max(0.0),
-                    w: right_w,
-                    h: metrics.cell_h,
-                },
-            );
+    // Compute per-tab widths. Each tab is sized to its label but clamped.
+    // Label = basename of tracked path, or "scratch".
+    let tab_count = open_buffers.len().max(1);
+    // Max total width available for tabs.
+    let available_w = rect.w;
+
+    let mut tab_widths: Vec<f64> = open_buffers
+        .iter()
+        .map(|&bid| {
+            let label = buffer_label(editor_panes, bid);
+            // label chars + dirty dot (1 char) + padding + close button
+            let char_w = (label.chars().count() + 2) as f64 * metrics.cell_w;
+            (char_w + TAB_PAD_L + TAB_CLOSE_W + 8.0).clamp(TAB_MIN_W, TAB_MAX_W)
+        })
+        .collect();
+
+    // If total width exceeds available, scale all tabs down proportionally.
+    let total_w: f64 = tab_widths.iter().sum();
+    if total_w > available_w && total_w > 0.0 {
+        let scale = available_w / total_w;
+        for w in &mut tab_widths {
+            *w = (*w * scale).max(TAB_MIN_W.min(available_w / tab_count as f64));
         }
     }
 
-    if active {
-        raster.fill_pixel_rect(rect.x, rect.y, rect.w, 1.0, theme.accent_primary);
+    // Draw each tab.
+    let mut cursor_x = rect.x;
+    for (i, &bid) in open_buffers.iter().enumerate() {
+        let tab_w = tab_widths[i];
+        let is_active = bid == active_buffer_id;
+        let is_hovered = hovered_buffer == Some(bid);
+        let tab_rect = crate::raster::PixelRect {
+            x: cursor_x,
+            y: rect.y,
+            w: tab_w,
+            h: tabs_h,
+        };
+
+        draw_buffer_tab(
+            raster,
+            painter,
+            editor_panes,
+            bid,
+            metrics,
+            theme,
+            tab_rect,
+            is_active,
+            is_hovered,
+            pane_id,
+            hits_out,
+        );
+
+        cursor_x += tab_w;
     }
 
     Rect {
         x: rect.x,
         y: rect.y + tabs_h,
         w: rect.w,
-        h: (rect.h - tabs_h - status_h).max(0.0),
+        h: (rect.h - tabs_h).max(0.0),
     }
 }
 
-fn draw_editor_tab(
+/// Get the display label (filename basename) for a buffer.
+fn buffer_label(editor_panes: &EditorPaneRegistry, buffer_id: BufferId) -> String {
+    editor_panes
+        .get_buffer(buffer_id)
+        .and_then(|b| b.tracked_path())
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("scratch")
+        .to_string()
+}
+
+/// Draw a single buffer tab and emit hit rects.
+#[allow(clippy::too_many_arguments)]
+fn draw_buffer_tab(
     raster: &mut Raster,
     painter: &mut dyn crate::raster::GlyphPainter,
+    editor_panes: &EditorPaneRegistry,
+    buffer_id: BufferId,
     metrics: FontMetrics,
     theme: &Theme,
-    label: &str,
-    tab: Rect,
-    active: bool,
-) -> f64 {
-    let fill = if active {
-        theme.charcoal
-    } else {
-        theme.graphite
-    };
-    raster.fill_pixel_rect(tab.x, tab.y + 5.0, tab.w, (tab.h - 5.0).max(0.0), fill);
-    raster.fill_pixel_rect_alpha(
-        tab.x + tab.w - 1.0,
-        tab.y + 7.0,
-        1.0,
-        (tab.h - 9.0).max(0.0),
-        theme.hairline,
-        0.86,
-    );
-    if active {
-        raster.fill_pixel_rect(tab.x, tab.y, tab.w, 2.0, theme.accent_primary);
-        raster.fill_pixel_rect_alpha(
-            tab.x,
-            tab.y + 5.0,
-            tab.w,
-            tab.h - 5.0,
-            theme.panel_raised,
-            0.16,
-        );
-    }
-
-    let text_x = tab.x + if active { 16.0 } else { 12.0 };
-    if active {
-        raster.fill_pixel_rect_alpha(
-            tab.x + 8.0,
-            tab.y + (tab.h * 0.5 - 3.0).max(0.0),
-            2.0,
-            6.0,
-            theme.accent_primary,
-            0.88,
-        );
-    }
-    draw_chrome_text(
-        raster,
-        painter,
-        metrics,
-        label,
-        if active {
-            theme.foreground
-        } else {
-            theme.text_muted
-        },
-        Rect {
-            x: text_x,
-            y: tab.y + ((tab.h - metrics.cell_h) * 0.5).max(0.0),
-            w: (tab.w - (text_x - tab.x) - 10.0).max(0.0),
-            h: metrics.cell_h,
-        },
-    );
-    tab.x + tab.w
-}
-
-fn draw_chrome_text(
-    raster: &mut Raster,
-    painter: &mut dyn crate::raster::GlyphPainter,
-    metrics: FontMetrics,
-    text: &str,
-    color: [u8; 3],
-    bounds: Rect,
+    tab: crate::raster::PixelRect,
+    is_active: bool,
+    is_hovered: bool,
+    pane_id: PaneId,
+    hits_out: &mut Vec<EditorTabHit>,
 ) {
-    let mut gx = bounds.x;
-    let max_x = bounds.x + bounds.w;
-    for ch in text.chars() {
-        if gx + metrics.cell_w > max_x {
+    // Tab background.
+    if is_active {
+        // Active tab: charcoal fill + 2px accent_primary top rule.
+        raster.fill_pixel_rect(tab.x, tab.y, tab.w, tab.h, theme.charcoal);
+        raster.fill_pixel_rect(tab.x, tab.y, tab.w, 2.0, theme.accent_primary);
+        // Right-edge separator between active and neighbor.
+        raster.fill_pixel_rect_alpha(
+            tab.x + tab.w - 1.0,
+            tab.y + 4.0,
+            1.0,
+            (tab.h - 6.0).max(0.0),
+            theme.hairline,
+            0.50,
+        );
+    } else {
+        // Inactive: transparent (graphite) — no fill needed; just a separator.
+        raster.fill_pixel_rect_alpha(
+            tab.x + tab.w - 1.0,
+            tab.y + 4.0,
+            1.0,
+            (tab.h - 6.0).max(0.0),
+            theme.hairline,
+            0.50,
+        );
+    }
+
+    // Dirty dot (7px, accent_primary) to the left of the filename.
+    let is_dirty = editor_panes
+        .get_buffer(buffer_id)
+        .map(|b| b.revisions > 0)
+        .unwrap_or(false);
+
+    let label = buffer_label(editor_panes, buffer_id);
+    let text_color = if is_active {
+        theme.foreground
+    } else {
+        theme.text_muted
+    };
+
+    // Layout: [PAD_L] [dirty_dot?] [label] ... [close_×]
+    let dot_w = if is_dirty {
+        8.0 + metrics.cell_w * 0.5
+    } else {
+        0.0
+    };
+    let text_x = tab.x + TAB_PAD_L + dot_w;
+    let text_max_x = tab.x + tab.w - TAB_CLOSE_W - 4.0;
+    let text_y = tab.y + ((tab.h - metrics.cell_h) * 0.5).max(0.0);
+
+    if is_dirty {
+        // 7×7 accent dot, vertically centered.
+        let dot_x = tab.x + TAB_PAD_L;
+        let dot_y = tab.y + (tab.h * 0.5 - 3.5).max(0.0);
+        raster.fill_pixel_rect(dot_x, dot_y, 7.0, 7.0, theme.accent_primary);
+    }
+
+    // Label text.
+    let mut gx = text_x;
+    for ch in label.chars() {
+        if gx + metrics.cell_w > text_max_x {
             break;
         }
-        raster.glyph_at(painter, metrics, gx, bounds.y, ch as u32, color);
+        raster.glyph_at(painter, metrics, gx, text_y, ch as u32, text_color);
         gx += metrics.cell_w;
     }
+
+    // Tab body hit rect (excludes the close button area).
+    let close_x = tab.x + tab.w - TAB_CLOSE_W;
+    hits_out.push(EditorTabHit {
+        pane_id,
+        buffer_id,
+        is_close: false,
+        rect: crate::raster::PixelRect {
+            x: tab.x,
+            y: tab.y,
+            w: (close_x - tab.x).max(0.0),
+            h: tab.h,
+        },
+    });
+
+    // Close `×` glyph: shown on active tab and on hovered tab.
+    if is_active || is_hovered {
+        let close_glyph_x = close_x + (TAB_CLOSE_W - metrics.cell_w) * 0.5;
+        let close_glyph_y = tab.y + ((tab.h - metrics.cell_h) * 0.5).max(0.0);
+        raster.glyph_at(
+            painter,
+            metrics,
+            close_glyph_x,
+            close_glyph_y,
+            '×' as u32,
+            theme.text_subtle,
+        );
+    }
+
+    // Close hit rect (always present for tab-close clicks).
+    hits_out.push(EditorTabHit {
+        pane_id,
+        buffer_id,
+        is_close: true,
+        rect: crate::raster::PixelRect {
+            x: close_x,
+            y: tab.y,
+            w: TAB_CLOSE_W,
+            h: tab.h,
+        },
+    });
 }
 
 /// Draw only the chrome portion of the workspace (divider hairlines, focused
@@ -659,6 +718,7 @@ mod tests {
 
         let tree = PaneTree::init_single(first_id);
         let ep_reg = EditorPaneRegistry::default();
+        let mut tab_hits = Vec::new();
         draw_workspace(
             &mut r,
             &mut GridPainters {
@@ -681,6 +741,8 @@ mod tests {
             None,
             0.0,
             &HashMap::new(),
+            None,
+            &mut tab_hits,
         );
 
         assert_eq!(r.origin_x, 0.0, "origin_x must be reset to 0");
@@ -735,6 +797,7 @@ mod tests {
         r.clear(theme.background);
 
         let ep_reg = EditorPaneRegistry::default();
+        let mut tab_hits = Vec::new();
         draw_workspace(
             &mut r,
             &mut GridPainters {
@@ -757,6 +820,8 @@ mod tests {
             None,
             0.0,
             &HashMap::new(),
+            None,
+            &mut tab_hits,
         );
 
         // Gutter center: pane1_w = (inner.w - TEST_DIV) * 0.5
@@ -849,6 +914,7 @@ mod tests {
     /// Native editor panes reserve a chrome strip before drawing buffer content.
     #[test]
     fn editor_chrome_paints_header_and_offsets_content_rect() {
+        use anvil_workspace::editor_pane::EditorPaneRegistry;
         let m = metrics();
         let mut r = Raster::new(320, 160);
         let mut painter = StubPainter::default();
@@ -860,14 +926,24 @@ mod tests {
             w: 260.0,
             h: 120.0,
         };
+        // Build a minimal registry with one pane and one scratch buffer.
+        let mut ep_reg = EditorPaneRegistry::default();
+        let bid = ep_reg.new_pane(1);
+        let open_bufs = vec![bid];
+        let mut hits = Vec::new();
         let content = draw_editor_chrome(
             &mut r,
             &mut painter,
-            &anvil_editor::Buffer::from_text("hello"),
+            &ep_reg,
+            bid,
+            &open_bufs,
             m,
             &theme,
             rect,
-            true,
+            true, // pane_focused
+            None, // hovered_buffer
+            1,    // pane_id
+            &mut hits,
         );
 
         assert_eq!(pixel_at(&r, 12, 12), theme.accent_primary);
@@ -878,10 +954,8 @@ mod tests {
         );
         assert!(content.y > rect.y, "editor content must be below chrome");
         assert!(content.h < rect.h, "chrome must reserve vertical space");
-        assert!(
-            !painter.calls.is_empty(),
-            "chrome should draw filename/placeholder text"
-        );
+        // With a single scratch tab we expect at least 2 hit rects (body + close).
+        assert!(hits.len() >= 2, "chrome must emit tab hit rects");
     }
 
     /// Two-pane: focused pane has a 1px inset accent border; non-focused does not.
@@ -913,6 +987,7 @@ mod tests {
         let mut bold_italic_p = StubPainter::default();
         r.clear(theme.background);
         let ep_reg = EditorPaneRegistry::default();
+        let mut tab_hits = Vec::new();
         draw_workspace(
             &mut r,
             &mut GridPainters {
@@ -935,6 +1010,8 @@ mod tests {
             None,
             0.0,
             &HashMap::new(),
+            None,
+            &mut tab_hits,
         );
 
         // Focused pane (id1) is the left half of inner.
@@ -992,6 +1069,7 @@ mod tests {
         let theme = anvil_theme::MINERAL_DARK;
         r.clear(theme.background);
         let ep_reg = EditorPaneRegistry::default();
+        let mut tab_hits = Vec::new();
         draw_workspace(
             &mut r,
             &mut GridPainters {
@@ -1014,6 +1092,8 @@ mod tests {
             None,
             0.0,
             &HashMap::new(),
+            None,
+            &mut tab_hits,
         );
         // "hello world" starts with 'h' — expect glyph calls.
         assert!(!painter.calls.is_empty());
