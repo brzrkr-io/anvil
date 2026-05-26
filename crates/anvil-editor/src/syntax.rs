@@ -383,6 +383,76 @@ pub fn derive_outline_rows(layer: &SyntaxLayer, text: &str) -> Vec<OutlineSymbol
     results
 }
 
+// ── Fold range derivation (item 13) ───────────────────────────────────────────
+
+/// A foldable range `(start_line, end_line)` where both are 0-indexed.
+///
+/// The fold covers lines `start_line+1..=end_line` — the start line stays
+/// visible; lines after it are hidden when the fold is active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FoldRange {
+    /// The line that starts the foldable block (e.g. `fn foo() {`).
+    pub start: usize,
+    /// The last line of the block body (the line containing the closing `}`).
+    pub end: usize,
+}
+
+/// Walk the syntax tree to find foldable ranges for Rust files.
+///
+/// Foldable node kinds: `function_item`, `impl_item`, `struct_item`,
+/// `enum_item`, `trait_item`, `mod_item`, `block`. For non-Rust buffers (or
+/// when no tree is available), returns an empty `Vec`.
+///
+/// Capped at 500 nodes.
+pub fn derive_fold_ranges(layer: &SyntaxLayer) -> Vec<FoldRange> {
+    const NODE_CAP: usize = 500;
+
+    let tree = match &layer.tree {
+        Some(t) => t,
+        None => return Vec::new(),
+    };
+
+    let mut results = Vec::new();
+    let mut stack: Vec<tree_sitter::Node<'_>> = vec![tree.root_node()];
+    let mut visited = 0usize;
+
+    while let Some(node) = stack.pop() {
+        visited += 1;
+        if visited > NODE_CAP {
+            break;
+        }
+
+        let kind = node.kind();
+        let is_foldable = matches!(
+            kind,
+            "function_item"
+                | "impl_item"
+                | "struct_item"
+                | "enum_item"
+                | "trait_item"
+                | "mod_item"
+                | "block"
+        );
+
+        if is_foldable {
+            let start = node.start_position().row;
+            let end = node.end_position().row;
+            if end > start {
+                results.push(FoldRange { start, end });
+            }
+        }
+
+        // Always recurse to collect nested foldable ranges.
+        for i in (0..node.child_count()).rev() {
+            if let Some(child) = node.child(i) {
+                stack.push(child);
+            }
+        }
+    }
+
+    results
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

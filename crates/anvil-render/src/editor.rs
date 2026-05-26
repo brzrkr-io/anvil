@@ -21,9 +21,11 @@
 
 use unicode_segmentation::UnicodeSegmentation as _;
 
-use anvil_editor::{Buffer, GitChange, GitGutter, SyntaxRole};
+use anvil_editor::{Buffer, FoldRange, GitChange, GitGutter, SyntaxRole, derive_fold_ranges};
 use anvil_theme::Theme;
-use anvil_workspace::{editor_pane::EditorPane, layout::Rect, selection::Selection};
+use anvil_workspace::{
+    bracket_match_for, editor_pane::EditorPane, layout::Rect, selection::Selection,
+};
 
 use crate::raster::{FontMetrics, GlyphPainter, Raster};
 
@@ -105,6 +107,22 @@ pub fn draw_editor_into(
     // First visible buffer line (integer snap).
     let scroll_line = editor_pane.scroll_pos.floor() as usize;
 
+    // ── Fold ranges (item 13) ─────────────────────────────────────────────────
+    let fold_ranges: Vec<FoldRange> = derive_fold_ranges(buffer.syntax());
+    let active_folds = editor_pane.folds.get(&editor_pane.buffer_id);
+    // Build a set of lines that are hidden by an active fold.
+    let mut hidden_lines: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    for fr in &fold_ranges {
+        if active_folds.map(|f| f.contains(&fr.start)).unwrap_or(false) {
+            for ln in (fr.start + 1)..=fr.end {
+                hidden_lines.insert(ln);
+            }
+        }
+    }
+    // Map from start_line → end_line for all foldable ranges (for chevron glyph).
+    let foldable_starts: std::collections::HashMap<usize, usize> =
+        fold_ranges.iter().map(|fr| (fr.start, fr.end)).collect();
+
     // ── Selection bounds (pre-compute for wash pass) ──────────────────────────
     let sel = &editor_pane.selection;
 
@@ -148,10 +166,14 @@ pub fn draw_editor_into(
     }
 
     // ── Row loop ──────────────────────────────────────────────────────────────
-    for vrow in 0..visible_rows {
-        let line_idx = scroll_line + vrow;
-        if line_idx >= line_count {
-            break;
+    // When folds are active we skip hidden lines but still count visual rows.
+    let mut vrow = 0usize;
+    let mut line_idx = scroll_line;
+    while vrow < visible_rows && line_idx < line_count {
+        // Skip lines hidden by an active fold (they don't consume a visual row).
+        if hidden_lines.contains(&line_idx) {
+            line_idx += 1;
+            continue;
         }
 
         let row_y = rect.y + vrow as f64 * ch;
@@ -276,6 +298,61 @@ pub fn draw_editor_into(
             raster.glyph_at(painter, metrics, gx, row_y, '▸' as u32, theme.text_muted);
         }
         let _ = painted; // suppress dead-code lint
+
+        // ── Fold chevron in gutter (item 13) ──────────────────────────────────
+        // Paint ▾ (open) or ▸ (folded) in the last gutter column for lines that
+        // start a foldable range.
+        if let Some(&end_line) = foldable_starts.get(&line_idx) {
+            let is_folded = active_folds.map(|f| f.contains(&line_idx)).unwrap_or(false);
+            // Only show the chevron when the range spans more than one line.
+            if end_line > line_idx {
+                let chevron = if is_folded { '▸' } else { '▾' };
+                // Place in the last gutter column (before content).
+                let gx = rect.x + (gutter_cols as f64 - 1.0) * cw;
+                raster.glyph_at(
+                    painter,
+                    metrics,
+                    gx,
+                    row_y,
+                    chevron as u32,
+                    theme.text_muted,
+                );
+            }
+        }
+
+        // ── Fold `…` marker line (item 13) ────────────────────────────────────
+        // If this line has an active fold, insert a visual `…` row immediately.
+        if active_folds.map(|f| f.contains(&line_idx)).unwrap_or(false) {
+            if let Some(&end_line) = foldable_starts.get(&line_idx) {
+                if end_line > line_idx {
+                    // Advance visual row for the … row.
+                    vrow += 1;
+                    if vrow < visible_rows {
+                        let ellipsis_y = rect.y + vrow as f64 * ch;
+                        raster.fill_pixel_rect_alpha(
+                            rect.x,
+                            ellipsis_y,
+                            rect.w,
+                            ch,
+                            theme.panel,
+                            0.20,
+                        );
+                        let gx = rect.x + gutter_w;
+                        raster.glyph_at(
+                            painter,
+                            metrics,
+                            gx,
+                            ellipsis_y,
+                            '\u{2026}' as u32,
+                            theme.text_muted,
+                        );
+                    }
+                }
+            }
+        }
+
+        vrow += 1;
+        line_idx += 1;
     }
 
     // ── Cursor bars — primary + secondary (NE13) ─────────────────────────────
@@ -295,6 +372,44 @@ pub fn draw_editor_into(
                 };
                 // 2 px-wide vertical bar, full cell height.
                 raster.fill_pixel_rect(cx, cy, 2.0, ch, color);
+            }
+        }
+    }
+
+    // ── Bracket match highlight (item 14) ────────────────────────────────────
+    // When the primary cursor is on or immediately after a bracket, outline the
+    // pair with a 2px border in `theme.accent_primary` α=0.4.
+    {
+        let cursor_pos = editor_pane.primary_cursor().pos;
+        if let Some((open_pos, close_pos)) = bracket_match_for(buffer, cursor_pos, 2000) {
+            for bpos in [open_pos, close_pos] {
+                if bpos.line >= scroll_line {
+                    let bvrow = bpos.line - scroll_line;
+                    if bvrow < visible_rows {
+                        let bx = rect.x + gutter_w + bpos.col as f64 * cw;
+                        let by = rect.y + bvrow as f64 * ch;
+                        // 2px outline: top, bottom, left, right edges.
+                        let alpha = 0.4f64;
+                        raster.fill_pixel_rect_alpha(bx, by, cw, 2.0, theme.accent, alpha);
+                        raster.fill_pixel_rect_alpha(
+                            bx,
+                            by + ch - 2.0,
+                            cw,
+                            2.0,
+                            theme.accent,
+                            alpha,
+                        );
+                        raster.fill_pixel_rect_alpha(bx, by, 2.0, ch, theme.accent, alpha);
+                        raster.fill_pixel_rect_alpha(
+                            bx + cw - 2.0,
+                            by,
+                            2.0,
+                            ch,
+                            theme.accent,
+                            alpha,
+                        );
+                    }
+                }
             }
         }
     }
@@ -536,6 +651,7 @@ mod tests {
             scroll_vel: 0.0,
             search: None,
             hover_popup: None,
+            folds: std::collections::HashMap::new(),
         }
     }
 

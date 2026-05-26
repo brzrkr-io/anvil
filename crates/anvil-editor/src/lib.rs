@@ -17,7 +17,10 @@ pub use buffer::{
     IoError, Position, ProposalError, ProposalStatus, Range,
 };
 pub use git::{GitChange, GitGutter};
-pub use syntax::{OutlineSymbol, OutlineSymbolKind, SyntaxLayer, SyntaxRole, derive_outline_rows};
+pub use syntax::{
+    FoldRange, OutlineSymbol, OutlineSymbolKind, SyntaxLayer, SyntaxRole, derive_fold_ranges,
+    derive_outline_rows,
+};
 
 // Re-export LSP types used by App and main.rs (NE9, NE10).
 pub use lsp::{
