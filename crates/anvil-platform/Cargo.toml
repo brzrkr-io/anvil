@@ -28,10 +28,13 @@ objc2-foundation   = { workspace = true, features = [
     "NSObject",
     "NSNotification",
     "NSValue",
+    "NSArray",
+    "NSURL",
 ] }
 objc2-app-kit      = { workspace = true, features = [
     "NSApplication",
     "NSAppearance",
+    "NSDragging",
     "NSEvent",
     "NSImage",
     "NSMenu",

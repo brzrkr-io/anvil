@@ -29,6 +29,7 @@ use anvil_config::{Chord, Config, Watcher, parse_chord};
 use anvil_platform::AtlasPainter;
 use anvil_platform::appkit::{
     AppHandler, AppKitApp, ContextAction, KeyEvent, KeyInput, Modifiers, MouseLocation,
+    RightClickZone,
 };
 use anvil_platform::font::{CHROME_PT, Font, FontFace, register_bundled};
 use anvil_platform::metal::{PresentMode, Renderer, present_mode};
@@ -831,6 +832,18 @@ pub struct App {
     project_switcher_open: bool,
     /// Currently highlighted row in the project-switcher overlay.
     project_switcher_sel: usize,
+
+    // ── Context-menu target path (I1/I2) ─────────────────────────────────────
+    /// Path resolved during `right_click_zone`; consumed by `context_action`.
+    right_click_path: Option<PathBuf>,
+
+    // ── Explorer-drag state (I3) ──────────────────────────────────────────────
+    /// File path being dragged from the Explorer, plus the mouse location at
+    /// which the drag started (used to detect the 4pt threshold).
+    explorer_drag: Option<(PathBuf, MouseLocation)>,
+    /// Current cursor position while an explorer drag is live; used by the
+    /// render path to paint the floating filename chip.
+    explorer_drag_cursor: Option<MouseLocation>,
 }
 
 // ── App helpers ───────────────────────────────────────────────────────────────
@@ -3434,6 +3447,48 @@ impl App {
                 chrome_top,
                 chrome_bot,
             );
+        }
+
+        // ── I3: Explorer drag chip ────────────────────────────────────────────
+        // Paint a small floating label near the cursor while dragging a file
+        // from the Explorer.
+        if let (Some(cursor), Some((path, _))) =
+            (self.explorer_drag_cursor, self.explorer_drag.as_ref())
+        {
+            let basename = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+            let (cx, cy) = self.view_pt_to_raster_px(cursor);
+            // Offset chip below-right of the cursor pointer.
+            let chip_x = cx + 12.0 * self.ui_scale;
+            let chip_y = cy - 16.0 * self.ui_scale;
+            let pad_x = 6.0 * self.ui_scale;
+            let pad_y = 3.0 * self.ui_scale;
+            let chip_w = basename.len() as f64 * self.font.metrics.cell_w + pad_x * 2.0;
+            let chip_h = ch + pad_y * 2.0;
+            // Panel background.
+            self.raster
+                .fill_pixel_rect(chip_x, chip_y, chip_w, chip_h, self.theme.panel);
+            self.raster.fill_pixel_rect_alpha(
+                chip_x,
+                chip_y,
+                chip_w,
+                1.0,
+                self.theme.hairline,
+                0.68,
+            );
+            // Filename text.
+            let metrics = self.font.metrics;
+            for (i, ch_c) in basename.chars().enumerate() {
+                let gx = chip_x + pad_x + i as f64 * metrics.cell_w;
+                let gy = chip_y + pad_y;
+                self.raster.glyph_at(
+                    grid_painters.regular,
+                    metrics,
+                    gx,
+                    gy,
+                    ch_c as u32,
+                    self.theme.foreground,
+                );
+            }
         }
 
         // ── Present ───────────────────────────────────────────────────────────
@@ -6695,6 +6750,9 @@ impl AppHandler for AppShell {
                                 }
                                 app.dirty = true;
                             } else {
+                                // I3: arm the explorer drag state so mouse_dragged can
+                                // track the cursor for the floating chip.
+                                app.explorer_drag = Some((path.clone(), loc));
                                 app.open_path_in_native_editor(&path);
                                 // Item 5: sync active_explorer_file after open.
                                 app.active_explorer_file = Some(path);
@@ -7109,6 +7167,19 @@ impl AppHandler for AppShell {
         // Native editor drag-select: release (NE7).
         app.editor_mouse_drag_start = None;
 
+        // I3: Explorer drag: if the user dragged past the threshold and released
+        // over an editor area, open the file (it was already opened on mouse_down,
+        // so this is a no-op for the same pane, or opens in a newly focused pane).
+        if app.explorer_drag_cursor.is_some() {
+            if let Some((path, _)) = app.explorer_drag.take() {
+                app.open_path_in_native_editor(&path);
+            }
+            app.explorer_drag_cursor = None;
+            app.dirty = true;
+        } else {
+            app.explorer_drag = None;
+        }
+
         // Tab reorder drag: release — just clear the state.
         if app.tab_drag.take().is_some() {
             app.dirty = true;
@@ -7255,6 +7326,21 @@ impl AppHandler for AppShell {
             if new_editor_hover != app.hovered_editor_tab {
                 app.hovered_editor_tab = new_editor_hover;
                 app.dirty = true;
+            }
+        }
+
+        // I3: Explorer drag — enter drag mode when cursor leaves an Explorer row
+        // by more than 4 logical pt.  The drag_path is set on mouse_down if the
+        // click landed on a non-directory Explorer row; see mouse_down above.
+        if let Some((ref drag_path, start_loc)) = app.explorer_drag.clone() {
+            let dx = loc.x - start_loc.x;
+            let dy = loc.y - start_loc.y;
+            let threshold_pt = 4.0;
+            if dx * dx + dy * dy >= threshold_pt * threshold_pt {
+                // We are actively dragging — track cursor for the chip render.
+                app.explorer_drag_cursor = Some(loc);
+                app.dirty = true;
+                let _ = drag_path; // hold borrow
             }
         }
 
@@ -7726,6 +7812,179 @@ impl AppHandler for AppShell {
             }
             ContextAction::SplitDown => {
                 self.app.split_focused_pane(SplitDir::Vertical);
+            }
+
+            // ── Explorer context menu (I1) ────────────────────────────────────
+            ContextAction::ExplorerOpen => {
+                if let Some(path) = self.app.right_click_path.take() {
+                    self.app.open_path_in_native_editor(&path);
+                }
+            }
+            ContextAction::ExplorerRename => {
+                if let Some(path) = self.app.right_click_path.take() {
+                    let name = path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("")
+                        .to_string();
+                    // Find the row index that matches this path.
+                    let row_idx = self
+                        .app
+                        .left_dock_hits
+                        .visible_rows
+                        .iter()
+                        .position(|(p, _)| *p == path)
+                        .unwrap_or(0);
+                    self.app.explorer_rename = Some(RenameState {
+                        old_path: path,
+                        input: name,
+                        row_idx,
+                    });
+                }
+            }
+            ContextAction::ExplorerDelete => {
+                if let Some(path) = self.app.right_click_path.take() {
+                    let name = path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("")
+                        .to_string();
+                    self.app.explorer_delete_confirm = Some(DeleteConfirm { path, name });
+                }
+            }
+            ContextAction::ExplorerNewFile => {
+                let parent_dir = self
+                    .app
+                    .right_click_path
+                    .take()
+                    .and_then(|p| {
+                        if p.is_dir() {
+                            Some(p)
+                        } else {
+                            p.parent().map(|pp| pp.to_path_buf())
+                        }
+                    })
+                    .or_else(|| {
+                        self.app
+                            .fs_snapshot
+                            .as_ref()
+                            .map(|snap| PathBuf::from(&snap.root))
+                    });
+                if let Some(dir) = parent_dir {
+                    self.app.explorer_new_item = Some(NewItemState {
+                        parent_dir: dir,
+                        input: String::new(),
+                        is_dir: false,
+                    });
+                }
+            }
+            ContextAction::ExplorerNewFolder => {
+                let parent_dir = self
+                    .app
+                    .right_click_path
+                    .take()
+                    .and_then(|p| {
+                        if p.is_dir() {
+                            Some(p)
+                        } else {
+                            p.parent().map(|pp| pp.to_path_buf())
+                        }
+                    })
+                    .or_else(|| {
+                        self.app
+                            .fs_snapshot
+                            .as_ref()
+                            .map(|snap| PathBuf::from(&snap.root))
+                    });
+                if let Some(dir) = parent_dir {
+                    self.app.explorer_new_item = Some(NewItemState {
+                        parent_dir: dir,
+                        input: String::new(),
+                        is_dir: true,
+                    });
+                }
+            }
+            ContextAction::ExplorerRevealInFinder => {
+                if let Some(path) = self.app.right_click_path.take() {
+                    let _ = std::process::Command::new("open")
+                        .args(["-R", &path.to_string_lossy()])
+                        .spawn();
+                }
+            }
+
+            // ── Editor body context menu (I2) ─────────────────────────────────
+            ContextAction::EditorGotoDef => {
+                let pane_id = self.app.tabs.current().map(|t| t.focused_id()).unwrap_or(0);
+                self.app.trigger_definition_request(pane_id);
+            }
+            ContextAction::EditorFindRefs => {
+                self.app.trigger_references_request();
+            }
+            ContextAction::EditorRenameSymbol => {
+                self.app.open_lsp_rename_overlay();
+            }
+            ContextAction::EditorFormatFile => {
+                self.app.apply_editor_action(EditorAction::FormatFile);
+            }
+            ContextAction::EditorToggleComment => {
+                self.app
+                    .apply_editor_action(EditorAction::ToggleLineComment);
+            }
+        }
+        self.app.dirty = true;
+    }
+
+    fn right_click_zone(&mut self, loc: MouseLocation) -> RightClickZone {
+        let app = &mut self.app;
+        let (rx, ry) = app.view_pt_to_raster_px(loc);
+
+        // Check if click is on an Explorer row.
+        if app.left_dock_visible {
+            if let Some(kind) = app.left_dock_hits.at(rx, ry).cloned() {
+                let path = match kind {
+                    LeftDockHitKind::Explorer(ExplorerHit::Row(idx)) => app
+                        .left_dock_hits
+                        .visible_rows
+                        .get(idx)
+                        .map(|(p, _)| p.clone()),
+                    LeftDockHitKind::Explorer(ExplorerHit::Header) => app
+                        .fs_snapshot
+                        .as_ref()
+                        .map(|snap| PathBuf::from(&snap.root)),
+                    _ => None,
+                };
+                if let Some(p) = path.clone() {
+                    app.right_click_path = Some(p);
+                }
+                return RightClickZone::Explorer {
+                    has_path: path.is_some(),
+                };
+            }
+        }
+
+        // Check if click is in a native editor pane.
+        if app.focused_is_native_editor() {
+            let has_lsp = app
+                .tabs
+                .current()
+                .and_then(|tab| {
+                    let pid = tab.focused_id();
+                    let ep = tab.editor_panes.get_pane(pid)?;
+                    let buf = tab.editor_panes.get_buffer(ep.buffer_id)?;
+                    buf.tracked_path()
+                })
+                .is_some();
+            return RightClickZone::Editor { has_lsp };
+        }
+
+        RightClickZone::Terminal
+    }
+
+    fn dropped_files(&mut self, paths: Vec<PathBuf>) {
+        // I4: open each dropped file in the native editor.
+        for path in paths {
+            if path.is_file() {
+                self.app.open_path_in_native_editor(&path);
             }
         }
         self.app.dirty = true;
@@ -8926,6 +9185,9 @@ fn main() -> Result<()> {
         recent_projects: Vec::new(),
         project_switcher_open: false,
         project_switcher_sel: 0,
+        right_click_path: None,
+        explorer_drag: None,
+        explorer_drag_cursor: None,
     };
 
     // -- AppKitApp: builds the window, view, timer ----------------------------
@@ -9015,6 +9277,18 @@ fn main() -> Result<()> {
         fn context_action(&mut self, action: ContextAction) {
             if let Some(h) = &mut *self.0.borrow_mut() {
                 h.context_action(action)
+            }
+        }
+        fn right_click_zone(&mut self, l: MouseLocation) -> RightClickZone {
+            self.0
+                .borrow_mut()
+                .as_mut()
+                .map(|h| h.right_click_zone(l))
+                .unwrap_or(RightClickZone::Terminal)
+        }
+        fn dropped_files(&mut self, paths: Vec<PathBuf>) {
+            if let Some(h) = &mut *self.0.borrow_mut() {
+                h.dropped_files(paths)
             }
         }
     }

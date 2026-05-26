@@ -25,6 +25,7 @@
 //! - `define_class!` bodies mirror the signatures in the AppKit headers.
 
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use block2::RcBlock;
@@ -33,12 +34,12 @@ use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSAppearance, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
-    NSBackingStoreType, NSEvent, NSEventModifierFlags, NSImage, NSMenu, NSMenuItem, NSTrackingArea,
-    NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
-    NSWindowTitleVisibility,
+    NSBackingStoreType, NSDragOperation, NSDraggingInfo, NSEvent, NSEventModifierFlags, NSImage,
+    NSMenu, NSMenuItem, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate,
+    NSWindowStyleMask, NSWindowTitleVisibility,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSData, NSNotification, NSPoint, NSRect, NSSize, NSString, NSTimer,
+    MainThreadMarker, NSArray, NSData, NSNotification, NSPoint, NSRect, NSSize, NSString, NSTimer,
 };
 
 // ── event types delivered to the AppHandler ──────────────────────────────────
@@ -91,13 +92,38 @@ pub struct MouseLocation {
 // ── ContextAction ─────────────────────────────────────────────────────────────
 
 /// Actions dispatched from the right-click context menu.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContextAction {
+    // Terminal context menu
     Copy,
     Paste,
     Clear,
     SplitRight,
     SplitDown,
+    // Explorer context menu (I1)
+    ExplorerOpen,
+    ExplorerRename,
+    ExplorerDelete,
+    ExplorerNewFile,
+    ExplorerNewFolder,
+    ExplorerRevealInFinder,
+    // Editor body context menu (I2)
+    EditorGotoDef,
+    EditorFindRefs,
+    EditorRenameSymbol,
+    EditorFormatFile,
+    EditorToggleComment,
+}
+
+/// Which surface the cursor is over when the user right-clicks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RightClickZone {
+    /// Right-click on an Explorer row; `has_path` is true when a file/dir is under cursor.
+    Explorer { has_path: bool },
+    /// Right-click in an editor pane body; `has_lsp` is true when LSP is active.
+    Editor { has_lsp: bool },
+    /// Right-click anywhere else (terminal pane, chrome, etc.).
+    Terminal,
 }
 
 // ── AppHandler trait ──────────────────────────────────────────────────────────
@@ -165,6 +191,15 @@ pub trait AppHandler {
 
     /// An item was selected from the right-click context menu.
     fn context_action(&mut self, action: ContextAction);
+
+    /// Called from `rightMouseDown:` before the menu is built, to determine
+    /// which surface the cursor is over.  Implementors must not borrow the
+    /// handler recursively while this is active.
+    fn right_click_zone(&mut self, loc: MouseLocation) -> RightClickZone;
+
+    /// Called when the user drops files from Finder (or another app) onto the
+    /// Anvil window.  `paths` is the list of dropped file paths (I4).
+    fn dropped_files(&mut self, paths: Vec<PathBuf>);
 }
 
 // ── NSEvent decoding ──────────────────────────────────────────────────────────
@@ -458,14 +493,21 @@ define_class!(
             // SAFETY: ObjC method callbacks are always on the main thread.
             let mtm = unsafe { MainThreadMarker::new_unchecked() };
 
-            // Build a 5-item context menu and show it at the cursor.
+            // Query the handler for the surface zone BEFORE building the menu.
+            // The borrow is released before `popUpContextMenu:` is called so
+            // that the action selectors can re-borrow mutably.
+            let loc = location_in_view(self, event);
+            let zone = {
+                let mut h = unsafe { self.ivars().handler.borrow_mut() };
+                h.right_click_zone(loc)
+            };
+
             let menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str(""));
             menu.setAutoenablesItems(false);
 
-            // Helper: build one item with self as target and the given selector.
-            // We use `msg_send!` for setTarget since objc2 marks it unsafe.
+            // Helper: one enabled menu item targeting self.
             let add_item = |title: &str, sel: objc2::runtime::Sel| {
-                // SAFETY: initWithTitle:action:keyEquivalent: is a valid selector.
+                // SAFETY: standard NSMenuItem designated initialiser.
                 let item = unsafe {
                     NSMenuItem::initWithTitle_action_keyEquivalent(
                         NSMenuItem::alloc(mtm),
@@ -474,7 +516,7 @@ define_class!(
                         &NSString::from_str(""),
                     )
                 };
-                // SAFETY: self is the target object; selector is defined on AnvilView.
+                // SAFETY: self is the target; selectors are defined below.
                 unsafe {
                     let self_obj: *const AnvilView = self;
                     let _: () = msg_send![&*item, setTarget: self_obj];
@@ -483,24 +525,50 @@ define_class!(
                 item
             };
 
-            // SAFETY: sel! macro produces valid selectors for methods defined
-            // in this define_class! block below.
-            let copy_item  = add_item("Copy",        objc2::sel!(anvilContextCopy:));
-            let paste_item = add_item("Paste",       objc2::sel!(anvilContextPaste:));
-            let clear_item = add_item("Clear",       objc2::sel!(anvilContextClear:));
-            let spr_item   = add_item("Split Right", objc2::sel!(anvilContextSplitRight:));
-            let spd_item   = add_item("Split Down",  objc2::sel!(anvilContextSplitDown:));
+            match zone {
+                RightClickZone::Explorer { .. } => {
+                    // I1 Explorer context menu
+                    menu.addItem(&add_item("Open",             objc2::sel!(anvilContextExplorerOpen:)));
+                    menu.addItem(&NSMenuItem::separatorItem(mtm));
+                    menu.addItem(&add_item("Rename",           objc2::sel!(anvilContextExplorerRename:)));
+                    menu.addItem(&add_item("Delete",           objc2::sel!(anvilContextExplorerDelete:)));
+                    menu.addItem(&NSMenuItem::separatorItem(mtm));
+                    menu.addItem(&add_item("New File",         objc2::sel!(anvilContextExplorerNewFile:)));
+                    menu.addItem(&add_item("New Folder",       objc2::sel!(anvilContextExplorerNewFolder:)));
+                    menu.addItem(&NSMenuItem::separatorItem(mtm));
+                    menu.addItem(&add_item("Reveal in Finder", objc2::sel!(anvilContextExplorerReveal:)));
+                }
+                RightClickZone::Editor { has_lsp } => {
+                    // I2 Editor body context menu
+                    let goto_item  = add_item("Go to Definition",  objc2::sel!(anvilContextEditorGotoDef:));
+                    let refs_item  = add_item("Find References",   objc2::sel!(anvilContextEditorFindRefs:));
+                    let ren_item   = add_item("Rename Symbol",     objc2::sel!(anvilContextEditorRenameSymbol:));
+                    // Gray out LSP-dependent items when no LSP is active.
+                    if !has_lsp {
+                        goto_item.setEnabled(false);
+                        refs_item.setEnabled(false);
+                        ren_item.setEnabled(false);
+                    }
+                    menu.addItem(&goto_item);
+                    menu.addItem(&refs_item);
+                    menu.addItem(&ren_item);
+                    menu.addItem(&NSMenuItem::separatorItem(mtm));
+                    menu.addItem(&add_item("Format File",          objc2::sel!(anvilContextEditorFormat:)));
+                    menu.addItem(&add_item("Toggle Comment",       objc2::sel!(anvilContextEditorToggleComment:)));
+                }
+                RightClickZone::Terminal => {
+                    // Existing terminal context menu
+                    menu.addItem(&add_item("Copy",        objc2::sel!(anvilContextCopy:)));
+                    menu.addItem(&add_item("Paste",       objc2::sel!(anvilContextPaste:)));
+                    menu.addItem(&NSMenuItem::separatorItem(mtm));
+                    menu.addItem(&add_item("Clear",       objc2::sel!(anvilContextClear:)));
+                    menu.addItem(&NSMenuItem::separatorItem(mtm));
+                    menu.addItem(&add_item("Split Right", objc2::sel!(anvilContextSplitRight:)));
+                    menu.addItem(&add_item("Split Down",  objc2::sel!(anvilContextSplitDown:)));
+                }
+            }
 
-            menu.addItem(&copy_item);
-            menu.addItem(&paste_item);
-            menu.addItem(&NSMenuItem::separatorItem(mtm));
-            menu.addItem(&clear_item);
-            menu.addItem(&NSMenuItem::separatorItem(mtm));
-            menu.addItem(&spr_item);
-            menu.addItem(&spd_item);
-
-            // SAFETY: popUpContextMenu:withEvent:forView: is a class method;
-            // menu, event, and self are all valid objects on the main thread.
+            // SAFETY: popUpContextMenu:withEvent:forView: is a valid class method.
             NSMenu::popUpContextMenu_withEvent_forView(&menu, event, self);
         }
 
@@ -534,6 +602,121 @@ define_class!(
         fn anvil_context_split_down(&self, _sender: *mut objc2::runtime::AnyObject) {
             let mut h = unsafe { self.ivars().handler.borrow_mut() };
             h.context_action(ContextAction::SplitDown);
+        }
+
+        // ── Explorer context menu selectors (I1) ──────────────────────────────
+
+        #[unsafe(method(anvilContextExplorerOpen:))]
+        fn anvil_context_explorer_open(&self, _sender: *mut objc2::runtime::AnyObject) {
+            let mut h = unsafe { self.ivars().handler.borrow_mut() };
+            h.context_action(ContextAction::ExplorerOpen);
+        }
+
+        #[unsafe(method(anvilContextExplorerRename:))]
+        fn anvil_context_explorer_rename(&self, _sender: *mut objc2::runtime::AnyObject) {
+            let mut h = unsafe { self.ivars().handler.borrow_mut() };
+            h.context_action(ContextAction::ExplorerRename);
+        }
+
+        #[unsafe(method(anvilContextExplorerDelete:))]
+        fn anvil_context_explorer_delete(&self, _sender: *mut objc2::runtime::AnyObject) {
+            let mut h = unsafe { self.ivars().handler.borrow_mut() };
+            h.context_action(ContextAction::ExplorerDelete);
+        }
+
+        #[unsafe(method(anvilContextExplorerNewFile:))]
+        fn anvil_context_explorer_new_file(&self, _sender: *mut objc2::runtime::AnyObject) {
+            let mut h = unsafe { self.ivars().handler.borrow_mut() };
+            h.context_action(ContextAction::ExplorerNewFile);
+        }
+
+        #[unsafe(method(anvilContextExplorerNewFolder:))]
+        fn anvil_context_explorer_new_folder(&self, _sender: *mut objc2::runtime::AnyObject) {
+            let mut h = unsafe { self.ivars().handler.borrow_mut() };
+            h.context_action(ContextAction::ExplorerNewFolder);
+        }
+
+        #[unsafe(method(anvilContextExplorerReveal:))]
+        fn anvil_context_explorer_reveal(&self, _sender: *mut objc2::runtime::AnyObject) {
+            let mut h = unsafe { self.ivars().handler.borrow_mut() };
+            h.context_action(ContextAction::ExplorerRevealInFinder);
+        }
+
+        // ── Editor body context menu selectors (I2) ───────────────────────────
+
+        #[unsafe(method(anvilContextEditorGotoDef:))]
+        fn anvil_context_editor_goto_def(&self, _sender: *mut objc2::runtime::AnyObject) {
+            let mut h = unsafe { self.ivars().handler.borrow_mut() };
+            h.context_action(ContextAction::EditorGotoDef);
+        }
+
+        #[unsafe(method(anvilContextEditorFindRefs:))]
+        fn anvil_context_editor_find_refs(&self, _sender: *mut objc2::runtime::AnyObject) {
+            let mut h = unsafe { self.ivars().handler.borrow_mut() };
+            h.context_action(ContextAction::EditorFindRefs);
+        }
+
+        #[unsafe(method(anvilContextEditorRenameSymbol:))]
+        fn anvil_context_editor_rename_symbol(&self, _sender: *mut objc2::runtime::AnyObject) {
+            let mut h = unsafe { self.ivars().handler.borrow_mut() };
+            h.context_action(ContextAction::EditorRenameSymbol);
+        }
+
+        #[unsafe(method(anvilContextEditorFormat:))]
+        fn anvil_context_editor_format(&self, _sender: *mut objc2::runtime::AnyObject) {
+            let mut h = unsafe { self.ivars().handler.borrow_mut() };
+            h.context_action(ContextAction::EditorFormatFile);
+        }
+
+        #[unsafe(method(anvilContextEditorToggleComment:))]
+        fn anvil_context_editor_toggle_comment(&self, _sender: *mut objc2::runtime::AnyObject) {
+            let mut h = unsafe { self.ivars().handler.borrow_mut() };
+            h.context_action(ContextAction::EditorToggleComment);
+        }
+
+        // ── Finder-drop destination (I4) ─────────────────────────────────────
+        // NSView already conforms to NSDraggingDestination; we just override
+        // the two methods we care about.  `registerForDraggedTypes` is called
+        // after the view is installed in its window (see `AppKitApp::new`).
+
+        #[unsafe(method(draggingEntered:))]
+        fn dragging_entered(
+            &self,
+            _sender: &ProtocolObject<dyn NSDraggingInfo>,
+        ) -> NSDragOperation {
+            NSDragOperation::Copy
+        }
+
+        #[unsafe(method(performDragOperation:))]
+        fn perform_drag_operation(
+            &self,
+            sender: &ProtocolObject<dyn NSDraggingInfo>,
+        ) -> objc2::runtime::Bool {
+            // Extract file paths via the legacy NSFilenamesPboardType, which
+            // returns an NSArray<NSString> of POSIX paths.  This is the
+            // simplest cross-Finder interop; modern NSURL enumeration is a
+            // follow-up if needed.
+            let paths: Vec<PathBuf> = unsafe {
+                let pb = sender.draggingPasteboard();
+                let fnames_type = NSString::from_str("NSFilenamesPboardType");
+                if let Some(list) = pb.propertyListForType(&fnames_type) {
+                    // SAFETY: NSFilenamesPboardType returns NSArray<NSString>.
+                    let arr_ptr = Retained::<objc2::runtime::AnyObject>::as_ptr(&list)
+                        as *const NSArray<NSString>;
+                    let arr: &NSArray<NSString> = &*arr_ptr;
+                    arr.iter()
+                        .map(|s| PathBuf::from(s.to_string()))
+                        .collect()
+                } else {
+                    Vec::new()
+                }
+            };
+            if paths.is_empty() {
+                return objc2::runtime::Bool::NO;
+            }
+            let mut h = unsafe { self.ivars().handler.borrow_mut() };
+            h.dropped_files(paths);
+            objc2::runtime::Bool::YES
         }
     }
 );
@@ -766,6 +949,16 @@ impl AppKitApp {
             let _: () = msg_send![&*anvil_view, setWantsLayer: true];
             let _: () = msg_send![&*layer, setCornerRadius: 10.0_f64];
             let _: () = msg_send![&*layer, setMasksToBounds: true];
+        }
+
+        // Register Finder-drop support (I4): accept file-path pasteboard type.
+        // SAFETY: NSPasteboardTypeFileURL static is valid; NSArray::from_retained_slice
+        // and registerForDraggedTypes are safe on the main thread.
+        unsafe {
+            use objc2_app_kit::NSPasteboardTypeFileURL;
+            let types: Retained<NSArray<NSString>> =
+                NSArray::from_retained_slice(&[Retained::from(NSPasteboardTypeFileURL)]);
+            anvil_view.registerForDraggedTypes(&types);
         }
 
         // Cast to NSView for window / delegate APIs.
