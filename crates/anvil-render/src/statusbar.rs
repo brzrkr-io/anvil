@@ -7,6 +7,20 @@ use anvil_theme::Theme;
 use crate::agent_panel::{LocalContext, RunState, format_cwd};
 use crate::raster::{FontMetrics, GlyphPainter, Raster};
 
+/// Current editor mode, shown as the leftmost chip in the status bar (O3).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum StatusMode {
+    /// Normal editing state (default).
+    #[default]
+    Editing,
+    /// Search bar is open.
+    Searching,
+    /// LSP rename overlay is open.
+    Renaming,
+    /// Any picker overlay is open (Cmd+P / Cmd+T / Cmd+R / Cmd+Shift+O).
+    Picking,
+}
+
 /// Linear per-channel lerp between two RGB colors: `a*(1-t) + b*t`, clamped to 0..255.
 fn mix_rgb(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
     [
@@ -43,6 +57,7 @@ pub fn draw_status_bar(
     chrome_bottom_px: f64,
     window_scale: f64,
     pulse_phase: f32,
+    mode: StatusMode,
 ) {
     let cell_w = metrics.cell_w;
     let cell_h = metrics.cell_h;
@@ -63,8 +78,27 @@ pub fn draw_status_bar(
     let glyph_y = strip_top + ((chrome_bottom_px - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
     let pad_x = 14.0 * window_scale; // D: .bottom-bar { padding: 0 14px }
 
-    // ── Left: cwd  ✓/✗ last 0.1s ─────────────────────────────────────────
+    // ── Left: mode chip ───────────────────────────────────────────────────
     let mut x = pad_x;
+    {
+        let (label, color) = match mode {
+            StatusMode::Editing => ("EDITING", theme.text_subtle),
+            StatusMode::Searching => ("SEARCHING", theme.accent_primary),
+            StatusMode::Renaming => ("RENAMING", theme.accent_bright),
+            StatusMode::Picking => ("PICKING", theme.accent_primary),
+        };
+        for ch in label.chars() {
+            if x + cell_w > total_w {
+                break;
+            }
+            raster.glyph_at(painter, metrics, x, glyph_y, ch as u32, color);
+            x += cell_w;
+        }
+        // Gap after chip.
+        x += 2.0 * cell_w;
+    }
+
+    // ── Left: cwd  ✓/✗ last 0.1s ─────────────────────────────────────────
     let draw_run = |raster: &mut Raster,
                     painter: &mut dyn GlyphPainter,
                     s: &str,
@@ -218,6 +252,7 @@ mod tests {
             chrome_bottom_px,
             1.0,
             0.0,
+            StatusMode::default(),
         );
 
         // The strip runs from (total_h - chrome_bottom_px) to total_h.
@@ -259,6 +294,7 @@ mod tests {
             m.cell_h * 2.0,
             1.0,
             0.0,
+            StatusMode::default(),
         );
 
         let muted_chars: Vec<char> = painter
@@ -300,6 +336,7 @@ mod tests {
             m.cell_h * 2.0,
             1.0,
             0.0,
+            StatusMode::default(),
         );
 
         let verified_chars: Vec<char> = painter
@@ -341,6 +378,7 @@ mod tests {
             m.cell_h * 2.0,
             1.0,
             0.0,
+            StatusMode::default(),
         );
 
         let failure_chars: Vec<char> = painter
@@ -382,6 +420,7 @@ mod tests {
             m.cell_h * 2.0,
             1.0,
             0.0,
+            StatusMode::default(),
         );
 
         // The dot (●, U+25CF) must appear in text_subtle.
@@ -444,6 +483,7 @@ mod tests {
             m.cell_h * 2.0,
             1.0,
             0.0,
+            StatusMode::default(),
         );
 
         let muted_chars: Vec<char> = painter
@@ -466,6 +506,87 @@ mod tests {
             !dot_subtle,
             "expected dot NOT in text_subtle when Live, got {:?}",
             painter.calls
+        );
+    }
+
+    // --- mode_chip_editing_shows_in_text_subtle ------------------------------
+
+    /// In default Editing mode, "EDITING" chars appear in text_subtle.
+    #[test]
+    fn mode_chip_editing_shows_in_text_subtle() {
+        let m = metrics();
+        let th = theme();
+        let mut r = Raster::new(400, 200);
+        let mut painter = StubPainter::default();
+        r.clear([0, 0, 0]);
+
+        let local_ctx = LocalContext::default();
+        let agent_snap = Snapshot::default();
+
+        draw_status_bar(
+            &mut r,
+            &mut painter,
+            m,
+            &th,
+            &local_ctx,
+            &agent_snap,
+            "",
+            m.cell_h * 2.0,
+            1.0,
+            0.0,
+            StatusMode::Editing,
+        );
+
+        // The first 'E' in "EDITING" must appear in text_subtle.
+        let subtle_chars: Vec<char> = painter
+            .calls
+            .iter()
+            .filter(|(_, fg)| *fg == th.text_subtle)
+            .filter_map(|(cp, _)| char::from_u32(*cp))
+            .collect();
+        assert!(
+            subtle_chars.contains(&'E'),
+            "expected 'E' from EDITING in text_subtle, got {subtle_chars:?}"
+        );
+    }
+
+    // --- mode_chip_picking_shows_in_accent_primary ---------------------------
+
+    /// In Picking mode, "PICKING" chars appear in accent_primary.
+    #[test]
+    fn mode_chip_picking_shows_in_accent_primary() {
+        let m = metrics();
+        let th = theme();
+        let mut r = Raster::new(400, 200);
+        let mut painter = StubPainter::default();
+        r.clear([0, 0, 0]);
+
+        let local_ctx = LocalContext::default();
+        let agent_snap = Snapshot::default();
+
+        draw_status_bar(
+            &mut r,
+            &mut painter,
+            m,
+            &th,
+            &local_ctx,
+            &agent_snap,
+            "",
+            m.cell_h * 2.0,
+            1.0,
+            0.0,
+            StatusMode::Picking,
+        );
+
+        let accent_chars: Vec<char> = painter
+            .calls
+            .iter()
+            .filter(|(_, fg)| *fg == th.accent_primary)
+            .filter_map(|(cp, _)| char::from_u32(*cp))
+            .collect();
+        assert!(
+            accent_chars.contains(&'P'),
+            "expected 'P' from PICKING in accent_primary, got {accent_chars:?}"
         );
     }
 }
