@@ -1299,7 +1299,18 @@ impl EditorPaneRegistry {
 
             // ── Copy / Cut ──────────────────────────────────────────────────
             EditorAction::Copy => {
-                if let Some(text) = selected_text(pane, self.buffers.get(&buffer_id).unwrap()) {
+                let buf = self.buffers.get(&buffer_id).unwrap();
+                if let Some(text) = selected_text(pane, buf) {
+                    *clipboard_out = Some(text);
+                } else {
+                    // No selection: copy the whole current line (VS Code behaviour).
+                    let line = pane.cursors[0].pos.line;
+                    let line_text: String = buf.line(line).chars().collect();
+                    let text = if line_text.ends_with('\n') {
+                        line_text
+                    } else {
+                        line_text + "\n"
+                    };
                     *clipboard_out = Some(text);
                 }
                 false
@@ -1314,7 +1325,57 @@ impl EditorPaneRegistry {
                     set_cursor(pane, start, false);
                     return true;
                 }
-                false
+                // No selection: cut the whole current line.
+                let line = pane.cursors[0].pos.line;
+                let line_text: String = {
+                    let buf = self.buffers.get(&buffer_id).unwrap();
+                    buf.line(line).chars().collect()
+                };
+                let text = if line_text.ends_with('\n') {
+                    line_text.clone()
+                } else {
+                    line_text.clone() + "\n"
+                };
+                *clipboard_out = Some(text);
+                // Delete from col 0 to start of next line.
+                let buf = self.buffers.get(&buffer_id).unwrap();
+                let last_line = buf.line_count().saturating_sub(1);
+                let delete_end = if line < last_line {
+                    Position {
+                        line: line + 1,
+                        col: 0,
+                    }
+                } else {
+                    // Last line: delete to end of line content.
+                    let col = line_text
+                        .trim_end_matches('\n')
+                        .trim_end_matches('\r')
+                        .graphemes(true)
+                        .count();
+                    Position { line, col }
+                };
+                let buf = self.buffers.get_mut(&buffer_id).unwrap();
+                buf.delete_range(Range {
+                    start: Position { line, col: 0 },
+                    end: delete_end,
+                });
+                let new_line = line.min(
+                    self.buffers
+                        .get(&buffer_id)
+                        .unwrap()
+                        .line_count()
+                        .saturating_sub(1),
+                );
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                set_cursor(
+                    pane,
+                    Position {
+                        line: new_line,
+                        col: 0,
+                    },
+                    false,
+                );
+                true
             }
 
             // ── AI ghost-text (NE14) ─────────────────────────────────────────
@@ -3472,6 +3533,94 @@ mod tests {
                 pane.scroll_pos
             );
         }
+    }
+
+    // ── L1: clipboard copy/cut whole-line fallback ───────────────────────────
+
+    #[test]
+    fn copy_no_selection_yields_whole_line() {
+        // Cursor at col 3 of "hello\n" — no selection.
+        let (mut reg, pid) = make_reg_with_text("hello\nworld\n");
+        {
+            let pane = reg.get_pane_mut(pid).unwrap();
+            pane.cursors[0].pos = Position { line: 0, col: 3 };
+            pane.cursors[0].anchor = Position { line: 0, col: 3 };
+        }
+        let mut clip: Option<String> = None;
+        let mutated = reg.apply(pid, EditorAction::Copy, &mut clip);
+        assert!(!mutated, "copy must not mutate the buffer");
+        assert_eq!(
+            clip.as_deref(),
+            Some("hello\n"),
+            "whole line must be copied"
+        );
+        // Buffer unchanged
+        assert_eq!(buf_text(&reg, pid), "hello\nworld\n");
+    }
+
+    #[test]
+    fn copy_with_selection_copies_selection() {
+        // Select "ell" from col 1..4.
+        let (mut reg, pid) = make_reg_with_text("hello\n");
+        {
+            let pane = reg.get_pane_mut(pid).unwrap();
+            pane.cursors[0].anchor = Position { line: 0, col: 1 };
+            pane.cursors[0].pos = Position { line: 0, col: 4 };
+        }
+        let mut clip: Option<String> = None;
+        reg.apply(pid, EditorAction::Copy, &mut clip);
+        assert_eq!(
+            clip.as_deref(),
+            Some("ell"),
+            "selection text must be copied"
+        );
+    }
+
+    #[test]
+    fn cut_no_selection_removes_whole_line() {
+        let (mut reg, pid) = make_reg_with_text("hello\nworld\n");
+        {
+            let pane = reg.get_pane_mut(pid).unwrap();
+            pane.cursors[0].pos = Position { line: 0, col: 2 };
+            pane.cursors[0].anchor = Position { line: 0, col: 2 };
+        }
+        let mut clip: Option<String> = None;
+        let mutated = reg.apply(pid, EditorAction::Cut, &mut clip);
+        assert!(mutated, "cut must mutate the buffer");
+        assert_eq!(
+            clip.as_deref(),
+            Some("hello\n"),
+            "cut must yield the whole line"
+        );
+        assert_eq!(buf_text(&reg, pid), "world\n", "line must be removed");
+        let pos = reg.get_pane(pid).unwrap().cursors[0].pos;
+        assert_eq!(
+            pos,
+            Position { line: 0, col: 0 },
+            "cursor must sit at start of next line"
+        );
+    }
+
+    // ── L2: Undo / Redo wiring verify ───────────────────────────────────────
+
+    #[test]
+    fn undo_redo_round_trip() {
+        let (mut reg, pid) = make_reg_with_text("abc");
+        let mut clip = None;
+        reg.apply(pid, EditorAction::InsertChar('X'), &mut clip);
+        assert_eq!(buf_text(&reg, pid), "Xabc");
+        // Undo must revert.
+        let mutated = reg.apply(pid, EditorAction::Undo, &mut clip);
+        assert!(mutated);
+        assert_eq!(
+            buf_text(&reg, pid),
+            "abc",
+            "undo must restore original text"
+        );
+        // Redo must re-apply.
+        let mutated = reg.apply(pid, EditorAction::Redo, &mut clip);
+        assert!(mutated);
+        assert_eq!(buf_text(&reg, pid), "Xabc", "redo must re-apply the edit");
     }
 
     /// G4: close_buffer drops the saved scroll entry (no stale memory).
