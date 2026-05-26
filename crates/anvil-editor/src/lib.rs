@@ -14,7 +14,7 @@ pub mod syntax;
 // expose no constructor surface worth a public commitment.
 pub use buffer::{
     AgentRevision, Buffer, BufferId, Cursor, Edit, EditProposal, EncodingError, GhostTextSpan,
-    IoError, Position, ProposalError, ProposalStatus, Range,
+    IndentStyle, IoError, Position, ProposalError, ProposalStatus, Range,
 };
 pub use git::{GitChange, GitGutter};
 pub use syntax::{

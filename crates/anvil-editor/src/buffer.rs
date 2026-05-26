@@ -88,6 +88,15 @@ pub enum ProposalError {
     NotPending,
 }
 
+/// Indent style detected from a buffer's content (H3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndentStyle {
+    /// Soft tabs — indent width in spaces.
+    Spaces(usize),
+    /// Hard tabs — display width.
+    Tabs(usize),
+}
+
 /// An inline ghost-text suggestion displayed after the cursor.
 #[derive(Debug, Clone)]
 pub struct GhostTextSpan {
@@ -379,6 +388,48 @@ impl Buffer {
     /// `None` when no path has been set (e.g. a fresh scratch buffer).
     pub fn tracked_path(&self) -> Option<&std::path::Path> {
         self.tracked_path.as_deref()
+    }
+
+    /// Indent style detected from the first 100 non-blank lines of the buffer (H3).
+    ///
+    /// - If any line starts with `\t`, returns `IndentStyle::Tabs(4)`.
+    /// - Else if any line starts with 2+ spaces, returns `IndentStyle::Spaces(N)`
+    ///   where N is the smallest leading-space run across those lines, capped at 8.
+    /// - Default: `IndentStyle::Spaces(4)`.
+    pub fn indent_style(&self) -> IndentStyle {
+        let mut found_tabs = false;
+        let mut min_spaces: Option<usize> = None;
+        let mut checked = 0usize;
+        for line_idx in 0..self.rope.len_lines() {
+            if checked >= 100 {
+                break;
+            }
+            let slice = self.rope.line(line_idx);
+            let s: String = slice.chars().collect();
+            let trimmed = s.trim_end_matches('\n').trim_end_matches('\r');
+            if trimmed.is_empty() {
+                continue;
+            }
+            checked += 1;
+            if trimmed.starts_with('\t') {
+                found_tabs = true;
+                break;
+            }
+            let leading = trimmed.len() - trimmed.trim_start_matches(' ').len();
+            if leading >= 2 {
+                min_spaces = Some(match min_spaces {
+                    None => leading.min(8),
+                    Some(prev) => prev.min(leading),
+                });
+            }
+        }
+        if found_tabs {
+            IndentStyle::Tabs(4)
+        } else if let Some(n) = min_spaces {
+            IndentStyle::Spaces(n)
+        } else {
+            IndentStyle::Spaces(4)
+        }
     }
 
     /// Return the LSP language-id for this buffer, derived from the file
@@ -1789,5 +1840,35 @@ mod tests {
             b.reload_from_disk().is_err(),
             "reload on scratch buffer must return an error"
         );
+    }
+
+    // ── indent_style (H3) ──────────────────────────────────────────────────────
+
+    /// Empty buffer defaults to Spaces(4).
+    #[test]
+    fn indent_style_empty_buffer_defaults_to_spaces4() {
+        let b = Buffer::new();
+        assert_eq!(b.indent_style(), IndentStyle::Spaces(4));
+    }
+
+    /// A buffer with leading tabs reports Tabs(4).
+    #[test]
+    fn indent_style_detects_tabs() {
+        let b = Buffer::from_text("fn main() {\n\tlet x = 1;\n\tlet y = 2;\n}\n");
+        assert_eq!(b.indent_style(), IndentStyle::Tabs(4));
+    }
+
+    /// A buffer with 2-space indents reports Spaces(2).
+    #[test]
+    fn indent_style_detects_two_spaces() {
+        let b = Buffer::from_text("fn f() {\n  let x = 1;\n  let y = 2;\n}\n");
+        assert_eq!(b.indent_style(), IndentStyle::Spaces(2));
+    }
+
+    /// A buffer with 4-space indents reports Spaces(4).
+    #[test]
+    fn indent_style_detects_four_spaces() {
+        let b = Buffer::from_text("fn f() {\n    let x = 1;\n    let y = 2;\n}\n");
+        assert_eq!(b.indent_style(), IndentStyle::Spaces(4));
     }
 }

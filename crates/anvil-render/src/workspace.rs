@@ -816,7 +816,7 @@ fn draw_editor_status_bar(
         gx += cw;
     }
 
-    // Right text: `Ln X, Col Y · UTF-8 · Language`.
+    // Right text: `Ln X, Col Y · UTF-8 · Language · Spaces:N` (or Tabs:N).
     let cursor_pos = ep.primary_cursor().pos;
     let lang = buf.and_then(|b| b.language_id()).unwrap_or("Plain Text");
     // Capitalise language display name.
@@ -829,11 +829,18 @@ fn draw_editor_status_bar(
         "markdown" => "Markdown",
         _ => lang,
     };
+    // H3: append indent style label.
+    let indent_label = match buf.map(|b| b.indent_style()) {
+        Some(anvil_editor::IndentStyle::Spaces(n)) => format!(" \u{00b7} Spaces:{n}"),
+        Some(anvil_editor::IndentStyle::Tabs(n)) => format!(" \u{00b7} Tabs:{n}"),
+        None => String::new(),
+    };
     let right_label = format!(
-        "Ln {}, Col {} \u{00b7} UTF-8 \u{00b7} {}",
+        "Ln {}, Col {} \u{00b7} UTF-8 \u{00b7} {}{}",
         cursor_pos.line + 1,
         cursor_pos.col + 1,
-        lang_display
+        lang_display,
+        indent_label,
     );
     let right_chars: Vec<char> = right_label.chars().collect();
     let right_w = right_chars.len() as f64 * cw;
