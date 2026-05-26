@@ -96,6 +96,26 @@ impl CompletionPopup {
     }
 }
 
+// ── CodeActionsPopup (item 25) ────────────────────────────────────────────────
+
+/// One item in the code-actions popup.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CodeActionEntry {
+    pub title: String,
+}
+
+/// A floating list of code actions anchored to the cursor line (item 25).
+///
+/// Populated by `main.rs` when `LspManager::poll_code_actions` returns items.
+/// Rendered via the completion-popup render path in `draw_editor_into`.
+/// Dismissed by Esc; Enter applies the selected action's `WorkspaceEdit`.
+#[derive(Debug, Clone)]
+pub struct CodeActionsPopup {
+    pub items: Vec<CodeActionEntry>,
+    pub selected: usize,
+    pub anchor: Position,
+}
+
 // ── EditorAction ──────────────────────────────────────────────────────────────
 
 /// A typed editor action — the unit of currency between the keymap and the
@@ -242,6 +262,15 @@ pub enum EditorAction {
     /// Format the active buffer (#23). Falls back to `rustfmt` for Rust files
     /// when no LSP is connected.
     FormatFile,
+    // ── Code actions popup (item 25) ──────────────────────────────────────────
+    /// Open the code-actions popup with the given items (Cmd+.).
+    CodeActionsOpen(Vec<CodeActionEntry>),
+    /// Move selection up in the code-actions popup.
+    CodeActionsUp,
+    /// Move selection down in the code-actions popup.
+    CodeActionsDown,
+    /// Dismiss the code-actions popup without applying.
+    CodeActionsDismiss,
 }
 
 /// Maximum number of open buffers tracked per pane. When the limit is
@@ -271,6 +300,8 @@ pub struct EditorPane {
     pub hover_popup: Option<HoverPopup>,
     /// Active completion popup (item 16). `None` when no completion is showing.
     pub completion_popup: Option<CompletionPopup>,
+    /// Active code-actions popup (item 25). `None` when closed.
+    pub code_actions_popup: Option<CodeActionsPopup>,
     /// Folded line ranges keyed by `BufferId` (item 13).
     /// Each entry is a set of start-line numbers for active folds.
     pub folds: HashMap<BufferId, HashSet<usize>>,
@@ -330,6 +361,7 @@ impl EditorPaneRegistry {
             search: None,
             hover_popup: None,
             completion_popup: None,
+            code_actions_popup: None,
             folds: HashMap::new(),
         };
         self.panes.insert(pane_id, pane);
@@ -361,6 +393,7 @@ impl EditorPaneRegistry {
             search: None,
             hover_popup: None,
             completion_popup: None,
+            code_actions_popup: None,
             folds: HashMap::new(),
         });
         let old_buffer_id = pane.buffer_id;
@@ -377,6 +410,7 @@ impl EditorPaneRegistry {
         pane.search = None;
         pane.hover_popup = None;
         pane.completion_popup = None;
+        pane.code_actions_popup = None;
         self.buffers.remove(&old_buffer_id);
         self.buffers.insert(buffer_id, buffer);
         Ok(buffer_id)
@@ -425,6 +459,7 @@ impl EditorPaneRegistry {
                 search: None,
                 hover_popup: None,
                 completion_popup: None,
+                code_actions_popup: None,
                 folds: HashMap::new(),
             };
             e.insert(pane);
@@ -518,6 +553,7 @@ impl EditorPaneRegistry {
             pane.search = None;
             pane.hover_popup = None;
             pane.completion_popup = None;
+            pane.code_actions_popup = None;
             self.buffers.insert(new_id, Buffer::new());
             return None;
         }
@@ -553,6 +589,14 @@ impl EditorPaneRegistry {
     /// Look up the `Buffer` mutably by `buffer_id`.
     pub fn get_buffer_mut(&mut self, buffer_id: BufferId) -> Option<&mut Buffer> {
         self.buffers.get_mut(&buffer_id)
+    }
+
+    /// Find and return a mutable reference to a `Buffer` that tracks `path`
+    /// (item 24, rename edits). Returns `None` if no open buffer matches.
+    pub fn find_buffer_for_path(&mut self, path: &std::path::Path) -> Option<&mut Buffer> {
+        self.buffers
+            .values_mut()
+            .find(|b| b.tracked_path() == Some(path))
     }
 
     /// Remove the `EditorPane` for `pane_id` and drop all its buffers.
@@ -1169,6 +1213,7 @@ impl EditorPaneRegistry {
                 let pane = self.panes.get_mut(&pane_id).unwrap();
                 pane.hover_popup = None;
                 pane.completion_popup = None;
+                pane.code_actions_popup = None;
                 false
             }
             EditorAction::HoverDismiss => {
@@ -1973,6 +2018,39 @@ impl EditorPaneRegistry {
                 }
                 false
             }
+            // ── Code actions popup (item 25) ───────────────────────────────────
+            EditorAction::CodeActionsOpen(entries) => {
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                let anchor = pane.cursors[0].pos;
+                pane.code_actions_popup = Some(CodeActionsPopup {
+                    items: entries,
+                    selected: 0,
+                    anchor,
+                });
+                false
+            }
+            EditorAction::CodeActionsUp => {
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                if let Some(cp) = &mut pane.code_actions_popup {
+                    cp.selected = cp.selected.saturating_sub(1);
+                }
+                false
+            }
+            EditorAction::CodeActionsDown => {
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                if let Some(cp) = &mut pane.code_actions_popup {
+                    let n = cp.items.len();
+                    if n > 0 {
+                        cp.selected = (cp.selected + 1).min(n - 1);
+                    }
+                }
+                false
+            }
+            EditorAction::CodeActionsDismiss => {
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                pane.code_actions_popup = None;
+                false
+            }
         }
     }
 }
@@ -2351,6 +2429,7 @@ mod tests {
             search: None,
             hover_popup: None,
             completion_popup: None,
+            code_actions_popup: None,
             folds: HashMap::new(),
         };
         let buf = anvil_editor::Buffer::from_text(text);

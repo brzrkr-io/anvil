@@ -23,6 +23,7 @@ use unicode_segmentation::UnicodeSegmentation as _;
 
 use anvil_editor::{Buffer, FoldRange, GitChange, GitGutter, SyntaxRole, derive_fold_ranges};
 use anvil_theme::Theme;
+use anvil_workspace::editor_pane::CodeActionEntry;
 use anvil_workspace::{
     bracket_match_for,
     editor_pane::{CompletionEntry, EditorPane},
@@ -563,6 +564,57 @@ pub fn draw_editor_into(
         }
     }
 
+    // ── Code-actions popup (item 25) ─────────────────────────────────────────
+    // Reuses the same floating-list chrome as the completion popup.
+    if let Some(cap) = &editor_pane.code_actions_popup {
+        if !cap.items.is_empty() {
+            let anchor = cap.anchor;
+            if anchor.line >= scroll_line {
+                let av = anchor.line - scroll_line;
+                let list_y = rect.y + (av + 1) as f64 * ch;
+                let list_x = rect.x + gutter_w + anchor.col as f64 * cw;
+
+                const MAX_ROWS: usize = 12;
+                const LABEL_COLS: usize = 40;
+
+                let show_count = cap.items.len().min(MAX_ROWS);
+                let popup_w = (LABEL_COLS + 2) as f64 * cw;
+                let popup_h = show_count as f64 * ch;
+
+                let list_x = list_x.min(rect.x + rect.w - popup_w).max(rect.x);
+                let list_y = list_y.min(rect.y + rect.h - popup_h).max(rect.y);
+
+                // Background + border.
+                raster.fill_pixel_rect(list_x, list_y, popup_w, popup_h, theme.surface);
+                raster.fill_pixel_rect(list_x, list_y, popup_w, 1.0, theme.border);
+                raster.fill_pixel_rect(list_x, list_y + popup_h - 1.0, popup_w, 1.0, theme.border);
+                raster.fill_pixel_rect(list_x, list_y, 1.0, popup_h, theme.border);
+                raster.fill_pixel_rect(list_x + popup_w - 1.0, list_y, 1.0, popup_h, theme.border);
+
+                let visible_selected = cap.selected.min(show_count.saturating_sub(1));
+                for (ri, entry) in cap.items.iter().enumerate().take(show_count) {
+                    let _ = entry as &CodeActionEntry;
+                    let row_y = list_y + ri as f64 * ch;
+                    if ri == visible_selected {
+                        raster.fill_pixel_rect_alpha(
+                            list_x,
+                            row_y,
+                            popup_w,
+                            ch,
+                            theme.accent,
+                            0.18,
+                        );
+                    }
+                    let label_chars: Vec<char> = entry.title.chars().take(LABEL_COLS).collect();
+                    for (ci, &c) in label_chars.iter().enumerate() {
+                        let tx = list_x + (ci + 1) as f64 * cw;
+                        raster.glyph_at(painter, metrics, tx, row_y, c as u32, theme.foreground);
+                    }
+                }
+            }
+        }
+    }
+
     // ── Hover popup (NE10) ────────────────────────────────────────────────────
     if let Some(popup) = &editor_pane.hover_popup {
         let anchor = popup.anchor;
@@ -776,6 +828,7 @@ mod tests {
             search: None,
             hover_popup: None,
             completion_popup: None,
+            code_actions_popup: None,
             folds: std::collections::HashMap::new(),
         }
     }

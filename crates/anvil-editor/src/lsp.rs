@@ -24,7 +24,7 @@ use lsp_types::{
     ClientCapabilities, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, InitializeParams, InitializedParams, PublishDiagnosticsParams,
     TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem, Url,
-    VersionedTextDocumentIdentifier,
+    VersionedTextDocumentIdentifier, WorkspaceEdit,
 };
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -100,6 +100,24 @@ enum LspCommand {
         character: u32,
         request_id: u64,
     },
+    Rename {
+        path: PathBuf,
+        line: u32,
+        character: u32,
+        new_name: String,
+        request_id: u64,
+    },
+    CodeActions {
+        path: PathBuf,
+        line: u32,
+        request_id: u64,
+    },
+    References {
+        path: PathBuf,
+        line: u32,
+        character: u32,
+        request_id: u64,
+    },
     Shutdown,
 }
 
@@ -122,6 +140,29 @@ pub struct DefinitionLocation {
     pub col: u32,
 }
 
+// ── Rename result (item 24) ───────────────────────────────────────────────────
+
+/// One edit produced by a `textDocument/rename` response.
+#[derive(Debug, Clone)]
+pub struct RenameEdit {
+    pub path: PathBuf,
+    pub start_line: u32,
+    pub start_col: u32,
+    pub end_line: u32,
+    pub end_col: u32,
+    pub new_text: String,
+}
+
+// ── Code action (item 25) ─────────────────────────────────────────────────────
+
+/// A single code action from `textDocument/codeAction`.
+#[derive(Debug, Clone)]
+pub struct LspCodeAction {
+    pub title: String,
+    /// Flat edits to apply (converted from WorkspaceEdit at receive time).
+    pub edits: Vec<RenameEdit>,
+}
+
 // ── Completion item (item 16) ─────────────────────────────────────────────────
 
 /// A single completion item from the LSP server.
@@ -139,6 +180,9 @@ pub struct CompletionItem {
 type HoverSlot = Arc<Mutex<Option<(u64, HoverResult)>>>;
 type DefinitionSlot = Arc<Mutex<Option<(u64, Vec<DefinitionLocation>)>>>;
 type CompletionSlot = Arc<Mutex<Option<(u64, Vec<CompletionItem>)>>>;
+type RenameSlot = Arc<Mutex<Option<(u64, Vec<RenameEdit>)>>>;
+type CodeActionsSlot = Arc<Mutex<Option<(u64, Vec<LspCodeAction>)>>>;
+type ReferencesSlot = Arc<Mutex<Option<(u64, Vec<DefinitionLocation>)>>>; // reuse DefinitionLocation
 
 // ── ServerHandle ─────────────────────────────────────────────────────────────
 
@@ -153,6 +197,12 @@ struct ServerHandle {
     definition_result: DefinitionSlot,
     /// Latest completion result (request_id, Vec<CompletionItem>).
     completion_result: CompletionSlot,
+    /// Latest rename result (request_id, Vec<RenameEdit>) — item 24.
+    rename_result: RenameSlot,
+    /// Latest code-actions result (request_id, Vec<LspCodeAction>) — item 25.
+    code_actions_result: CodeActionsSlot,
+    /// Latest references result (request_id, Vec<DefinitionLocation>) — item 26.
+    references_result: ReferencesSlot,
 }
 
 // ── LspManager ────────────────────────────────────────────────────────────────
@@ -350,6 +400,126 @@ impl LspManager {
         None
     }
 
+    // ── Rename (item 24) ──────────────────────────────────────────────────────
+
+    /// Send a `textDocument/rename` request. Returns a non-zero `request_id` on
+    /// success; 0 when no live server is available (logs once to stderr).
+    pub fn request_rename(&self, path: &Path, line: u32, character: u32, new_name: String) -> u64 {
+        let id = next_request_id();
+        let server_id = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .and_then(|ext| language_id_for_ext(ext))
+            .and_then(|lang| server_id_for_language(lang));
+        if let Some(sid) = server_id {
+            if let Some(handle) = self.servers.get(sid) {
+                let _ = handle.tx.blocking_send(LspCommand::Rename {
+                    path: path.to_path_buf(),
+                    line,
+                    character,
+                    new_name,
+                    request_id: id,
+                });
+                return id;
+            }
+        }
+        eprintln!("anvil-lsp: rename unavailable (no LSP)");
+        0
+    }
+
+    /// Poll for a rename result matching `request_id`. Consumes on success.
+    pub fn poll_rename(&self, request_id: u64) -> Option<Vec<RenameEdit>> {
+        if request_id == 0 {
+            return None;
+        }
+        for handle in self.servers.values() {
+            let mut slot = handle.rename_result.lock().unwrap();
+            if slot.as_ref().map(|(id, _)| *id) == Some(request_id) {
+                return slot.take().map(|(_, r)| r);
+            }
+        }
+        None
+    }
+
+    // ── Code actions (item 25) ────────────────────────────────────────────────
+
+    /// Send a `textDocument/codeAction` request for `line`. Returns a non-zero
+    /// `request_id` on success; 0 when no live server is available (logs once).
+    pub fn request_code_actions(&self, path: &Path, line: u32) -> u64 {
+        let id = next_request_id();
+        let server_id = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .and_then(|ext| language_id_for_ext(ext))
+            .and_then(|lang| server_id_for_language(lang));
+        if let Some(sid) = server_id {
+            if let Some(handle) = self.servers.get(sid) {
+                let _ = handle.tx.blocking_send(LspCommand::CodeActions {
+                    path: path.to_path_buf(),
+                    line,
+                    request_id: id,
+                });
+                return id;
+            }
+        }
+        eprintln!("anvil-lsp: code actions unavailable (no LSP)");
+        0
+    }
+
+    /// Poll for a code-actions result matching `request_id`. Consumes on success.
+    pub fn poll_code_actions(&self, request_id: u64) -> Option<Vec<LspCodeAction>> {
+        if request_id == 0 {
+            return None;
+        }
+        for handle in self.servers.values() {
+            let mut slot = handle.code_actions_result.lock().unwrap();
+            if slot.as_ref().map(|(id, _)| *id) == Some(request_id) {
+                return slot.take().map(|(_, r)| r);
+            }
+        }
+        None
+    }
+
+    // ── References (item 26) ──────────────────────────────────────────────────
+
+    /// Send a `textDocument/references` request. Returns a non-zero `request_id`
+    /// on success; 0 when no live server is available (logs once).
+    pub fn request_references(&self, path: &Path, line: u32, character: u32) -> u64 {
+        let id = next_request_id();
+        let server_id = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .and_then(|ext| language_id_for_ext(ext))
+            .and_then(|lang| server_id_for_language(lang));
+        if let Some(sid) = server_id {
+            if let Some(handle) = self.servers.get(sid) {
+                let _ = handle.tx.blocking_send(LspCommand::References {
+                    path: path.to_path_buf(),
+                    line,
+                    character,
+                    request_id: id,
+                });
+                return id;
+            }
+        }
+        eprintln!("anvil-lsp: references unavailable (no LSP)");
+        0
+    }
+
+    /// Poll for a references result matching `request_id`. Consumes on success.
+    pub fn poll_references(&self, request_id: u64) -> Option<Vec<DefinitionLocation>> {
+        if request_id == 0 {
+            return None;
+        }
+        for handle in self.servers.values() {
+            let mut slot = handle.references_result.lock().unwrap();
+            if slot.as_ref().map(|(id, _)| *id) == Some(request_id) {
+                return slot.take().map(|(_, r)| r);
+            }
+        }
+        None
+    }
+
     /// Return the current state of the named server.
     pub fn state_of(&self, server_id: &'static str) -> LspState {
         self.servers
@@ -448,6 +618,9 @@ fn spawn_server(
     let hover_result: HoverSlot = Arc::new(Mutex::new(None));
     let definition_result: DefinitionSlot = Arc::new(Mutex::new(None));
     let completion_result: CompletionSlot = Arc::new(Mutex::new(None));
+    let rename_result: RenameSlot = Arc::new(Mutex::new(None));
+    let code_actions_result: CodeActionsSlot = Arc::new(Mutex::new(None));
+    let references_result: ReferencesSlot = Arc::new(Mutex::new(None));
     let (tx, rx) = mpsc::channel::<LspCommand>(64);
 
     let state_task = Arc::clone(&state);
@@ -455,6 +628,9 @@ fn spawn_server(
     let hover_task = Arc::clone(&hover_result);
     let def_task = Arc::clone(&definition_result);
     let comp_task = Arc::clone(&completion_result);
+    let rename_task = Arc::clone(&rename_result);
+    let code_actions_task = Arc::clone(&code_actions_result);
+    let references_task = Arc::clone(&references_result);
 
     // Resolve the binary before entering the async task so we can report the
     // failure synchronously-ish via the shared state.
@@ -470,6 +646,9 @@ fn spawn_server(
             hover_result,
             definition_result,
             completion_result,
+            rename_result,
+            code_actions_result,
+            references_result,
         };
     }
 
@@ -487,6 +666,9 @@ fn spawn_server(
             hover_result,
             definition_result,
             completion_result,
+            rename_result,
+            code_actions_result,
+            references_result,
         };
     }
 
@@ -505,6 +687,9 @@ fn spawn_server(
             hover_task,
             def_task,
             comp_task,
+            rename_task,
+            code_actions_task,
+            references_task,
             root_uri,
         )
         .await;
@@ -517,6 +702,9 @@ fn spawn_server(
         hover_result,
         definition_result,
         completion_result,
+        rename_result,
+        code_actions_result,
+        references_result,
     }
 }
 
@@ -533,6 +721,9 @@ async fn run_server(
     hover_result: HoverSlot,
     definition_result: DefinitionSlot,
     completion_result: CompletionSlot,
+    rename_result: RenameSlot,
+    code_actions_result: CodeActionsSlot,
+    references_result: ReferencesSlot,
     root_uri: Option<Url>,
 ) {
     let mut child: Child = match tokio::process::Command::new(&binary)
@@ -624,6 +815,9 @@ async fn run_server(
     let hover_clone = Arc::clone(&hover_result);
     let def_clone = Arc::clone(&definition_result);
     let comp_clone = Arc::clone(&completion_result);
+    let rename_clone = Arc::clone(&rename_result);
+    let code_actions_clone = Arc::clone(&code_actions_result);
+    let references_clone = Arc::clone(&references_result);
     loop {
         tokio::select! {
             biased;
@@ -737,12 +931,82 @@ async fn run_server(
                         );
                         let _ = write_message(&mut writer, &req).await;
                     }
+                    Some(LspCommand::Rename { path, line, character, new_name, request_id }) => {
+                        let uri = path_to_uri(&path);
+                        let req = make_request(
+                            request_id,
+                            lsp_types::request::Rename::METHOD,
+                            serde_json::to_value(lsp_types::RenameParams {
+                                text_document_position: lsp_types::TextDocumentPositionParams {
+                                    text_document: TextDocumentIdentifier { uri },
+                                    position: lsp_types::Position { line, character },
+                                },
+                                new_name,
+                                work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+                            })
+                            .unwrap(),
+                        );
+                        let _ = write_message(&mut writer, &req).await;
+                    }
+                    Some(LspCommand::CodeActions { path, line, request_id }) => {
+                        let uri = path_to_uri(&path);
+                        let range = lsp_types::Range {
+                            start: lsp_types::Position { line, character: 0 },
+                            end: lsp_types::Position { line, character: 0 },
+                        };
+                        let req = make_request(
+                            request_id,
+                            lsp_types::request::CodeActionRequest::METHOD,
+                            serde_json::to_value(lsp_types::CodeActionParams {
+                                text_document: TextDocumentIdentifier { uri },
+                                range,
+                                context: lsp_types::CodeActionContext {
+                                    diagnostics: Vec::new(),
+                                    only: None,
+                                    trigger_kind: None,
+                                },
+                                work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+                                partial_result_params: lsp_types::PartialResultParams::default(),
+                            })
+                            .unwrap(),
+                        );
+                        let _ = write_message(&mut writer, &req).await;
+                    }
+                    Some(LspCommand::References { path, line, character, request_id }) => {
+                        let uri = path_to_uri(&path);
+                        let req = make_request(
+                            request_id,
+                            lsp_types::request::References::METHOD,
+                            serde_json::to_value(lsp_types::ReferenceParams {
+                                text_document_position: lsp_types::TextDocumentPositionParams {
+                                    text_document: TextDocumentIdentifier { uri },
+                                    position: lsp_types::Position { line, character },
+                                },
+                                work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+                                partial_result_params: lsp_types::PartialResultParams::default(),
+                                context: lsp_types::ReferenceContext {
+                                    include_declaration: true,
+                                },
+                            })
+                            .unwrap(),
+                        );
+                        let _ = write_message(&mut writer, &req).await;
+                    }
                 }
             }
             // Inbound: message from the server.
             msg = read_message(&mut reader) => {
                 match msg {
-                    Ok(Some(m)) => handle_server_message(m, &diag_clone, &hover_clone, &def_clone, &comp_clone),
+                    Ok(Some(m)) => handle_server_message(
+                        m,
+                        &diag_clone,
+                        &hover_clone,
+                        &def_clone,
+                        &comp_clone,
+                        &rename_clone,
+                        &code_actions_clone,
+                        &references_clone,
+                    ),
                     _ => break,
                 }
             }
@@ -811,12 +1075,16 @@ async fn read_message(reader: &mut BufReader<ChildStdout>) -> std::io::Result<Op
 
 // ── Inbound message handler ──────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn handle_server_message(
     msg: Value,
     diagnostics: &Arc<Mutex<HashMap<PathBuf, Vec<DocumentDiagnostic>>>>,
     hover_result: &HoverSlot,
     definition_result: &DefinitionSlot,
     completion_result: &CompletionSlot,
+    rename_result: &RenameSlot,
+    code_actions_result: &CodeActionsSlot,
+    references_result: &ReferencesSlot,
 ) {
     // Check if this is a response (has "id" but no "method").
     if msg.get("method").is_none() {
@@ -832,6 +1100,40 @@ fn handle_server_message(
                 if !text.is_empty() {
                     *hover_result.lock().unwrap() = Some((id, HoverResult { text }));
                     return;
+                }
+            }
+            // Try rename response (WorkspaceEdit).
+            if let Ok(we) = serde_json::from_value::<WorkspaceEdit>(result.clone()) {
+                let edits = parse_workspace_edit_to_rename(&we);
+                if !edits.is_empty() {
+                    *rename_result.lock().unwrap() = Some((id, edits));
+                    return;
+                }
+            }
+            // Try code-action response (Vec<CodeAction | Command>).
+            let actions = parse_code_actions_result(result);
+            if !actions.is_empty() {
+                *code_actions_result.lock().unwrap() = Some((id, actions));
+                return;
+            }
+            // Try references response (Vec<Location>).
+            if let Ok(locs) = serde_json::from_value::<Vec<lsp_types::Location>>(result.clone()) {
+                if !locs.is_empty() {
+                    let refs: Vec<DefinitionLocation> = locs
+                        .into_iter()
+                        .filter_map(|l| {
+                            let path = l.uri.to_file_path().ok()?;
+                            Some(DefinitionLocation {
+                                path,
+                                line: l.range.start.line,
+                                col: l.range.start.character,
+                            })
+                        })
+                        .collect();
+                    if !refs.is_empty() {
+                        *references_result.lock().unwrap() = Some((id, refs));
+                        return;
+                    }
                 }
             }
             // Try definition response (Location | Vec<Location> | Vec<LocationLink>).
@@ -958,6 +1260,62 @@ fn parse_completion_result(result: &Value) -> Vec<CompletionItem> {
             label: ci.label.clone(),
             detail: ci.detail.clone(),
             insert_text: ci.insert_text.or(Some(ci.label)),
+        })
+        .collect()
+}
+
+/// Flatten a `WorkspaceEdit` into a list of `RenameEdit`s (item 24).
+fn parse_workspace_edit_to_rename(we: &WorkspaceEdit) -> Vec<RenameEdit> {
+    parse_workspace_edit_to_rename_inner(we)
+}
+
+/// Public wrapper for `lib.rs` re-export.
+pub fn parse_workspace_edit_to_rename_pub(we: WorkspaceEdit) -> Vec<RenameEdit> {
+    parse_workspace_edit_to_rename_inner(&we)
+}
+
+fn parse_workspace_edit_to_rename_inner(we: &WorkspaceEdit) -> Vec<RenameEdit> {
+    let mut out = Vec::new();
+    if let Some(changes) = &we.changes {
+        for (uri, edits) in changes {
+            let Ok(path) = uri.to_file_path() else {
+                continue;
+            };
+            for e in edits {
+                out.push(RenameEdit {
+                    path: path.clone(),
+                    start_line: e.range.start.line,
+                    start_col: e.range.start.character,
+                    end_line: e.range.end.line,
+                    end_col: e.range.end.character,
+                    new_text: e.new_text.clone(),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Parse a `textDocument/codeAction` result into `LspCodeAction`s (item 25).
+fn parse_code_actions_result(result: &Value) -> Vec<LspCodeAction> {
+    if result.is_null() {
+        return Vec::new();
+    }
+    // The response is `(Command | CodeAction)[]`.
+    let arr = match result.as_array() {
+        Some(a) => a,
+        None => return Vec::new(),
+    };
+    arr.iter()
+        .filter_map(|v| {
+            // A CodeAction has `title`; a Command also has `title`. Both usable.
+            let title = v.get("title")?.as_str()?.to_string();
+            let edits = v
+                .get("edit")
+                .and_then(|e| serde_json::from_value::<WorkspaceEdit>(e.clone()).ok())
+                .map(|we| parse_workspace_edit_to_rename_inner(&we))
+                .unwrap_or_default();
+            Some(LspCodeAction { title, edits })
         })
         .collect()
 }
@@ -1103,5 +1461,105 @@ mod tests {
         assert_eq!(language_id_for_ext("json"), Some("json"));
         assert_eq!(language_id_for_ext("md"), Some("markdown"));
         assert_eq!(language_id_for_ext("c"), None);
+    }
+
+    // ── Item 24: LSP rename ────────────────────────────────────────────────────
+
+    /// `request_rename` with no server returns 0 and logs once.
+    #[test]
+    fn request_rename_no_server_returns_zero() {
+        let mgr = LspManager::new().expect("runtime");
+        // No server started — must return 0 without panicking.
+        let id = mgr.request_rename(&PathBuf::from("/tmp/foo.rs"), 5, 3, "new_name".to_string());
+        assert_eq!(id, 0, "expected 0 when no server");
+    }
+
+    /// `poll_rename` on a zero id returns None immediately.
+    #[test]
+    fn poll_rename_zero_request_id_is_none() {
+        let mgr = LspManager::new().expect("runtime");
+        assert!(mgr.poll_rename(0).is_none());
+    }
+
+    /// `parse_workspace_edit_to_rename_inner` correctly flattens a WorkspaceEdit.
+    #[test]
+    fn parse_workspace_edit_flattens_edits() {
+        use lsp_types::{TextEdit, Url};
+        let mut changes = std::collections::HashMap::new();
+        let uri = Url::parse("file:///tmp/foo.rs").unwrap();
+        changes.insert(
+            uri,
+            vec![TextEdit {
+                range: lsp_types::Range {
+                    start: lsp_types::Position {
+                        line: 1,
+                        character: 2,
+                    },
+                    end: lsp_types::Position {
+                        line: 1,
+                        character: 7,
+                    },
+                },
+                new_text: "renamed".to_string(),
+            }],
+        );
+        let we = WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        };
+        let edits = parse_workspace_edit_to_rename_inner(&we);
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].new_text, "renamed");
+        assert_eq!(edits[0].start_line, 1);
+        assert_eq!(edits[0].start_col, 2);
+    }
+
+    // ── Item 25: code actions ──────────────────────────────────────────────────
+
+    /// `request_code_actions` with no server returns 0 and logs once.
+    #[test]
+    fn request_code_actions_no_server_returns_zero() {
+        let mgr = LspManager::new().expect("runtime");
+        let id = mgr.request_code_actions(&PathBuf::from("/tmp/foo.rs"), 3);
+        assert_eq!(id, 0, "expected 0 when no server");
+    }
+
+    /// `poll_code_actions` on zero id returns None.
+    #[test]
+    fn poll_code_actions_zero_id_is_none() {
+        let mgr = LspManager::new().expect("runtime");
+        assert!(mgr.poll_code_actions(0).is_none());
+    }
+
+    /// `parse_code_actions_result` extracts titles and converts edits.
+    #[test]
+    fn parse_code_actions_result_extracts_title() {
+        let json = serde_json::json!([
+            { "title": "Import std::io", "kind": "quickfix" },
+            { "title": "Fix spelling" }
+        ]);
+        let actions = parse_code_actions_result(&json);
+        assert_eq!(actions.len(), 2);
+        assert_eq!(actions[0].title, "Import std::io");
+        assert_eq!(actions[1].title, "Fix spelling");
+        // No edit field → edits should be empty.
+        assert!(actions[0].edits.is_empty());
+    }
+
+    // ── Item 26: references ────────────────────────────────────────────────────
+
+    /// `request_references` with no server returns 0 and logs once.
+    #[test]
+    fn request_references_no_server_returns_zero() {
+        let mgr = LspManager::new().expect("runtime");
+        let id = mgr.request_references(&PathBuf::from("/tmp/foo.rs"), 0, 0);
+        assert_eq!(id, 0, "expected 0 when no server");
+    }
+
+    /// `poll_references` on zero id returns None.
+    #[test]
+    fn poll_references_zero_id_is_none() {
+        let mgr = LspManager::new().expect("runtime");
+        assert!(mgr.poll_references(0).is_none());
     }
 }
