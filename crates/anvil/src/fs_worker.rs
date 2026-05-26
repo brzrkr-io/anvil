@@ -10,7 +10,8 @@
 //! 3. 2-second per-path debounce: repeated identical paths within 2 s are dropped.
 //! 4. Main thread per frame: `while let Ok(s) = rx.try_recv()` — mirror kube drain.
 
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -26,6 +27,12 @@ pub struct DirEntry {
 pub struct DirSnapshot {
     pub root: PathBuf,
     pub entries: Vec<DirEntry>,
+    /// Git status marks per filename (item 10).
+    ///
+    /// Populated by a `git status --porcelain` shell-out on the worker thread.
+    /// Key: filename (basename). Value: `'M'` modified, `'A'` added, `'?'` untracked, `'D'` deleted.
+    /// Empty when not in a git repo or the `git` binary is unavailable.
+    pub git_marks: HashMap<String, char>,
 }
 
 /// Directories to skip entirely.
@@ -114,10 +121,70 @@ pub fn spawn_child_fs_worker() -> (
 /// On IO error returns an empty snapshot (honest empty state).
 pub fn read_dir_snapshot(root: &PathBuf) -> DirSnapshot {
     let entries = read_entries(root).unwrap_or_default();
+    let git_marks = read_git_marks(root);
     DirSnapshot {
         root: root.clone(),
         entries,
+        git_marks,
     }
+}
+
+/// Run `git status --porcelain` in `root` and return a map of basename → status char.
+///
+/// Runs synchronously on the worker thread. Fast for typical project sizes.
+/// Returns an empty map when not in a git repo or `git` is unavailable.
+fn read_git_marks(root: &Path) -> HashMap<String, char> {
+    use std::process::Command;
+
+    let output = match Command::new("git")
+        .args(["-C", &root.to_string_lossy(), "status", "--porcelain"])
+        .output()
+    {
+        Ok(o) if o.status.success() || !o.stdout.is_empty() => o,
+        _ => return HashMap::new(),
+    };
+
+    let mut marks = HashMap::new();
+    let text = match std::str::from_utf8(&output.stdout) {
+        Ok(s) => s,
+        Err(_) => return marks,
+    };
+
+    for line in text.lines() {
+        // Porcelain format: "XY path" or "XY orig -> path" for renames.
+        if line.len() < 4 {
+            continue;
+        }
+        let xy = &line[..2];
+        // For renames (R), take the destination path after " -> ".
+        let path_part = if let Some(arrow) = line[3..].find(" -> ") {
+            &line[3 + arrow + 4..]
+        } else {
+            line[3..].trim_start_matches('"').trim_end_matches('"')
+        };
+        // Only care about direct children of root (no subpath slash).
+        let basename = if let Some(slash) = path_part.find('/') {
+            &path_part[..slash]
+        } else {
+            path_part
+        };
+        if basename.is_empty() {
+            continue;
+        }
+        // Determine mark from XY columns.
+        // Index (X) takes precedence over work-tree (Y) unless it's untracked.
+        let mark = if xy == "??" {
+            '?'
+        } else if xy.starts_with('D') || xy.ends_with('D') {
+            'D'
+        } else if xy.starts_with('A') {
+            'A'
+        } else {
+            'M' // modified in any form (M, R, C, U, …)
+        };
+        marks.insert(basename.to_string(), mark);
+    }
+    marks
 }
 
 /// Read, filter, sort, and cap entries. Returns `Err` on IO failure.
