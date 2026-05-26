@@ -1865,6 +1865,15 @@ impl App {
             }
         }
         self.tabs.push(tab);
+        // If we're in IDE mode, the fresh tab is a single terminal pane;
+        // promote it to the editor + drawer layout so the new tab matches
+        // the rest of the app. Without this, the new tab renders as a bare
+        // terminal that's hidden behind IDE chrome.
+        if self.layout_mode == LayoutMode::Ide {
+            if let Some(tab) = self.tabs.current_mut() {
+                tab.ensure_ide_editor_surface();
+            }
+        }
         self.resize_all_tabs();
         self.snap_anim();
         self.dirty = true;
@@ -4668,13 +4677,15 @@ impl App {
             match self.layout_mode {
                 LayoutMode::Terminal => {
                     self.left_dock_visible = false;
-                    if let Some(tab) = self.tabs.current_mut() {
+                    // Normalize every tab — switching modes must be coherent
+                    // across the whole workspace, not just the active tab.
+                    for tab in self.tabs.tabs.iter_mut() {
                         tab.normalize_terminal_surface();
                     }
                 }
                 LayoutMode::Ide => {
                     self.spawn_ide_terminal_drawer();
-                    if let Some(tab) = self.tabs.current_mut() {
+                    for tab in self.tabs.tabs.iter_mut() {
                         tab.ensure_ide_editor_surface();
                     }
                     self.left_dock_visible = true;
