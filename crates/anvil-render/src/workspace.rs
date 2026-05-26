@@ -518,18 +518,22 @@ fn draw_buffer_tab(
         );
     }
 
-    // Close hit rect (always present for tab-close clicks).
-    hits_out.push(EditorTabHit {
-        pane_id,
-        buffer_id,
-        is_close: true,
-        rect: crate::raster::PixelRect {
-            x: close_x,
-            y: tab.y,
-            w: TAB_CLOSE_W,
-            h: tab.h,
-        },
-    });
+    // Close hit rect only present when the × glyph is rendered (active or
+    // hovered). Otherwise a click in the rightmost 20px of any inactive tab
+    // silently closes it — surprising.
+    if is_active || is_hovered {
+        hits_out.push(EditorTabHit {
+            pane_id,
+            buffer_id,
+            is_close: true,
+            rect: crate::raster::PixelRect {
+                x: close_x,
+                y: tab.y,
+                w: TAB_CLOSE_W,
+                h: tab.h,
+            },
+        });
+    }
 }
 
 /// Draw only the chrome portion of the workspace (divider hairlines, focused

@@ -329,9 +329,11 @@ pub const MINERAL_LIGHT: Theme = Theme {
         [0x25, 0x6a, 0x70],
         [0x5f, 0x67, 0x6f],
     ],
-    // Chrome fields — filled with legacy hardcoded values from tabbar/statusbar consts.
-    graphite: [0xee, 0xf1, 0xf2],
-    charcoal: [0xee, 0xf1, 0xf2],
+    // Chrome hierarchy in light mode: background (bone) > graphite (cool gray)
+    // > charcoal (darker gray) > panel (white). graphite/charcoal must be
+    // distinct from background or the chrome strip vanishes in light mode.
+    graphite: [0xe2, 0xe6, 0xe9],
+    charcoal: [0xd6, 0xdb, 0xe0],
     panel: [0xff, 0xff, 0xff],
     panel_raised: [0xff, 0xff, 0xff],
     hairline: [0xb8, 0xbe, 0xc3],
