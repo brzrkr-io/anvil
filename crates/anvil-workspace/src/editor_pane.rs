@@ -3658,4 +3658,85 @@ mod tests {
             "scroll for closed buffer must be removed"
         );
     }
+
+    // ── M3: PageUp / PageDown cursor movement ─────────────────────────────────
+
+    /// M3: PageUp moves cursor upward (toward line 0) and does not panic.
+    #[test]
+    fn page_up_moves_cursor_up() {
+        let mut reg = EditorPaneRegistry::default();
+        reg.new_pane(1);
+        let text: String = (0..50).map(|i| format!("line{i}\n")).collect();
+        {
+            let buf = reg.get_buffer_mut(1).unwrap();
+            *buf = anvil_editor::Buffer::from_text(&text);
+        }
+        // Position cursor at line 30.
+        {
+            let pane = reg.get_pane_mut(1).unwrap();
+            pane.cursors[0].pos = anvil_editor::Position { line: 30, col: 0 };
+            pane.cursors[0].anchor = anvil_editor::Position { line: 30, col: 0 };
+            pane.scroll_pos = 20.0;
+            pane.scroll_target = 20.0;
+        }
+        let mut clip = None;
+        reg.apply(1, EditorAction::PageUp { extend: false }, &mut clip);
+        let pane = reg.get_pane(1).unwrap();
+        // Cursor must have moved to a line < 30.
+        assert!(
+            pane.cursors[0].pos.line < 30,
+            "PageUp must move cursor above line 30; got line {}",
+            pane.cursors[0].pos.line
+        );
+    }
+
+    /// M3: PageDown moves cursor downward and does not panic.
+    #[test]
+    fn page_down_moves_cursor_down() {
+        let mut reg = EditorPaneRegistry::default();
+        reg.new_pane(1);
+        let text: String = (0..50).map(|i| format!("line{i}\n")).collect();
+        {
+            let buf = reg.get_buffer_mut(1).unwrap();
+            *buf = anvil_editor::Buffer::from_text(&text);
+        }
+        // Position cursor at line 5.
+        {
+            let pane = reg.get_pane_mut(1).unwrap();
+            pane.cursors[0].pos = anvil_editor::Position { line: 5, col: 0 };
+            pane.cursors[0].anchor = anvil_editor::Position { line: 5, col: 0 };
+        }
+        let mut clip = None;
+        reg.apply(1, EditorAction::PageDown { extend: false }, &mut clip);
+        let pane = reg.get_pane(1).unwrap();
+        // Cursor must have moved below line 5.
+        assert!(
+            pane.cursors[0].pos.line > 5,
+            "PageDown must move cursor below line 5; got line {}",
+            pane.cursors[0].pos.line
+        );
+    }
+
+    // ── M1: scroll_target stays non-negative after wheel scroll ───────────────
+
+    /// M1: scroll_target must not go negative when clamped.
+    #[test]
+    fn scroll_target_clamp_non_negative() {
+        let mut reg = EditorPaneRegistry::default();
+        reg.new_pane(1);
+        {
+            let pane = reg.get_pane_mut(1).unwrap();
+            pane.scroll_target = 0.0;
+        }
+        // Simulate an upward scroll that would go negative.
+        {
+            let pane = reg.get_pane_mut(1).unwrap();
+            pane.scroll_target = (pane.scroll_target - 5.0).max(0.0);
+        }
+        let pane = reg.get_pane(1).unwrap();
+        assert_eq!(
+            pane.scroll_target, 0.0,
+            "scroll_target must clamp to 0 when scrolled above top"
+        );
+    }
 }

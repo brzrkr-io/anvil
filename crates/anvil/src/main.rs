@@ -2442,6 +2442,26 @@ impl App {
         }
     }
 
+    /// M3: Compute the approximate number of visible rows for the focused editor
+    /// pane, used by PgUp/PgDn scroll-target updates.
+    fn editor_visible_rows(&self) -> usize {
+        let Some(tab) = self.tabs.current() else {
+            return 24;
+        };
+        let id = tab.focused_id();
+        let cell_h = self.font.metrics.cell_h;
+        if cell_h <= 0.0 {
+            return 24;
+        }
+        let ir = self.pane_area_rect();
+        let entries = tab.tree.layout(ir, DIVIDER_PX);
+        entries
+            .iter()
+            .find(|e| e.id == id)
+            .map(|e| (e.rect.h / cell_h).ceil() as usize)
+            .unwrap_or(24)
+    }
+
     /// Concatenate the focused pane's current selection into a single string.
     /// Multi-row selections separate rows with `\n`. Rect mode picks the
     /// same column window on every row. Returns `None` when no selection is
@@ -3052,6 +3072,7 @@ impl App {
                     self.hovered_editor_tab,
                     &mut self.editor_tab_hits,
                     self.ui_scale,
+                    self.scroll_indicator_alpha,
                 );
             }
         } else {
@@ -5340,6 +5361,47 @@ impl AppHandler for AppShell {
             }
         }
 
+        // M2: Native editor smooth-scroll easing.
+        // Eases EditorPane.scroll_pos toward scroll_target at factor 0.35 per frame.
+        // Clamps scroll_target to [0, max(0, line_count - visible_rows)] before easing.
+        // Snaps when delta < 0.01 to avoid sub-pixel drift.
+        {
+            let cell_h = app.font.metrics.cell_h;
+            let ir = app.pane_area_rect();
+            if let Some(tab) = app.tabs.current_mut() {
+                let id = tab.focused_id();
+                let visible_rows = {
+                    let entries = tab.tree.layout(ir, DIVIDER_PX);
+                    entries
+                        .iter()
+                        .find(|e| e.id == id)
+                        .map(|e| (e.rect.h / cell_h).ceil() as usize)
+                        .unwrap_or(1)
+                };
+                // Resolve line_count before the mutable borrow of editor_panes.
+                let line_count = tab
+                    .editor_panes
+                    .get_pane(id)
+                    .and_then(|ep| tab.editor_panes.get_buffer(ep.buffer_id))
+                    .map(|b| b.line_count())
+                    .unwrap_or(1);
+                let max_scroll = (line_count.saturating_sub(visible_rows)) as f32;
+                if let Some(ep) = tab.editor_panes.get_pane_mut(id) {
+                    // Clamp target before easing.
+                    ep.scroll_target = ep.scroll_target.clamp(0.0, max_scroll.max(0.0));
+                    let delta = ep.scroll_target - ep.scroll_pos;
+                    if delta.abs() > 0.01 {
+                        ep.scroll_pos += delta * 0.35;
+                        app.dirty = true;
+                    } else if delta.abs() > 0.0 {
+                        ep.scroll_pos = ep.scroll_target.round();
+                        ep.scroll_vel = 0.0;
+                        app.dirty = true;
+                    }
+                }
+            }
+        }
+
         // Refresh throttle — ALWAYS runs so the bottom status bar gets
         // cwd / git / agent data even when the HUD panel is hidden.
         app.hud_tick += 1;
@@ -5469,12 +5531,37 @@ impl AppHandler for AppShell {
                         self.app.apply_editor_action(EditorAction::MoveBufferStart {
                             extend: mods.shift,
                         });
+                        // M4: scroll to buffer start.
+                        if let Some(tab) = self.app.tabs.current_mut() {
+                            let id = tab.focused_id();
+                            if let Some(ep) = tab.editor_panes.get_pane_mut(id) {
+                                ep.scroll_target = 0.0;
+                            }
+                        }
+                        self.app.dirty = true;
                         return;
                     }
                     KeyInput::End | KeyInput::Down => {
                         self.app.apply_editor_action(EditorAction::MoveBufferEnd {
                             extend: mods.shift,
                         });
+                        // M4: scroll to buffer end.
+                        let visible_rows = self.app.editor_visible_rows();
+                        if let Some(tab) = self.app.tabs.current_mut() {
+                            let id = tab.focused_id();
+                            // Read line_count before the mutable borrow.
+                            let line_count = tab
+                                .editor_panes
+                                .get_pane(id)
+                                .and_then(|ep| tab.editor_panes.get_buffer(ep.buffer_id))
+                                .map(|b| b.line_count())
+                                .unwrap_or(1);
+                            let max_scroll = (line_count.saturating_sub(visible_rows)) as f32;
+                            if let Some(ep) = tab.editor_panes.get_pane_mut(id) {
+                                ep.scroll_target = max_scroll.max(0.0);
+                            }
+                        }
+                        self.app.dirty = true;
                         return;
                     }
                     _ => {}
@@ -6578,6 +6665,33 @@ impl AppHandler for AppShell {
                         // Fall through to normal handling.
                     }
                 }
+            }
+
+            // M3: PageUp / PageDown — move cursor and update scroll_target.
+            if event.key == KeyInput::PageUp || event.key == KeyInput::PageDown {
+                let visible_rows = self.app.editor_visible_rows();
+                let is_up = event.key == KeyInput::PageUp;
+                let shift = event.mods.shift;
+                // Move cursor by one page.
+                self.app.apply_editor_action(if is_up {
+                    EditorAction::PageUp { extend: shift }
+                } else {
+                    EditorAction::PageDown { extend: shift }
+                });
+                // Scroll viewport by one page in the same direction.
+                if let Some(tab) = self.app.tabs.current_mut() {
+                    let id = tab.focused_id();
+                    if let Some(ep) = tab.editor_panes.get_pane_mut(id) {
+                        let delta = visible_rows as f32;
+                        if is_up {
+                            ep.scroll_target = (ep.scroll_target - delta).max(0.0);
+                        } else {
+                            ep.scroll_target += delta;
+                        }
+                    }
+                }
+                self.app.dirty = true;
+                return;
             }
 
             let action = key_event_to_editor_action(event);
@@ -7752,7 +7866,7 @@ impl AppHandler for AppShell {
             eprintln!("anvil-perf: scroll dy={dy:.2} pp={pixel_precise} d={d:.3}");
         }
 
-        // Native editor scroll (NE7): update scroll_target; easing loop applies it.
+        // Native editor scroll (NE7 + M1): update scroll_target; easing loop applies it.
         if app.focused_is_native_editor() {
             if let Some(tab) = app.tabs.current_mut() {
                 let id = tab.focused_id();
@@ -7760,6 +7874,9 @@ impl AppHandler for AppShell {
                     pane.scroll_target = (pane.scroll_target + d).max(0.0);
                 }
             }
+            // M5: trigger scrollbar fade-in on editor scroll.
+            app.scroll_indicator_alpha = 1.0;
+            app.scroll_indicator_last_scroll = Some(Instant::now());
             app.dirty = true;
             return;
         }
