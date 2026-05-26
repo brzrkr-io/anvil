@@ -405,7 +405,7 @@ fn draw_explorer_section(
                     } else {
                         "▸"
                     };
-                    (chevron, entry.name.clone(), theme.text_muted)
+                    (chevron, entry.name.clone(), theme.text_subtle)
                 } else {
                     (
                         "◇",
