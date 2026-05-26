@@ -301,7 +301,10 @@ fn draw_editor_chrome(
         format!("{dirty_dot} ◇ {filename}")
     };
 
-    let tab_w = (active_title.chars().count() as f64 * metrics.cell_w + 42.0).clamp(96.0, 188.0);
+    let min_tab_w = 8.0 * metrics.cell_w + 24.0;
+    let max_tab_w = 32.0 * metrics.cell_w + 42.0;
+    let tab_w =
+        (active_title.chars().count() as f64 * metrics.cell_w + 42.0).clamp(min_tab_w, max_tab_w);
     let _tab_x = draw_editor_tab(
         raster,
         painter,
