@@ -262,6 +262,11 @@ pub enum EditorAction {
     /// Format the active buffer (#23). Falls back to `rustfmt` for Rust files
     /// when no LSP is connected.
     FormatFile,
+    // ── Tier-H toggles ────────────────────────────────────────────────────────
+    /// H1: toggle soft word-wrap for the active pane (Cmd+K W).
+    ToggleSoftWrap,
+    /// H2: toggle show-whitespace overlay for the active pane (Cmd+K Space).
+    ToggleShowWhitespace,
     // ── Code actions popup (item 25) ──────────────────────────────────────────
     /// Open the code-actions popup with the given items (Cmd+.).
     CodeActionsOpen(Vec<CodeActionEntry>),
@@ -305,6 +310,14 @@ pub struct EditorPane {
     /// Folded line ranges keyed by `BufferId` (item 13).
     /// Each entry is a set of start-line numbers for active folds.
     pub folds: HashMap<BufferId, HashSet<usize>>,
+    /// H1: soft word-wrap enabled for this pane.  When true, long lines wrap
+    /// instead of clipping to the content width.
+    /// TODO(anvil-tierH-H1-wrap): actual wrap rendering not yet wired; flag is
+    /// toggled and persisted but render shows a placeholder until the full
+    /// multi-visual-row layout is implemented.
+    pub soft_wrap: bool,
+    /// H2: show whitespace overlay — spaces render as `·`, tabs as `→`.
+    pub show_whitespace: bool,
 }
 
 impl EditorPane {
@@ -369,6 +382,8 @@ impl EditorPaneRegistry {
             completion_popup: None,
             code_actions_popup: None,
             folds: HashMap::new(),
+            soft_wrap: false,
+            show_whitespace: false,
         };
         self.panes.insert(pane_id, pane);
         self.buffers.insert(buffer_id, Buffer::new());
@@ -401,6 +416,8 @@ impl EditorPaneRegistry {
             completion_popup: None,
             code_actions_popup: None,
             folds: HashMap::new(),
+            soft_wrap: false,
+            show_whitespace: false,
         });
         let old_buffer_id = pane.buffer_id;
         pane.buffer_id = buffer_id;
@@ -467,6 +484,8 @@ impl EditorPaneRegistry {
                 completion_popup: None,
                 code_actions_popup: None,
                 folds: HashMap::new(),
+                soft_wrap: false,
+                show_whitespace: false,
             };
             e.insert(pane);
             self.buffers.insert(buffer_id, buffer);
@@ -2079,6 +2098,18 @@ impl EditorPaneRegistry {
                 pane.code_actions_popup = None;
                 false
             }
+
+            // ── Tier-H toggles ────────────────────────────────────────────
+            EditorAction::ToggleSoftWrap => {
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                pane.soft_wrap = !pane.soft_wrap;
+                false
+            }
+            EditorAction::ToggleShowWhitespace => {
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                pane.show_whitespace = !pane.show_whitespace;
+                false
+            }
         }
     }
 }
@@ -2459,6 +2490,8 @@ mod tests {
             completion_popup: None,
             code_actions_popup: None,
             folds: HashMap::new(),
+            soft_wrap: false,
+            show_whitespace: false,
         };
         let buf = anvil_editor::Buffer::from_text(text);
         (pane, buf)

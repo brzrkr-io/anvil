@@ -776,6 +776,17 @@ pub struct App {
     /// pixel size and dock geometry. Cmd+= zooms in, Cmd+- zooms out, Cmd+0 resets.
     ui_scale: f64,
 
+    // ── Font scale (H4) ───────────────────────────────────────────────────────
+    /// Font-only scale multiplier.  Multiplies font pixel size only — dock
+    /// widths, chrome heights, and row heights are unchanged.
+    /// Cmd+Opt+= in, Cmd+Opt+- out, Cmd+Opt+0 reset.  Range [0.6, 2.5].
+    font_scale: f64,
+
+    // ── Cmd+K chord pending (H1, H2) ─────────────────────────────────────────
+    /// True after Cmd+K fires in a native editor pane, awaiting the second
+    /// key (W = soft-wrap, Space = show-whitespace).  Cleared on any key.
+    pending_chord_k: bool,
+
     // ── Goto-line overlay (item 11) ───────────────────────────────────────────
     /// When `Some`, the goto-line input overlay is open. The string is the
     /// text typed so far (e.g. "42" or "42,8").
@@ -3924,9 +3935,14 @@ impl App {
                 // No-op: use Cmd+G instead.
                 return true;
             }
-            // Cmd+K → HoverRequest (NE10)
+            // Cmd+K → start two-stroke chord (H1/H2); Cmd+K K → HoverRequest (NE10).
+            // After Cmd+K, the next plain key is consumed:
+            //   W     → ToggleSoftWrap (H1)
+            //   Space → ToggleShowWhitespace (H2)
+            //   K     → HoverRequest (NE10 — original binding preserved via double-tap)
+            //   other → cancel chord
             if lch == 'k' && !mods.shift && !mods.control && !mods.option {
-                self.trigger_hover_request();
+                self.pending_chord_k = true;
                 return true;
             }
             // Cmd+R → force-reload the active buffer from disk (item 27).
@@ -4440,6 +4456,7 @@ impl App {
 
         session::SessionState {
             ui_scale: self.ui_scale,
+            font_scale: self.font_scale,
             left_dock_w_pt: self.left_dock_w_pt,
             layout_mode: match self.layout_mode {
                 LayoutMode::Ide => "ide".to_string(),
@@ -4465,6 +4482,9 @@ impl App {
 
         if state.ui_scale > 0.0 {
             self.ui_scale = state.ui_scale;
+        }
+        if state.font_scale > 0.0 {
+            self.font_scale = state.font_scale;
         }
         if state.left_dock_w_pt >= 180.0 && state.left_dock_w_pt <= 600.0 {
             self.left_dock_w_pt = state.left_dock_w_pt;
@@ -4582,6 +4602,94 @@ impl AppShell {
             }
             _ => {}
         }
+    }
+
+    /// H4: Cmd+Opt+=/+: font scale up; Cmd+Opt+-: down; Cmd+Opt+0: reset.
+    ///
+    /// Only changes `font_scale` — dock widths, chrome heights, and row
+    /// heights are unaffected.  Range clamped to [0.6, 2.5].
+    fn handle_font_scale_chord(&mut self, ch: char) {
+        let delta = match ch {
+            '=' | '+' => 0.1,
+            '-' => -0.1,
+            '0' => 1.0 - self.app.font_scale,
+            _ => return,
+        };
+        self.bump_font_scale(delta);
+    }
+
+    /// Adjust `font_scale` by `delta`, rebuild fonts, and force a full redraw.
+    fn bump_font_scale(&mut self, delta: f64) {
+        let new_scale = (self.app.font_scale + delta).clamp(0.6, 2.5);
+        if (new_scale - self.app.font_scale).abs() < 0.001 {
+            return;
+        }
+        self.app.font_scale = new_scale;
+        // Rebuild font at font_size_pt * window_scale * font_scale.
+        let pixel_size = self.app.font_size_pt * self.app.window_scale * self.app.font_scale;
+        let names: Vec<&str> = vec![
+            "BlexMono Nerd Font Mono",
+            self.app.font_family.as_str(),
+            "SFMono-Regular",
+            "Menlo",
+        ];
+        let Ok(new_font) = Font::init_first_available(&names, pixel_size)
+            .or_else(|_| Font::init("Menlo", pixel_size))
+        else {
+            eprintln!("anvil: font_scale reinit failed at {new_scale}; keeping current");
+            return;
+        };
+        let new_bold =
+            Font::init_face(&names, pixel_size, FontFace::Bold, true).unwrap_or_else(|_| {
+                Font::init_first_available(&names, pixel_size)
+                    .or_else(|_| Font::init("Menlo", pixel_size))
+                    .expect("fallback must be available")
+            });
+        let new_italic = Font::init_face(&names, pixel_size, FontFace::Italic, true)
+            .unwrap_or_else(|_| {
+                Font::init_first_available(&names, pixel_size)
+                    .or_else(|_| Font::init("Menlo", pixel_size))
+                    .expect("fallback must be available")
+            });
+        let new_bold_italic = Font::init_face(&names, pixel_size, FontFace::BoldItalic, true)
+            .unwrap_or_else(|_| {
+                Font::init_first_available(&names, pixel_size)
+                    .or_else(|_| Font::init("Menlo", pixel_size))
+                    .expect("fallback must be available")
+            });
+
+        let old_font = std::mem::replace(&mut self.app.font, Box::new(new_font));
+        let old_bold = std::mem::replace(&mut self.app.bold_font, Box::new(new_bold));
+        let old_italic = std::mem::replace(&mut self.app.italic_font, Box::new(new_italic));
+        let old_bold_italic =
+            std::mem::replace(&mut self.app.bold_italic_font, Box::new(new_bold_italic));
+
+        // SAFETY: same lifetime-extension pattern as bump_ui_scale.
+        self.painter = unsafe {
+            let font_ref: &'static Font = &*(self.app.font.as_ref() as *const Font);
+            anvil_platform::font::CoreTextPainter::new(font_ref)
+        };
+        self.bold_painter = unsafe {
+            let font_ref: &'static Font = &*(self.app.bold_font.as_ref() as *const Font);
+            anvil_platform::font::CoreTextPainter::new(font_ref)
+        };
+        self.italic_painter = unsafe {
+            let font_ref: &'static Font = &*(self.app.italic_font.as_ref() as *const Font);
+            anvil_platform::font::CoreTextPainter::new(font_ref)
+        };
+        self.bold_italic_painter = unsafe {
+            let font_ref: &'static Font = &*(self.app.bold_italic_font.as_ref() as *const Font);
+            anvil_platform::font::CoreTextPainter::new(font_ref)
+        };
+
+        drop(old_font);
+        drop(old_bold);
+        drop(old_italic);
+        drop(old_bold_italic);
+
+        self.app.resize_all_tabs();
+        self.app.force_full_redraw = true;
+        self.app.dirty = true;
     }
 
     /// Adjust `ui_scale` by `delta`, rebuild fonts, and force a full redraw.
@@ -5283,6 +5391,13 @@ impl AppHandler for AppShell {
                     self.handle_zoom_chord(ch);
                     return;
                 }
+                // H4: Cmd+Opt+= / Cmd+Opt+- / Cmd+Opt+0 → font-only scale.
+                KeyInput::Char(ch)
+                    if matches!(ch, '=' | '+' | '-' | '0') && !mods.control && mods.option =>
+                {
+                    self.handle_font_scale_chord(ch);
+                    return;
+                }
                 // Cmd+Return — approve topmost pending approval (HUD must be visible).
                 KeyInput::Enter if !mods.shift && !mods.control && !mods.option => {
                     if self.app.hud_visible {
@@ -5541,6 +5656,37 @@ impl AppHandler for AppShell {
                     return;
                 }
                 _ => {}
+            }
+            return;
+        }
+
+        // ── Cmd+K two-stroke chord (H1: soft-wrap, H2: show-whitespace) ─────────
+        // `pending_chord_k` is set by the Cmd+K handler in handle_cmd_chord.
+        // The next plain (non-Cmd) key completes or cancels the chord.
+        if self.app.pending_chord_k {
+            self.app.pending_chord_k = false;
+            if self.app.focused_is_native_editor() {
+                match event.key {
+                    KeyInput::Char('w') | KeyInput::Char('W') => {
+                        self.app.apply_editor_action(EditorAction::ToggleSoftWrap);
+                        self.app.dirty = true;
+                        self.app.force_full_redraw = true;
+                    }
+                    KeyInput::Char(' ') => {
+                        self.app
+                            .apply_editor_action(EditorAction::ToggleShowWhitespace);
+                        self.app.dirty = true;
+                        self.app.force_full_redraw = true;
+                    }
+                    KeyInput::Char('k') | KeyInput::Char('K') => {
+                        // Cmd+K K → HoverRequest (original NE10 binding via double-tap).
+                        self.app.trigger_hover_request();
+                        self.app.dirty = true;
+                    }
+                    _ => {
+                        // Any other key: cancel chord silently (key is consumed).
+                    }
+                }
             }
             return;
         }
@@ -6384,6 +6530,15 @@ impl AppHandler for AppShell {
                         && !event.mods.option =>
                 {
                     self.handle_zoom_chord(ch);
+                    return true;
+                }
+                // H4: Cmd+Opt+= / Cmd+Opt+- / Cmd+Opt+0 → font-only scale.
+                KeyInput::Char(ch)
+                    if matches!(ch, '=' | '+' | '-' | '0')
+                        && !event.mods.control
+                        && event.mods.option =>
+                {
+                    self.handle_font_scale_chord(ch);
                     return true;
                 }
                 // HUD toggle: intercept here so we can call toggle_hud()
@@ -8756,6 +8911,8 @@ fn main() -> Result<()> {
         lsp_rename_input: None,
         lsp_references: None,
         ui_scale: 1.0,
+        font_scale: 1.0,
+        pending_chord_k: false,
         focus_target: FocusTarget::default(),
         selected_explorer_row: None,
         explorer_rename: None,
@@ -8957,6 +9114,16 @@ fn main() -> Result<()> {
     // (open_path_in_native_editor triggers syntax highlighting).
     if let Some(cwd) = shell.app.current_cwd() {
         shell.app.restore_session(&cwd);
+    }
+    // H4: apply restored font_scale if it differs from the startup default.
+    // restore_session sets the field on App; bump_font_scale lives on AppShell.
+    {
+        let fs = shell.app.font_scale;
+        if (fs - 1.0).abs() > 0.001 {
+            // Temporarily reset to 1.0 so delta = fs - 1.0 brings it to fs.
+            shell.app.font_scale = 1.0;
+            shell.bump_font_scale(fs - 1.0);
+        }
     }
 
     let mut grid_painters = GridPainters {

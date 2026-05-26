@@ -140,6 +140,22 @@ pub fn draw_editor_into(
     // exceed typical sizes.
     let full_text = buffer.to_text();
 
+    // H1: soft-wrap stub indicator.
+    // TODO(anvil-tierH-H1-wrap): actual multi-visual-row wrapping not yet wired.
+    // When enabled, render a subtle one-line notice at the top of the pane.
+    if editor_pane.soft_wrap {
+        let notice = "wrap";
+        let nx = rect.x + gutter_w + 0.5 * cw;
+        let ny = rect.y + 0.5 * ch;
+        for (i, c) in notice.chars().enumerate() {
+            let gx = nx + i as f64 * cw;
+            if gx + cw > rect.x + rect.w {
+                break;
+            }
+            raster.glyph_at(painter, metrics, gx, ny, c as u32, theme.text_subtle);
+        }
+    }
+
     if buffer.byte_len() == 0 {
         let hint_x = rect.x + gutter_w + 2.0 * cw;
         let hint_y = rect.y + 2.0 * ch;
@@ -301,6 +317,26 @@ pub fn draw_editor_into(
                 continue;
             }
             raster.glyph_at(painter, metrics, gx, row_y, cp, fg);
+            // H2: whitespace overlay — paint `·` over spaces, `→` over tabs.
+            if editor_pane.show_whitespace {
+                let ws_cp: Option<u32> = match *g {
+                    " " => Some('\u{00B7}' as u32),  // middle dot ·
+                    "\t" => Some('\u{2192}' as u32), // →
+                    _ => None,
+                };
+                if let Some(wcp) = ws_cp {
+                    // Pre-blend text_subtle at α=0.4 over the surface background
+                    // to produce a muted but visible marker color.
+                    let s = theme.text_subtle;
+                    let bg = theme.surface;
+                    let blended = [
+                        (s[0] as f32 * 0.4 + bg[0] as f32 * 0.6) as u8,
+                        (s[1] as f32 * 0.4 + bg[1] as f32 * 0.6) as u8,
+                        (s[2] as f32 * 0.4 + bg[2] as f32 * 0.6) as u8,
+                    ];
+                    raster.glyph_at(painter, metrics, gx, row_y, wcp, blended);
+                }
+            }
             grapheme_byte += g.len();
             painted = col + 1;
         }
@@ -835,6 +871,8 @@ mod tests {
             completion_popup: None,
             code_actions_popup: None,
             folds: std::collections::HashMap::new(),
+            soft_wrap: false,
+            show_whitespace: false,
         }
     }
 
