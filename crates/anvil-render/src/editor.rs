@@ -24,7 +24,10 @@ use unicode_segmentation::UnicodeSegmentation as _;
 use anvil_editor::{Buffer, FoldRange, GitChange, GitGutter, SyntaxRole, derive_fold_ranges};
 use anvil_theme::Theme;
 use anvil_workspace::{
-    bracket_match_for, editor_pane::EditorPane, layout::Rect, selection::Selection,
+    bracket_match_for,
+    editor_pane::{CompletionEntry, EditorPane},
+    layout::Rect,
+    selection::Selection,
 };
 
 use crate::raster::{FontMetrics, GlyphPainter, Raster};
@@ -441,6 +444,79 @@ pub fn draw_editor_into(
         }
     }
 
+    // ── Completion popup (item 16) ────────────────────────────────────────────
+    if let Some(cp) = &editor_pane.completion_popup {
+        let vis: Vec<&CompletionEntry> = cp.visible_items();
+        if !vis.is_empty() {
+            let anchor = cp.anchor;
+            if anchor.line >= scroll_line {
+                let av = anchor.line - scroll_line;
+                // Show list one row below the trigger line.
+                let list_y = rect.y + (av + 1) as f64 * ch;
+                let list_x = rect.x + gutter_w + anchor.col as f64 * cw;
+
+                const MAX_ROWS: usize = 12;
+                const LABEL_COLS: usize = 24;
+                const DETAIL_COLS: usize = 20;
+                const POPUP_COLS: usize = LABEL_COLS + 1 + DETAIL_COLS;
+
+                let show_count = vis.len().min(MAX_ROWS);
+                let popup_w = POPUP_COLS as f64 * cw;
+                let popup_h = show_count as f64 * ch;
+
+                let list_x = list_x.min(rect.x + rect.w - popup_w).max(rect.x);
+                let list_y = list_y.min(rect.y + rect.h - popup_h).max(rect.y);
+
+                // Background + border.
+                raster.fill_pixel_rect(list_x, list_y, popup_w, popup_h, theme.surface);
+                raster.fill_pixel_rect(list_x, list_y, popup_w, 1.0, theme.border);
+                raster.fill_pixel_rect(list_x, list_y + popup_h - 1.0, popup_w, 1.0, theme.border);
+                raster.fill_pixel_rect(list_x, list_y, 1.0, popup_h, theme.border);
+                raster.fill_pixel_rect(list_x + popup_w - 1.0, list_y, 1.0, popup_h, theme.border);
+
+                // Per-row paint.
+                let visible_selected = cp.selected.min(show_count.saturating_sub(1));
+                for (ri, entry) in vis.iter().enumerate().take(show_count) {
+                    let row_y = list_y + ri as f64 * ch;
+                    // Selection highlight.
+                    if ri == visible_selected {
+                        raster.fill_pixel_rect_alpha(
+                            list_x,
+                            row_y,
+                            popup_w,
+                            ch,
+                            theme.accent,
+                            0.18,
+                        );
+                    }
+                    // Label (left, clamped to LABEL_COLS).
+                    let label_color = theme.foreground;
+                    let label_chars: Vec<char> = entry.label.chars().take(LABEL_COLS).collect();
+                    for (ci, &c) in label_chars.iter().enumerate() {
+                        let tx = list_x + (ci + 1) as f64 * cw;
+                        raster.glyph_at(painter, metrics, tx, row_y, c as u32, label_color);
+                    }
+                    // Detail (right-aligned, text_subtle).
+                    if let Some(detail) = &entry.detail {
+                        let detail_chars: Vec<char> = detail.chars().take(DETAIL_COLS).collect();
+                        let detail_start_col = LABEL_COLS + 2;
+                        for (ci, &c) in detail_chars.iter().enumerate() {
+                            let tx = list_x + (detail_start_col + ci) as f64 * cw;
+                            raster.glyph_at(
+                                painter,
+                                metrics,
+                                tx,
+                                row_y,
+                                c as u32,
+                                theme.text_subtle,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // ── Hover popup (NE10) ────────────────────────────────────────────────────
     if let Some(popup) = &editor_pane.hover_popup {
         let anchor = popup.anchor;
@@ -651,6 +727,7 @@ mod tests {
             scroll_vel: 0.0,
             search: None,
             hover_popup: None,
+            completion_popup: None,
             folds: std::collections::HashMap::new(),
         }
     }

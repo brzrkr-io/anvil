@@ -22,8 +22,8 @@ pub use syntax::{
     derive_outline_rows,
 };
 
-// Re-export LSP types used by App and main.rs (NE9, NE10).
+// Re-export LSP types used by App and main.rs (NE9, NE10, tier-3).
 pub use lsp::{
-    DiagnosticSeverity, DocumentDiagnostic, HoverResult, LspManager, LspState, language_id_for_ext,
-    server_id_for_language,
+    CompletionItem, DefinitionLocation, DiagnosticSeverity, DocumentDiagnostic, HoverResult,
+    LspManager, LspState, language_id_for_ext, server_id_for_language,
 };

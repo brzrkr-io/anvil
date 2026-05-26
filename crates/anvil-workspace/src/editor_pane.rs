@@ -50,6 +50,52 @@ pub struct HoverPopup {
     pub anchor: Position,
 }
 
+// ── CompletionPopup (item 16) ─────────────────────────────────────────────────
+
+/// A completion popup anchored to the cursor position.
+///
+/// Populated by `main.rs` when `LspManager::poll_completion` returns items.
+/// Rendered by `draw_editor_chrome` as a 12-row floating list below the cursor.
+/// Dismissed by Esc, any buffer-mutating key, or a non-navigation key.
+#[derive(Debug, Clone)]
+pub struct CompletionPopup {
+    /// All items returned by the LSP (pre-filter).
+    pub items: Vec<CompletionEntry>,
+    /// Index into `visible_items()` of the currently selected row.
+    pub selected: usize,
+    /// Buffer position at which completion was triggered.
+    pub anchor: Position,
+    /// Text typed since the trigger (prefix filter applied client-side).
+    pub filter_prefix: String,
+}
+
+/// One row in the completion popup.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompletionEntry {
+    pub label: String,
+    pub detail: Option<String>,
+    /// Text to insert on accept; falls back to `label` when absent.
+    pub insert_text: String,
+}
+
+impl CompletionPopup {
+    /// Items that pass the prefix filter.  O(n) each call — fine for popup sizes.
+    pub fn visible_items(&self) -> Vec<&CompletionEntry> {
+        if self.filter_prefix.is_empty() {
+            self.items.iter().collect()
+        } else {
+            self.items
+                .iter()
+                .filter(|e| {
+                    e.label
+                        .to_ascii_lowercase()
+                        .starts_with(&self.filter_prefix.to_ascii_lowercase())
+                })
+                .collect()
+        }
+    }
+}
+
 // ── EditorAction ──────────────────────────────────────────────────────────────
 
 /// A typed editor action — the unit of currency between the keymap and the
@@ -132,7 +178,7 @@ pub enum EditorAction {
     SelectWordAt(Position),
     /// Select the entire line containing `pos` (triple-click, NE7).
     SelectLineAt(Position),
-    // ── LSP UI (NE10) ────────────────────────────────────────────────────────
+    // ── LSP UI (NE10, tier-3) ────────────────────────────────────────────────
     /// Request hover information at the current cursor position (Cmd+K).
     ///
     /// `main.rs` translates this into an `LspManager::request_hover` call; the
@@ -141,6 +187,20 @@ pub enum EditorAction {
     HoverRequest,
     /// Dismiss the hover popup.
     HoverDismiss,
+    // ── Completion popup (item 16) ────────────────────────────────────────────
+    /// Open completion popup with the given items anchored at the cursor.
+    /// `main.rs` calls this after `LspManager::poll_completion` returns.
+    CompletionOpen(Vec<CompletionEntry>),
+    /// Move selection up in the completion popup.
+    CompletionUp,
+    /// Move selection down in the completion popup.
+    CompletionDown,
+    /// Accept the selected completion item: insert its `insert_text` and close.
+    CompletionAccept,
+    /// Dismiss the completion popup without inserting.
+    CompletionDismiss,
+    /// Append a character to the completion filter prefix and re-filter.
+    CompletionFilter(char),
     // ── AI ghost-text (NE14) ─────────────────────────────────────────────────
     /// Accept the first ghost-text suggestion at the cursor: inserts its text
     /// at the cursor position and clears all ghost text.
@@ -187,6 +247,8 @@ pub struct EditorPane {
     /// Set by `main.rs` when `LspManager::poll_hover` returns a result.
     /// Cleared by `EditorAction::HoverDismiss` or on any buffer-mutating action.
     pub hover_popup: Option<HoverPopup>,
+    /// Active completion popup (item 16). `None` when no completion is showing.
+    pub completion_popup: Option<CompletionPopup>,
     /// Folded line ranges keyed by `BufferId` (item 13).
     /// Each entry is a set of start-line numbers for active folds.
     pub folds: HashMap<BufferId, HashSet<usize>>,
@@ -245,6 +307,7 @@ impl EditorPaneRegistry {
             scroll_vel: 0.0,
             search: None,
             hover_popup: None,
+            completion_popup: None,
             folds: HashMap::new(),
         };
         self.panes.insert(pane_id, pane);
@@ -275,6 +338,7 @@ impl EditorPaneRegistry {
             scroll_vel: 0.0,
             search: None,
             hover_popup: None,
+            completion_popup: None,
             folds: HashMap::new(),
         });
         let old_buffer_id = pane.buffer_id;
@@ -290,6 +354,7 @@ impl EditorPaneRegistry {
         pane.scroll_vel = 0.0;
         pane.search = None;
         pane.hover_popup = None;
+        pane.completion_popup = None;
         self.buffers.remove(&old_buffer_id);
         self.buffers.insert(buffer_id, buffer);
         Ok(buffer_id)
@@ -337,6 +402,7 @@ impl EditorPaneRegistry {
                 scroll_vel: 0.0,
                 search: None,
                 hover_popup: None,
+                completion_popup: None,
                 folds: HashMap::new(),
             };
             e.insert(pane);
@@ -429,6 +495,7 @@ impl EditorPaneRegistry {
             pane.scroll_vel = 0.0;
             pane.search = None;
             pane.hover_popup = None;
+            pane.completion_popup = None;
             self.buffers.insert(new_id, Buffer::new());
             return None;
         }
@@ -992,6 +1059,7 @@ impl EditorPaneRegistry {
             EditorAction::HoverRequest => {
                 let pane = self.panes.get_mut(&pane_id).unwrap();
                 pane.hover_popup = None;
+                pane.completion_popup = None;
                 false
             }
             EditorAction::HoverDismiss => {
@@ -1325,6 +1393,108 @@ impl EditorPaneRegistry {
                 }
                 false
             }
+
+            // ── Completion popup (item 16) ─────────────────────────────────────
+            EditorAction::CompletionOpen(entries) => {
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                let anchor = pane.cursors[0].pos;
+                pane.completion_popup = Some(CompletionPopup {
+                    items: entries,
+                    selected: 0,
+                    anchor,
+                    filter_prefix: String::new(),
+                });
+                false
+            }
+            EditorAction::CompletionUp => {
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                if let Some(cp) = &mut pane.completion_popup {
+                    let n = cp.visible_items().len();
+                    if n > 0 {
+                        cp.selected = cp.selected.saturating_sub(1);
+                    }
+                }
+                false
+            }
+            EditorAction::CompletionDown => {
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                if let Some(cp) = &mut pane.completion_popup {
+                    let n = cp.visible_items().len();
+                    if n > 0 {
+                        cp.selected = (cp.selected + 1).min(n - 1);
+                    }
+                }
+                false
+            }
+            EditorAction::CompletionAccept => {
+                // Extract the insert_text of the selected visible item.
+                let insert_text: Option<String> = {
+                    let pane = self.panes.get(&pane_id).unwrap();
+                    pane.completion_popup.as_ref().and_then(|cp| {
+                        let vis = cp.visible_items();
+                        vis.get(cp.selected).map(|e| e.insert_text.clone())
+                    })
+                };
+                // Remove the completion popup and the filter prefix chars.
+                let (anchor, prefix_len) = {
+                    let pane = self.panes.get(&pane_id).unwrap();
+                    pane.completion_popup
+                        .as_ref()
+                        .map(|cp| (cp.anchor, cp.filter_prefix.chars().count()))
+                        .unwrap_or((pane.cursors[0].pos, 0))
+                };
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                pane.completion_popup = None;
+                if let Some(text) = insert_text {
+                    // Delete the filter prefix chars typed after the trigger.
+                    let del_start = Position {
+                        line: anchor.line,
+                        col: anchor.col.saturating_sub(prefix_len),
+                    };
+                    let del_end = anchor;
+                    if del_start != del_end {
+                        let buf = self.buffers.get_mut(&buffer_id).unwrap();
+                        buf.delete_range(anvil_editor::Range {
+                            start: del_start,
+                            end: del_end,
+                        });
+                    }
+                    // Insert the completion text.
+                    let cur_pos = self.panes.get(&pane_id).unwrap().cursors[0].pos;
+                    let buf = self.buffers.get_mut(&buffer_id).unwrap();
+                    buf.insert_str(cur_pos, &text);
+                    let n = text.graphemes(true).count();
+                    let new_pos = Position {
+                        line: cur_pos.line,
+                        col: cur_pos.col + n,
+                    };
+                    let pane = self.panes.get_mut(&pane_id).unwrap();
+                    set_cursor(pane, new_pos, false);
+                    true
+                } else {
+                    false
+                }
+            }
+            EditorAction::CompletionDismiss => {
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                pane.completion_popup = None;
+                false
+            }
+            EditorAction::CompletionFilter(ch) => {
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                if let Some(cp) = &mut pane.completion_popup {
+                    cp.filter_prefix.push(ch);
+                    // Clamp selected to new visible count.
+                    let n = cp.visible_items().len();
+                    if n == 0 {
+                        pane.completion_popup = None;
+                    } else {
+                        let cp = pane.completion_popup.as_mut().unwrap();
+                        cp.selected = cp.selected.min(n - 1);
+                    }
+                }
+                false
+            }
         }
     }
 }
@@ -1543,6 +1713,7 @@ mod tests {
             scroll_vel: 0.0,
             search: None,
             hover_popup: None,
+            completion_popup: None,
             folds: HashMap::new(),
         };
         let buf = anvil_editor::Buffer::from_text(text);

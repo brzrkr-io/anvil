@@ -88,6 +88,18 @@ enum LspCommand {
         character: u32,
         request_id: u64,
     },
+    Definition {
+        path: PathBuf,
+        line: u32,
+        character: u32,
+        request_id: u64,
+    },
+    Completion {
+        path: PathBuf,
+        line: u32,
+        character: u32,
+        request_id: u64,
+    },
     Shutdown,
 }
 
@@ -100,6 +112,34 @@ pub struct HoverResult {
     pub text: String,
 }
 
+// ── Definition result (item 17) ───────────────────────────────────────────────
+
+/// One resolved definition location.
+#[derive(Debug, Clone)]
+pub struct DefinitionLocation {
+    pub path: PathBuf,
+    pub line: u32,
+    pub col: u32,
+}
+
+// ── Completion item (item 16) ─────────────────────────────────────────────────
+
+/// A single completion item from the LSP server.
+#[derive(Debug, Clone)]
+pub struct CompletionItem {
+    pub label: String,
+    /// Optional short description shown on the right.
+    pub detail: Option<String>,
+    /// Text to insert; falls back to `label` when `None`.
+    pub insert_text: Option<String>,
+}
+
+// ── Shared result slot types ──────────────────────────────────────────────────
+
+type HoverSlot = Arc<Mutex<Option<(u64, HoverResult)>>>;
+type DefinitionSlot = Arc<Mutex<Option<(u64, Vec<DefinitionLocation>)>>>;
+type CompletionSlot = Arc<Mutex<Option<(u64, Vec<CompletionItem>)>>>;
+
 // ── ServerHandle ─────────────────────────────────────────────────────────────
 
 struct ServerHandle {
@@ -108,7 +148,11 @@ struct ServerHandle {
     diagnostics: Arc<Mutex<HashMap<PathBuf, Vec<DocumentDiagnostic>>>>,
     /// Latest hover result (request_id, HoverResult). `main.rs` polls this
     /// each frame and clears after consumption.
-    hover_result: Arc<Mutex<Option<(u64, HoverResult)>>>,
+    hover_result: HoverSlot,
+    /// Latest definition result (request_id, Vec<DefinitionLocation>).
+    definition_result: DefinitionSlot,
+    /// Latest completion result (request_id, Vec<CompletionItem>).
+    completion_result: CompletionSlot,
 }
 
 // ── LspManager ────────────────────────────────────────────────────────────────
@@ -232,6 +276,80 @@ impl LspManager {
         None
     }
 
+    /// Send a `textDocument/definition` request for `path` at `(line, character)`.
+    /// Returns a `request_id` (non-zero on success) for use with `poll_definition`.
+    pub fn request_definition(&self, path: &Path, line: u32, character: u32) -> u64 {
+        let id = next_request_id();
+        let server_id = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .and_then(|ext| language_id_for_ext(ext))
+            .and_then(|lang| server_id_for_language(lang));
+        if let Some(sid) = server_id {
+            if let Some(handle) = self.servers.get(sid) {
+                let _ = handle.tx.blocking_send(LspCommand::Definition {
+                    path: path.to_path_buf(),
+                    line,
+                    character,
+                    request_id: id,
+                });
+                return id;
+            }
+        }
+        0
+    }
+
+    /// Poll for a definition result matching `request_id`. Consumes on success.
+    pub fn poll_definition(&self, request_id: u64) -> Option<Vec<DefinitionLocation>> {
+        if request_id == 0 {
+            return None;
+        }
+        for handle in self.servers.values() {
+            let mut slot = handle.definition_result.lock().unwrap();
+            if slot.as_ref().map(|(id, _)| *id) == Some(request_id) {
+                return slot.take().map(|(_, r)| r);
+            }
+        }
+        None
+    }
+
+    /// Send a `textDocument/completion` request for `path` at `(line, character)`.
+    /// Returns a `request_id` (non-zero on success) for use with `poll_completion`.
+    pub fn request_completion(&self, path: &Path, line: u32, character: u32) -> u64 {
+        let id = next_request_id();
+        let server_id = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .and_then(|ext| language_id_for_ext(ext))
+            .and_then(|lang| server_id_for_language(lang));
+        if let Some(sid) = server_id {
+            if let Some(handle) = self.servers.get(sid) {
+                let _ = handle.tx.blocking_send(LspCommand::Completion {
+                    path: path.to_path_buf(),
+                    line,
+                    character,
+                    request_id: id,
+                });
+                return id;
+            }
+        }
+        0
+    }
+
+    /// Poll for a completion result matching `request_id`. Consumes on success.
+    pub fn poll_completion(&self, request_id: u64) -> Option<Vec<CompletionItem>> {
+        if request_id == 0 {
+            return None;
+        }
+        for handle in self.servers.values() {
+            let mut slot = handle.completion_result.lock().unwrap();
+            if slot.as_ref().map(|(id, _)| *id) == Some(request_id) {
+                return slot.take().map(|(_, r)| r);
+            }
+        }
+        None
+    }
+
     /// Return the current state of the named server.
     pub fn state_of(&self, server_id: &'static str) -> LspState {
         self.servers
@@ -292,12 +410,16 @@ fn spawn_server(
     let state = Arc::new(Mutex::new(LspState::Spawning));
     let diagnostics: Arc<Mutex<HashMap<PathBuf, Vec<DocumentDiagnostic>>>> =
         Arc::new(Mutex::new(HashMap::new()));
-    let hover_result: Arc<Mutex<Option<(u64, HoverResult)>>> = Arc::new(Mutex::new(None));
+    let hover_result: HoverSlot = Arc::new(Mutex::new(None));
+    let definition_result: DefinitionSlot = Arc::new(Mutex::new(None));
+    let completion_result: CompletionSlot = Arc::new(Mutex::new(None));
     let (tx, rx) = mpsc::channel::<LspCommand>(64);
 
     let state_task = Arc::clone(&state);
     let diag_task = Arc::clone(&diagnostics);
     let hover_task = Arc::clone(&hover_result);
+    let def_task = Arc::clone(&definition_result);
+    let comp_task = Arc::clone(&completion_result);
 
     // Resolve the binary before entering the async task so we can report the
     // failure synchronously-ish via the shared state.
@@ -311,6 +433,8 @@ fn spawn_server(
             tx,
             diagnostics,
             hover_result,
+            definition_result,
+            completion_result,
         };
     }
 
@@ -326,6 +450,8 @@ fn spawn_server(
             tx,
             diagnostics,
             hover_result,
+            definition_result,
+            completion_result,
         };
     }
 
@@ -342,6 +468,8 @@ fn spawn_server(
             state_task,
             diag_task,
             hover_task,
+            def_task,
+            comp_task,
             root_uri,
         )
         .await;
@@ -352,6 +480,8 @@ fn spawn_server(
         tx,
         diagnostics,
         hover_result,
+        definition_result,
+        completion_result,
     }
 }
 
@@ -365,7 +495,9 @@ async fn run_server(
     mut rx: mpsc::Receiver<LspCommand>,
     state: Arc<Mutex<LspState>>,
     diagnostics: Arc<Mutex<HashMap<PathBuf, Vec<DocumentDiagnostic>>>>,
-    hover_result: Arc<Mutex<Option<(u64, HoverResult)>>>,
+    hover_result: HoverSlot,
+    definition_result: DefinitionSlot,
+    completion_result: CompletionSlot,
     root_uri: Option<Url>,
 ) {
     let mut child: Child = match tokio::process::Command::new(&binary)
@@ -455,6 +587,8 @@ async fn run_server(
     // Main loop: interleave incoming commands with incoming server messages.
     let diag_clone = Arc::clone(&diagnostics);
     let hover_clone = Arc::clone(&hover_result);
+    let def_clone = Arc::clone(&definition_result);
+    let comp_clone = Arc::clone(&completion_result);
     loop {
         tokio::select! {
             biased;
@@ -530,12 +664,50 @@ async fn run_server(
                         );
                         let _ = write_message(&mut writer, &req).await;
                     }
+                    Some(LspCommand::Definition { path, line, character, request_id }) => {
+                        let uri = path_to_uri(&path);
+                        let req = make_request(
+                            request_id,
+                            lsp_types::request::GotoDefinition::METHOD,
+                            serde_json::to_value(lsp_types::GotoDefinitionParams {
+                                text_document_position_params: lsp_types::TextDocumentPositionParams {
+                                    text_document: TextDocumentIdentifier { uri },
+                                    position: lsp_types::Position { line, character },
+                                },
+                                work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+                                partial_result_params: lsp_types::PartialResultParams::default(),
+                            })
+                            .unwrap(),
+                        );
+                        let _ = write_message(&mut writer, &req).await;
+                    }
+                    Some(LspCommand::Completion { path, line, character, request_id }) => {
+                        let uri = path_to_uri(&path);
+                        let req = make_request(
+                            request_id,
+                            lsp_types::request::Completion::METHOD,
+                            serde_json::to_value(lsp_types::CompletionParams {
+                                text_document_position: lsp_types::TextDocumentPositionParams {
+                                    text_document: TextDocumentIdentifier { uri },
+                                    position: lsp_types::Position { line, character },
+                                },
+                                work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+                                partial_result_params: lsp_types::PartialResultParams::default(),
+                                context: Some(lsp_types::CompletionContext {
+                                    trigger_kind: lsp_types::CompletionTriggerKind::INVOKED,
+                                    trigger_character: None,
+                                }),
+                            })
+                            .unwrap(),
+                        );
+                        let _ = write_message(&mut writer, &req).await;
+                    }
                 }
             }
             // Inbound: message from the server.
             msg = read_message(&mut reader) => {
                 match msg {
-                    Ok(Some(m)) => handle_server_message(m, &diag_clone, &hover_clone),
+                    Ok(Some(m)) => handle_server_message(m, &diag_clone, &hover_clone, &def_clone, &comp_clone),
                     _ => break,
                 }
             }
@@ -607,7 +779,9 @@ async fn read_message(reader: &mut BufReader<ChildStdout>) -> std::io::Result<Op
 fn handle_server_message(
     msg: Value,
     diagnostics: &Arc<Mutex<HashMap<PathBuf, Vec<DocumentDiagnostic>>>>,
-    hover_result: &Arc<Mutex<Option<(u64, HoverResult)>>>,
+    hover_result: &HoverSlot,
+    definition_result: &DefinitionSlot,
+    completion_result: &CompletionSlot,
 ) {
     // Check if this is a response (has "id" but no "method").
     if msg.get("method").is_none() {
@@ -616,13 +790,25 @@ fn handle_server_message(
             Some(i) => i,
             None => return,
         };
-        // Handle hover response.
         if let Some(result) = msg.get("result") {
+            // Try hover response.
             if let Ok(hover) = serde_json::from_value::<lsp_types::Hover>(result.clone()) {
                 let text = extract_hover_text(&hover);
                 if !text.is_empty() {
                     *hover_result.lock().unwrap() = Some((id, HoverResult { text }));
+                    return;
                 }
+            }
+            // Try definition response (Location | Vec<Location> | Vec<LocationLink>).
+            let locs = parse_definition_result(result);
+            if !locs.is_empty() {
+                *definition_result.lock().unwrap() = Some((id, locs));
+                return;
+            }
+            // Try completion response (CompletionList | Vec<CompletionItem>).
+            let items = parse_completion_result(result);
+            if !items.is_empty() {
+                *completion_result.lock().unwrap() = Some((id, items));
             }
         }
         return;
@@ -664,6 +850,81 @@ fn handle_server_message(
         }
     }
     // Future: handle window/logMessage, $/progress, etc.
+}
+
+/// Parse a `textDocument/definition` result into `DefinitionLocation`s.
+fn parse_definition_result(result: &Value) -> Vec<DefinitionLocation> {
+    // Response can be: null | Location | Location[] | LocationLink[]
+    if result.is_null() {
+        return Vec::new();
+    }
+    // Try as a single Location.
+    if let Ok(loc) = serde_json::from_value::<lsp_types::Location>(result.clone()) {
+        if let Ok(path) = loc.uri.to_file_path() {
+            return vec![DefinitionLocation {
+                path,
+                line: loc.range.start.line,
+                col: loc.range.start.character,
+            }];
+        }
+    }
+    // Try as Vec<Location>.
+    if let Ok(locs) = serde_json::from_value::<Vec<lsp_types::Location>>(result.clone()) {
+        return locs
+            .into_iter()
+            .filter_map(|l| {
+                let path = l.uri.to_file_path().ok()?;
+                Some(DefinitionLocation {
+                    path,
+                    line: l.range.start.line,
+                    col: l.range.start.character,
+                })
+            })
+            .collect();
+    }
+    // Try as Vec<LocationLink>.
+    if let Ok(links) = serde_json::from_value::<Vec<lsp_types::LocationLink>>(result.clone()) {
+        return links
+            .into_iter()
+            .filter_map(|l| {
+                let path = l.target_uri.to_file_path().ok()?;
+                Some(DefinitionLocation {
+                    path,
+                    line: l.target_range.start.line,
+                    col: l.target_range.start.character,
+                })
+            })
+            .collect();
+    }
+    Vec::new()
+}
+
+/// Parse a `textDocument/completion` result into `CompletionItem`s.
+fn parse_completion_result(result: &Value) -> Vec<CompletionItem> {
+    // Response can be: CompletionList | CompletionItem[] | null
+    if result.is_null() {
+        return Vec::new();
+    }
+    // Try as CompletionList first.
+    let raw_items: Vec<lsp_types::CompletionItem> =
+        if let Ok(list) = serde_json::from_value::<lsp_types::CompletionList>(result.clone()) {
+            list.items
+        } else if let Ok(items) =
+            serde_json::from_value::<Vec<lsp_types::CompletionItem>>(result.clone())
+        {
+            items
+        } else {
+            return Vec::new();
+        };
+
+    raw_items
+        .into_iter()
+        .map(|ci| CompletionItem {
+            label: ci.label.clone(),
+            detail: ci.detail.clone(),
+            insert_text: ci.insert_text.or(Some(ci.label)),
+        })
+        .collect()
 }
 
 /// Extract plain text from a `Hover` response.
