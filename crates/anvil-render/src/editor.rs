@@ -77,6 +77,10 @@ pub struct RenderDiagnostic {
 ///
 /// After this call the raster's `origin_x`/`origin_y` are not changed; callers
 /// are expected to set them before calling (matching the `draw_workspace` pattern).
+///
+/// `scroll_indicator_alpha` drives the M5 right-edge scrollbar thumb.  Pass
+/// `0.0` when no indicator should be shown; `1.0` for full opacity.  The
+/// caller is responsible for the fade-in / hold / fade-out timing.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_editor_into(
     raster: &mut Raster,
@@ -90,6 +94,7 @@ pub fn draw_editor_into(
     gutter: Option<&GitGutter>,
     focused: bool,
     blink_phase: f32,
+    scroll_indicator_alpha: f32,
 ) {
     let cw = metrics.cell_w;
     let ch = metrics.cell_h;
@@ -656,6 +661,34 @@ pub fn draw_editor_into(
         }
     }
 
+    // ── M5: right-edge scrollbar thumb ───────────────────────────────────────
+    // 3 px wide, `text_subtle` at α = indicator_alpha * 0.6.
+    // Hidden when the entire buffer fits in the visible area.
+    if scroll_indicator_alpha > 0.0 && line_count > visible_rows {
+        let thumb_alpha = (scroll_indicator_alpha * 0.6) as f64;
+        let content_h = rect.h;
+        let total_lines = line_count as f64;
+        let vis_rows = visible_rows as f64;
+        let thumb_h = ((vis_rows / total_lines) * content_h)
+            .max(20.0)
+            .min(content_h);
+        let max_scroll = total_lines - vis_rows;
+        let thumb_top = if max_scroll > 0.0 {
+            rect.y + (scroll_line as f64 / max_scroll) * (content_h - thumb_h)
+        } else {
+            rect.y
+        };
+        let thumb_x = rect.x + rect.w - 3.0;
+        raster.fill_pixel_rect_alpha(
+            thumb_x,
+            thumb_top,
+            3.0,
+            thumb_h,
+            theme.text_subtle,
+            thumb_alpha,
+        );
+    }
+
     // ── Hover popup (NE10) ────────────────────────────────────────────────────
     if let Some(popup) = &editor_pane.hover_popup {
         let anchor = popup.anchor;
@@ -900,6 +933,7 @@ mod tests {
             None,
             false,
             0.0,
+            0.0,
         );
 
         // The gutter should paint the digit '1' in text_muted.
@@ -960,6 +994,7 @@ mod tests {
             None,
             false,
             0.0,
+            0.0,
         );
 
         let fg_cps: Vec<u32> = painter
@@ -1018,6 +1053,7 @@ mod tests {
             None,
             false,
             0.0,
+            0.0,
         );
 
         // Cursor pixel: x = gutter_w + col * cw, y = row * ch (row 5, col 3).
@@ -1057,6 +1093,7 @@ mod tests {
             None,
             false,
             0.0,
+            0.0,
         );
 
         let has_overflow_marker = painter
@@ -1095,6 +1132,7 @@ mod tests {
             &[],
             None,
             false,
+            0.0,
             0.0,
         );
 
@@ -1167,6 +1205,7 @@ mod tests {
             None,
             false,
             0.0,
+            0.0,
         );
 
         // 'f' and 'n' must be painted with the keyword color.
@@ -1234,6 +1273,7 @@ mod tests {
             None,
             false,
             0.0,
+            0.0,
         );
 
         // The 4 px gutter stripe is at rect.x=0, row 0.
@@ -1279,6 +1319,7 @@ mod tests {
             &[],
             None,
             false,
+            0.0,
             0.0,
         );
 
@@ -1358,6 +1399,7 @@ mod tests {
                 None,
                 true, // focused
                 0.0,
+                0.0,
             );
             // Sample a pixel at the cursor row's y, inside the content area.
             // Cursor is at vrow=2 (scroll_pos=0), so y = 2 * cell_h.
@@ -1388,6 +1430,7 @@ mod tests {
                 &[],
                 None,
                 false, // unfocused
+                0.0,
                 0.0,
             );
             let sample_y = (r.y + 2.0 * m.cell_h + m.cell_h * 0.5) as usize;
@@ -1440,6 +1483,7 @@ mod tests {
                 None,
                 true,
                 0.0, // blink_phase = 0 → full opacity
+                0.0,
             );
             pixel_at(&raster, cursor_x, cursor_y)
         };
@@ -1461,6 +1505,7 @@ mod tests {
                 None,
                 true,
                 0.5, // blink_phase = 0.5 → dimmed
+                0.0,
             );
             pixel_at(&raster, cursor_x, cursor_y)
         };
@@ -1513,6 +1558,7 @@ mod tests {
             &[],
             None,
             false,
+            0.0,
             0.0,
         );
 
@@ -1568,6 +1614,7 @@ mod tests {
             None,
             false,
             0.0,
+            0.0,
         );
 
         // Sample inside the selected region (col 2).
@@ -1585,6 +1632,116 @@ mod tests {
         assert_ne!(
             ember, primary,
             "test pre-condition: accent_ember and accent_primary must differ in MINERAL_DARK"
+        );
+    }
+
+    // ── M5: scrollbar thumb painted when content overflows ────────────────────
+
+    /// M5: When scroll_indicator_alpha = 1.0 and the buffer has more lines than
+    /// fit in the visible area, a thumb is painted at the right edge of the pane
+    /// in `theme.text_subtle` (blended).  We verify the right-edge pixels are not
+    /// the raw surface color.
+    #[test]
+    fn scrollbar_thumb_painted_when_content_overflows() {
+        use crate::raster::pixel_at;
+
+        // Build a 100-line buffer. rect() is 400x200 with cell_h=16 → ~12 visible rows.
+        let text: String = (0..100).map(|i| format!("line{i}\n")).collect();
+        let buf = Buffer::from_text(&text);
+        let mut pane = make_pane(1);
+        // Scroll to line 20 so thumb is not at the top.
+        pane.scroll_pos = 20.0;
+        pane.scroll_target = 20.0;
+
+        let m = metrics();
+        let r = rect();
+        let theme = MINERAL_DARK;
+
+        let mut raster = Raster::new(400, 200);
+        raster.clear(theme.surface);
+        let mut painter = CapturePainter::default();
+
+        draw_editor_into(
+            &mut raster,
+            &mut painter,
+            &pane,
+            &buf,
+            m,
+            &theme,
+            r,
+            &[],
+            None,
+            false,
+            0.0,
+            1.0, // scroll_indicator_alpha = 1.0 → thumb visible
+        );
+
+        // Thumb occupies the rightmost 3px column. Sample x = rect.w - 2.
+        // The thumb should be somewhere in the middle-to-lower portion of the
+        // pane (scroll_pos=20 out of 100 lines → ~20% down).
+        // We sample near the middle of the visible area.
+        let thumb_x = (r.w - 2.0) as usize;
+        let mid_y = (r.h * 0.5) as usize;
+        let px = pixel_at(&raster, thumb_x, mid_y);
+        // The thumb blends text_subtle at α=0.6 over surface. The result must
+        // differ from raw surface (unless text_subtle == surface, which it isn't).
+        // Since the thumb position depends on scroll, we just verify that the
+        // right edge was modified somewhere.
+        // More robust: iterate the right column and check at least one pixel differs.
+        let any_thumb = (0..r.h as usize).any(|y| {
+            let px = pixel_at(&raster, thumb_x, y);
+            px != theme.surface
+        });
+        let _ = px;
+        assert!(
+            any_thumb,
+            "right-edge column must contain at least one thumb pixel when content overflows"
+        );
+    }
+
+    /// M5: When scroll_indicator_alpha = 0.0, no thumb is painted (right edge
+    /// stays at surface color).
+    #[test]
+    fn scrollbar_thumb_hidden_when_alpha_zero() {
+        use crate::raster::pixel_at;
+
+        let text: String = (0..100).map(|i| format!("line{i}\n")).collect();
+        let buf = Buffer::from_text(&text);
+        let pane = make_pane(1);
+        let m = metrics();
+        let r = rect();
+        let theme = MINERAL_DARK;
+
+        let mut raster = Raster::new(400, 200);
+        raster.clear(theme.surface);
+        let mut painter = CapturePainter::default();
+
+        draw_editor_into(
+            &mut raster,
+            &mut painter,
+            &pane,
+            &buf,
+            m,
+            &theme,
+            r,
+            &[],
+            None,
+            false,
+            0.0,
+            0.0, // scroll_indicator_alpha = 0.0 → no thumb
+        );
+
+        // Right edge should remain unmodified (surface color throughout).
+        let thumb_x = (r.w - 2.0) as usize;
+        // Surface color should be present everywhere in the right column.
+        // (The editor fills the right area with `theme.surface`.)
+        let all_surface = (0..r.h as usize).all(|y| {
+            let px = pixel_at(&raster, thumb_x, y);
+            px == theme.surface
+        });
+        assert!(
+            all_surface,
+            "right-edge must stay surface color when scroll_indicator_alpha=0"
         );
     }
 }

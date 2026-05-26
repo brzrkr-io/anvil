@@ -70,6 +70,8 @@ pub struct EditorTabHit {
 ///   editor_tab_hits    — output: cleared and repopulated with tab-strip click regions.
 ///   ui_scale           — logical zoom multiplier (separate from Retina window_scale).
 ///                        Pass `1.0` when no zoom is configured.
+///   scroll_indicator_alpha — alpha for the M5 editor scrollbar thumb [0.0, 1.0].
+///                        Driven by the same fade timer as the Explorer thumb.
 ///
 /// After this function returns, raster.origin_x and raster.origin_y are both 0.
 #[allow(clippy::too_many_arguments)]
@@ -93,6 +95,7 @@ pub fn draw_workspace(
     hovered_editor_tab: Option<(PaneId, BufferId)>,
     editor_tab_hits: &mut Vec<EditorTabHit>,
     ui_scale: f64,
+    scroll_indicator_alpha: f32,
 ) {
     editor_tab_hits.clear();
     let entries = tree.layout(inner, div_px);
@@ -233,6 +236,12 @@ pub fn draw_workspace(
                         // Only the focused pane animates; inactive panes get 0.0
                         // (fully opaque cursor) via cursor_opacity(0.0) == 1.0.
                         if e.id == focused_id { blink_phase } else { 0.0 },
+                        // M5: scrollbar thumb alpha — only for the focused pane.
+                        if e.id == focused_id {
+                            scroll_indicator_alpha
+                        } else {
+                            0.0
+                        },
                     );
                 } else {
                     // Buffer missing — panel fill with header strip.
@@ -1068,6 +1077,7 @@ mod tests {
             None,
             &mut tab_hits,
             1.0,
+            0.0,
         );
 
         assert_eq!(r.origin_x, 0.0, "origin_x must be reset to 0");
@@ -1148,6 +1158,7 @@ mod tests {
             None,
             &mut tab_hits,
             1.0,
+            0.0,
         );
 
         // Gutter center: pane1_w = (inner.w - TEST_DIV) * 0.5
@@ -1347,6 +1358,7 @@ mod tests {
             None,
             &mut tab_hits,
             1.0,
+            0.0,
         );
 
         // Focused pane (id1) is the left half of inner.
@@ -1462,6 +1474,7 @@ mod tests {
             None,
             &mut tab_hits,
             1.0,
+            0.0,
         );
         // "hello world" starts with 'h' — expect glyph calls.
         assert!(!painter.calls.is_empty());
