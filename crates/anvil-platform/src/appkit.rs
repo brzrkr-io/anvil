@@ -33,8 +33,9 @@ use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSAppearance, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
-    NSBackingStoreType, NSEvent, NSEventModifierFlags, NSImage, NSMenu, NSMenuItem, NSView,
-    NSWindow, NSWindowDelegate, NSWindowStyleMask, NSWindowTitleVisibility,
+    NSBackingStoreType, NSEvent, NSEventModifierFlags, NSImage, NSMenu, NSMenuItem, NSTrackingArea,
+    NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
+    NSWindowTitleVisibility,
 };
 use objc2_foundation::{
     MainThreadMarker, NSData, NSNotification, NSPoint, NSRect, NSSize, NSString, NSTimer,
@@ -132,6 +133,9 @@ pub trait AppHandler {
 
     /// Mouse dragged (button held).
     fn mouse_dragged(&mut self, loc: MouseLocation);
+
+    /// Mouse moved without any button held (passive hover).
+    fn mouse_moved(&mut self, loc: MouseLocation);
 
     /// Scroll-wheel event. `dy` is the AppKit delta along Y. `pixel_precise`
     /// is true for trackpad / Magic Mouse (delta is in points), false for a
@@ -366,6 +370,53 @@ define_class!(
             // SAFETY: handler pointer is valid for the app lifetime.
             let mut h = unsafe { self.ivars().handler.borrow_mut() };
             h.mouse_dragged(loc);
+        }
+
+        #[unsafe(method(mouseMoved:))]
+        fn mouse_moved(&self, event: &NSEvent) {
+            let loc = location_in_view(self, event);
+            // SAFETY: handler pointer is valid for the app lifetime.
+            let mut h = unsafe { self.ivars().handler.borrow_mut() };
+            h.mouse_moved(loc);
+        }
+
+        #[unsafe(method(mouseExited:))]
+        fn mouse_exited(&self, _event: &NSEvent) {
+            // Cursor left the tracking area — clear hover by reporting a
+            // location that maps to no hit zone.
+            let loc = MouseLocation { x: -1.0, y: -1.0 };
+            // SAFETY: handler pointer is valid for the app lifetime.
+            let mut h = unsafe { self.ivars().handler.borrow_mut() };
+            h.mouse_moved(loc);
+        }
+
+        /// Recreate the tracking area whenever the view is resized so the
+        /// active rect always covers the full view bounds.
+        #[unsafe(method(updateTrackingAreas))]
+        fn update_tracking_areas(&self) {
+            // Remove any existing tracking areas before adding a new one.
+            let existing = self.trackingAreas();
+            for area in existing.iter() {
+                self.removeTrackingArea(&area);
+            }
+            let opts = NSTrackingAreaOptions::MouseMoved
+                | NSTrackingAreaOptions::MouseEnteredAndExited
+                | NSTrackingAreaOptions::ActiveInKeyWindow
+                | NSTrackingAreaOptions::InVisibleRect;
+            // SAFETY: initWithRect_options_owner_userInfo is the NSTrackingArea
+            // designated initialiser; self (the view) is the owner.
+            let area = unsafe {
+                NSTrackingArea::initWithRect_options_owner_userInfo(
+                    NSTrackingArea::alloc(),
+                    self.bounds(),
+                    opts,
+                    Some(self as &NSView as &objc2::runtime::AnyObject),
+                    None,
+                )
+            };
+            self.addTrackingArea(&area);
+            // SAFETY: call super to ensure AppKit updates its own tracking data.
+            unsafe { objc2::msg_send![super(self), updateTrackingAreas] }
         }
 
         #[unsafe(method(mouseUp:))]
@@ -748,6 +799,11 @@ impl AppKitApp {
                 &*(view.as_ref() as *const NSView as *const NSResponder),
             ))
         };
+
+        // Install the initial NSTrackingArea so the view receives mouseMoved:
+        // events without a button held.  updateTrackingAreas is also overridden
+        // on AnvilView so it rebuilds the area on every resize.
+        view.updateTrackingAreas();
 
         // ── NSTimer at ~60 fps ────────────────────────────────────────────────
         // `scheduledTimerWithTimeInterval:repeats:block:` fires on the main

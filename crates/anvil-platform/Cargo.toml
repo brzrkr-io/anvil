@@ -38,6 +38,7 @@ objc2-app-kit      = { workspace = true, features = [
     "NSMenuItem",
     "NSPasteboard",
     "NSResponder",
+    "NSTrackingArea",
     "NSView",
     "NSWindow",
 ] }

@@ -4402,6 +4402,22 @@ impl AppHandler for AppShell {
         app.dirty = true;
     }
 
+    fn mouse_moved(&mut self, loc: MouseLocation) {
+        let app = &mut self.app;
+        let (rx, ry) = app.view_pt_to_raster_px(loc);
+        let new_hover = app.left_dock_hits.at(rx, ry).and_then(|kind| {
+            if let LeftDockHitKind::Explorer(ExplorerHit::Row(i)) = kind {
+                Some(*i)
+            } else {
+                None
+            }
+        });
+        if new_hover != app.hovered_explorer_row {
+            app.hovered_explorer_row = new_hover;
+            app.dirty = true;
+        }
+    }
+
     fn scroll(&mut self, dy: f64, pixel_precise: bool, loc: MouseLocation) {
         let app = &mut self.app;
         if dy == 0.0 {
@@ -5190,6 +5206,11 @@ fn main() -> Result<()> {
         fn mouse_dragged(&mut self, l: MouseLocation) {
             if let Some(h) = &mut *self.0.borrow_mut() {
                 h.mouse_dragged(l)
+            }
+        }
+        fn mouse_moved(&mut self, l: MouseLocation) {
+            if let Some(h) = &mut *self.0.borrow_mut() {
+                h.mouse_moved(l)
             }
         }
         fn scroll(&mut self, dy: f64, pp: bool, l: MouseLocation) {
