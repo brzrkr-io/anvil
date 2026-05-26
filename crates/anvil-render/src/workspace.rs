@@ -19,6 +19,8 @@ use anvil_workspace::{
     pane::PaneRegistry,
 };
 
+use anvil_workspace::editor_pane::EditorPane;
+
 use crate::{
     draw::{CursorConfig, CursorParams, FoldedBlocks, GridPainters, draw_viewport},
     editor::{RenderDiagnostic, draw_editor_into},
@@ -91,6 +93,16 @@ pub fn draw_workspace(
 ) {
     editor_tab_hits.clear();
     let entries = tree.layout(inner, div_px);
+
+    // Count how many editor-pane leaves exist (for focus ring, item 14).
+    let editor_pane_count = entries
+        .iter()
+        .filter(|e| {
+            registry
+                .get(e.id)
+                .is_some_and(|p| p.terminal.is_none() && p.editor_id.is_some())
+        })
+        .count();
 
     // Draw each leaf.
     for e in &entries {
@@ -192,6 +204,8 @@ pub fn draw_workspace(
                         hovered_bid,
                         e.id,
                         editor_tab_hits,
+                        ep,
+                        editor_pane_count > 1,
                     );
                     draw_editor_into(
                         raster,
@@ -203,6 +217,7 @@ pub fn draw_workspace(
                         editor_rect,
                         diags,
                         buf.git_gutter.as_ref(),
+                        e.id == focused_id,
                     );
                 } else {
                     // Buffer missing — panel fill with header strip.
@@ -282,6 +297,8 @@ fn draw_terminal_drawer_chrome(
 
 /// Height of the per-pane editor buffer tab strip in device pixels.
 const EDITOR_TABS_H: f64 = 34.0;
+/// Height of the per-pane editor status bar at the bottom of the editor pane (item 8).
+const EDITOR_STATUS_H: f64 = 26.0;
 /// Minimum per-tab width: ~6 chars + padding.
 const TAB_MIN_W: f64 = 80.0;
 /// Maximum per-tab width: ~24 chars + padding.
@@ -291,9 +308,11 @@ const TAB_PAD_L: f64 = 10.0;
 /// Space reserved on the right for the `×` close glyph.
 const TAB_CLOSE_W: f64 = 20.0;
 
-/// Draw the per-pane multi-buffer tab strip and return the editor body rect.
+/// Draw the per-pane multi-buffer tab strip, status bar, and return the editor body rect.
 ///
 /// Paints `open_buffers` as horizontal tabs with `active_buffer_id` highlighted.
+/// Also paints a 26px status bar at the bottom of the pane (item 8).
+/// Paints a 2px left-edge focus ring when focused and `multi_pane` is true (item 14).
 /// Writes hit regions (tab-body + close button per tab) into `hits_out`.
 #[allow(clippy::too_many_arguments)]
 fn draw_editor_chrome(
@@ -309,6 +328,8 @@ fn draw_editor_chrome(
     hovered_buffer: Option<BufferId>,
     pane_id: PaneId,
     hits_out: &mut Vec<EditorTabHit>,
+    ep: &EditorPane,
+    multi_pane: bool,
 ) -> Rect {
     let tabs_h = EDITOR_TABS_H.min(rect.h.max(0.0));
     if tabs_h <= 0.0 || rect.w <= 0.0 {
@@ -331,6 +352,13 @@ fn draw_editor_chrome(
     // Top accent rule for focused pane (overwrites graphite at y=0).
     if pane_focused {
         raster.fill_pixel_rect(rect.x, rect.y, rect.w, 2.0, theme.accent_primary);
+    }
+
+    // Left-edge focus ring (item 14): 2px accent_primary bar along the full pane
+    // height. Only painted when there are multiple editor panes so a solo pane
+    // does not show a distracting ring.
+    if pane_focused && multi_pane {
+        raster.fill_pixel_rect(rect.x, rect.y, 2.0, rect.h, theme.accent_primary);
     }
 
     // Compute per-tab widths. Each tab is sized to its label but clamped.
@@ -388,11 +416,31 @@ fn draw_editor_chrome(
         cursor_x += tab_w;
     }
 
+    // ── Status bar (item 8) ───────────────────────────────────────────────────
+    let status_h = EDITOR_STATUS_H.min((rect.h - tabs_h).max(0.0));
+    if status_h > 0.0 {
+        let buf = editor_panes.get_buffer(active_buffer_id);
+        draw_editor_status_bar(
+            raster,
+            painter,
+            metrics,
+            theme,
+            Rect {
+                x: rect.x,
+                y: rect.y + rect.h - status_h,
+                w: rect.w,
+                h: status_h,
+            },
+            ep,
+            buf,
+        );
+    }
+
     Rect {
         x: rect.x,
         y: rect.y + tabs_h,
         w: rect.w,
-        h: (rect.h - tabs_h).max(0.0),
+        h: (rect.h - tabs_h - status_h).max(0.0),
     }
 }
 
@@ -533,6 +581,77 @@ fn draw_buffer_tab(
                 h: tab.h,
             },
         });
+    }
+}
+
+/// Draw the editor status bar at the bottom of a pane (item 8).
+///
+/// Left side: `main · no LSP · N diagnostics` (branch + LSP placeholder).
+/// Right side: `Ln X, Col Y · UTF-8 · <Language>`.
+/// Background: `theme.panel`, top edge: 1px `theme.hairline`.
+fn draw_editor_status_bar(
+    raster: &mut Raster,
+    painter: &mut dyn crate::raster::GlyphPainter,
+    metrics: FontMetrics,
+    theme: &Theme,
+    rect: Rect,
+    ep: &EditorPane,
+    buf: Option<&anvil_editor::Buffer>,
+) {
+    if rect.w <= 0.0 || rect.h <= 0.0 {
+        return;
+    }
+    const PAD_X: f64 = 8.0;
+
+    // Background + top hairline.
+    raster.fill_pixel_rect(rect.x, rect.y, rect.w, rect.h, theme.panel);
+    raster.fill_pixel_rect_alpha(rect.x, rect.y, rect.w, 1.0, theme.hairline, 0.92);
+
+    let cw = metrics.cell_w;
+    let ch = metrics.cell_h;
+    let text_y = rect.y + ((rect.h - ch) * 0.5 + metrics.descent * 0.5).max(0.0);
+
+    // Left text: branch + LSP placeholder.
+    let left_label = "main \u{00b7} no LSP".to_string(); // · separators
+    let mut gx = rect.x + PAD_X;
+    let max_x = rect.x + rect.w - PAD_X;
+    for c in left_label.chars() {
+        if gx + cw > max_x {
+            break;
+        }
+        raster.glyph_at(painter, metrics, gx, text_y, c as u32, theme.text_subtle);
+        gx += cw;
+    }
+
+    // Right text: `Ln X, Col Y · UTF-8 · Language`.
+    let cursor_pos = ep.primary_cursor().pos;
+    let lang = buf.and_then(|b| b.language_id()).unwrap_or("Plain Text");
+    // Capitalise language display name.
+    let lang_display = match lang {
+        "rust" => "Rust",
+        "typescript" => "TypeScript",
+        "python" => "Python",
+        "toml" => "TOML",
+        "json" => "JSON",
+        "markdown" => "Markdown",
+        _ => lang,
+    };
+    let right_label = format!(
+        "Ln {}, Col {} \u{00b7} UTF-8 \u{00b7} {}",
+        cursor_pos.line + 1,
+        cursor_pos.col + 1,
+        lang_display
+    );
+    let right_chars: Vec<char> = right_label.chars().collect();
+    let right_w = right_chars.len() as f64 * cw;
+    let right_x = (rect.x + rect.w - PAD_X - right_w).max(rect.x + PAD_X);
+    let mut gx = right_x;
+    for c in &right_chars {
+        if gx + cw > rect.x + rect.w - PAD_X {
+            break;
+        }
+        raster.glyph_at(painter, metrics, gx, text_y, *c as u32, theme.text_subtle);
+        gx += cw;
     }
 }
 
@@ -938,6 +1057,7 @@ mod tests {
         // Build a minimal registry with one pane and one scratch buffer.
         let mut ep_reg = EditorPaneRegistry::default();
         let bid = ep_reg.new_pane(1);
+        let ep = ep_reg.get_pane(1).unwrap();
         let open_bufs = vec![bid];
         let mut hits = Vec::new();
         let content = draw_editor_chrome(
@@ -953,6 +1073,8 @@ mod tests {
             None, // hovered_buffer
             1,    // pane_id
             &mut hits,
+            ep,
+            false, // multi_pane (single pane — no focus ring)
         );
 
         assert_eq!(pixel_at(&r, 12, 12), theme.accent_primary);
@@ -1106,5 +1228,141 @@ mod tests {
         );
         // "hello world" starts with 'h' — expect glyph calls.
         assert!(!painter.calls.is_empty());
+    }
+
+    /// Item 8: editor chrome reserves a status-bar strip at the bottom; body rect
+    /// shrinks accordingly and the status bar area is filled (not raw background).
+    #[test]
+    fn editor_chrome_status_bar_reserves_bottom_strip() {
+        use anvil_workspace::editor_pane::EditorPaneRegistry;
+        let m = metrics();
+        let mut r = Raster::new(400, 200);
+        let mut painter = StubPainter::default();
+        let theme = anvil_theme::MINERAL_DARK;
+        r.clear(theme.background);
+        let rect = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 400.0,
+            h: 200.0,
+        };
+        let mut ep_reg = EditorPaneRegistry::default();
+        let bid = ep_reg.new_pane(1);
+        let ep = ep_reg.get_pane(1).unwrap();
+        let open_bufs = vec![bid];
+        let mut hits = Vec::new();
+        let content = draw_editor_chrome(
+            &mut r,
+            &mut painter,
+            &ep_reg,
+            bid,
+            &open_bufs,
+            m,
+            &theme,
+            rect,
+            false, // pane_focused
+            None,
+            1,
+            &mut hits,
+            ep,
+            false,
+        );
+        // Body rect must not extend to the bottom of the pane (status bar reserves bottom).
+        let body_bottom = content.y + content.h;
+        assert!(
+            body_bottom < rect.y + rect.h,
+            "status bar must reserve a strip at the bottom; body_bottom={body_bottom} rect_bottom={}",
+            rect.y + rect.h
+        );
+        // The strip height reserved must be ≥ EDITOR_STATUS_H.
+        let total_reserved = rect.h - content.h;
+        assert!(
+            total_reserved >= EDITOR_STATUS_H,
+            "must reserve at least EDITOR_STATUS_H px; reserved={total_reserved}"
+        );
+    }
+
+    /// Item 14: a 2px accent_primary left rail is painted only for the focused pane
+    /// in a multi-pane layout.
+    #[test]
+    fn editor_chrome_focus_ring_only_when_multi_pane() {
+        use anvil_workspace::editor_pane::EditorPaneRegistry;
+        let m = metrics();
+        let theme = anvil_theme::MINERAL_DARK;
+        let rect = Rect {
+            x: 10.0,
+            y: 10.0,
+            w: 300.0,
+            h: 200.0,
+        };
+
+        // Single pane: no focus ring on left edge.
+        {
+            let mut r = Raster::new(400, 300);
+            r.clear(theme.background);
+            let mut painter = StubPainter::default();
+            let mut ep_reg = EditorPaneRegistry::default();
+            let bid = ep_reg.new_pane(1);
+            let ep = ep_reg.get_pane(1).unwrap();
+            let open_bufs = vec![bid];
+            let mut hits = Vec::new();
+            draw_editor_chrome(
+                &mut r,
+                &mut painter,
+                &ep_reg,
+                bid,
+                &open_bufs,
+                m,
+                &theme,
+                rect,
+                true,
+                None,
+                1,
+                &mut hits,
+                ep,
+                false, // multi_pane=false
+            );
+            // Left edge (x=10) must NOT be accent_primary in single-pane mode.
+            let mid_y = (rect.y + rect.h * 0.5) as usize;
+            let px = pixel_at(&r, rect.x as usize, mid_y);
+            assert_ne!(
+                px, theme.accent_primary,
+                "single-pane left edge must not show focus ring; got {px:?}"
+            );
+        }
+
+        // Multi pane + focused: left edge IS accent_primary.
+        {
+            let mut r = Raster::new(400, 300);
+            r.clear(theme.background);
+            let mut painter = StubPainter::default();
+            let mut ep_reg = EditorPaneRegistry::default();
+            let bid = ep_reg.new_pane(1);
+            let ep = ep_reg.get_pane(1).unwrap();
+            let open_bufs = vec![bid];
+            let mut hits = Vec::new();
+            draw_editor_chrome(
+                &mut r,
+                &mut painter,
+                &ep_reg,
+                bid,
+                &open_bufs,
+                m,
+                &theme,
+                rect,
+                true,
+                None,
+                1,
+                &mut hits,
+                ep,
+                true, // multi_pane=true
+            );
+            let mid_y = (rect.y + rect.h * 0.5) as usize;
+            let px = pixel_at(&r, rect.x as usize, mid_y);
+            assert_eq!(
+                px, theme.accent_primary,
+                "multi-pane focused left edge must show focus ring; got {px:?}"
+            );
+        }
     }
 }
