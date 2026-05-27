@@ -56,7 +56,19 @@ pub fn draw_context_bar(
     let by = rect.y;
     let cell_h = metrics.cell_h;
 
-    raster.fill_pixel_rect(bx, by, bar_w, bar_h, theme.charcoal);
+    // DD6: 4pt graphite gap between the OS tab-strip chrome and the context bar.
+    // Paint the top 4 device pixels as a dark graphite strip, then the charcoal
+    // bar body below it — without touching the rect geometry so pane layout is
+    // unchanged.
+    const GAP_PT: f64 = 4.0;
+    raster.fill_pixel_rect(bx, by, bar_w, GAP_PT, theme.graphite);
+    raster.fill_pixel_rect(
+        bx,
+        by + GAP_PT,
+        bar_w,
+        (bar_h - GAP_PT).max(0.0),
+        theme.charcoal,
+    );
     raster.fill_pixel_rect(bx, by + bar_h - 1.0, bar_w, 1.0, theme.hairline);
 
     // Baseline for ui_line calls in this bar.

@@ -151,6 +151,16 @@ pub fn draw_workspace(
                 // Per-pane dirty set: None means "draw all rows".
                 let pane_dirty: Option<&DirtySet> = dirty.and_then(|m| m.get(&e.id));
 
+                // DD7: bottom-drawer gets a 24pt charcoal header above the PTY.
+                // Reserve header_h at the top of the drawer before calling
+                // draw_viewport so the terminal cells don't overdraw the header.
+                let drawer_header_h = if is_bottom_drawer(&e.rect, &inner, entries.len()) {
+                    (24.0 * ui_scale).min(e.rect.h)
+                } else {
+                    0.0
+                };
+                raster.origin_y += drawer_header_h;
+
                 draw_viewport(
                     raster,
                     painters,
@@ -168,6 +178,9 @@ pub fn draw_workspace(
                     running_pulse_phase,
                 );
 
+                // Restore origin before chrome draws in absolute space.
+                raster.origin_y -= drawer_header_h;
+
                 if is_bottom_drawer(&e.rect, &inner, entries.len()) {
                     draw_terminal_drawer_chrome(
                         raster,
@@ -176,6 +189,7 @@ pub fn draw_workspace(
                         theme,
                         e.rect,
                         e.id == focused_id,
+                        drawer_header_h,
                     );
                 }
 
@@ -319,21 +333,48 @@ fn draw_empty_pane(
 
 fn draw_terminal_drawer_chrome(
     raster: &mut Raster,
-    _painter: &mut dyn crate::raster::GlyphPainter,
-    _metrics: FontMetrics,
+    painter: &mut dyn crate::raster::GlyphPainter,
+    metrics: FontMetrics,
     theme: &Theme,
     rect: Rect,
     _active: bool,
+    header_h: f64,
 ) {
     if rect.w <= 0.0 || rect.h <= 0.0 {
         return;
     }
 
-    // Top separator between editor and drawer — 1px hairline only.
-    // A full header strip would overdraw terminal cells because draw_viewport
-    // fires before this function with the same rect origin. D5 deferred until
-    // the viewport rect can be inset to reserve space.
-    raster.fill_pixel_rect_alpha(rect.x, rect.y, rect.w, 1.0, theme.hairline, 0.92);
+    // DD7: paint a charcoal header strip at the top of the drawer.
+    // The caller has already inset raster.origin_y so the PTY cells
+    // render below this header — no overdraw.
+    if header_h > 0.0 {
+        raster.fill_pixel_rect(rect.x, rect.y, rect.w, header_h, theme.charcoal);
+        raster.fill_pixel_rect_alpha(rect.x, rect.y, rect.w, 1.0, theme.hairline, 0.92);
+        raster.fill_pixel_rect_alpha(
+            rect.x,
+            rect.y + header_h - 1.0,
+            rect.w,
+            1.0,
+            theme.hairline,
+            0.60,
+        );
+
+        const PAD_X: f64 = 8.0;
+        let text_y = rect.y + ((header_h - metrics.cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+        let label = "TERMINAL";
+        let mut gx = rect.x + PAD_X;
+        let max_x = rect.x + rect.w - PAD_X;
+        for ch in label.chars() {
+            if gx + metrics.cell_w > max_x {
+                break;
+            }
+            raster.glyph_at(painter, metrics, gx, text_y, ch as u32, theme.text_subtle);
+            gx += metrics.cell_w;
+        }
+    } else {
+        // Fallback: 1px hairline separator only (no reserved space).
+        raster.fill_pixel_rect_alpha(rect.x, rect.y, rect.w, 1.0, theme.hairline, 0.92);
+    }
 }
 
 /// Draw the collapsed drawer strip (G2): a 24pt-tall charcoal bar with
@@ -702,9 +743,10 @@ fn draw_buffer_tab(
     }
 
     // Dirty dot (7px, accent_primary) to the left of the filename.
+    // DD9: use is_dirty() (revisions != saved_revision) not revisions > 0.
     let is_dirty = editor_panes
         .get_buffer(buffer_id)
-        .map(|b| b.revisions > 0)
+        .map(|b| b.is_dirty())
         .unwrap_or(false);
 
     let label = buffer_label(editor_panes, buffer_id);
@@ -1230,8 +1272,10 @@ mod tests {
         ));
     }
 
+    /// DD7: draw_terminal_drawer_chrome paints a charcoal header strip for the
+    /// reserved header area and leaves the body (below header_h) untouched.
     #[test]
-    fn terminal_drawer_chrome_paints_top_hairline_only() {
+    fn terminal_drawer_chrome_paints_header_strip() {
         let m = metrics();
         let mut r = Raster::new(220, 90);
         let mut painter = StubPainter::default();
@@ -1243,23 +1287,30 @@ mod tests {
             w: 180.0,
             h: 52.0,
         };
+        let header_h = 24.0_f64;
 
-        draw_terminal_drawer_chrome(&mut r, &mut painter, m, &theme, rect, true);
+        draw_terminal_drawer_chrome(&mut r, &mut painter, m, &theme, rect, true, header_h);
 
+        // Header row must be painted charcoal (not raw black).
         let top_px = pixel_at(&r, 20, 12);
-        // Top row must have moved off raw black — hairline is painted there.
-        assert_ne!(top_px, [0, 0, 0], "top hairline must paint");
+        assert_ne!(top_px, [0, 0, 0], "header strip must be painted");
         assert_ne!(
             top_px, theme.accent_ember,
-            "drawer hairline must not use Ember accent"
+            "drawer header must not use Ember accent"
         );
-        // Body must remain whatever the viewport painted under us.
+        // Body below the header must remain whatever the viewport painted (black in this test).
+        // header_h=24, rect.y=12, so body starts at y=36; sample y=40.
         let body_px = pixel_at(&r, 20, 40);
         assert_eq!(
             body_px,
             [0, 0, 0],
             "drawer body must NOT be overdrawn — viewport cells must pass through"
         );
+        // Zero header_h falls back to hairline-only (no charcoal fill).
+        r.clear([0, 0, 0]);
+        draw_terminal_drawer_chrome(&mut r, &mut painter, m, &theme, rect, true, 0.0);
+        let top_px_no_hdr = pixel_at(&r, 20, 12);
+        assert_ne!(top_px_no_hdr, [0, 0, 0], "fallback hairline must paint");
     }
 
     /// Native editor panes reserve a chrome strip before drawing buffer content.
