@@ -1,0 +1,7 @@
+# Option A target scene — IDE surface with Explorer + editor + drawer.
+# Use with: cargo run --bin anvil-snapshot -- --scene examples/snapshot-scenes/option-a.toml
+
+width = 1700
+height = 1100
+theme = "ember-dark"
+cwd = "/home/user/anvil"

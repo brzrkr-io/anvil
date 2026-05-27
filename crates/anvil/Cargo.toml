@@ -8,6 +8,10 @@ rust-version.workspace = true
 name = "anvil"
 path = "src/main.rs"
 
+[[bin]]
+name = "anvil-snapshot"
+path = "src/bin/anvil-snapshot.rs"
+
 [dependencies]
 anvil-platform   = { workspace = true }
 anvil-term       = { workspace = true }
@@ -28,6 +32,8 @@ unicode-segmentation = { workspace = true }
 serde            = { workspace = true }
 serde_json       = { workspace = true }
 libc             = { workspace = true }
+which            = { workspace = true }
+png              = { workspace = true }
 objc2            = { workspace = true }
 objc2-app-kit    = { workspace = true, features = ["NSApplication", "NSAppearance", "NSPasteboard"] }
 objc2-foundation    = { workspace = true, features = ["NSString"] }
