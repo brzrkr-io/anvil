@@ -60,6 +60,9 @@ impl Default for FontCfg {
 pub struct CursorCfg {
     pub style: CursorStyle,
     pub blink: bool,
+    /// Optional override for the cursor color as a `#rrggbb` hex string (AA7).
+    /// When absent, the theme's `accent_primary` is used.
+    pub color: Option<String>,
 }
 
 // CursorCfg needs blink to default to true, but #[serde(default)] on the
@@ -69,6 +72,7 @@ impl CursorCfg {
         CursorCfg {
             style: CursorStyle::Block,
             blink: true,
+            color: None,
         }
     }
 }
@@ -217,16 +221,120 @@ impl Default for Keybindings {
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
+// ── ThemeSectionCfg (AA3) ─────────────────────────────────────────────────────
+
+/// Per-token overrides inside `[theme.tokens]` (AA3).
+///
+/// Each field is an optional `#rrggbb` hex string applied on top of the
+/// base theme.  Fields here mirror the most-useful `Theme` tokens.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ThemeTokenOverrides {
+    pub background: Option<String>,
+    pub foreground: Option<String>,
+    pub accent: Option<String>,
+    pub verified: Option<String>,
+    pub failure: Option<String>,
+    pub attention: Option<String>,
+    pub agent: Option<String>,
+    pub info: Option<String>,
+}
+
+/// A `[theme]` table section in `config.toml` (AA3).
+///
+/// Supports two equivalent spellings in TOML:
+///
+/// ```toml
+/// # simple — bare string on one line
+/// theme = "ember-dark"
+///
+/// # extended — table with optional per-token overrides
+/// [theme]
+/// override = "ember-dark"
+///
+/// [theme.tokens]
+/// accent = "#ff0000"
+/// ```
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ThemeSectionCfg {
+    /// Base theme name; empty string means "use the hardcoded default".
+    #[serde(rename = "override")]
+    pub theme_override: String,
+    /// Per-token color overrides applied on top of the base theme.
+    pub tokens: ThemeTokenOverrides,
+}
+
+/// Accepts either a bare string (`theme = "name"`) or a `[theme]` table.
+/// The untagged representation means serde tries each variant in order.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub enum ThemeEntry {
+    /// `theme = "ember-dark"` — simple bare string.
+    Name(String),
+    /// `[theme]\n override = "ember-dark"` — extended table.
+    Section(ThemeSectionCfg),
+}
+
+impl ThemeEntry {
+    /// The resolved base theme name; falls back to `"ember-dark"` when absent.
+    pub fn theme_name(&self) -> &str {
+        match self {
+            ThemeEntry::Name(s) => s.as_str(),
+            ThemeEntry::Section(sec) => {
+                if sec.theme_override.is_empty() {
+                    "ember-dark"
+                } else {
+                    sec.theme_override.as_str()
+                }
+            }
+        }
+    }
+
+    /// Per-token overrides; only available when the table form is used.
+    pub fn token_overrides(&self) -> Option<&ThemeTokenOverrides> {
+        match self {
+            ThemeEntry::Name(_) => None,
+            ThemeEntry::Section(sec) => Some(&sec.tokens),
+        }
+    }
+}
+
+impl Default for ThemeEntry {
+    fn default() -> Self {
+        ThemeEntry::Name("ember-dark".into())
+    }
+}
+
 // ── EditorCfg ─────────────────────────────────────────────────────────────────
 
+fn default_italic_comments() -> bool {
+    true
+}
+
 /// Editor-specific configuration options.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct EditorCfg {
     /// When `true`, automatically save dirty editor buffers when the window
     /// loses focus (`windowDidResignKey`).  Silent — errors are logged to
     /// stderr.  Default: `false`.
     pub save_on_blur: bool,
+    /// When `true`, comment tokens are rendered in italic. Default: `true` (AA5).
+    #[serde(default = "default_italic_comments")]
+    pub italic_comments: bool,
+    /// When `true`, keyword tokens are rendered in bold. Default: `false` (AA6).
+    pub bold_keywords: bool,
+}
+
+impl Default for EditorCfg {
+    fn default() -> Self {
+        EditorCfg {
+            save_on_blur: false,
+            italic_comments: true,
+            bold_keywords: false,
+        }
+    }
 }
 
 /// Explorer-specific configuration options (Y1).
@@ -236,6 +344,30 @@ pub struct ExplorerCfg {
     /// When `true`, expanding a directory at depth > 2 collapses sibling
     /// directories at the same depth.  Default: `false`.
     pub auto_collapse_siblings: bool,
+}
+
+/// Per-language syntax color overrides (AA4).
+///
+/// Each field is an optional `#rrggbb` hex string.  Applied on top of the
+/// theme's `SyntaxTheme` for the named language.
+///
+/// Example in `config.toml`:
+/// ```toml
+/// [syntax.rust]
+/// keyword = "#ff8800"
+/// ```
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LangSyntaxOverride {
+    pub keyword: Option<String>,
+    pub string: Option<String>,
+    pub number: Option<String>,
+    pub comment: Option<String>,
+    pub function: Option<String>,
+    pub type_: Option<String>,
+    pub variable: Option<String>,
+    pub operator: Option<String>,
+    pub punctuation: Option<String>,
 }
 
 /// A named task defined in `[tasks]` (Y12).
@@ -256,7 +388,10 @@ pub struct Config {
     #[serde(default = "CursorCfg::new_default")]
     pub cursor: CursorCfg,
     pub window: WindowCfg,
-    pub theme: String,
+    /// Base theme name or extended `[theme]` table (AA3).
+    /// Simple: `theme = "ember-dark"`.
+    /// Extended: `[theme]\n override = "ember-dark"\n [theme.tokens]\n accent = "#ff0000"`.
+    pub theme: ThemeEntry,
     pub layout_mode: StartupLayout,
     pub theme_overrides: ThemeOverrides,
     pub keybindings: Keybindings,
@@ -264,6 +399,10 @@ pub struct Config {
     pub prompt: PromptCfg,
     pub editor: EditorCfg,
     pub explorer: ExplorerCfg,
+    /// Per-language syntax color overrides (AA4). Key is the language name
+    /// as returned by the syntax layer (e.g. `"rust"`, `"python"`).
+    #[serde(default)]
+    pub syntax: std::collections::HashMap<String, LangSyntaxOverride>,
     /// Named tasks (`[tasks.<name>]`). Y12.
     #[serde(default)]
     pub tasks: std::collections::HashMap<String, TaskDef>,
@@ -276,7 +415,7 @@ impl Default for Config {
             font: FontCfg::default(),
             cursor: CursorCfg::new_default(),
             window: WindowCfg::default(),
-            theme: "ember-dark".into(),
+            theme: ThemeEntry::default(),
             layout_mode: StartupLayout::Auto,
             theme_overrides: ThemeOverrides::default(),
             keybindings: Keybindings::default(),
@@ -284,6 +423,7 @@ impl Default for Config {
             prompt: PromptCfg::default(),
             editor: EditorCfg::default(),
             explorer: ExplorerCfg::default(),
+            syntax: std::collections::HashMap::new(),
             tasks: std::collections::HashMap::new(),
         }
     }
@@ -503,7 +643,7 @@ accent = "#3aa0a8"
         assert!((cfg.font.size - 16.0).abs() < f64::EPSILON);
         assert_eq!(cfg.cursor.style, CursorStyle::Bar);
         assert!(!cfg.cursor.blink);
-        assert_eq!(cfg.theme, "mineral-light");
+        assert_eq!(cfg.theme.theme_name(), "mineral-light");
         assert_eq!(cfg.layout_mode, StartupLayout::Auto);
         assert_eq!(cfg.theme_overrides.accent.as_deref(), Some("#3aa0a8"));
     }
@@ -514,7 +654,7 @@ accent = "#3aa0a8"
         assert_eq!(cfg.scrollback, 200);
         assert_eq!(cfg.font.family, "IBM Plex Mono");
         assert_eq!(cfg.cursor.style, CursorStyle::Block);
-        assert_eq!(cfg.theme, "ember-dark");
+        assert_eq!(cfg.theme.theme_name(), "ember-dark");
         assert_eq!(cfg.layout_mode, StartupLayout::Auto);
     }
 
@@ -573,7 +713,7 @@ height = 1.0
         assert_eq!(cfg.scrollback, 100_000);
         assert_eq!(cfg.font.family, "IBM Plex Mono");
         assert!(cfg.cursor.blink);
-        assert_eq!(cfg.theme, "ember-dark");
+        assert_eq!(cfg.theme.theme_name(), "ember-dark");
         assert_eq!(cfg.layout_mode, StartupLayout::Auto);
         assert!(cfg.shell_integration);
         assert!(cfg.prompt.enabled);
@@ -846,5 +986,133 @@ cmd = "cargo build"
         assert_eq!(cfg.tasks.len(), 2, "should parse 2 tasks (Y12)");
         assert_eq!(cfg.tasks["test"].cmd, "cargo test");
         assert_eq!(cfg.tasks["build"].cmd, "cargo build");
+    }
+
+    // ── AA3: [theme] table section ────────────────────────────────────────────
+
+    #[test]
+    fn theme_bare_string_still_parses() {
+        let cfg = parse_str("theme = \"mineral-dark\"").unwrap();
+        assert_eq!(cfg.theme.theme_name(), "mineral-dark", "AA3: bare string");
+        assert!(cfg.theme.token_overrides().is_none());
+    }
+
+    #[test]
+    fn theme_section_override_parses() {
+        let src = r#"
+[theme]
+override = "ember-light"
+"#;
+        let cfg = parse_str(src).unwrap();
+        assert_eq!(cfg.theme.theme_name(), "ember-light", "AA3: table override");
+    }
+
+    #[test]
+    fn theme_section_token_overrides_parse() {
+        let src = r##"
+[theme]
+override = "ember-dark"
+
+[theme.tokens]
+accent = "#ff0000"
+"##;
+        let cfg = parse_str(src).unwrap();
+        assert_eq!(cfg.theme.theme_name(), "ember-dark");
+        let toks = cfg.theme.token_overrides().expect("tokens must be present");
+        assert_eq!(
+            toks.accent.as_deref(),
+            Some("#ff0000"),
+            "AA3: per-token accent"
+        );
+    }
+
+    #[test]
+    fn theme_section_empty_override_falls_back_to_default() {
+        // [theme] with no override key → theme_name() returns "ember-dark".
+        let src = "[theme]\n";
+        let cfg = parse_str(src).unwrap();
+        assert_eq!(
+            cfg.theme.theme_name(),
+            "ember-dark",
+            "AA3: empty override = default"
+        );
+    }
+
+    // ── AA4: per-language syntax overrides ────────────────────────────────────
+
+    #[test]
+    fn syntax_override_parses_for_rust() {
+        let src = r##"
+[syntax.rust]
+keyword = "#ff8800"
+string = "#44aa44"
+"##;
+        let cfg = parse_str(src).unwrap();
+        let rust = cfg
+            .syntax
+            .get("rust")
+            .expect("rust syntax override must parse (AA4)");
+        assert_eq!(rust.keyword.as_deref(), Some("#ff8800"));
+        assert_eq!(rust.string.as_deref(), Some("#44aa44"));
+        assert!(rust.number.is_none(), "absent field must be None");
+    }
+
+    #[test]
+    fn syntax_empty_by_default() {
+        let cfg = Config::default();
+        assert!(
+            cfg.syntax.is_empty(),
+            "syntax must be empty by default (AA4)"
+        );
+    }
+
+    // ── AA5/AA6: editor italic_comments / bold_keywords ──────────────────────
+
+    #[test]
+    fn editor_italic_comments_defaults_true() {
+        let cfg = Config::default();
+        assert!(
+            cfg.editor.italic_comments,
+            "italic_comments must default to true (AA5)"
+        );
+    }
+
+    #[test]
+    fn editor_bold_keywords_defaults_false() {
+        let cfg = Config::default();
+        assert!(
+            !cfg.editor.bold_keywords,
+            "bold_keywords must default to false (AA6)"
+        );
+    }
+
+    #[test]
+    fn editor_italic_bold_parse_from_toml() {
+        let src = "[editor]\nitalic_comments = false\nbold_keywords = true\n";
+        let cfg = parse_str(src).unwrap();
+        assert!(!cfg.editor.italic_comments, "AA5: italic_comments = false");
+        assert!(cfg.editor.bold_keywords, "AA6: bold_keywords = true");
+    }
+
+    // ── AA7: cursor color override ────────────────────────────────────────────
+
+    #[test]
+    fn cursor_color_defaults_none() {
+        let cfg = Config::default();
+        assert!(
+            cfg.cursor.color.is_none(),
+            "cursor.color must default to None (AA7)"
+        );
+    }
+
+    #[test]
+    fn cursor_color_parses_from_toml() {
+        let src = "[cursor]\ncolor = \"#ff4400\"\n";
+        let cfg = parse_str(src).unwrap();
+        assert_eq!(
+            cfg.cursor.color.as_deref(),
+            Some("#ff4400"),
+            "AA7: cursor color"
+        );
     }
 }
