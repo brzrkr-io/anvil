@@ -548,7 +548,8 @@ fn draw_explorer_section(
         theme.text_subtle
     };
 
-    let header_y = rect.y + ((header_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+    let header_icon_top = rect.y + ((header_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+    let header_baseline = header_icon_top + (cell_h - metrics.descent);
     // #9: collapse chevron — ▾ when expanded, ▸ when collapsed. Drawn at pad_x.
     // Chevrons are Nerd Font glyphs; keep on mono path.
     let chevron = if collapsed { '▸' } else { '▾' };
@@ -556,7 +557,7 @@ fn draw_explorer_section(
         painter,
         metrics,
         rect.x + pad_x,
-        header_y,
+        header_icon_top,
         chevron as u32,
         theme.text_subtle,
     );
@@ -564,7 +565,7 @@ fn draw_explorer_section(
         ui_painter,
         header_label,
         rect.x + pad_x + cell_w * 1.5,
-        header_y,
+        header_baseline,
         EXPLORER_HEADER_PT,
         UiWeight::Regular,
         theme.accent_bright,
@@ -580,7 +581,7 @@ fn draw_explorer_section(
             ui_painter,
             &header_meta,
             (rect.x + rect.w - pad_x - meta_w).max(rect.x + pad_x + cell_w * 1.5),
-            header_y,
+            header_baseline,
             EXPLORER_HEADER_PT,
             UiWeight::Regular,
             meta_color,
@@ -604,24 +605,28 @@ fn draw_explorer_section(
     match snapshot {
         None => {
             // No cwd yet — waiting state.
-            let row_y = content_y_start + ((row_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+            let row_icon_top =
+                content_y_start + ((row_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+            let row_baseline = row_icon_top + (cell_h - metrics.descent);
             raster.ui_line(
                 ui_painter,
                 "Waiting for shell prompt\u{2026}",
                 rect.x + pad_x,
-                row_y,
+                row_baseline,
                 EXPLORER_ROW_PT,
                 UiWeight::Regular,
                 theme.text_muted,
             );
         }
         Some(snap) if snap.entries.is_empty() => {
-            let row_y = content_y_start + ((row_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+            let row_icon_top =
+                content_y_start + ((row_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+            let row_baseline = row_icon_top + (cell_h - metrics.descent);
             raster.ui_line(
                 ui_painter,
                 "(empty)",
                 rect.x + pad_x,
-                row_y,
+                row_baseline,
                 EXPLORER_ROW_PT,
                 UiWeight::Regular,
                 theme.text_muted,
@@ -746,7 +751,8 @@ fn draw_explorer_section(
                     });
                 }
 
-                let glyph_y = row_top + ((row_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+                let icon_top = row_top + ((row_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+                let baseline_y = icon_top + (cell_h - metrics.descent);
 
                 // Y4: render italic "(empty)" placeholder for empty expanded dirs.
                 if is_empty_sentinel {
@@ -756,7 +762,7 @@ fn draw_explorer_section(
                         ui_painter,
                         "(empty)",
                         text_x,
-                        glyph_y,
+                        baseline_y,
                         EXPLORER_ROW_PT,
                         UiWeight::Regular,
                         theme.text_subtle,
@@ -845,7 +851,7 @@ fn draw_explorer_section(
                     painter,
                     metrics,
                     icon_x,
-                    glyph_y,
+                    icon_top,
                     icon_ch as u32,
                     icon_color,
                 );
@@ -881,7 +887,7 @@ fn draw_explorer_section(
                         painter,
                         metrics,
                         badge_x,
-                        glyph_y,
+                        icon_top,
                         badge as u32,
                         badge_color,
                     );
@@ -925,7 +931,7 @@ fn draw_explorer_section(
                     ui_painter,
                     &display_name,
                     label_x,
-                    glyph_y,
+                    baseline_y,
                     EXPLORER_ROW_PT,
                     UiWeight::Regular,
                     label_color,
@@ -946,7 +952,7 @@ fn draw_explorer_section(
                             painter,
                             metrics,
                             arrow_x,
-                            glyph_y,
+                            icon_top,
                             '\u{2192}' as u32,
                             theme.text_subtle,
                         );
@@ -1097,14 +1103,16 @@ fn draw_outline_section(
     } else {
         theme.text_subtle
     };
-    let header_y = rect.y + ((header_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+    let outline_header_icon_top =
+        rect.y + ((header_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+    let outline_header_baseline = outline_header_icon_top + (cell_h - metrics.descent);
     // #9: collapse chevron — keep on mono path (Nerd Font / Unicode glyph).
     let chevron = if collapsed { '▸' } else { '▾' };
     raster.glyph_at(
         painter,
         metrics,
         rect.x + pad_x,
-        header_y,
+        outline_header_icon_top,
         chevron as u32,
         theme.text_subtle,
     );
@@ -1112,7 +1120,7 @@ fn draw_outline_section(
         ui_painter,
         "OUTLINE",
         rect.x + pad_x + cell_w * 1.5,
-        header_y,
+        outline_header_baseline,
         EXPLORER_HEADER_PT,
         UiWeight::Regular,
         header_color,
@@ -1151,7 +1159,9 @@ fn draw_outline_section(
                     },
                     kind: LeftDockHitKind::Outline(i),
                 });
-                let glyph_y = row_top + ((row_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+                let outline_icon_top =
+                    row_top + ((row_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+                let outline_baseline = outline_icon_top + (cell_h - metrics.descent);
 
                 // Indent: 2 cells per depth level.
                 let outline_indent_cells = row.depth as usize * 2;
@@ -1166,7 +1176,7 @@ fn draw_outline_section(
                         painter,
                         metrics,
                         x_start,
-                        glyph_y,
+                        outline_icon_top,
                         ch as u32,
                         theme.accent_primary,
                     );
@@ -1186,7 +1196,7 @@ fn draw_outline_section(
                     ui_painter,
                     &truncated,
                     name_x,
-                    glyph_y,
+                    outline_baseline,
                     EXPLORER_ROW_PT,
                     UiWeight::Regular,
                     theme.text_muted,
