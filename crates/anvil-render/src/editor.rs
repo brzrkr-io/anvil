@@ -183,13 +183,15 @@ pub fn draw_editor_into(
     // ── Cursor-line highlight (item 11) ──────────────────────────────────────
     // Paint a subtle row tint under the cursor line before drawing any glyphs
     // so that text renders over the tint.  Only for the focused pane.
+    // P2: α bumped 0.40→0.55 and color switched to theme.surface (lighter than
+    // panel) so the tint reads as a distinct band against the editor background.
     if focused {
         let cursor_line = editor_pane.primary_cursor().pos.line;
         if cursor_line >= scroll_line {
             let cursor_vrow = cursor_line - scroll_line;
             if cursor_vrow < visible_rows {
                 let tint_y = rect.y + cursor_vrow as f64 * ch;
-                raster.fill_pixel_rect_alpha(rect.x, tint_y, rect.w, ch, theme.panel, 0.40);
+                raster.fill_pixel_rect_alpha(rect.x, tint_y, rect.w, ch, theme.surface, 0.55);
             }
         }
     }
