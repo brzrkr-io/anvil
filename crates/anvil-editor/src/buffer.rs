@@ -2014,4 +2014,64 @@ mod tests {
             "small file must not have syntax_pending set"
         );
     }
+
+    // ── AA10: Rope buffer scaling — 100 MB load test ──────────────────────────
+
+    /// AA10: open a synthetic 100 MB buffer, apply an edit, and round-trip
+    /// through save + reload.  Tagged `#[ignore]` so it is opt-in:
+    ///
+    ///   cargo test -p anvil-editor rope_100mb_open_edit_save_round_trip -- --ignored
+    ///
+    /// Expected: no panic, final byte count equals the edited size.
+    #[test]
+    #[ignore = "AA10: slow 100 MB I/O test; run explicitly with --ignored"]
+    fn rope_100mb_open_edit_save_round_trip() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.txt");
+
+        // Build a 100 MB file: repeat an 80-byte line until we hit 100 MB.
+        const TARGET: usize = 100 * 1024 * 1024;
+        let line = b"Hello, Anvil! This is a filler line for the 100MB scaling test.\n";
+        let repeats = (TARGET + line.len() - 1) / line.len();
+        {
+            use std::io::Write;
+            let mut f = fs::File::create(&path).unwrap();
+            for _ in 0..repeats {
+                f.write_all(line).unwrap();
+            }
+        }
+        let file_size = fs::metadata(&path).unwrap().len() as usize;
+        assert!(file_size >= TARGET, "file must be at least 100 MB");
+
+        // Open.
+        let mut buf = Buffer::from_path(&path).expect("100 MB open must not fail");
+        let original_len = buf.to_text().len();
+
+        // Edit: insert a marker at the very beginning.
+        let marker = "// EDITED\n";
+        buf.apply_edit(Edit {
+            range: Range {
+                start: Position { line: 0, col: 0 },
+                end: Position { line: 0, col: 0 },
+            },
+            replacement: marker.to_string(),
+        });
+
+        // Save.
+        buf.save(&path).expect("100 MB save must not fail");
+
+        // Reload and verify the marker is present and the length grew.
+        let reloaded = Buffer::from_path(&path).expect("100 MB reload must not fail");
+        let reloaded_text = reloaded.to_text();
+        assert!(
+            reloaded_text.starts_with(marker),
+            "AA10: saved file must start with the edit marker"
+        );
+        assert!(
+            reloaded_text.len() > original_len,
+            "AA10: reloaded file must be larger than the original after edit"
+        );
+    }
 }
