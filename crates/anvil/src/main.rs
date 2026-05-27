@@ -1225,6 +1225,7 @@ struct BranchSwitcher {
     /// All local branches, output of `git branch`.
     branches: Vec<String>,
     /// Index of the currently checked-out branch.
+    #[allow(dead_code)]
     current_idx: Option<usize>,
     /// Filter text.
     query: String,
@@ -2272,13 +2273,23 @@ impl App {
             0
         };
         self.workspace_symbol_search = Some(WorkspaceSymbolSearch {
-            query,
+            query: query.clone(),
             hits: Vec::new(),
             selected: 0,
             pending_request_id,
             lsp_unavailable,
             last_query_change: None,
         });
+        self.overlays.push(anvil_render::overlay::Overlay::Picker(
+            anvil_render::overlay::PickerOverlay {
+                id: anvil_render::overlay::OverlayId::WorkspaceSymbols,
+                title: Some("workspace symbols".to_string()),
+                query,
+                rows: Vec::new(),
+                selected: 0,
+                max_visible: 20,
+            },
+        ));
         self.dirty = true;
         self.force_full_redraw = true;
     }
@@ -2313,12 +2324,31 @@ impl App {
                 .map(|(i, _)| i)
                 .collect()
         };
+        let picker_rows: Vec<anvil_render::overlay::widgets::picker::PickerRow> = filtered
+            .iter()
+            .filter_map(|&idx| all_symbols.get(idx))
+            .map(|sym| anvil_render::overlay::widgets::picker::PickerRow {
+                primary: sym.name.clone(),
+                secondary: Some(format!("Ln {}", sym.line + 1)),
+                badge: None,
+            })
+            .collect();
         self.buffer_symbol_search = Some(BufferSymbolSearch {
             query,
             all_symbols,
             filtered,
             selected: 0,
         });
+        self.overlays.push(anvil_render::overlay::Overlay::Picker(
+            anvil_render::overlay::PickerOverlay {
+                id: anvil_render::overlay::OverlayId::BufferSymbols,
+                title: Some("buffer symbols".to_string()),
+                query: String::new(),
+                rows: picker_rows,
+                selected: 0,
+                max_visible: 20,
+            },
+        ));
         self.dirty = true;
         self.force_full_redraw = true;
     }
@@ -2439,12 +2469,38 @@ impl App {
     fn open_branch_switcher(&mut self) {
         let cwd = PathBuf::from(self.local_ctx.cwd.clone());
         let (branches, current_idx) = git_branch_list(&cwd);
+        let picker_rows: Vec<anvil_render::overlay::widgets::picker::PickerRow> = branches
+            .iter()
+            .enumerate()
+            .map(|(i, b)| {
+                let primary = if Some(i) == current_idx {
+                    format!("* {b}")
+                } else {
+                    format!("  {b}")
+                };
+                anvil_render::overlay::widgets::picker::PickerRow {
+                    primary,
+                    secondary: None,
+                    badge: None,
+                }
+            })
+            .collect();
         self.branch_switcher = Some(BranchSwitcher {
             branches,
             current_idx,
             query: String::new(),
             selected: 0,
         });
+        self.overlays.push(anvil_render::overlay::Overlay::Picker(
+            anvil_render::overlay::PickerOverlay {
+                id: anvil_render::overlay::OverlayId::BranchSwitcher,
+                title: Some("git checkout".to_string()),
+                query: String::new(),
+                rows: picker_rows,
+                selected: 0,
+                max_visible: 15,
+            },
+        ));
         self.dirty = true;
         self.force_full_redraw = true;
     }
@@ -2477,10 +2533,28 @@ impl App {
     fn open_git_log_palette(&mut self) {
         let cwd = PathBuf::from(self.local_ctx.cwd.clone());
         let entries = git_log_entries(&cwd);
+        let picker_rows: Vec<anvil_render::overlay::widgets::picker::PickerRow> = entries
+            .iter()
+            .map(|e| anvil_render::overlay::widgets::picker::PickerRow {
+                primary: format!("{} {}", &e.hash[..e.hash.len().min(8)], e.subject),
+                secondary: None,
+                badge: None,
+            })
+            .collect();
         self.git_log_palette = Some(GitLogPalette {
             entries,
             selected: 0,
         });
+        self.overlays.push(anvil_render::overlay::Overlay::Picker(
+            anvil_render::overlay::PickerOverlay {
+                id: anvil_render::overlay::OverlayId::GitLog,
+                title: Some("git log".to_string()),
+                query: String::new(),
+                rows: picker_rows,
+                selected: 0,
+                max_visible: 20,
+            },
+        ));
         self.dirty = true;
         self.force_full_redraw = true;
     }
@@ -3963,7 +4037,15 @@ impl App {
             eprintln!("anvil-lsp: rename unavailable (no LSP)");
             return;
         }
-        self.lsp_rename_input = Some(word);
+        // Push overlay with the word as initial value.
+        let mut ti = anvil_render::overlay::TextInputOverlay::new(
+            anvil_render::overlay::OverlayId::LspRename,
+            "rename: ",
+        );
+        ti.value = word.clone();
+        ti.cursor = word.len();
+        self.overlays
+            .push(anvil_render::overlay::Overlay::TextInput(ti));
         self.dirty = true;
     }
 
@@ -4187,7 +4269,7 @@ impl App {
             if locs.is_empty() {
                 return;
             }
-            let rows = locs
+            let rows: Vec<ReferencesRow> = locs
                 .into_iter()
                 .map(|l| ReferencesRow {
                     path: l.path,
@@ -4195,6 +4277,27 @@ impl App {
                     col: l.col,
                 })
                 .collect();
+            let picker_rows: Vec<anvil_render::overlay::widgets::picker::PickerRow> = rows
+                .iter()
+                .map(|r| {
+                    let base = r.path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+                    anvil_render::overlay::widgets::picker::PickerRow {
+                        primary: format!("{}:{}:{}", base, r.line + 1, r.col + 1),
+                        secondary: None,
+                        badge: None,
+                    }
+                })
+                .collect();
+            self.overlays.push(anvil_render::overlay::Overlay::Picker(
+                anvil_render::overlay::PickerOverlay {
+                    id: anvil_render::overlay::OverlayId::LspReferences,
+                    title: Some(format!("references ({})", rows.len())),
+                    query: String::new(),
+                    rows: picker_rows,
+                    selected: 0,
+                    max_visible: 16,
+                },
+            ));
             self.lsp_references = Some(LspReferencesOverlay { rows, selected: 0 });
             self.dirty = true;
         }
@@ -5214,113 +5317,8 @@ impl App {
             );
         }
 
-        // ── Goto-line overlay (item 11) ───────────────────────────────────────
-        if let Some(ref input) = self.goto_line_input {
-            let cw = self.font.metrics.cell_w;
-            let chrome_top = self.chrome_top_px();
-            draw_goto_line_overlay(
-                &mut self.raster,
-                chrome_painter,
-                chrome_metrics,
-                &self.theme,
-                input,
-                dw as f64,
-                dh as f64,
-                chrome_top,
-                cw,
-                ch,
-            );
-        }
-
-        // ── Save-as overlay (tier-J J2) ───────────────────────────────────────
-        if let Some(ref input) = self.save_as_input {
-            let cw = self.font.metrics.cell_w;
-            let chrome_top = self.chrome_top_px();
-            draw_save_as_overlay(
-                &mut self.raster,
-                chrome_painter,
-                chrome_metrics,
-                &self.theme,
-                input,
-                dw as f64,
-                dh as f64,
-                chrome_top,
-                cw,
-                ch,
-            );
-        }
-
-        // ── LSP rename overlay (item 24) ──────────────────────────────────────
-        if let Some(ref input) = self.lsp_rename_input {
-            let cw = self.font.metrics.cell_w;
-            let chrome_top = self.chrome_top_px();
-            draw_lsp_rename_overlay(
-                &mut self.raster,
-                chrome_painter,
-                chrome_metrics,
-                &self.theme,
-                input,
-                dw as f64,
-                dh as f64,
-                chrome_top,
-                cw,
-                ch,
-            );
-        }
-
-        // ── LSP references overlay (item 26) ──────────────────────────────────
-        if let Some(ref refs) = self.lsp_references {
-            let cw = self.font.metrics.cell_w;
-            let chrome_top = self.chrome_top_px();
-            draw_lsp_references_overlay(
-                &mut self.raster,
-                chrome_painter,
-                chrome_metrics,
-                &self.theme,
-                refs,
-                dw as f64,
-                dh as f64,
-                chrome_top,
-                cw,
-                ch,
-            );
-        }
-
-        // ── Workspace symbol search overlay (O1) ─────────────────────────────
-        if let Some(ref wss) = self.workspace_symbol_search {
-            let cw = self.font.metrics.cell_w;
-            let chrome_top = self.chrome_top_px();
-            draw_workspace_symbol_overlay(
-                &mut self.raster,
-                chrome_painter,
-                chrome_metrics,
-                &self.theme,
-                wss,
-                dw as f64,
-                dh as f64,
-                chrome_top,
-                cw,
-                ch,
-            );
-        }
-
-        // ── Buffer symbol search overlay (O2) ────────────────────────────────
-        if let Some(ref bss) = self.buffer_symbol_search {
-            let cw = self.font.metrics.cell_w;
-            let chrome_top = self.chrome_top_px();
-            draw_buffer_symbol_overlay(
-                &mut self.raster,
-                chrome_painter,
-                chrome_metrics,
-                &self.theme,
-                bss,
-                dw as f64,
-                dh as f64,
-                chrome_top,
-                cw,
-                ch,
-            );
-        }
+        // Overlays 3-12 (TextInputs + Pickers) are now rendered via self.overlays.render()
+        // above. The old draw functions are deleted; overlay stack handles all rendering.
 
         // ── T2: git blame tooltip ────────────────────────────────────────────
         if let Some(ref popup) = self.blame_popup {
@@ -5421,78 +5419,7 @@ impl App {
             );
         }
 
-        // ── Project switcher overlay (item 30) ────────────────────────────────
-        // ── Open-folder overlay (Q19) ─────────────────────────────────────────
-        if let Some(ref input) = self.open_folder_input {
-            let cw = self.font.metrics.cell_w;
-            let chrome_top = self.chrome_top_px();
-            draw_open_folder_overlay(
-                &mut self.raster,
-                chrome_painter,
-                chrome_metrics,
-                &self.theme,
-                input,
-                dw as f64,
-                chrome_top,
-                cw,
-                ch,
-            );
-        }
-
-        // ── Theme picker overlay (W3) ─────────────────────────────────────────
-        if let Some(ref picker) = self.theme_picker {
-            let cw = self.font.metrics.cell_w;
-            let chrome_top = self.chrome_top_px();
-            draw_theme_picker_overlay(
-                &mut self.raster,
-                chrome_painter,
-                chrome_metrics,
-                &self.theme,
-                picker.selected,
-                dw as f64,
-                chrome_top,
-                cw,
-                ch,
-            );
-        }
-
-        // ── Language picker overlay (Q22) ─────────────────────────────────────
-        if let Some(ref picker) = self.language_picker {
-            let cw = self.font.metrics.cell_w;
-            let chrome_top = self.chrome_top_px();
-            draw_language_picker_overlay(
-                &mut self.raster,
-                chrome_painter,
-                chrome_metrics,
-                &self.theme,
-                &picker.query,
-                picker.selected,
-                dw as f64,
-                chrome_top,
-                cw,
-                ch,
-            );
-        }
-
-        if self.project_switcher_open {
-            let cw = self.font.metrics.cell_w;
-            let chrome_top = self.chrome_top_px();
-            draw_project_switcher_overlay(
-                &mut self.raster,
-                chrome_painter,
-                chrome_metrics,
-                &self.theme,
-                &self.recent_projects,
-                self.project_switcher_sel,
-                dw as f64,
-                dh as f64,
-                chrome_top,
-                cw,
-                ch,
-            );
-        }
-
-        // ── Z1: SCM panel overlay ────────────────────────────────────────────
+        // ── Z1: SCM panel overlay (Batch 4 Custom — kept as legacy draw until CustomOverlay impl) ──
         if let Some(ref panel) = self.scm_panel {
             let cw = self.font.metrics.cell_w;
             let chrome_top = self.chrome_top_px();
@@ -5507,41 +5434,6 @@ impl App {
                 dh as f64,
                 chrome_top,
                 chrome_bot,
-                cw,
-                ch,
-            );
-        }
-
-        // ── Z6: Branch switcher overlay ───────────────────────────────────────
-        if let Some(ref sw) = self.branch_switcher {
-            let cw = self.font.metrics.cell_w;
-            let chrome_top = self.chrome_top_px();
-            draw_branch_switcher_overlay(
-                &mut self.raster,
-                chrome_painter,
-                chrome_metrics,
-                &self.theme,
-                sw,
-                dw as f64,
-                dh as f64,
-                chrome_top,
-                cw,
-                ch,
-            );
-        }
-
-        // ── Z8: Git-log palette overlay ───────────────────────────────────────
-        if let Some(ref pal) = self.git_log_palette {
-            let cw = self.font.metrics.cell_w;
-            let chrome_top = self.chrome_top_px();
-            draw_git_log_overlay(
-                &mut self.raster,
-                chrome_painter,
-                chrome_metrics,
-                &self.theme,
-                pal,
-                dw as f64,
-                chrome_top,
                 cw,
                 ch,
             );
@@ -6370,7 +6262,14 @@ impl App {
                     } else {
                         String::new()
                     };
-                    self.save_as_input = Some(prefill);
+                    let mut ti = anvil_render::overlay::TextInputOverlay::new(
+                        anvil_render::overlay::OverlayId::SaveAs,
+                        "save as: ",
+                    );
+                    ti.value = prefill.clone();
+                    ti.cursor = prefill.len();
+                    self.overlays
+                        .push(anvil_render::overlay::Overlay::TextInput(ti));
                     self.dirty = true;
                 }
                 return true;
@@ -6410,7 +6309,13 @@ impl App {
             // Cmd+G → GoToLine overlay (item 11)
             if lch == 'g' && !mods.shift && !mods.control && !mods.option {
                 if self.goto_line_input.is_none() {
-                    self.goto_line_input = Some(String::new());
+                    self.overlays
+                        .push(anvil_render::overlay::Overlay::TextInput(
+                            anvil_render::overlay::TextInputOverlay::new(
+                                anvil_render::overlay::OverlayId::GotoLine,
+                                "line: ",
+                            ),
+                        ));
                     self.dirty = true;
                 }
                 return true;
@@ -6928,6 +6833,32 @@ impl App {
             if !self.recent_projects.is_empty() {
                 self.project_switcher_open = true;
                 self.project_switcher_sel = 0;
+                let rows: Vec<anvil_render::overlay::widgets::picker::PickerRow> = self
+                    .recent_projects
+                    .iter()
+                    .take(10)
+                    .map(|p| {
+                        let name = p
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| p.to_string_lossy().into_owned());
+                        anvil_render::overlay::widgets::picker::PickerRow {
+                            primary: name,
+                            secondary: Some(p.to_string_lossy().into_owned()),
+                            badge: None,
+                        }
+                    })
+                    .collect();
+                self.overlays.push(anvil_render::overlay::Overlay::Picker(
+                    anvil_render::overlay::PickerOverlay {
+                        id: anvil_render::overlay::OverlayId::ProjectSwitcher,
+                        title: Some("Open Recent Project".to_string()),
+                        query: String::new(),
+                        rows,
+                        selected: 0,
+                        max_visible: 10,
+                    },
+                ));
                 self.dirty = true;
             }
             return true;
@@ -7316,6 +7247,8 @@ pub struct AppShell {
     chrome_painter: anvil_platform::font::CoreTextPainter<'static>,
     /// Reusable PTY read buffer — allocated once, reused across every tick.
     pty_read_buf: Box<[u8; 64 * 1024]>,
+    /// Instant of the previous tick; used to compute per-frame dt for animations.
+    last_tick_time: Instant,
 }
 
 impl AppShell {
@@ -7619,6 +7552,7 @@ impl AppShell {
             bold_italic_painter,
             chrome_painter,
             pty_read_buf: Box::new([0u8; 64 * 1024]),
+            last_tick_time: Instant::now(),
         }
     }
 
@@ -7635,6 +7569,15 @@ impl AppShell {
 
 impl AppHandler for AppShell {
     fn tick(&mut self) {
+        // ── Phase 4: overlay animation tick ──────────────────────────────────
+        let now = Instant::now();
+        let dt_ms = now.duration_since(self.last_tick_time).as_secs_f64() * 1000.0;
+        self.last_tick_time = now;
+        if self.app.overlays.animating() {
+            self.app.overlays.tick(dt_ms);
+            self.app.dirty = true;
+        }
+
         let app = &mut self.app;
 
         // Config watcher poll.
@@ -8674,69 +8617,330 @@ impl AppHandler for AppShell {
                 }
                 OverlayKeyResult::Close => {
                     self.app.overlays.close_top();
-                    // Also close the backing ProjectSearch state if it was open.
+                    // Clear all backing overlay state so old handlers don't fire.
                     self.app.project_search.close();
+                    self.app.goto_line_input = None;
+                    self.app.save_as_input = None;
+                    self.app.lsp_rename_input = None;
+                    self.app.open_folder_input = None;
+                    self.app.theme_picker = None;
+                    self.app.language_picker = None;
+                    self.app.lsp_references = None;
+                    self.app.workspace_symbol_search = None;
+                    self.app.buffer_symbol_search = None;
+                    self.app.project_switcher_open = false;
+                    self.app.branch_switcher = None;
+                    self.app.git_log_palette = None;
                     self.app.dirty = true;
                     self.app.force_full_redraw = true;
                     return;
                 }
                 OverlayKeyResult::Submit(submission) => {
-                    use anvil_render::overlay::Submission;
+                    use anvil_render::overlay::{OverlayId, Submission};
                     self.app.overlays.close_top();
-                    if let Submission::PickerRow {
-                        id: anvil_render::overlay::OverlayId::ProjectSearch,
-                        index,
-                    } = submission
-                    {
-                        // Drive the backing ProjectSearch state machine so
-                        // open_path_in_native_editor can use the hit.
-                        let hit_info = self
-                            .app
-                            .project_search
-                            .hits
-                            .get(index)
-                            .map(|h| (h.path.clone(), h.line));
-                        self.app.project_search.close();
-                        if let Some((path, line)) = hit_info {
-                            self.app.open_path_in_native_editor(&path);
-                            self.app.apply_editor_action(EditorAction::GoToLine(
-                                line.saturating_sub(1),
-                            ));
+                    match submission {
+                        // ── Batch 1: TextInput submits ───────────────────────
+                        Submission::TextValue {
+                            id: OverlayId::GotoLine,
+                            value,
+                        } => {
+                            let mut parts = value.splitn(2, ',');
+                            if let Some(line_str) = parts.next() {
+                                if let Ok(n) = line_str.trim().parse::<usize>() {
+                                    self.app.apply_editor_action(EditorAction::GoToLine(
+                                        n.saturating_sub(1),
+                                    ));
+                                }
+                            }
                         }
+                        Submission::TextValue {
+                            id: OverlayId::LspRename,
+                            value,
+                        } if !value.is_empty() => {
+                            self.app.commit_lsp_rename(value);
+                        }
+                        Submission::TextValue {
+                            id: OverlayId::LspRename,
+                            ..
+                        } => {}
+                        Submission::TextValue {
+                            id: OverlayId::SaveAs,
+                            value,
+                        } if !value.is_empty() => {
+                            let new_path = PathBuf::from(&value);
+                            self.app.apply_editor_action(EditorAction::SaveAs(new_path));
+                        }
+                        Submission::TextValue {
+                            id: OverlayId::SaveAs,
+                            ..
+                        } => {}
+                        Submission::TextValue {
+                            id: OverlayId::OpenFolder,
+                            value,
+                        } => {
+                            let path = PathBuf::from(&value);
+                            if path.is_dir() {
+                                let cwd_str = self.app.current_cwd().unwrap_or_default();
+                                let state = self.app.build_session_state();
+                                session::save_session(std::path::Path::new(&cwd_str), &state);
+                                if let Ok(exe) = std::env::current_exe() {
+                                    let _ =
+                                        std::process::Command::new(&exe).current_dir(&path).spawn();
+                                }
+                                terminate_app();
+                            }
+                        }
+                        // ── Batch 2: Picker submits ──────────────────────────
+                        Submission::PickerRow {
+                            id: OverlayId::ProjectSearch,
+                            index,
+                        } => {
+                            let hit_info = self
+                                .app
+                                .project_search
+                                .hits
+                                .get(index)
+                                .map(|h| (h.path.clone(), h.line));
+                            self.app.project_search.close();
+                            if let Some((path, line)) = hit_info {
+                                self.app.open_path_in_native_editor(&path);
+                                self.app.apply_editor_action(EditorAction::GoToLine(
+                                    line.saturating_sub(1),
+                                ));
+                            }
+                        }
+                        Submission::PickerRow {
+                            id: OverlayId::ThemePicker,
+                            index,
+                        } => {
+                            if let Some(&name) = PICKER_THEMES.get(index) {
+                                self.app.set_theme_mode(name);
+                            }
+                            self.app.theme_picker = None;
+                        }
+                        Submission::PickerRow {
+                            id: OverlayId::LangPicker,
+                            index,
+                        } => {
+                            // language_picker query is in the backing state; rebuild filtered
+                            // list to resolve the selected index.
+                            let lang = self.app.language_picker.as_ref().and_then(|p| {
+                                let filtered = picker_filtered(PICKER_LANGS, &p.query);
+                                filtered.get(index).copied()
+                            });
+                            if let Some(l) = lang {
+                                self.app.set_active_buffer_language(l);
+                            }
+                            self.app.language_picker = None;
+                        }
+                        Submission::PickerRow {
+                            id: OverlayId::LspReferences,
+                            index,
+                        } => {
+                            let loc = self
+                                .app
+                                .lsp_references
+                                .as_ref()
+                                .and_then(|r| r.rows.get(index))
+                                .map(|row| (row.path.clone(), row.line));
+                            self.app.lsp_references = None;
+                            if let Some((path, line)) = loc {
+                                self.app.open_path_in_native_editor(&path);
+                                self.app
+                                    .apply_editor_action(EditorAction::GoToLine(line as usize));
+                            }
+                        }
+                        Submission::PickerRow {
+                            id: OverlayId::WorkspaceSymbols,
+                            index,
+                        } => {
+                            let loc = self
+                                .app
+                                .workspace_symbol_search
+                                .as_ref()
+                                .and_then(|s| s.hits.get(index))
+                                .map(|h| (h.path.clone(), h.line));
+                            self.app.workspace_symbol_search = None;
+                            if let Some((path, line)) = loc {
+                                self.app.open_path_in_native_editor(&path);
+                                self.app
+                                    .apply_editor_action(EditorAction::GoToLine(line as usize));
+                            }
+                        }
+                        Submission::PickerRow {
+                            id: OverlayId::BufferSymbols,
+                            index,
+                        } => {
+                            let line = self.app.buffer_symbol_search.as_ref().and_then(|s| {
+                                s.filtered
+                                    .get(index)
+                                    .copied()
+                                    .and_then(|idx| s.all_symbols.get(idx).map(|sym| sym.line))
+                            });
+                            self.app.buffer_symbol_search = None;
+                            if let Some(line) = line {
+                                self.app.apply_editor_action(EditorAction::GoToLine(line));
+                            }
+                        }
+                        Submission::PickerRow {
+                            id: OverlayId::ProjectSwitcher,
+                            index,
+                        } => {
+                            let proj = self.app.recent_projects.get(index).cloned();
+                            self.app.project_switcher_open = false;
+                            if let Some(p) = proj {
+                                let cwd_str = self.app.current_cwd().unwrap_or_default();
+                                let state = self.app.build_session_state();
+                                session::save_session(std::path::Path::new(&cwd_str), &state);
+                                if let Ok(exe) = std::env::current_exe() {
+                                    let _ =
+                                        std::process::Command::new(&exe).current_dir(&p).spawn();
+                                }
+                                terminate_app();
+                            }
+                        }
+                        Submission::PickerRow {
+                            id: OverlayId::BranchSwitcher,
+                            index: _,
+                        } => {
+                            self.app.branch_switcher_confirm();
+                        }
+                        Submission::PickerRow {
+                            id: OverlayId::GitLog,
+                            index,
+                        } => {
+                            let hash = self
+                                .app
+                                .git_log_palette
+                                .as_ref()
+                                .and_then(|p| p.entries.get(index))
+                                .map(|e| e.hash.clone());
+                            self.app.git_log_palette = None;
+                            if let Some(hash) = hash {
+                                let cwd = self
+                                    .app
+                                    .current_cwd()
+                                    .map(PathBuf::from)
+                                    .unwrap_or_default();
+                                // Show the commit in the system browser.
+                                let _ = std::process::Command::new("git")
+                                    .args(["show", "--stat", &hash])
+                                    .current_dir(&cwd)
+                                    .spawn();
+                            }
+                        }
+                        _ => {}
                     }
                     self.app.dirty = true;
                     self.app.force_full_redraw = true;
                     return;
                 }
                 OverlayKeyResult::Consumed => {
-                    // Keep the backing ProjectSearch state in sync with the overlay.
-                    // Char/Backspace re-scan and rebuild picker rows.
-                    // Up/Down sync the selection index.
-                    match event.key {
-                        KeyInput::Char(ch) => {
-                            let q = format!("{}{}", self.app.project_search.query, ch);
-                            let root = std::path::PathBuf::from(&self.app.local_ctx.cwd);
-                            self.app.project_search.scan(&q, &root);
-                            // Rebuild picker rows to reflect updated results.
-                            self.app.rebuild_project_search_picker();
-                        }
-                        KeyInput::Backspace => {
-                            let mut q = self.app.project_search.query.clone();
-                            let mut bytes = q.as_bytes().to_vec();
-                            while !bytes.is_empty() && (bytes[bytes.len() - 1] & 0xC0) == 0x80 {
-                                bytes.pop();
+                    // Sync backing state for overlays that need it.
+                    use anvil_render::overlay::OverlayId;
+                    match self.app.overlays.top_id() {
+                        Some(OverlayId::ProjectSearch) => match event.key {
+                            KeyInput::Char(ch) => {
+                                let q = format!("{}{}", self.app.project_search.query, ch);
+                                let root = std::path::PathBuf::from(&self.app.local_ctx.cwd);
+                                self.app.project_search.scan(&q, &root);
+                                self.app.rebuild_project_search_picker();
                             }
-                            bytes.pop();
-                            q = String::from_utf8_lossy(&bytes).into_owned();
-                            let root = std::path::PathBuf::from(&self.app.local_ctx.cwd);
-                            self.app.project_search.scan(&q, &root);
-                            self.app.rebuild_project_search_picker();
+                            KeyInput::Backspace => {
+                                let mut q = self.app.project_search.query.clone();
+                                let mut bytes = q.as_bytes().to_vec();
+                                while !bytes.is_empty() && (bytes[bytes.len() - 1] & 0xC0) == 0x80 {
+                                    bytes.pop();
+                                }
+                                bytes.pop();
+                                q = String::from_utf8_lossy(&bytes).into_owned();
+                                let root = std::path::PathBuf::from(&self.app.local_ctx.cwd);
+                                self.app.project_search.scan(&q, &root);
+                                self.app.rebuild_project_search_picker();
+                            }
+                            KeyInput::Up => {
+                                self.app.project_search.select_prev();
+                            }
+                            KeyInput::Down => {
+                                self.app.project_search.select_next();
+                            }
+                            _ => {}
+                        },
+                        Some(OverlayId::WorkspaceSymbols) => {
+                            // Sync query to backing state so LSP re-requests fire.
+                            match event.key {
+                                KeyInput::Char(ch) => {
+                                    if let Some(ref mut s) = self.app.workspace_symbol_search {
+                                        s.query.push(ch);
+                                        s.last_query_change = Some(Instant::now());
+                                        s.hits.clear();
+                                    }
+                                }
+                                KeyInput::Backspace => {
+                                    if let Some(ref mut s) = self.app.workspace_symbol_search {
+                                        let mut bytes = s.query.as_bytes().to_vec();
+                                        while !bytes.is_empty()
+                                            && (bytes[bytes.len() - 1] & 0xC0) == 0x80
+                                        {
+                                            bytes.pop();
+                                        }
+                                        bytes.pop();
+                                        s.query = String::from_utf8_lossy(&bytes).into_owned();
+                                        s.last_query_change = Some(Instant::now());
+                                        s.hits.clear();
+                                    }
+                                }
+                                _ => {}
+                            }
                         }
-                        KeyInput::Up => {
-                            self.app.project_search.select_prev();
-                        }
-                        KeyInput::Down => {
-                            self.app.project_search.select_next();
+                        Some(OverlayId::BufferSymbols) => {
+                            // Sync query + filtered list to backing state.
+                            match event.key {
+                                KeyInput::Char(_) | KeyInput::Backspace => {
+                                    if let Some(ref mut s) = self.app.buffer_symbol_search {
+                                        match event.key {
+                                            KeyInput::Char(c) => s.query.push(c),
+                                            KeyInput::Backspace => {
+                                                s.query.pop();
+                                            }
+                                            _ => {}
+                                        }
+                                        let q = s.query.to_ascii_lowercase();
+                                        s.filtered = if q.is_empty() {
+                                            (0..s.all_symbols.len()).collect()
+                                        } else {
+                                            s.all_symbols
+                                                .iter()
+                                                .enumerate()
+                                                .filter(|(_, sym)| {
+                                                    sym.name.to_ascii_lowercase().contains(&q)
+                                                })
+                                                .map(|(i, _)| i)
+                                                .collect()
+                                        };
+                                        s.selected = 0;
+                                        // Update picker rows.
+                                        let rows: Vec<_> = s
+                                            .filtered
+                                            .iter()
+                                            .filter_map(|&idx| s.all_symbols.get(idx))
+                                            .map(|sym| {
+                                                anvil_render::overlay::widgets::picker::PickerRow {
+                                                    primary: sym.name.clone(),
+                                                    secondary: Some(format!("Ln {}", sym.line + 1)),
+                                                    badge: None,
+                                                }
+                                            })
+                                            .collect();
+                                        self.app.overlays.update_picker_top(
+                                            rows,
+                                            s.query.clone(),
+                                            0,
+                                        );
+                                    }
+                                }
+                                _ => {}
+                            }
                         }
                         _ => {}
                     }
@@ -9295,7 +9499,15 @@ impl AppHandler for AppShell {
             // Q19: Cmd+K O → open folder (global — no editor focus required).
             if matches!(event.key, KeyInput::Char('o') | KeyInput::Char('O')) {
                 let cwd = self.app.current_cwd().unwrap_or_else(|| String::from("/"));
-                self.app.open_folder_input = Some(cwd);
+                let mut ti = anvil_render::overlay::TextInputOverlay::new(
+                    anvil_render::overlay::OverlayId::OpenFolder,
+                    "open folder: ",
+                );
+                ti.value = cwd.clone();
+                ti.cursor = cwd.len();
+                self.app
+                    .overlays
+                    .push(anvil_render::overlay::Overlay::TextInput(ti));
                 self.app.dirty = true;
                 return;
             }
@@ -9306,6 +9518,26 @@ impl AppHandler for AppShell {
                         query: String::new(),
                         selected: 0,
                     });
+                    let rows: Vec<anvil_render::overlay::widgets::picker::PickerRow> = PICKER_LANGS
+                        .iter()
+                        .map(|&name| anvil_render::overlay::widgets::picker::PickerRow {
+                            primary: name.to_string(),
+                            secondary: None,
+                            badge: None,
+                        })
+                        .collect();
+                    self.app
+                        .overlays
+                        .push(anvil_render::overlay::Overlay::Picker(
+                            anvil_render::overlay::PickerOverlay {
+                                id: anvil_render::overlay::OverlayId::LangPicker,
+                                title: Some("language".to_string()),
+                                query: String::new(),
+                                rows,
+                                selected: 0,
+                                max_visible: PICKER_LANGS.len(),
+                            },
+                        ));
                     self.app.dirty = true;
                 }
                 return;
@@ -9333,6 +9565,26 @@ impl AppHandler for AppShell {
                     .position(|&name| name == self.app.config.theme.theme_name())
                     .unwrap_or(0);
                 self.app.theme_picker = Some(ThemePickerState { selected: current });
+                let rows: Vec<anvil_render::overlay::widgets::picker::PickerRow> = PICKER_THEMES
+                    .iter()
+                    .map(|&name| anvil_render::overlay::widgets::picker::PickerRow {
+                        primary: name.to_string(),
+                        secondary: None,
+                        badge: None,
+                    })
+                    .collect();
+                self.app
+                    .overlays
+                    .push(anvil_render::overlay::Overlay::Picker(
+                        anvil_render::overlay::PickerOverlay {
+                            id: anvil_render::overlay::OverlayId::ThemePicker,
+                            title: Some("theme".to_string()),
+                            query: String::new(),
+                            rows,
+                            selected: current,
+                            max_visible: PICKER_THEMES.len(),
+                        },
+                    ));
                 self.app.dirty = true;
                 return;
             }
@@ -12484,29 +12736,6 @@ fn draw_overlay_scrim_and_shadow(
     }
 }
 
-/// Shadow-only variant for overlays that don't have the full window height.
-/// Draws the panel drop-shadow without a full-window scrim.
-fn draw_overlay_shadow(
-    raster: &mut anvil_render::raster::Raster,
-    panel_x: f64,
-    panel_y: f64,
-    panel_w: f64,
-    panel_h: f64,
-) {
-    let shadow_color = [0u8, 0u8, 0u8];
-    let steps: &[(f64, f64)] = &[(2.0, 0.18), (4.0, 0.12), (7.0, 0.07), (12.0, 0.04)];
-    for &(expand, alpha) in steps {
-        raster.fill_pixel_rect_alpha(
-            panel_x - expand,
-            panel_y - expand,
-            panel_w + expand * 2.0,
-            panel_h + expand * 2.0,
-            shadow_color,
-            alpha,
-        );
-    }
-}
-
 /// Draw the project-wide search overlay (item 10).
 ///
 /// A centered panel with one input row and up to N result rows.
@@ -12606,675 +12835,6 @@ fn draw_project_search_overlay(
             };
             raster.glyph_at(painter, metrics, rx, row_y, c as u32, color);
             rx += cw;
-        }
-    }
-}
-
-/// Draw the goto-line overlay (item 11).
-///
-/// A small centered panel with a single input row.
-#[allow(clippy::too_many_arguments)]
-fn draw_goto_line_overlay(
-    raster: &mut anvil_render::raster::Raster,
-    painter: &mut dyn anvil_render::raster::GlyphPainter,
-    metrics: anvil_render::raster::FontMetrics,
-    theme: &anvil_theme::Theme,
-    input: &str,
-    dw: f64,
-    dh: f64,
-    chrome_top: f64,
-    cw: f64,
-    ch: f64,
-) {
-    let panel_w = 24.0 * cw;
-    let panel_h = ch + 8.0;
-    let panel_x = ((dw - panel_w) * 0.5).max(0.0);
-    let panel_y = chrome_top + 4.0 * ch;
-
-    draw_overlay_scrim_and_shadow(raster, dw, dh, panel_x, panel_y, panel_w, panel_h);
-
-    raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
-    raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent);
-    raster.fill_pixel_rect(panel_x, panel_y + panel_h - 1.0, panel_w, 1.0, theme.accent);
-    raster.fill_pixel_rect(panel_x, panel_y, 1.0, panel_h, theme.accent);
-    raster.fill_pixel_rect(panel_x + panel_w - 1.0, panel_y, 1.0, panel_h, theme.accent);
-
-    let glyph_y = panel_y + 4.0;
-    let prefix = "line: ";
-    let pad_x = 1.5 * cw;
-    let mut x = panel_x + pad_x;
-    for c in prefix.chars() {
-        if x + cw > panel_x + panel_w - pad_x {
-            break;
-        }
-        raster.glyph_at(painter, metrics, x, glyph_y, c as u32, theme.text_muted);
-        x += cw;
-    }
-    for c in input.chars() {
-        if x + cw > panel_x + panel_w - pad_x {
-            break;
-        }
-        raster.glyph_at(painter, metrics, x, glyph_y, c as u32, theme.foreground);
-        x += cw;
-    }
-    // Cursor.
-    raster.fill_pixel_rect(x, panel_y + 2.0, cw, panel_h - 4.0, theme.accent_bright);
-}
-
-// ── LSP rename overlay draw (item 24) ────────────────────────────────────────
-
-/// Draw the LSP rename input overlay — same chrome as goto-line.
-#[allow(clippy::too_many_arguments)]
-fn draw_lsp_rename_overlay(
-    raster: &mut anvil_render::raster::Raster,
-    painter: &mut dyn anvil_render::raster::GlyphPainter,
-    metrics: anvil_render::raster::FontMetrics,
-    theme: &anvil_theme::Theme,
-    input: &str,
-    dw: f64,
-    dh: f64,
-    chrome_top: f64,
-    cw: f64,
-    ch: f64,
-) {
-    let panel_w = 30.0 * cw;
-    let panel_h = ch + 8.0;
-    let panel_x = ((dw - panel_w) * 0.5).max(0.0);
-    let panel_y = chrome_top + 5.0 * ch;
-
-    draw_overlay_scrim_and_shadow(raster, dw, dh, panel_x, panel_y, panel_w, panel_h);
-
-    raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
-    raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent);
-    raster.fill_pixel_rect(panel_x, panel_y + panel_h - 1.0, panel_w, 1.0, theme.accent);
-    raster.fill_pixel_rect(panel_x, panel_y, 1.0, panel_h, theme.accent);
-    raster.fill_pixel_rect(panel_x + panel_w - 1.0, panel_y, 1.0, panel_h, theme.accent);
-
-    let glyph_y = panel_y + 4.0;
-    let prefix = "rename: ";
-    let pad_x = 1.5 * cw;
-    let mut x = panel_x + pad_x;
-    for c in prefix.chars() {
-        if x + cw > panel_x + panel_w - pad_x {
-            break;
-        }
-        raster.glyph_at(painter, metrics, x, glyph_y, c as u32, theme.text_muted);
-        x += cw;
-    }
-    for c in input.chars() {
-        if x + cw > panel_x + panel_w - pad_x {
-            break;
-        }
-        raster.glyph_at(painter, metrics, x, glyph_y, c as u32, theme.foreground);
-        x += cw;
-    }
-    raster.fill_pixel_rect(x, panel_y + 2.0, cw, panel_h - 4.0, theme.accent_bright);
-}
-
-// ── Save-as overlay draw (tier-J J2) ─────────────────────────────────────────
-
-/// Draw the save-as path-input overlay — same chrome as goto-line.
-/// TODO(anvil-tierJ-J2-nspanel): replace with NSSavePanel.
-#[allow(clippy::too_many_arguments)]
-fn draw_save_as_overlay(
-    raster: &mut anvil_render::raster::Raster,
-    painter: &mut dyn anvil_render::raster::GlyphPainter,
-    metrics: anvil_render::raster::FontMetrics,
-    theme: &anvil_theme::Theme,
-    input: &str,
-    dw: f64,
-    dh: f64,
-    chrome_top: f64,
-    cw: f64,
-    ch: f64,
-) {
-    let panel_w = 60.0 * cw;
-    let panel_h = ch + 8.0;
-    let panel_x = ((dw - panel_w) * 0.5).max(0.0);
-    let panel_y = chrome_top + 4.0 * ch;
-
-    draw_overlay_scrim_and_shadow(raster, dw, dh, panel_x, panel_y, panel_w, panel_h);
-
-    raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
-    raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent);
-    raster.fill_pixel_rect(panel_x, panel_y + panel_h - 1.0, panel_w, 1.0, theme.accent);
-    raster.fill_pixel_rect(panel_x, panel_y, 1.0, panel_h, theme.accent);
-    raster.fill_pixel_rect(panel_x + panel_w - 1.0, panel_y, 1.0, panel_h, theme.accent);
-
-    let glyph_y = panel_y + 4.0;
-    let prefix = "save as: ";
-    let pad_x = 1.5 * cw;
-    let mut x = panel_x + pad_x;
-    for c in prefix.chars() {
-        if x + cw > panel_x + panel_w - pad_x {
-            break;
-        }
-        raster.glyph_at(painter, metrics, x, glyph_y, c as u32, theme.text_muted);
-        x += cw;
-    }
-    // Show only the tail of a long path so the cursor end is always visible.
-    let visible_cols = ((panel_w - pad_x * 2.0 - prefix.len() as f64 * cw) / cw).floor() as usize;
-    let chars: Vec<char> = input.chars().collect();
-    let start = chars.len().saturating_sub(visible_cols);
-    for &c in &chars[start..] {
-        if x + cw > panel_x + panel_w - pad_x {
-            break;
-        }
-        raster.glyph_at(painter, metrics, x, glyph_y, c as u32, theme.foreground);
-        x += cw;
-    }
-    raster.fill_pixel_rect(x, panel_y + 2.0, cw, panel_h - 4.0, theme.accent_bright);
-}
-
-// ── Open-folder overlay draw (Q19) ───────────────────────────────────────────
-
-/// Draw the open-folder path-input overlay (Cmd+K Cmd+O).
-#[allow(clippy::too_many_arguments)]
-fn draw_open_folder_overlay(
-    raster: &mut anvil_render::raster::Raster,
-    painter: &mut dyn anvil_render::raster::GlyphPainter,
-    metrics: anvil_render::raster::FontMetrics,
-    theme: &anvil_theme::Theme,
-    input: &str,
-    dw: f64,
-    chrome_top: f64,
-    cw: f64,
-    ch: f64,
-) {
-    let panel_w = 60.0 * cw;
-    let panel_h = ch + 8.0;
-    let panel_x = ((dw - panel_w) * 0.5).max(0.0);
-    let panel_y = chrome_top + 4.0 * ch;
-
-    draw_overlay_shadow(raster, panel_x, panel_y, panel_w, panel_h);
-
-    raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
-    raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent);
-    raster.fill_pixel_rect(panel_x, panel_y + panel_h - 1.0, panel_w, 1.0, theme.accent);
-    raster.fill_pixel_rect(panel_x, panel_y, 1.0, panel_h, theme.accent);
-    raster.fill_pixel_rect(panel_x + panel_w - 1.0, panel_y, 1.0, panel_h, theme.accent);
-
-    let glyph_y = panel_y + 4.0;
-    let prefix = "open folder: ";
-    let pad_x = 1.5 * cw;
-    let mut x = panel_x + pad_x;
-    for c in prefix.chars() {
-        if x + cw > panel_x + panel_w - pad_x {
-            break;
-        }
-        raster.glyph_at(painter, metrics, x, glyph_y, c as u32, theme.text_muted);
-        x += cw;
-    }
-    // Show only the tail of a long path so the cursor end is always visible.
-    let visible_cols = ((panel_w - pad_x * 2.0 - prefix.len() as f64 * cw) / cw).floor() as usize;
-    let chars: Vec<char> = input.chars().collect();
-    let start = chars.len().saturating_sub(visible_cols);
-    for &c in &chars[start..] {
-        if x + cw > panel_x + panel_w - pad_x {
-            break;
-        }
-        raster.glyph_at(painter, metrics, x, glyph_y, c as u32, theme.foreground);
-        x += cw;
-    }
-    raster.fill_pixel_rect(x, panel_y + 2.0, cw, panel_h - 4.0, theme.accent_bright);
-}
-
-// ── Theme picker overlay draw (W3) ───────────────────────────────────────────
-
-/// Draw the theme-picker overlay (Cmd+K Cmd+T).
-#[allow(clippy::too_many_arguments)]
-fn draw_theme_picker_overlay(
-    raster: &mut anvil_render::raster::Raster,
-    painter: &mut dyn anvil_render::raster::GlyphPainter,
-    metrics: anvil_render::raster::FontMetrics,
-    theme: &anvil_theme::Theme,
-    selected: usize,
-    dw: f64,
-    chrome_top: f64,
-    cw: f64,
-    ch: f64,
-) {
-    let rows = PICKER_THEMES.len();
-    let panel_w = 28.0 * cw;
-    let header_h = ch + 4.0;
-    let panel_h = header_h + (rows as f64) * (ch + 2.0);
-    let panel_x = ((dw - panel_w) * 0.5).max(0.0);
-    let panel_y = chrome_top + 2.0 * ch;
-
-    draw_overlay_shadow(raster, panel_x, panel_y, panel_w, panel_h);
-
-    raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
-    raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent);
-    raster.fill_pixel_rect(panel_x, panel_y + panel_h - 1.0, panel_w, 1.0, theme.accent);
-    raster.fill_pixel_rect(panel_x, panel_y, 1.0, panel_h, theme.accent);
-    raster.fill_pixel_rect(panel_x + panel_w - 1.0, panel_y, 1.0, panel_h, theme.accent);
-
-    let pad_x = 1.5 * cw;
-    let header_label = "theme: ";
-    let mut hx = panel_x + pad_x;
-    let header_y = panel_y + 2.0;
-    for c in header_label.chars() {
-        raster.glyph_at(painter, metrics, hx, header_y, c as u32, theme.text_muted);
-        hx += cw;
-    }
-    raster.fill_pixel_rect(panel_x, panel_y + header_h, panel_w, 1.0, theme.hairline);
-
-    for (i, &name) in PICKER_THEMES.iter().enumerate() {
-        let row_y = panel_y + header_h + 1.0 + i as f64 * (ch + 2.0);
-        if i == selected.min(rows.saturating_sub(1)) {
-            raster.fill_pixel_rect_alpha(panel_x, row_y, panel_w, ch + 2.0, theme.accent, 0.15);
-        }
-        let mut rx = panel_x + pad_x;
-        let color = if i == selected.min(rows.saturating_sub(1)) {
-            theme.foreground
-        } else {
-            theme.text_muted
-        };
-        for c in name.chars() {
-            if rx + cw > panel_x + panel_w - pad_x {
-                break;
-            }
-            raster.glyph_at(painter, metrics, rx, row_y + 1.0, c as u32, color);
-            rx += cw;
-        }
-    }
-}
-
-// ── Language picker overlay draw (Q22) ───────────────────────────────────────
-
-/// Draw the language-picker overlay (Cmd+K Cmd+L).
-#[allow(clippy::too_many_arguments)]
-fn draw_language_picker_overlay(
-    raster: &mut anvil_render::raster::Raster,
-    painter: &mut dyn anvil_render::raster::GlyphPainter,
-    metrics: anvil_render::raster::FontMetrics,
-    theme: &anvil_theme::Theme,
-    query: &str,
-    selected: usize,
-    dw: f64,
-    chrome_top: f64,
-    cw: f64,
-    ch: f64,
-) {
-    let langs = PICKER_LANGS;
-    let filtered = picker_filtered(langs, query);
-    let rows = filtered.len();
-    let panel_w = 30.0 * cw;
-    let header_h = ch + 4.0;
-    let panel_h = header_h + (rows as f64 + 1.0) * (ch + 2.0);
-    let panel_x = ((dw - panel_w) * 0.5).max(0.0);
-    let panel_y = chrome_top + 2.0 * ch;
-
-    draw_overlay_shadow(raster, panel_x, panel_y, panel_w, panel_h);
-
-    raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
-    raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent);
-    raster.fill_pixel_rect(panel_x, panel_y + panel_h - 1.0, panel_w, 1.0, theme.accent);
-    raster.fill_pixel_rect(panel_x, panel_y, 1.0, panel_h, theme.accent);
-    raster.fill_pixel_rect(panel_x + panel_w - 1.0, panel_y, 1.0, panel_h, theme.accent);
-
-    // Header: filter input.
-    let pad_x = 1.5 * cw;
-    let header_label = "language: ";
-    let mut hx = panel_x + pad_x;
-    let header_y = panel_y + 2.0;
-    for c in header_label.chars() {
-        raster.glyph_at(painter, metrics, hx, header_y, c as u32, theme.text_muted);
-        hx += cw;
-    }
-    for c in query.chars() {
-        if hx + cw > panel_x + panel_w - pad_x {
-            break;
-        }
-        raster.glyph_at(painter, metrics, hx, header_y, c as u32, theme.foreground);
-        hx += cw;
-    }
-    // Cursor.
-    raster.fill_pixel_rect(hx, panel_y + 2.0, cw, ch, theme.accent_bright);
-
-    raster.fill_pixel_rect(panel_x, panel_y + header_h, panel_w, 1.0, theme.hairline);
-
-    // Language rows.
-    for (i, lang) in filtered.iter().enumerate() {
-        let row_y = panel_y + header_h + 1.0 + i as f64 * (ch + 2.0);
-        if i == selected.min(rows.saturating_sub(1)) {
-            raster.fill_pixel_rect_alpha(panel_x, row_y, panel_w, ch + 2.0, theme.accent, 0.15);
-        }
-        let mut rx = panel_x + pad_x;
-        for c in lang.chars() {
-            if rx + cw > panel_x + panel_w - pad_x {
-                break;
-            }
-            let color = if i == selected.min(rows.saturating_sub(1)) {
-                theme.foreground
-            } else {
-                theme.text_muted
-            };
-            raster.glyph_at(painter, metrics, rx, row_y + 1.0, c as u32, color);
-            rx += cw;
-        }
-    }
-}
-
-// ── LSP references overlay draw (item 26) ────────────────────────────────────
-
-/// Draw the references overlay panel.
-#[allow(clippy::too_many_arguments)]
-fn draw_lsp_references_overlay(
-    raster: &mut anvil_render::raster::Raster,
-    painter: &mut dyn anvil_render::raster::GlyphPainter,
-    metrics: anvil_render::raster::FontMetrics,
-    theme: &anvil_theme::Theme,
-    refs: &LspReferencesOverlay,
-    dw: f64,
-    dh: f64,
-    chrome_top: f64,
-    cw: f64,
-    ch: f64,
-) {
-    const MAX_ROWS: usize = 16;
-    const PANEL_COLS: usize = 60;
-    let show = refs.rows.len().min(MAX_ROWS);
-    if show == 0 {
-        return;
-    }
-    let panel_w = PANEL_COLS as f64 * cw;
-    let panel_h = (show + 1) as f64 * ch; // +1 for header row
-    let panel_x = ((dw - panel_w) * 0.5).max(0.0);
-    let panel_y = (chrome_top + 2.0 * ch).min(dh - panel_h).max(chrome_top);
-
-    draw_overlay_scrim_and_shadow(raster, dw, dh, panel_x, panel_y, panel_w, panel_h);
-
-    // Background + border.
-    raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
-    raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent);
-    raster.fill_pixel_rect(panel_x, panel_y + panel_h - 1.0, panel_w, 1.0, theme.accent);
-    raster.fill_pixel_rect(panel_x, panel_y, 1.0, panel_h, theme.accent);
-    raster.fill_pixel_rect(panel_x + panel_w - 1.0, panel_y, 1.0, panel_h, theme.accent);
-
-    // Header row.
-    let header = format!("references ({} found)", refs.rows.len());
-    let header_y = panel_y;
-    for (ci, c) in header.chars().take(PANEL_COLS - 2).enumerate() {
-        let tx = panel_x + (ci + 1) as f64 * cw;
-        raster.glyph_at(painter, metrics, tx, header_y, c as u32, theme.text_muted);
-    }
-
-    let visible_selected = refs.selected.min(show.saturating_sub(1));
-    for (ri, row) in refs.rows.iter().enumerate().take(show) {
-        let row_y = panel_y + (ri + 1) as f64 * ch;
-        if ri == visible_selected {
-            raster.fill_pixel_rect_alpha(panel_x, row_y, panel_w, ch, theme.accent, 0.18);
-        }
-        // Format: "basename:line"
-        let base = row.path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-        let label = format!("{}:{}:{}", base, row.line + 1, row.col + 1);
-        let label_chars: Vec<char> = label.chars().take(PANEL_COLS - 2).collect();
-        for (ci, &c) in label_chars.iter().enumerate() {
-            let tx = panel_x + (ci + 1) as f64 * cw;
-            raster.glyph_at(painter, metrics, tx, row_y, c as u32, theme.foreground);
-        }
-    }
-}
-
-// ── Workspace symbol search overlay (O1) ─────────────────────────────────────
-
-/// Draw the workspace/symbol search overlay (Cmd+T).
-///
-/// Shows "(LSP unavailable)" when no server is live. Otherwise shows
-/// `hits` with format `kind name · file:line`.
-#[allow(clippy::too_many_arguments)]
-fn draw_workspace_symbol_overlay(
-    raster: &mut anvil_render::raster::Raster,
-    painter: &mut dyn anvil_render::raster::GlyphPainter,
-    metrics: anvil_render::raster::FontMetrics,
-    theme: &anvil_theme::Theme,
-    search: &WorkspaceSymbolSearch,
-    dw: f64,
-    dh: f64,
-    chrome_top: f64,
-    cw: f64,
-    ch: f64,
-) {
-    const MAX_RESULTS: usize = 20;
-    let n_hits = search.hits.len().min(MAX_RESULTS);
-    // Panel height: input row + separator + results (or 1 message row if empty)
-    let result_rows = if n_hits == 0 { 1 } else { n_hits };
-    let panel_h = (1 + result_rows) as f64 * ch + ch * 0.5;
-    let panel_w = (dw * 0.62).min(dw - 4.0 * cw).max(24.0 * cw);
-    let panel_x = ((dw - panel_w) * 0.5).max(0.0);
-    let panel_y = (chrome_top + (dh - chrome_top - panel_h) * 0.2).max(chrome_top);
-    let pad_x = 2.0 * cw;
-
-    draw_overlay_scrim_and_shadow(raster, dw, dh, panel_x, panel_y, panel_w, panel_h);
-
-    // Background + border.
-    raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
-    raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.hairline);
-    raster.fill_pixel_rect(
-        panel_x,
-        panel_y + panel_h - 1.0,
-        panel_w,
-        1.0,
-        theme.hairline,
-    );
-    raster.fill_pixel_rect(panel_x, panel_y, 1.0, panel_h, theme.hairline);
-    raster.fill_pixel_rect(
-        panel_x + panel_w - 1.0,
-        panel_y,
-        1.0,
-        panel_h,
-        theme.hairline,
-    );
-
-    // Input row.
-    let row0_y = panel_y + 0.5 * ch;
-    let prefix = "symbols: ";
-    let mut x = panel_x + pad_x;
-    for c in prefix.chars() {
-        if x + cw > panel_x + panel_w - pad_x {
-            break;
-        }
-        raster.glyph_at(painter, metrics, x, row0_y, c as u32, theme.text_muted);
-        x += cw;
-    }
-    for c in search.query.chars() {
-        if x + cw > panel_x + panel_w - pad_x {
-            break;
-        }
-        raster.glyph_at(painter, metrics, x, row0_y, c as u32, theme.foreground);
-        x += cw;
-    }
-    raster.fill_pixel_rect(x, panel_y + 2.0, cw, ch - 4.0, theme.accent_bright);
-    raster.fill_pixel_rect(panel_x, panel_y + ch, panel_w, 1.0, theme.hairline);
-
-    // Result rows or message.
-    if search.lsp_unavailable {
-        let msg = "(LSP unavailable)";
-        let msg_y = panel_y + ch + 0.5 * ch;
-        let mut mx = panel_x + pad_x;
-        for c in msg.chars() {
-            if mx + cw > panel_x + panel_w - pad_x {
-                break;
-            }
-            raster.glyph_at(painter, metrics, mx, msg_y, c as u32, theme.text_subtle);
-            mx += cw;
-        }
-    } else if n_hits == 0 {
-        let msg = if search.query.is_empty() {
-            "(type to search workspace symbols)"
-        } else {
-            "(no results)"
-        };
-        let msg_y = panel_y + ch + 0.5 * ch;
-        let mut mx = panel_x + pad_x;
-        for c in msg.chars() {
-            if mx + cw > panel_x + panel_w - pad_x {
-                break;
-            }
-            raster.glyph_at(painter, metrics, mx, msg_y, c as u32, theme.text_subtle);
-            mx += cw;
-        }
-    } else {
-        for (i, hit) in search.hits.iter().take(MAX_RESULTS).enumerate() {
-            let row_y = panel_y + (i + 1) as f64 * ch + 0.5 * ch;
-            let is_sel = i == search.selected;
-            if is_sel {
-                raster.fill_pixel_rect_alpha(
-                    panel_x,
-                    panel_y + (i + 1) as f64 * ch,
-                    panel_w,
-                    ch,
-                    theme.accent,
-                    0.12,
-                );
-            }
-            let file = hit.path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-            let row_text = format!(
-                "{} {} \u{00B7} {}:{}",
-                hit.kind_label,
-                hit.name,
-                file,
-                hit.line + 1
-            );
-            let mut rx = panel_x + pad_x;
-            for c in row_text.chars() {
-                if rx + cw > panel_x + panel_w - pad_x {
-                    break;
-                }
-                let color = if is_sel {
-                    theme.foreground
-                } else {
-                    theme.text_muted
-                };
-                raster.glyph_at(painter, metrics, rx, row_y, c as u32, color);
-                rx += cw;
-            }
-        }
-    }
-}
-
-// ── Buffer symbol search overlay (O2) ────────────────────────────────────────
-
-/// Draw the buffer symbol search overlay (Cmd+R).
-///
-/// Filters `OutlineSymbol`s from the active buffer by substring and shows
-/// `kind name · Ln N`.
-#[allow(clippy::too_many_arguments)]
-fn draw_buffer_symbol_overlay(
-    raster: &mut anvil_render::raster::Raster,
-    painter: &mut dyn anvil_render::raster::GlyphPainter,
-    metrics: anvil_render::raster::FontMetrics,
-    theme: &anvil_theme::Theme,
-    search: &BufferSymbolSearch,
-    dw: f64,
-    dh: f64,
-    chrome_top: f64,
-    cw: f64,
-    ch: f64,
-) {
-    const MAX_RESULTS: usize = 20;
-    let n_hits = search.filtered.len().min(MAX_RESULTS);
-    let result_rows = if n_hits == 0 { 1 } else { n_hits };
-    let panel_h = (1 + result_rows) as f64 * ch + ch * 0.5;
-    let panel_w = (dw * 0.55).min(dw - 4.0 * cw).max(24.0 * cw);
-    let panel_x = ((dw - panel_w) * 0.5).max(0.0);
-    let panel_y = (chrome_top + (dh - chrome_top - panel_h) * 0.2).max(chrome_top);
-    let pad_x = 2.0 * cw;
-
-    draw_overlay_scrim_and_shadow(raster, dw, dh, panel_x, panel_y, panel_w, panel_h);
-
-    raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
-    raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.hairline);
-    raster.fill_pixel_rect(
-        panel_x,
-        panel_y + panel_h - 1.0,
-        panel_w,
-        1.0,
-        theme.hairline,
-    );
-    raster.fill_pixel_rect(panel_x, panel_y, 1.0, panel_h, theme.hairline);
-    raster.fill_pixel_rect(
-        panel_x + panel_w - 1.0,
-        panel_y,
-        1.0,
-        panel_h,
-        theme.hairline,
-    );
-
-    // Input row.
-    let row0_y = panel_y + 0.5 * ch;
-    let prefix = "buffer: ";
-    let mut x = panel_x + pad_x;
-    for c in prefix.chars() {
-        if x + cw > panel_x + panel_w - pad_x {
-            break;
-        }
-        raster.glyph_at(painter, metrics, x, row0_y, c as u32, theme.text_muted);
-        x += cw;
-    }
-    for c in search.query.chars() {
-        if x + cw > panel_x + panel_w - pad_x {
-            break;
-        }
-        raster.glyph_at(painter, metrics, x, row0_y, c as u32, theme.foreground);
-        x += cw;
-    }
-    raster.fill_pixel_rect(x, panel_y + 2.0, cw, ch - 4.0, theme.accent_bright);
-    raster.fill_pixel_rect(panel_x, panel_y + ch, panel_w, 1.0, theme.hairline);
-
-    if n_hits == 0 {
-        let msg = if search.all_symbols.is_empty() {
-            "(no symbols in buffer)"
-        } else {
-            "(no matches)"
-        };
-        let msg_y = panel_y + ch + 0.5 * ch;
-        let mut mx = panel_x + pad_x;
-        for c in msg.chars() {
-            if mx + cw > panel_x + panel_w - pad_x {
-                break;
-            }
-            raster.glyph_at(painter, metrics, mx, msg_y, c as u32, theme.text_subtle);
-            mx += cw;
-        }
-    } else {
-        for (i, &sym_idx) in search.filtered.iter().take(MAX_RESULTS).enumerate() {
-            let sym = &search.all_symbols[sym_idx];
-            let row_y = panel_y + (i + 1) as f64 * ch + 0.5 * ch;
-            let is_sel = i == search.selected;
-            if is_sel {
-                raster.fill_pixel_rect_alpha(
-                    panel_x,
-                    panel_y + (i + 1) as f64 * ch,
-                    panel_w,
-                    ch,
-                    theme.accent,
-                    0.12,
-                );
-            }
-            let kind_str = match sym.kind {
-                anvil_editor::OutlineSymbolKind::Function => "fn",
-                anvil_editor::OutlineSymbolKind::Struct => "struct",
-                anvil_editor::OutlineSymbolKind::Enum => "enum",
-                anvil_editor::OutlineSymbolKind::Trait => "trait",
-                anvil_editor::OutlineSymbolKind::Impl => "impl",
-                anvil_editor::OutlineSymbolKind::Other => "sym",
-            };
-            let row_text = format!("{} {} \u{00B7} Ln {}", kind_str, sym.name, sym.line + 1);
-            let mut rx = panel_x + pad_x;
-            for c in row_text.chars() {
-                if rx + cw > panel_x + panel_w - pad_x {
-                    break;
-                }
-                let color = if is_sel {
-                    theme.foreground
-                } else {
-                    theme.text_muted
-                };
-                raster.glyph_at(painter, metrics, rx, row_y, c as u32, color);
-                rx += cw;
-            }
         }
     }
 }
@@ -13497,100 +13057,6 @@ fn draw_welcome_screen(
     }
 }
 
-// ── Project switcher overlay (item 30) ────────────────────────────────────────
-
-/// Palette-style overlay listing recently-opened workspace directories.
-#[allow(clippy::too_many_arguments)]
-fn draw_project_switcher_overlay(
-    raster: &mut anvil_render::raster::Raster,
-    painter: &mut dyn anvil_render::raster::GlyphPainter,
-    metrics: anvil_render::raster::FontMetrics,
-    theme: &anvil_theme::Theme,
-    recent_projects: &[PathBuf],
-    selected: usize,
-    dw: f64,
-    dh: f64,
-    chrome_top: f64,
-    cw: f64,
-    ch: f64,
-) {
-    if recent_projects.is_empty() {
-        return;
-    }
-    let rows = recent_projects.len().min(10);
-    let panel_w = (50.0 * cw).min(dw * 0.7);
-    let header_h = ch + 4.0;
-    let panel_h = header_h + rows as f64 * (ch + 4.0);
-    let panel_x = ((dw - panel_w) * 0.5).max(0.0);
-    let panel_y = chrome_top + 2.0 * ch;
-
-    draw_overlay_scrim_and_shadow(raster, dw, dh, panel_x, panel_y, panel_w, panel_h);
-
-    raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
-    raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent);
-    raster.fill_pixel_rect(panel_x, panel_y + panel_h - 1.0, panel_w, 1.0, theme.accent);
-    raster.fill_pixel_rect(panel_x, panel_y, 1.0, panel_h, theme.accent);
-    raster.fill_pixel_rect(panel_x + panel_w - 1.0, panel_y, 1.0, panel_h, theme.accent);
-
-    // Header label.
-    let header = "Open Recent Project";
-    let pad_x = 1.5 * cw;
-    let header_y = panel_y + 2.0;
-    let mut hx = panel_x + pad_x;
-    for c in header.chars() {
-        if hx + cw > panel_x + panel_w - pad_x {
-            break;
-        }
-        raster.glyph_at(painter, metrics, hx, header_y, c as u32, theme.text_subtle);
-        hx += cw;
-    }
-
-    raster.fill_pixel_rect(panel_x, panel_y + header_h, panel_w, 1.0, theme.hairline);
-
-    // Rows.
-    for (i, proj) in recent_projects.iter().take(rows).enumerate() {
-        let row_y = panel_y + header_h + i as f64 * (ch + 4.0);
-        if i == selected {
-            raster.fill_pixel_rect_alpha(panel_x, row_y, panel_w, ch + 4.0, theme.accent, 0.15);
-        }
-        let name = proj
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| proj.to_string_lossy().into_owned());
-        let path_str = proj.to_string_lossy().into_owned();
-
-        // Basename in foreground.
-        let mut rx = panel_x + pad_x;
-        let glyph_y = row_y + 2.0;
-        let name_max_x = panel_x + panel_w * 0.4;
-        for c in name.chars() {
-            if rx + cw > name_max_x {
-                break;
-            }
-            let color = if i == selected {
-                theme.foreground
-            } else {
-                theme.text_muted
-            };
-            raster.glyph_at(painter, metrics, rx, glyph_y, c as u32, color);
-            rx += cw;
-        }
-
-        // Path in text_subtle.
-        rx = panel_x + panel_w * 0.42;
-        for c in path_str.chars() {
-            if rx + cw > panel_x + panel_w - pad_x {
-                break;
-            }
-            raster.glyph_at(painter, metrics, rx, glyph_y, c as u32, theme.text_subtle);
-            rx += cw;
-        }
-    }
-}
-
-// ── Language picker (Q22) ────────────────────────────────────────────────────
-
-/// All language-ids supported by the language picker (Cmd+K Cmd+L).
 const PICKER_LANGS: &[&str] = &["rust", "typescript", "python", "toml", "json", "markdown"];
 
 /// Return the subset of `langs` whose name contains `query` (case-insensitive).
@@ -13882,187 +13348,6 @@ fn draw_scm_panel_overlay(
     if panel.commit_input_active {
         let cursor_x = panel_x + pad_x + panel.commit_msg.chars().count() as f64 * cw;
         raster.fill_pixel_rect(cursor_x, y + 3.0, 2.0, ch, theme.accent);
-    }
-}
-
-// ── Z6: Branch switcher draw ──────────────────────────────────────────────────
-
-#[allow(clippy::too_many_arguments)]
-fn draw_branch_switcher_overlay(
-    raster: &mut anvil_render::raster::Raster,
-    painter: &mut dyn anvil_render::raster::GlyphPainter,
-    metrics: anvil_render::raster::FontMetrics,
-    theme: &anvil_theme::Theme,
-    sw: &BranchSwitcher,
-    dw: f64,
-    _dh: f64,
-    chrome_top: f64,
-    cw: f64,
-    ch: f64,
-) {
-    let filtered = sw.filtered();
-    let rows = filtered.len().min(15);
-    let row_h = ch + 4.0;
-    let panel_w = (50.0 * cw).min(dw * 0.7);
-    let header_h = row_h + 2.0; // "git checkout" label + filter input
-    let panel_h = header_h + rows as f64 * row_h + 4.0;
-    let panel_x = ((dw - panel_w) * 0.5).max(0.0);
-    let panel_y = chrome_top + 2.0 * ch;
-
-    draw_overlay_shadow(raster, panel_x, panel_y, panel_w, panel_h);
-
-    raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
-    raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent);
-    raster.fill_pixel_rect(panel_x, panel_y + panel_h - 1.0, panel_w, 1.0, theme.accent);
-    raster.fill_pixel_rect(panel_x, panel_y, 1.0, panel_h, theme.accent);
-    raster.fill_pixel_rect(panel_x + panel_w - 1.0, panel_y, 1.0, panel_h, theme.accent);
-
-    let pad_x = 1.5 * cw;
-
-    // Header label.
-    let mut rx = panel_x + pad_x;
-    let header_y = panel_y + 2.0;
-    for c in "git checkout".chars() {
-        if rx + cw > panel_x + panel_w - pad_x {
-            break;
-        }
-        raster.glyph_at(painter, metrics, rx, header_y, c as u32, theme.text_subtle);
-        rx += cw;
-    }
-
-    // Filter input row.
-    let filter_y = panel_y + row_h;
-    let filter_label = format!("> {}", sw.query);
-    let mut rx = panel_x + pad_x;
-    for c in filter_label.chars() {
-        if rx + cw > panel_x + panel_w - pad_x {
-            break;
-        }
-        raster.glyph_at(painter, metrics, rx, filter_y, c as u32, theme.foreground);
-        rx += cw;
-    }
-    // Cursor.
-    let cursor_x = panel_x + pad_x + (2 + sw.query.chars().count()) as f64 * cw;
-    raster.fill_pixel_rect(cursor_x, filter_y - 1.0, 2.0, ch, theme.accent);
-
-    raster.fill_pixel_rect(
-        panel_x,
-        panel_y + header_h - 1.0,
-        panel_w,
-        1.0,
-        theme.hairline,
-    );
-
-    // Branch rows.
-    for (ri, &branch_idx) in filtered.iter().take(rows).enumerate() {
-        let branch = &sw.branches[branch_idx];
-        let is_current = sw.current_idx == Some(branch_idx);
-        let is_sel = ri == sw.selected;
-        let row_y = panel_y + header_h + ri as f64 * row_h;
-        if is_sel {
-            raster.fill_pixel_rect_alpha(panel_x, row_y, panel_w, row_h, theme.accent, 0.15);
-        }
-        let prefix = if is_current { "* " } else { "  " };
-        let label = format!("{prefix}{branch}");
-        let color = if is_sel {
-            theme.foreground
-        } else if is_current {
-            theme.verified
-        } else {
-            theme.text_muted
-        };
-        let glyph_y = row_y + 2.0;
-        let mut rx = panel_x + pad_x;
-        for c in label.chars() {
-            if rx + cw > panel_x + panel_w - pad_x {
-                break;
-            }
-            raster.glyph_at(painter, metrics, rx, glyph_y, c as u32, color);
-            rx += cw;
-        }
-    }
-}
-
-// ── Z8: Git-log palette draw ──────────────────────────────────────────────────
-
-#[allow(clippy::too_many_arguments)]
-fn draw_git_log_overlay(
-    raster: &mut anvil_render::raster::Raster,
-    painter: &mut dyn anvil_render::raster::GlyphPainter,
-    metrics: anvil_render::raster::FontMetrics,
-    theme: &anvil_theme::Theme,
-    pal: &GitLogPalette,
-    dw: f64,
-    chrome_top: f64,
-    cw: f64,
-    ch: f64,
-) {
-    let rows = pal.entries.len().min(20);
-    let row_h = ch + 4.0;
-    let panel_w = (72.0 * cw).min(dw * 0.9);
-    let header_h = row_h;
-    let panel_h = header_h + rows as f64 * row_h + 4.0;
-    let panel_x = ((dw - panel_w) * 0.5).max(0.0);
-    let panel_y = chrome_top + 2.0 * ch;
-
-    draw_overlay_shadow(raster, panel_x, panel_y, panel_w, panel_h);
-
-    raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
-    raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent);
-    raster.fill_pixel_rect(panel_x, panel_y + panel_h - 1.0, panel_w, 1.0, theme.accent);
-    raster.fill_pixel_rect(panel_x, panel_y, 1.0, panel_h, theme.accent);
-    raster.fill_pixel_rect(panel_x + panel_w - 1.0, panel_y, 1.0, panel_h, theme.accent);
-
-    let pad_x = 1.5 * cw;
-
-    // Header.
-    let header_y = panel_y + 2.0;
-    let mut rx = panel_x + pad_x;
-    for c in "git log (Enter to open, Esc to close)".chars() {
-        if rx + cw > panel_x + panel_w - pad_x {
-            break;
-        }
-        raster.glyph_at(painter, metrics, rx, header_y, c as u32, theme.text_subtle);
-        rx += cw;
-    }
-    raster.fill_pixel_rect(
-        panel_x,
-        panel_y + header_h - 1.0,
-        panel_w,
-        1.0,
-        theme.hairline,
-    );
-
-    for (i, entry) in pal.entries.iter().take(rows).enumerate() {
-        let is_sel = i == pal.selected;
-        let row_y = panel_y + header_h + i as f64 * row_h;
-        if is_sel {
-            raster.fill_pixel_rect_alpha(panel_x, row_y, panel_w, row_h, theme.accent, 0.15);
-        }
-        let glyph_y = row_y + 2.0;
-        // Hash in accent color.
-        let mut rx = panel_x + pad_x;
-        for c in entry.hash.chars() {
-            if rx + cw > panel_x + pad_x + 8.0 * cw {
-                break;
-            }
-            raster.glyph_at(painter, metrics, rx, glyph_y, c as u32, theme.accent_bright);
-            rx += cw;
-        }
-        rx += cw * 0.5;
-        // Subject.
-        let color = if is_sel {
-            theme.foreground
-        } else {
-            theme.text_muted
-        };
-        for c in entry.subject.chars() {
-            if rx + cw > panel_x + panel_w - pad_x {
-                break;
-            }
-            raster.glyph_at(painter, metrics, rx, glyph_y, c as u32, color);
-            rx += cw;
-        }
     }
 }
 
