@@ -266,8 +266,8 @@ fn is_bottom_drawer(rect: &Rect, inner: &Rect, leaf_count: usize) -> bool {
     leaf_count > 1 && rect.h <= inner.h * 0.40 && rect.y > inner.y + inner.h * 0.45
 }
 
-/// Empty pane (no PTY, no editor). Solid `panel` base with a 22px `charcoal`
-/// header strip at the top showing a `text_subtle` label.
+/// Empty pane (no PTY, no editor). Solid `panel` base with a centered welcome
+/// block showing the Anvil name and key hints.
 fn draw_empty_pane(
     raster: &mut Raster,
     painter: &mut dyn crate::raster::GlyphPainter,
@@ -278,24 +278,40 @@ fn draw_empty_pane(
     if rect.w <= 0.0 || rect.h <= 0.0 {
         return;
     }
-    const PAD_X: f64 = 10.0;
-    const STRIP_H: f64 = 22.0;
 
+    // Panel background + top hairline.
     raster.fill_pixel_rect(rect.x, rect.y, rect.w, rect.h, theme.panel);
     raster.fill_pixel_rect_alpha(rect.x, rect.y, rect.w, 1.0, theme.hairline, 0.68);
 
-    let strip_h = STRIP_H.min(rect.h);
-    if strip_h > 0.0 {
-        raster.fill_pixel_rect(rect.x, rect.y, rect.w, strip_h, theme.charcoal);
-        let label = "TERMINAL  \u{2318}T";
-        let text_y = rect.y + ((strip_h - metrics.cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
-        let mut gx = rect.x + PAD_X;
-        let max_x = rect.x + rect.w - PAD_X;
+    // Centered welcome block. Each hint is a fixed-width monospace row.
+    let hints: &[(&str, [u8; 3])] = &[
+        ("Anvil", theme.accent_bright),
+        ("", theme.text_subtle),
+        ("\u{2318}P  Open file", theme.text_subtle),
+        ("\u{2318}E  New editor", theme.text_subtle),
+        ("\u{2318}T  Open terminal", theme.text_subtle),
+        ("\u{2318}B  Toggle sidebar", theme.text_subtle),
+    ];
+
+    let row_h = metrics.cell_h + 4.0;
+    let block_h = hints.len() as f64 * row_h;
+    if block_h >= rect.h {
+        return;
+    }
+    let start_y = rect.y + (rect.h - block_h) * 0.5;
+    for (i, (label, color)) in hints.iter().enumerate() {
+        let label_w = label.chars().count() as f64 * metrics.cell_w;
+        let lx = rect.x + ((rect.w - label_w) * 0.5).max(0.0);
+        let ly = start_y
+            + i as f64 * row_h
+            + ((row_h - metrics.cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+        let max_x = rect.x + rect.w;
+        let mut gx = lx;
         for ch in label.chars() {
             if gx + metrics.cell_w > max_x {
                 break;
             }
-            raster.glyph_at(painter, metrics, gx, text_y, ch as u32, theme.text_subtle);
+            raster.glyph_at(painter, metrics, gx, ly, ch as u32, *color);
             gx += metrics.cell_w;
         }
     }
@@ -303,8 +319,8 @@ fn draw_empty_pane(
 
 fn draw_terminal_drawer_chrome(
     raster: &mut Raster,
-    _painter: &mut dyn crate::raster::GlyphPainter,
-    _metrics: FontMetrics,
+    painter: &mut dyn crate::raster::GlyphPainter,
+    metrics: FontMetrics,
     theme: &Theme,
     rect: Rect,
     _active: bool,
@@ -313,10 +329,27 @@ fn draw_terminal_drawer_chrome(
         return;
     }
 
-    // Top separator is the only chrome — a 1px hairline between editor and
-    // drawer. The viewport (drawn earlier) carries the terminal cells; don't
-    // overdraw them with a panel fill.
+    // 28pt charcoal header strip at the top of the drawer: "TERMINAL" label on
+    // the left. Terminal cells are drawn by draw_viewport BEFORE this function
+    // is called, so we overdraw only the top 28pt strip.
+    const HEADER_H: f64 = 28.0;
+    let strip_h = HEADER_H.min(rect.h);
+    raster.fill_pixel_rect(rect.x, rect.y, rect.w, strip_h, theme.charcoal);
     raster.fill_pixel_rect_alpha(rect.x, rect.y, rect.w, 1.0, theme.hairline, 0.92);
+
+    // "TERMINAL" label left-aligned in the header strip.
+    const PAD_X: f64 = 8.0;
+    let label = "TERMINAL";
+    let text_y = rect.y + ((strip_h - metrics.cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+    let mut gx = rect.x + PAD_X;
+    let max_x = rect.x + rect.w - PAD_X;
+    for ch in label.chars() {
+        if gx + metrics.cell_w > max_x {
+            break;
+        }
+        raster.glyph_at(painter, metrics, gx, text_y, ch as u32, theme.text_subtle);
+        gx += metrics.cell_w;
+    }
 }
 
 /// Draw the collapsed drawer strip (G2): a 24pt-tall charcoal bar with
@@ -414,11 +447,6 @@ fn draw_editor_chrome(
         theme.hairline,
         0.92,
     );
-
-    // Top accent rule for focused pane (overwrites graphite at y=0).
-    if pane_focused {
-        raster.fill_pixel_rect(rect.x, rect.y, rect.w, 2.0, theme.accent_primary);
-    }
 
     // Left-edge focus ring (item 14): 2px accent_primary bar along the full pane
     // height. Only painted when there are multiple editor panes so a solo pane
@@ -1219,7 +1247,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_drawer_chrome_paints_top_hairline_only() {
+    fn terminal_drawer_chrome_paints_header_strip() {
         let m = metrics();
         let mut r = Raster::new(220, 90);
         let mut painter = StubPainter::default();
@@ -1235,20 +1263,18 @@ mod tests {
         draw_terminal_drawer_chrome(&mut r, &mut painter, m, &theme, rect, true);
 
         let top_px = pixel_at(&r, 20, 12);
+        // D5: header strip (charcoal) is painted at the top.
+        assert_ne!(top_px, [0, 0, 0], "top header strip must be painted");
+        assert_ne!(
+            top_px, theme.accent_ember,
+            "drawer header must not use Ember accent"
+        );
+        // Body below header (y=40, outside 28pt strip) must not be overdrawn.
         let body_px = pixel_at(&r, 20, 40);
-        // Top row must have moved off raw black — hairline is painted there.
-        assert_ne!(top_px, [0, 0, 0], "top hairline must paint");
-        // Body must remain whatever the viewport painted under us (here:
-        // the test's clear background). The drawer chrome no longer overdraws
-        // the terminal cells with a panel fill.
         assert_eq!(
             body_px,
             [0, 0, 0],
-            "drawer body must NOT be overdrawn — viewport cells must pass through"
-        );
-        assert_ne!(
-            top_px, theme.accent_ember,
-            "drawer hairline must not use Ember accent"
+            "drawer body below header must NOT be overdrawn"
         );
     }
 
@@ -1291,6 +1317,8 @@ mod tests {
             1.0,   // ui_scale
         );
 
+        // Active tab's 2px top rule paints accent_primary at the tab's top edge.
+        // The pane-level accent rule was removed (D9); the tab-level rule remains.
         assert_eq!(pixel_at(&r, 12, 12), theme.accent_primary);
         assert_ne!(
             pixel_at(&r, 12, 16),
