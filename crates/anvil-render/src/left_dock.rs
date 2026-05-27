@@ -133,7 +133,7 @@ pub struct OutlineRow {
 // ── Row geometry ──────────────────────────────────────────────────────────────
 
 /// Base height of a section header row in points (multiplied by `ui_scale`).
-const HEADER_H_BASE: f64 = 36.0;
+const HEADER_H_BASE: f64 = 30.0;
 
 /// Base height of a content row in points (multiplied by `ui_scale`).
 /// Bumped from 28 → 34 so Explorer reads as IDE chrome rather than a
@@ -566,7 +566,7 @@ fn draw_explorer_section(
         rect.x + pad_x + cell_w * 1.5,
         header_y,
         EXPLORER_HEADER_PT,
-        UiWeight::Semibold,
+        UiWeight::Regular,
         theme.accent_bright,
     );
     if !header_meta.is_empty() {
@@ -574,7 +574,7 @@ fn draw_explorer_section(
             ui_painter,
             &header_meta,
             EXPLORER_HEADER_PT,
-            UiWeight::Semibold,
+            UiWeight::Regular,
         );
         raster.ui_line(
             ui_painter,
@@ -582,7 +582,7 @@ fn draw_explorer_section(
             (rect.x + rect.w - pad_x - meta_w).max(rect.x + pad_x + cell_w * 1.5),
             header_y,
             EXPLORER_HEADER_PT,
-            UiWeight::Semibold,
+            UiWeight::Regular,
             meta_color,
         );
     }
@@ -1114,7 +1114,7 @@ fn draw_outline_section(
         rect.x + pad_x + cell_w * 1.5,
         header_y,
         EXPLORER_HEADER_PT,
-        UiWeight::Semibold,
+        UiWeight::Regular,
         header_color,
     );
     raster.fill_pixel_rect(rect.x, rect.y + header_h - 1.0, rect.w, 1.0, theme.hairline);

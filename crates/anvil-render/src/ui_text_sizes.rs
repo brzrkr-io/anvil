@@ -7,8 +7,8 @@
 /// Explorer file/directory row label — Regular weight.
 pub const EXPLORER_ROW_PT: f64 = 13.0;
 
-/// Explorer section header (e.g. "OPEN EDITORS") — Semibold weight.
-pub const EXPLORER_HEADER_PT: f64 = 11.0;
+/// Explorer section header (e.g. "OPEN EDITORS") — Regular weight.
+pub const EXPLORER_HEADER_PT: f64 = 10.0;
 
 /// Editor tab label (active and inactive) — Medium (active) / Regular (inactive).
 pub const TAB_LABEL_PT: f64 = 13.0;
