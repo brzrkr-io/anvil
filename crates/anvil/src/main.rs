@@ -12,6 +12,7 @@
 
 mod fs_worker;
 mod kube;
+mod overlays;
 mod session;
 
 use std::cell::RefCell;
@@ -2367,13 +2368,65 @@ impl App {
         panel.stashes = stashes;
         panel.prs = prs;
         panel.selected = 0;
+        self.scm_push_overlay();
         self.dirty = true;
         self.force_full_redraw = true;
+    }
+
+    /// Build a `ScmPanelOverlay` snapshot from the current `scm_panel` state
+    /// and push (or replace) it on the overlay stack.
+    fn scm_push_overlay(&mut self) {
+        let Some(panel) = &self.scm_panel else { return };
+        let ov = overlays::ScmPanelOverlay {
+            staged: panel
+                .staged
+                .iter()
+                .map(|f| overlays::ScmFileSnap {
+                    path: f.path.clone(),
+                    mark: f.mark,
+                })
+                .collect(),
+            unstaged: panel
+                .unstaged
+                .iter()
+                .map(|f| overlays::ScmFileSnap {
+                    path: f.path.clone(),
+                    mark: f.mark,
+                })
+                .collect(),
+            selected: panel.selected,
+            commit_msg: panel.commit_msg.clone(),
+            commit_input_active: panel.commit_input_active,
+            stashes: panel
+                .stashes
+                .iter()
+                .map(|s| overlays::StashSnap {
+                    message: s.message.clone(),
+                })
+                .collect(),
+            stashes_expanded: panel.stashes_expanded,
+            prs: panel
+                .prs
+                .iter()
+                .map(|p| overlays::PrSnap {
+                    number: p.number,
+                    title: p.title.clone(),
+                })
+                .collect(),
+            prs_expanded: panel.prs_expanded,
+        };
+        // Replace any existing SCM overlay with the fresh snapshot.
+        self.overlays
+            .remove_by_id(anvil_render::overlay::OverlayId::ScmPanel);
+        self.overlays
+            .push(anvil_render::overlay::Overlay::Custom(Box::new(ov)));
     }
 
     fn toggle_scm_panel(&mut self) {
         if self.scm_panel.is_some() {
             self.scm_panel = None;
+            self.overlays
+                .remove_by_id(anvil_render::overlay::OverlayId::ScmPanel);
             self.dirty = true;
         } else {
             self.open_scm_panel();
@@ -4739,6 +4792,111 @@ impl App {
         self.dirty = true;
     }
 
+    /// Sync editor-pane popup overlays (completion, code-actions, hover) with the
+    /// overlay stack. Called each frame before rendering. If the focused pane has
+    /// an active popup, the overlay stack is updated with a fresh snapshot; if the
+    /// pane no longer has the popup, the overlay is removed.
+    fn sync_editor_popup_overlays(&mut self) {
+        use anvil_render::overlay::{Overlay, OverlayId};
+
+        let Some(tab) = self.tabs.current() else {
+            return;
+        };
+        let id = tab.focused_id();
+        let Some(ep) = tab.editor_panes.get_pane(id) else {
+            return;
+        };
+
+        // Compute the focused pane's pixel rect.
+        let ir = self.pane_area_rect();
+        let entries = tab.tree.layout(ir, DIVIDER_PX);
+        let pane_rect = match entries.iter().find(|e| e.id == id).map(|e| e.rect) {
+            Some(r) => r,
+            None => return,
+        };
+
+        let cw = self.font.metrics.cell_w;
+        let ch = self.font.metrics.cell_h;
+        let scroll_line = ep.scroll_pos.floor() as usize;
+
+        // Gutter width (matches editor.rs calculation).
+        let buf_line_count = tab
+            .editor_panes
+            .get_buffer(ep.buffer_id)
+            .map(|b| b.line_count().max(1))
+            .unwrap_or(1);
+        let digit_cols = buf_line_count.to_string().len();
+        let git_gutter_cols = if tab
+            .editor_panes
+            .get_buffer(ep.buffer_id)
+            .and_then(|b| b.git_gutter.as_ref())
+            .is_some()
+        {
+            2
+        } else {
+            0
+        };
+        let gutter_w = (digit_cols + 2 + git_gutter_cols) as f64 * cw;
+
+        // ── Completion ────────────────────────────────────────────────────────
+        if let Some(cp) = &ep.completion_popup {
+            let vis = cp.visible_items();
+            if !vis.is_empty() && cp.anchor.line >= scroll_line {
+                let av = cp.anchor.line - scroll_line;
+                let px = pane_rect.x + gutter_w + cp.anchor.col as f64 * cw;
+                let py = pane_rect.y + (av + 1) as f64 * ch;
+                let snap = overlays::CompletionOverlay {
+                    items: vis.iter().map(|e| (*e).clone()).collect(),
+                    selected: cp.selected,
+                    pixel_x: px,
+                    pixel_y: py,
+                };
+                self.overlays.remove_by_id(OverlayId::Completion);
+                self.overlays.push(Overlay::Custom(Box::new(snap)));
+            }
+        } else {
+            self.overlays.remove_by_id(OverlayId::Completion);
+        }
+
+        // ── Code actions ──────────────────────────────────────────────────────
+        if let Some(cap) = &ep.code_actions_popup {
+            if !cap.items.is_empty() && cap.anchor.line >= scroll_line {
+                let av = cap.anchor.line - scroll_line;
+                let px = pane_rect.x + gutter_w + cap.anchor.col as f64 * cw;
+                let py = pane_rect.y + (av + 1) as f64 * ch;
+                let snap = overlays::CodeActionsOverlay {
+                    items: cap.items.clone(),
+                    selected: cap.selected,
+                    pixel_x: px,
+                    pixel_y: py,
+                };
+                self.overlays.remove_by_id(OverlayId::CodeActions);
+                self.overlays.push(Overlay::Custom(Box::new(snap)));
+            }
+        } else {
+            self.overlays.remove_by_id(OverlayId::CodeActions);
+        }
+
+        // ── Hover ─────────────────────────────────────────────────────────────
+        if let Some(popup) = &ep.hover_popup {
+            if popup.anchor.line >= scroll_line {
+                let av = popup.anchor.line - scroll_line;
+                let px = pane_rect.x + gutter_w + popup.anchor.col as f64 * cw;
+                let py = pane_rect.y + (av + 1) as f64 * ch;
+                let lines: Vec<String> = popup.text.lines().map(|l| l.to_string()).collect();
+                let snap = overlays::HoverOverlay {
+                    lines,
+                    pixel_x: px,
+                    pixel_y: py,
+                };
+                self.overlays.remove_by_id(OverlayId::Hover);
+                self.overlays.push(Overlay::Custom(Box::new(snap)));
+            }
+        } else {
+            self.overlays.remove_by_id(OverlayId::Hover);
+        }
+    }
+
     // Scroll-position change detector: only force a full redraw when
     // scroll_pos / viewport_offset actually MOVED since the last frame.
     // Sitting still inside scrollback should be as cheap as sitting at
@@ -4749,6 +4907,10 @@ impl App {
         chrome_painter: &mut dyn anvil_render::GlyphPainter,
         ui_painter: &mut dyn anvil_render::UiTextPainter,
     ) {
+        // Sync editor-anchored popups (completion, code-actions, hover) to the
+        // overlay stack before rendering so the stack renders them on top.
+        self.sync_editor_popup_overlays();
+
         // ANVIL_PERF=1 emits per-frame timing to stderr so we can diagnose
         // scroll lag without guessing.
         let perf_log = std::env::var_os("ANVIL_PERF").is_some();
@@ -5426,25 +5588,7 @@ impl App {
             );
         }
 
-        // ── Z1: SCM panel overlay (Batch 4 Custom — kept as legacy draw until CustomOverlay impl) ──
-        if let Some(ref panel) = self.scm_panel {
-            let cw = self.font.metrics.cell_w;
-            let chrome_top = self.chrome_top_px();
-            let chrome_bot = self.chrome_bottom_px();
-            draw_scm_panel_overlay(
-                &mut self.raster,
-                chrome_painter,
-                chrome_metrics,
-                &self.theme,
-                panel,
-                dw as f64,
-                dh as f64,
-                chrome_top,
-                chrome_bot,
-                cw,
-                ch,
-            );
-        }
+        // ── Z1: SCM panel — rendered via self.overlays (ScmPanelOverlay) ───────
 
         // ── Toasts (N3) ───────────────────────────────────────────────────────
         if !self.toasts.is_empty() {
@@ -8453,6 +8597,9 @@ impl AppHandler for AppShell {
                             p.commit_input_active = false;
                         } else {
                             self.app.scm_panel = None;
+                            self.app
+                                .overlays
+                                .remove_by_id(anvil_render::overlay::OverlayId::ScmPanel);
                         }
                     }
                     self.app.dirty = true;
@@ -8534,6 +8681,8 @@ impl AppHandler for AppShell {
                 }
                 _ => {}
             }
+            // Sync overlay snapshot after any SCM state mutation.
+            self.app.scm_push_overlay();
             return;
         }
 
@@ -13105,284 +13254,6 @@ fn picker_filtered<'a>(langs: &[&'a str], query: &str) -> Vec<&'a str> {
             .copied()
             .filter(|l| l.contains(q.as_str()))
             .collect()
-    }
-}
-
-// ── Z1/Z2/Z3/Z5/Z12: SCM panel draw ─────────────────────────────────────────
-
-/// Draw one text row at `y`, advance y by `row_h`, return new y.
-#[allow(clippy::too_many_arguments)]
-fn scm_draw_row(
-    raster: &mut anvil_render::raster::Raster,
-    painter: &mut dyn anvil_render::raster::GlyphPainter,
-    metrics: anvil_render::raster::FontMetrics,
-    label: &str,
-    color: [u8; 3],
-    panel_x: f64,
-    panel_w: f64,
-    pad_x: f64,
-    cw: f64,
-    y: f64,
-    row_h: f64,
-) -> f64 {
-    let glyph_y = y + 2.0;
-    let mut rx = panel_x + pad_x;
-    for ch_c in label.chars() {
-        if rx + cw > panel_x + panel_w - pad_x {
-            break;
-        }
-        raster.glyph_at(painter, metrics, rx, glyph_y, ch_c as u32, color);
-        rx += cw;
-    }
-    y + row_h
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_scm_panel_overlay(
-    raster: &mut anvil_render::raster::Raster,
-    painter: &mut dyn anvil_render::raster::GlyphPainter,
-    metrics: anvil_render::raster::FontMetrics,
-    theme: &anvil_theme::Theme,
-    panel: &ScmPanel,
-    dw: f64,
-    dh: f64,
-    chrome_top: f64,
-    chrome_bot: f64,
-    cw: f64,
-    ch: f64,
-) {
-    let row_h = ch + 4.0;
-    let panel_w = (55.0 * cw).min(dw * 0.72);
-    let header_rows = 2usize; // STAGED / UNSTAGED section headers
-    let file_rows = panel.staged.len() + panel.unstaged.len();
-    let stash_rows = if panel.stashes_expanded {
-        panel.stashes.len()
-    } else {
-        0
-    };
-    let pr_rows = if panel.prs_expanded {
-        panel.prs.len().min(8)
-    } else {
-        0
-    };
-    let commit_input_h = row_h + 4.0;
-    let total_rows = header_rows + file_rows + 2 + stash_rows + pr_rows;
-    let panel_h =
-        (total_rows as f64 * row_h + commit_input_h + 8.0).min(dh - chrome_top - chrome_bot - 20.0);
-    let panel_x = ((dw - panel_w) * 0.5).max(0.0);
-    let panel_y = chrome_top + 1.5 * ch;
-
-    draw_overlay_scrim_and_shadow(raster, dw, dh, panel_x, panel_y, panel_w, panel_h);
-
-    raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
-    raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent_bright);
-    raster.fill_pixel_rect(
-        panel_x,
-        panel_y + panel_h - 1.0,
-        panel_w,
-        1.0,
-        theme.accent_bright,
-    );
-    raster.fill_pixel_rect(panel_x, panel_y, 1.0, panel_h, theme.accent_bright);
-    raster.fill_pixel_rect(
-        panel_x + panel_w - 1.0,
-        panel_y,
-        1.0,
-        panel_h,
-        theme.accent_bright,
-    );
-
-    let pad_x = 1.5 * cw;
-    let mut y = panel_y + 2.0;
-
-    // STAGED section.
-    y = scm_draw_row(
-        raster,
-        painter,
-        metrics,
-        "STAGED",
-        theme.text_subtle,
-        panel_x,
-        panel_w,
-        pad_x,
-        cw,
-        y,
-        row_h,
-    );
-    for (i, f) in panel.staged.iter().enumerate() {
-        let is_sel = i == panel.selected;
-        if is_sel {
-            raster.fill_pixel_rect_alpha(panel_x, y, panel_w, row_h, theme.accent, 0.14);
-        }
-        let name = f.path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-        let label = format!("{} {name}", f.mark);
-        let color = if is_sel {
-            theme.foreground
-        } else {
-            theme.verified
-        };
-        y = scm_draw_row(
-            raster, painter, metrics, &label, color, panel_x, panel_w, pad_x, cw, y, row_h,
-        );
-    }
-
-    // UNSTAGED section.
-    raster.fill_pixel_rect(
-        panel_x + pad_x,
-        y,
-        panel_w - pad_x * 2.0,
-        1.0,
-        theme.hairline,
-    );
-    y = scm_draw_row(
-        raster,
-        painter,
-        metrics,
-        "UNSTAGED",
-        theme.text_subtle,
-        panel_x,
-        panel_w,
-        pad_x,
-        cw,
-        y,
-        row_h,
-    );
-    for (i, f) in panel.unstaged.iter().enumerate() {
-        let abs_i = panel.staged.len() + i;
-        let is_sel = abs_i == panel.selected;
-        if is_sel {
-            raster.fill_pixel_rect_alpha(panel_x, y, panel_w, row_h, theme.accent, 0.14);
-        }
-        let name = f.path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-        let label = format!("{} {name}", f.mark);
-        let color = if is_sel {
-            theme.foreground
-        } else {
-            theme.attention
-        };
-        y = scm_draw_row(
-            raster, painter, metrics, &label, color, panel_x, panel_w, pad_x, cw, y, row_h,
-        );
-    }
-
-    // STASHES section (Z5).
-    raster.fill_pixel_rect(
-        panel_x + pad_x,
-        y,
-        panel_w - pad_x * 2.0,
-        1.0,
-        theme.hairline,
-    );
-    let stash_label = if panel.stashes_expanded {
-        format!("v STASHES ({})", panel.stashes.len())
-    } else {
-        format!("> STASHES ({})", panel.stashes.len())
-    };
-    y = scm_draw_row(
-        raster,
-        painter,
-        metrics,
-        &stash_label,
-        theme.text_subtle,
-        panel_x,
-        panel_w,
-        pad_x,
-        cw,
-        y,
-        row_h,
-    );
-    if panel.stashes_expanded {
-        for st in &panel.stashes {
-            let label = format!("  {}", &st.message);
-            y = scm_draw_row(
-                raster,
-                painter,
-                metrics,
-                &label,
-                theme.text_muted,
-                panel_x,
-                panel_w,
-                pad_x,
-                cw,
-                y,
-                row_h,
-            );
-        }
-    }
-
-    // PULL REQUESTS section (Z12).
-    raster.fill_pixel_rect(
-        panel_x + pad_x,
-        y,
-        panel_w - pad_x * 2.0,
-        1.0,
-        theme.hairline,
-    );
-    let pr_label = if panel.prs_expanded {
-        format!("v PULL REQUESTS ({})", panel.prs.len())
-    } else {
-        format!("> PULL REQUESTS ({})", panel.prs.len())
-    };
-    y = scm_draw_row(
-        raster,
-        painter,
-        metrics,
-        &pr_label,
-        theme.text_subtle,
-        panel_x,
-        panel_w,
-        pad_x,
-        cw,
-        y,
-        row_h,
-    );
-    if panel.prs_expanded {
-        for pr in panel.prs.iter().take(8) {
-            let label = format!("  #{} {}", pr.number, pr.title);
-            y = scm_draw_row(
-                raster, painter, metrics, &label, theme.info, panel_x, panel_w, pad_x, cw, y, row_h,
-            );
-        }
-    }
-
-    // Commit message input (Z3).
-    raster.fill_pixel_rect(
-        panel_x + pad_x,
-        y,
-        panel_w - pad_x * 2.0,
-        1.0,
-        theme.hairline,
-    );
-    let commit_bg = if panel.commit_input_active {
-        theme.panel
-    } else {
-        theme.surface
-    };
-    raster.fill_pixel_rect(panel_x, y + 2.0, panel_w, commit_input_h - 2.0, commit_bg);
-    let commit_text: &str = if !panel.commit_msg.is_empty() {
-        &panel.commit_msg
-    } else if !panel.commit_input_active {
-        "Commit message (Tab to focus, Cmd+Enter to commit)"
-    } else {
-        ""
-    };
-    let commit_color = if panel.commit_msg.is_empty() {
-        theme.text_subtle
-    } else {
-        theme.foreground
-    };
-    let mut rx = panel_x + pad_x;
-    let glyph_y = y + 4.0;
-    for ch_c in commit_text.chars() {
-        if rx + cw > panel_x + panel_w - pad_x {
-            break;
-        }
-        raster.glyph_at(painter, metrics, rx, glyph_y, ch_c as u32, commit_color);
-        rx += cw;
-    }
-    if panel.commit_input_active {
-        let cursor_x = panel_x + pad_x + panel.commit_msg.chars().count() as f64 * cw;
-        raster.fill_pixel_rect(cursor_x, y + 3.0, 2.0, ch, theme.accent);
     }
 }
 

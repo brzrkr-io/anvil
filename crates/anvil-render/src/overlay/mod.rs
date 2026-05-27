@@ -89,6 +89,18 @@ pub trait CustomOverlay {
     fn close_on_blur(&self) -> bool {
         true
     }
+    /// Override card position. When `Some((x, y))`, the stack places the card
+    /// at that pixel origin instead of centering it. Used by anchored overlays
+    /// (completion, hover) that must sit near the cursor.
+    fn card_origin(
+        &self,
+        _size: CardSize,
+        _dw: f64,
+        _dh: f64,
+        _chrome_top: f64,
+    ) -> Option<(f64, f64)> {
+        None
+    }
 }
 
 /// The active overlay variant.
@@ -207,19 +219,25 @@ impl OverlayStack {
                 Overlay::Custom(c) => {
                     let cw = metrics.cell_w;
                     let ch = metrics.cell_h;
-                    let panel_w = (dw * 0.6).min(dw - 4.0 * cw).max(20.0 * cw);
-                    let panel_h = dh * 0.5;
+                    let size = c.measure(&OverlayMeasureCtx { metrics, dw, dh });
+                    let (panel_x, panel_y) =
+                        if let Some(origin) = c.card_origin(size, dw, dh, chrome_top) {
+                            origin
+                        } else {
+                            let panel_w = size.w.max(20.0 * cw);
+                            (((dw - panel_w) * 0.5).max(0.0), chrome_top + ch)
+                        };
                     let geom = CardGeom {
-                        x: ((dw - panel_w) * 0.5).max(0.0),
-                        y: chrome_top + ch,
-                        w: panel_w,
-                        h: panel_h,
+                        x: panel_x,
+                        y: panel_y,
+                        w: size.w,
+                        h: size.h,
                         radius: 0.0,
                         padding: 2.0 * cw,
                         anim_scale: scale,
                         anim_alpha: alpha,
                     };
-                    draw_card_chrome(raster, theme, geom, true);
+                    draw_card_chrome(raster, theme, geom, c.close_on_blur());
                     let mut ctx = OverlayRenderCtx {
                         raster,
                         painter,
@@ -251,6 +269,33 @@ impl OverlayStack {
     /// Mutable ref to the top overlay entry, if any.
     fn top_mut(&mut self) -> Option<&mut OverlayEntry> {
         self.entries.last_mut()
+    }
+
+    /// Remove any entry whose id matches `id` (immediate, no animation).
+    /// Used to replace a custom overlay whose state has changed (e.g. SCM refresh).
+    pub fn remove_by_id(&mut self, id: OverlayId) {
+        self.entries.retain(|e| {
+            let eid = match &e.overlay {
+                Overlay::Picker(p) => p.id,
+                Overlay::TextInput(ti) => ti.id,
+                Overlay::Tooltip(tt) => tt.id,
+                Overlay::Custom(c) => c.id(),
+            };
+            eid != id
+        });
+    }
+
+    /// True if any entry with the given id is present in the stack.
+    pub fn contains_id(&self, id: OverlayId) -> bool {
+        self.entries.iter().any(|e| {
+            let eid = match &e.overlay {
+                Overlay::Picker(p) => p.id,
+                Overlay::TextInput(ti) => ti.id,
+                Overlay::Tooltip(tt) => tt.id,
+                Overlay::Custom(c) => c.id(),
+            };
+            eid == id
+        })
     }
 
     /// Update the rows, query, and selection of the top `Picker` overlay.
