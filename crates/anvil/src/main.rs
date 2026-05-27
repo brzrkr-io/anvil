@@ -7719,11 +7719,19 @@ impl App {
         if self.layout_mode != LayoutMode::Ide {
             return;
         }
-        // Check whether any editor pane has an open buffer already.
+        // Check whether any editor pane has a real (non-scratch) buffer.
+        // Scratch buffers (no tracked path) don't count — they're created
+        // automatically when a pane is initialised and should not block
+        // auto-opening a README when no session files were restored.
         let has_open = self.tabs.current().is_some_and(|tab| {
-            tab.editor_panes
-                .panes_iter()
-                .any(|(_, ep)| !ep.open_buffers.is_empty())
+            tab.editor_panes.panes_iter().any(|(_, ep)| {
+                ep.open_buffers.iter().any(|&bid| {
+                    tab.editor_panes
+                        .get_buffer(bid)
+                        .and_then(|b| b.tracked_path())
+                        .is_some()
+                })
+            })
         });
         if has_open {
             return;
@@ -7823,10 +7831,17 @@ impl App {
         let Some(tab) = self.tabs.current() else {
             return false;
         };
-        // True when no pane has an open buffer.
-        !tab.editor_panes
-            .panes_iter()
-            .any(|(_, ep)| !ep.open_buffers.is_empty())
+        // True when no pane has a real (non-scratch) buffer open.
+        // A pane initialised but with only scratch buffers should still
+        // trigger the welcome card.
+        !tab.editor_panes.panes_iter().any(|(_, ep)| {
+            ep.open_buffers.iter().any(|&bid| {
+                tab.editor_panes
+                    .get_buffer(bid)
+                    .and_then(|b| b.tracked_path())
+                    .is_some()
+            })
+        })
     }
 }
 
