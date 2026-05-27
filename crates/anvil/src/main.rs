@@ -4747,6 +4747,7 @@ impl App {
         &mut self,
         grid_painters: &mut GridPainters<'_>,
         chrome_painter: &mut dyn anvil_render::GlyphPainter,
+        ui_painter: &mut dyn anvil_render::UiTextPainter,
     ) {
         // ANVIL_PERF=1 emits per-frame timing to stderr so we can diagnose
         // scroll lag without guessing.
@@ -5027,6 +5028,7 @@ impl App {
             draw_tab_bar(
                 &mut self.raster,
                 chrome_painter,
+                ui_painter,
                 chrome_metrics,
                 &self.theme,
                 &self.tabs,
@@ -5079,6 +5081,7 @@ impl App {
             anvil_render::draw_context_bar(
                 &mut self.raster,
                 chrome_painter,
+                ui_painter,
                 chrome_metrics,
                 &self.theme,
                 &self.local_ctx,
@@ -5089,6 +5092,7 @@ impl App {
             let pp = anvil_render::draw_push_pull_chips(
                 &mut self.raster,
                 chrome_painter,
+                ui_painter,
                 chrome_metrics,
                 &self.theme,
                 &self.local_ctx,
@@ -5155,6 +5159,7 @@ impl App {
                 self.left_dock_hits = draw_left_dock_with_scroll(
                     &mut self.raster,
                     chrome_painter,
+                    ui_painter,
                     chrome_metrics,
                     &self.theme,
                     self.fs_snapshot.as_ref(),
@@ -5220,6 +5225,7 @@ impl App {
             anvil_render::statusbar::draw_status_bar(
                 &mut self.raster,
                 chrome_painter,
+                ui_painter,
                 chrome_metrics,
                 &self.theme,
                 &self.local_ctx,
@@ -8249,7 +8255,11 @@ impl AppHandler for AppShell {
                 italic: &mut self.italic_painter,
                 bold_italic: &mut self.bold_italic_painter,
             };
-            app.render_frame(&mut grid_painters, &mut self.chrome_painter);
+            app.render_frame(
+                &mut grid_painters,
+                &mut self.chrome_painter,
+                &mut self.ui_painter,
+            );
             app.dirty = false;
         }
 
@@ -12163,8 +12173,11 @@ impl AppHandler for AppShell {
             italic: &mut self.italic_painter,
             bold_italic: &mut self.bold_italic_painter,
         };
-        self.app
-            .render_frame(&mut grid_painters, &mut self.chrome_painter);
+        self.app.render_frame(
+            &mut grid_painters,
+            &mut self.chrome_painter,
+            &mut self.ui_painter,
+        );
     }
 
     fn live_resize_ended(&mut self) {
@@ -12175,8 +12188,11 @@ impl AppHandler for AppShell {
             italic: &mut self.italic_painter,
             bold_italic: &mut self.bold_italic_painter,
         };
-        self.app
-            .render_frame(&mut grid_painters, &mut self.chrome_painter);
+        self.app.render_frame(
+            &mut grid_painters,
+            &mut self.chrome_painter,
+            &mut self.ui_painter,
+        );
     }
 
     fn focus_gained(&mut self) {
@@ -14163,9 +14179,11 @@ fn main() -> Result<()> {
         italic: &mut shell.italic_painter,
         bold_italic: &mut shell.bold_italic_painter,
     };
-    shell
-        .app
-        .render_frame(&mut grid_painters, &mut shell.chrome_painter);
+    shell.app.render_frame(
+        &mut grid_painters,
+        &mut shell.chrome_painter,
+        &mut shell.ui_painter,
+    );
     shell.app.dirty = false;
     *shell_slot.borrow_mut() = Some(shell);
 

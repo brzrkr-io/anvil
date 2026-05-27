@@ -9,7 +9,8 @@ use anvil_theme::Theme;
 use anvil_workspace::layout::Rect;
 
 use crate::agent_panel::{GitState, LocalContext};
-use crate::raster::{FontMetrics, GlyphPainter, PixelRect, Raster};
+use crate::raster::{FontMetrics, GlyphPainter, PixelRect, Raster, UiTextPainter, UiWeight};
+use crate::ui_text_sizes::CONTEXT_BAR_PT;
 
 /// Editor-segment input for the context bar.
 ///
@@ -34,9 +35,11 @@ pub struct ContextBarEditor<'a> {
 /// - Sections omitted when data is absent; no placeholder text.
 /// - `editor`: optional native editor descriptor. Rendered as
 ///   `edit: <name>[•]` when `Some`.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_context_bar(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
+    ui_painter: &mut dyn UiTextPainter,
     metrics: FontMetrics,
     theme: &Theme,
     local: &LocalContext,
@@ -59,7 +62,9 @@ pub fn draw_context_bar(
     let glyph_y = by + ((bar_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
     let mut x = bx + 12.0 + 80.0;
 
-    x = draw_chip(raster, painter, metrics, theme, "IDE", x, by, bar_h, true) + 10.0;
+    x = draw_chip(
+        raster, painter, ui_painter, metrics, theme, "IDE", x, by, bar_h, true,
+    ) + 10.0;
 
     let cwd_base = if local.cwd.is_empty() {
         "anvil".to_string()
@@ -77,8 +82,7 @@ pub fn draw_context_bar(
     };
     draw_run_ellipsized(
         raster,
-        painter,
-        metrics,
+        ui_painter,
         &path,
         theme.text_muted,
         x,
@@ -92,6 +96,7 @@ pub fn draw_context_bar(
         draw_chip_right(
             raster,
             painter,
+            ui_painter,
             metrics,
             theme,
             "Parsing\u{2026}",
@@ -106,12 +111,15 @@ pub fn draw_context_bar(
         let mut rx = bx + bar_w - 12.0;
         let dirty = local.git_dirty > 0 || local.git == GitState::Dirty;
         let tok = if dirty { "dirty" } else { "clean" };
-        rx = draw_chip_right(raster, painter, metrics, theme, tok, rx, by, bar_h, dirty);
+        rx = draw_chip_right(
+            raster, painter, ui_painter, metrics, theme, tok, rx, by, bar_h, dirty,
+        );
         rx -= 8.0;
         if !local.head_short.is_empty() {
             rx = draw_chip_right(
                 raster,
                 painter,
+                ui_painter,
                 metrics,
                 theme,
                 &local.head_short,
@@ -130,7 +138,7 @@ pub fn draw_context_bar(
                 (a, b) => format!("\u{2191}{a} \u{2193}{b}"),
             };
             rx = draw_chip_right(
-                raster, painter, metrics, theme, &ab_label, rx, by, bar_h, false,
+                raster, painter, ui_painter, metrics, theme, &ab_label, rx, by, bar_h, false,
             );
             rx -= 8.0;
         }
@@ -143,6 +151,7 @@ pub fn draw_context_bar(
         let _ = draw_chip_right(
             raster,
             painter,
+            ui_painter,
             metrics,
             theme,
             &branch_label,
@@ -163,6 +172,7 @@ pub fn draw_context_bar(
 pub fn draw_push_pull_chips(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
+    ui_painter: &mut dyn UiTextPainter,
     metrics: FontMetrics,
     theme: &Theme,
     local: &LocalContext,
@@ -176,36 +186,22 @@ pub fn draw_push_pull_chips(
     let by = rect.y;
     let bar_h = rect.h;
     // Start x: 12 (left margin) + 80 (traffic-light area) + IDE chip width + 10 gap.
-    let ide_w = "IDE".chars().count() as f64 * metrics.cell_w + 14.0;
+    let ide_w = ui_painter.measure("IDE", CONTEXT_BAR_PT, UiWeight::Regular) + 14.0;
     let mut x = bx + 12.0 + 80.0 + ide_w + 10.0;
 
-    let push_w = "\u{2191} push".chars().count() as f64 * metrics.cell_w + 14.0;
+    let push_label = "\u{2191} push";
+    let push_w = ui_painter.measure(push_label, CONTEXT_BAR_PT, UiWeight::Regular) + 14.0;
     let push_x = x;
     draw_chip(
-        raster,
-        painter,
-        metrics,
-        theme,
-        "\u{2191} push",
-        x,
-        by,
-        bar_h,
-        false,
+        raster, painter, ui_painter, metrics, theme, push_label, x, by, bar_h, false,
     );
     x += push_w + 6.0;
 
-    let pull_w = "\u{2193} pull".chars().count() as f64 * metrics.cell_w + 14.0;
+    let pull_label = "\u{2193} pull";
+    let pull_w = ui_painter.measure(pull_label, CONTEXT_BAR_PT, UiWeight::Regular) + 14.0;
     let pull_x = x;
     draw_chip(
-        raster,
-        painter,
-        metrics,
-        theme,
-        "\u{2193} pull",
-        x,
-        by,
-        bar_h,
-        false,
+        raster, painter, ui_painter, metrics, theme, pull_label, x, by, bar_h, false,
     );
 
     let chip_y = by + ((bar_h - 20.0) * 0.5).max(0.0);
@@ -229,6 +225,7 @@ pub fn draw_push_pull_chips(
 fn draw_chip(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
+    ui_painter: &mut dyn UiTextPainter,
     metrics: FontMetrics,
     theme: &Theme,
     label: &str,
@@ -237,7 +234,8 @@ fn draw_chip(
     bar_h: f64,
     accent: bool,
 ) -> f64 {
-    let w = label.chars().count() as f64 * metrics.cell_w + 14.0;
+    let label_w = ui_painter.measure(label, CONTEXT_BAR_PT, UiWeight::Regular);
+    let w = label_w + 14.0;
     let y = by + ((bar_h - 20.0) * 0.5).max(0.0);
     raster.fill_pixel_rect_alpha(
         x,
@@ -256,20 +254,27 @@ fn draw_chip(
         if accent { 0.36 } else { 0.16 },
     );
     raster.fill_pixel_rect_alpha(x, y + 19.0, w, 1.0, theme.hairline, 0.8);
-    draw_run_clipped(
-        raster,
-        painter,
-        metrics,
-        label,
-        if accent {
-            theme.accent
-        } else {
-            theme.text_subtle
-        },
-        x + 7.0,
-        by + ((bar_h - metrics.cell_h) * 0.5 + metrics.descent * 0.5).max(0.0),
-        x + w - 7.0,
-    );
+    let color = if accent {
+        theme.accent
+    } else {
+        theme.text_subtle
+    };
+    let text_y = by + ((bar_h - metrics.cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+    // Clip to chip interior: don't draw outside [x+7, x+w-7].
+    let max_x = x + w - 7.0;
+    if x + 7.0 < max_x {
+        raster.ui_line(
+            ui_painter,
+            label,
+            x + 7.0,
+            text_y,
+            CONTEXT_BAR_PT,
+            UiWeight::Regular,
+            color,
+        );
+    }
+    // painter kept alive to satisfy borrow but not used for chip text
+    let _ = painter;
     x + w
 }
 
@@ -277,6 +282,7 @@ fn draw_chip(
 fn draw_chip_right(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
+    ui_painter: &mut dyn UiTextPainter,
     metrics: FontMetrics,
     theme: &Theme,
     label: &str,
@@ -285,63 +291,66 @@ fn draw_chip_right(
     bar_h: f64,
     accent: bool,
 ) -> f64 {
-    let w = label.chars().count() as f64 * metrics.cell_w + 14.0;
+    let label_w = ui_painter.measure(label, CONTEXT_BAR_PT, UiWeight::Regular);
+    let w = label_w + 14.0;
     let x = right - w;
-    draw_chip(raster, painter, metrics, theme, label, x, by, bar_h, accent);
+    draw_chip(
+        raster, painter, ui_painter, metrics, theme, label, x, by, bar_h, accent,
+    );
     x
 }
 
-#[allow(clippy::too_many_arguments)]
-fn draw_run_clipped(
-    raster: &mut Raster,
-    painter: &mut dyn GlyphPainter,
-    metrics: FontMetrics,
-    s: &str,
-    color: [u8; 3],
-    mut x: f64,
-    y: f64,
-    max_x: f64,
-) {
-    for ch in s.chars() {
-        if x + metrics.cell_w > max_x {
-            break;
-        }
-        raster.glyph_at(painter, metrics, x, y, ch as u32, color);
-        x += metrics.cell_w;
-    }
-}
-
-/// Like `draw_run_clipped` but appends `…` when the string overflows `max_x`.
+/// Draw `s` at (`x`, `y`) using UI text, clipping at `max_x`.
+/// Appends `…` when overflow detected via `ui_measure`.
 #[allow(clippy::too_many_arguments)]
 fn draw_run_ellipsized(
     raster: &mut Raster,
-    painter: &mut dyn GlyphPainter,
-    metrics: FontMetrics,
+    ui_painter: &mut dyn UiTextPainter,
     s: &str,
     color: [u8; 3],
-    mut x: f64,
+    x: f64,
     y: f64,
     max_x: f64,
 ) {
-    let cw = metrics.cell_w;
-    let total_w = s.chars().count() as f64 * cw;
-    if x + total_w <= max_x {
-        // No overflow: paint normally.
-        draw_run_clipped(raster, painter, metrics, s, color, x, y, max_x);
+    if x >= max_x || s.is_empty() {
         return;
     }
-    // Reserve one cell for the ellipsis.
-    let ellipsis_x = max_x - cw;
+    let total_w = ui_painter.measure(s, CONTEXT_BAR_PT, UiWeight::Regular);
+    if x + total_w <= max_x {
+        raster.ui_line(
+            ui_painter,
+            s,
+            x,
+            y,
+            CONTEXT_BAR_PT,
+            UiWeight::Regular,
+            color,
+        );
+        return;
+    }
+    // Overflow: fit as many chars as possible, then append '…'.
+    let ellipsis_w = ui_painter.measure("\u{2026}", CONTEXT_BAR_PT, UiWeight::Regular);
+    let budget = (max_x - x - ellipsis_w).max(0.0);
+    let mut acc = 0.0;
+    let mut cut = 0;
     for ch in s.chars() {
-        if x + cw > ellipsis_x {
+        let cw = ui_painter.measure(&ch.to_string(), CONTEXT_BAR_PT, UiWeight::Regular);
+        if acc + cw > budget {
             break;
         }
-        raster.glyph_at(painter, metrics, x, y, ch as u32, color);
-        x += cw;
+        acc += cw;
+        cut += ch.len_utf8();
     }
-    if ellipsis_x >= x {
-        raster.glyph_at(painter, metrics, ellipsis_x, y, '…' as u32, color);
-    }
+    let clipped = format!("{}\u{2026}", &s[..cut]);
+    raster.ui_line(
+        ui_painter,
+        &clipped,
+        x,
+        y,
+        CONTEXT_BAR_PT,
+        UiWeight::Regular,
+        color,
+    );
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -373,6 +382,33 @@ mod tests {
         }
     }
 
+    /// Records ui_line draws as (text, color).
+    #[derive(Default)]
+    struct StubUiPainter {
+        pub draws: Vec<(String, [u8; 3])>,
+    }
+
+    impl UiTextPainter for StubUiPainter {
+        fn measure(&mut self, text: &str, _size_pt: f64, _weight: UiWeight) -> f64 {
+            text.chars().count() as f64 * 8.0
+        }
+
+        fn draw_line(
+            &mut self,
+            text: &str,
+            _x: f64,
+            _y: f64,
+            _size_pt: f64,
+            _weight: UiWeight,
+            fg: [u8; 3],
+            _pixels: &mut [u8],
+            _bw: usize,
+            _bh: usize,
+        ) {
+            self.draws.push((text.to_string(), fg));
+        }
+    }
+
     fn font_metrics() -> FontMetrics {
         FontMetrics {
             cell_w: 8.0,
@@ -401,11 +437,13 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 100);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
         r.clear([0, 0, 0]);
 
         draw_context_bar(
             &mut r,
             &mut p,
+            &mut up,
             m,
             &th,
             &LocalContext::default(),
@@ -424,13 +462,23 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 100);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
         let zero = Rect {
             x: 0.0,
             y: 0.0,
             w: 0.0,
             h: 0.0,
         };
-        draw_context_bar(&mut r, &mut p, m, &th, &LocalContext::default(), None, zero);
+        draw_context_bar(
+            &mut r,
+            &mut p,
+            &mut up,
+            m,
+            &th,
+            &LocalContext::default(),
+            None,
+            zero,
+        );
     }
 
     // CWD basename appears in text_muted.
@@ -440,20 +488,23 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 100);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
 
         let local = LocalContext {
             cwd: "/Users/test/anvil".to_string(),
             ..LocalContext::default()
         };
-        draw_context_bar(&mut r, &mut p, m, &th, &local, None, bar_rect());
+        draw_context_bar(&mut r, &mut p, &mut up, m, &th, &local, None, bar_rect());
 
-        let muted: Vec<char> = p
-            .calls
+        let has_muted = up
+            .draws
             .iter()
-            .filter(|(_, fg)| *fg == th.text_muted)
-            .filter_map(|(cp, _)| char::from_u32(*cp))
-            .collect();
-        assert!(!muted.is_empty(), "expected cwd chars in text_muted");
+            .any(|(text, fg)| *fg == th.text_muted && text.contains("anvil"));
+        assert!(
+            has_muted,
+            "expected cwd 'anvil' in text_muted, got {:?}",
+            up.draws
+        );
     }
 
     // Dirty branch uses accent color.
@@ -463,6 +514,7 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 100);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
 
         let local = LocalContext {
             cwd: "/anvil".to_string(),
@@ -471,17 +523,17 @@ mod tests {
             git_dirty: 2,
             ..LocalContext::default()
         };
-        draw_context_bar(&mut r, &mut p, m, &th, &local, None, bar_rect());
+        draw_context_bar(&mut r, &mut p, &mut up, m, &th, &local, None, bar_rect());
 
-        let accent_chars: Vec<char> = p
-            .calls
+        // "git main" chip drawn in accent (dirty=true)
+        let has_accent = up
+            .draws
             .iter()
-            .filter(|(_, fg)| *fg == th.accent)
-            .filter_map(|(cp, _)| char::from_u32(*cp))
-            .collect();
+            .any(|(text, fg)| *fg == th.accent && text.contains("main"));
         assert!(
-            accent_chars.contains(&'m'),
-            "expected branch 'm' in accent color, got {accent_chars:?}"
+            has_accent,
+            "expected branch 'main' in accent color, got {:?}",
+            up.draws
         );
     }
 
@@ -492,6 +544,7 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 100);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
 
         let local = LocalContext {
             cwd: "/anvil".to_string(),
@@ -500,17 +553,16 @@ mod tests {
             git_dirty: 0,
             ..LocalContext::default()
         };
-        draw_context_bar(&mut r, &mut p, m, &th, &local, None, bar_rect());
+        draw_context_bar(&mut r, &mut p, &mut up, m, &th, &local, None, bar_rect());
 
-        let subtle_chars: Vec<char> = p
-            .calls
+        let has_subtle = up
+            .draws
             .iter()
-            .filter(|(_, fg)| *fg == th.text_subtle)
-            .filter_map(|(cp, _)| char::from_u32(*cp))
-            .collect();
+            .any(|(text, fg)| *fg == th.text_subtle && text.contains("main"));
         assert!(
-            subtle_chars.contains(&'m'),
-            "expected branch 'm' in text_subtle for clean branch, got {subtle_chars:?}"
+            has_subtle,
+            "expected branch 'main' in text_subtle for clean branch, got {:?}",
+            up.draws
         );
     }
 
@@ -521,6 +573,7 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 100);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
 
         let local = LocalContext {
             cwd: "/anvil".to_string(),
@@ -528,17 +581,10 @@ mod tests {
             branch: String::new(),
             ..LocalContext::default()
         };
-        draw_context_bar(&mut r, &mut p, m, &th, &local, None, bar_rect());
+        draw_context_bar(&mut r, &mut p, &mut up, m, &th, &local, None, bar_rect());
 
-        let rendered: String = p
-            .calls
-            .iter()
-            .filter_map(|(cp, _)| char::from_u32(*cp))
-            .collect();
-        assert!(
-            !rendered.contains("git "),
-            "no repo → no git branch chip, got {rendered:?}"
-        );
+        let has_git = up.draws.iter().any(|(text, _)| text.contains("git "));
+        assert!(!has_git, "no repo → no git branch chip, got {:?}", up.draws);
     }
 
     // head_short appears on the right when set.
@@ -548,23 +594,23 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 100);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
 
         let local = LocalContext {
             head_short: "abc1234".to_string(),
             git: GitState::Ok,
             ..LocalContext::default()
         };
-        draw_context_bar(&mut r, &mut p, m, &th, &local, None, bar_rect());
+        draw_context_bar(&mut r, &mut p, &mut up, m, &th, &local, None, bar_rect());
 
-        let subtle_chars: Vec<char> = p
-            .calls
+        let has_head = up
+            .draws
             .iter()
-            .filter(|(_, fg)| *fg == th.text_subtle)
-            .filter_map(|(cp, _)| char::from_u32(*cp))
-            .collect();
+            .any(|(text, fg)| *fg == th.text_subtle && text.contains("abc1234"));
         assert!(
-            subtle_chars.contains(&'a'),
-            "expected head_short 'a' in text_subtle, got {subtle_chars:?}"
+            has_head,
+            "expected head_short 'abc1234' in text_subtle, got {:?}",
+            up.draws
         );
     }
 
@@ -575,6 +621,7 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 100);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
 
         let ed = ContextBarEditor {
             name: "foo.rs",
@@ -584,6 +631,7 @@ mod tests {
         draw_context_bar(
             &mut r,
             &mut p,
+            &mut up,
             m,
             &th,
             &LocalContext::default(),
@@ -591,25 +639,21 @@ mod tests {
             bar_rect(),
         );
 
-        let muted_chars: Vec<char> = p
-            .calls
+        let has_name = up
+            .draws
             .iter()
-            .filter(|(_, fg)| *fg == th.text_muted)
-            .filter_map(|(cp, _)| char::from_u32(*cp))
-            .collect();
+            .any(|(text, fg)| *fg == th.text_muted && text.contains("foo.rs"));
         assert!(
-            muted_chars.contains(&'f'),
-            "expected 'f' from 'foo.rs' in text_muted, got {muted_chars:?}"
+            has_name,
+            "expected 'foo.rs' in text_muted, got {:?}",
+            up.draws
         );
     }
 
     // F4: path text longer than available width gets an ellipsis char appended.
-    // Setup: bar_w=400 → max_x = 400 - 220 = 180. IDE chip + margins put the
-    // path start at ~138px. A 10-char path = 80px → fits. A 100-char path
-    // = 800px → overflows → must produce '…'.
     #[test]
     fn long_path_gets_ellipsis() {
-        let m = font_metrics(); // cell_w = 8.0
+        let m = font_metrics(); // cell_w = 8.0 / measure = 8.0 * chars
         let th = theme();
         let bar = Rect {
             x: 0.0,
@@ -619,21 +663,19 @@ mod tests {
         };
         let mut r = Raster::new(400, 100);
         let mut p = StubPainter::default();
-        // cwd that produces a very long basename after the last '/'.
+        let mut up = StubUiPainter::default();
         let long_cwd = format!("/home/user/{}", "a".repeat(80));
         let local = LocalContext {
             cwd: long_cwd,
             ..LocalContext::default()
         };
-        draw_context_bar(&mut r, &mut p, m, &th, &local, None, bar);
-        let chars: Vec<char> = p
-            .calls
-            .iter()
-            .filter_map(|(cp, _)| char::from_u32(*cp))
-            .collect();
+        draw_context_bar(&mut r, &mut p, &mut up, m, &th, &local, None, bar);
+
+        let has_ellipsis = up.draws.iter().any(|(text, _)| text.contains('\u{2026}'));
         assert!(
-            chars.contains(&'…'),
-            "expected ellipsis in overflowing path, got {chars:?}"
+            has_ellipsis,
+            "expected ellipsis in overflowing path, got {:?}",
+            up.draws
         );
     }
 
@@ -644,6 +686,7 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 100);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
 
         let local = LocalContext {
             git: GitState::Ok,
@@ -652,25 +695,23 @@ mod tests {
             git_behind: 1,
             ..LocalContext::default()
         };
-        draw_context_bar(&mut r, &mut p, m, &th, &local, None, bar_rect());
+        draw_context_bar(&mut r, &mut p, &mut up, m, &th, &local, None, bar_rect());
 
-        let chars: Vec<char> = p
-            .calls
-            .iter()
-            .filter_map(|(cp, _)| char::from_u32(*cp))
-            .collect();
-        // '↑' = U+2191, '↓' = U+2193
+        let all_text: String = up.draws.iter().map(|(t, _)| t.as_str()).collect();
         assert!(
-            chars.contains(&'\u{2191}'),
-            "expected ↑ in ahead/behind chip, got {chars:?}"
+            all_text.contains('\u{2191}'),
+            "expected ↑ in ahead/behind chip, got {:?}",
+            up.draws
         );
         assert!(
-            chars.contains(&'\u{2193}'),
-            "expected ↓ in ahead/behind chip, got {chars:?}"
+            all_text.contains('\u{2193}'),
+            "expected ↓ in ahead/behind chip, got {:?}",
+            up.draws
         );
         assert!(
-            chars.contains(&'3'),
-            "expected ahead count '3', got {chars:?}"
+            all_text.contains('3'),
+            "expected ahead count '3', got {:?}",
+            up.draws
         );
     }
 
@@ -681,6 +722,7 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 100);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
 
         let local = LocalContext {
             git: GitState::Ok,
@@ -689,20 +731,18 @@ mod tests {
             git_behind: 0,
             ..LocalContext::default()
         };
-        draw_context_bar(&mut r, &mut p, m, &th, &local, None, bar_rect());
+        draw_context_bar(&mut r, &mut p, &mut up, m, &th, &local, None, bar_rect());
 
-        let chars: Vec<char> = p
-            .calls
-            .iter()
-            .filter_map(|(cp, _)| char::from_u32(*cp))
-            .collect();
+        let all_text: String = up.draws.iter().map(|(t, _)| t.as_str()).collect();
         assert!(
-            !chars.contains(&'\u{2191}'),
-            "no ↑ chip when ahead==0, got {chars:?}"
+            !all_text.contains('\u{2191}'),
+            "no ↑ chip when ahead==0, got {:?}",
+            up.draws
         );
         assert!(
-            !chars.contains(&'\u{2193}'),
-            "no ↓ chip when behind==0, got {chars:?}"
+            !all_text.contains('\u{2193}'),
+            "no ↓ chip when behind==0, got {:?}",
+            up.draws
         );
     }
 
@@ -713,10 +753,12 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 100);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
 
         draw_context_bar(
             &mut r,
             &mut p,
+            &mut up,
             m,
             &th,
             &LocalContext::default(),
@@ -724,15 +766,15 @@ mod tests {
             bar_rect(),
         );
 
-        let muted_chars: Vec<char> = p
-            .calls
+        // When editor is None, cwd falls back to "anvil" — check text_muted contains it.
+        let has_fallback = up
+            .draws
             .iter()
-            .filter(|(_, fg)| *fg == th.text_muted)
-            .filter_map(|(cp, _)| char::from_u32(*cp))
-            .collect();
+            .any(|(text, fg)| *fg == th.text_muted && text.contains("anvil"));
         assert!(
-            muted_chars.contains(&'n'),
-            "expected fallback native-editor label in text_muted, got {muted_chars:?}"
+            has_fallback,
+            "expected fallback 'anvil' label in text_muted, got {:?}",
+            up.draws
         );
     }
 }

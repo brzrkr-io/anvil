@@ -5,7 +5,8 @@ use anvil_agent::{Connection, Snapshot};
 use anvil_theme::Theme;
 
 use crate::agent_panel::{LocalContext, RunState, format_cwd};
-use crate::raster::{FontMetrics, GlyphPainter, Raster};
+use crate::raster::{FontMetrics, GlyphPainter, Raster, UiTextPainter, UiWeight};
+use crate::ui_text_sizes::STATUS_PT;
 
 /// Current editor mode, shown as the leftmost chip in the status bar (O3).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -49,6 +50,7 @@ fn mix_rgb(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
 pub fn draw_status_bar(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
+    ui_painter: &mut dyn UiTextPainter,
     metrics: FontMetrics,
     theme: &Theme,
     local_ctx: &LocalContext,
@@ -87,63 +89,75 @@ pub fn draw_status_bar(
             StatusMode::Renaming => ("RENAMING", theme.accent_bright),
             StatusMode::Picking => ("PICKING", theme.accent_primary),
         };
-        for ch in label.chars() {
-            if x + cell_w > total_w {
-                break;
-            }
-            raster.glyph_at(painter, metrics, x, glyph_y, ch as u32, color);
-            x += cell_w;
-        }
-        // Gap after chip.
-        x += 2.0 * cell_w;
+        raster.ui_line(
+            ui_painter,
+            label,
+            x,
+            glyph_y,
+            STATUS_PT,
+            UiWeight::Regular,
+            color,
+        );
+        x += raster.ui_measure(ui_painter, label, STATUS_PT, UiWeight::Regular) + 2.0 * cell_w;
     }
 
     // ── Left: cwd  ✓/✗ last 0.1s ─────────────────────────────────────────
-    let draw_run = |raster: &mut Raster,
-                    painter: &mut dyn GlyphPainter,
-                    s: &str,
-                    color: [u8; 3],
-                    x: &mut f64| {
-        for ch in s.chars() {
-            if *x + cell_w > total_w {
-                break;
-            }
-            raster.glyph_at(painter, metrics, *x, glyph_y, ch as u32, color);
-            *x += cell_w;
-        }
-    };
-
     if !local_ctx.cwd.is_empty() {
         let cwd = format_cwd(&local_ctx.cwd);
-        draw_run(raster, painter, &cwd, theme.text_muted, &mut x);
-        x += 2.0 * cell_w; // gap
+        raster.ui_line(
+            ui_painter,
+            &cwd,
+            x,
+            glyph_y,
+            STATUS_PT,
+            UiWeight::Regular,
+            theme.text_muted,
+        );
+        x += raster.ui_measure(ui_painter, &cwd, STATUS_PT, UiWeight::Regular) + 2.0 * cell_w;
 
-        let (sym, color) = match local_ctx.run {
-            RunState::Ok => ("\u{2713}", theme.verified),
-            RunState::Failed => ("\u{2717}", theme.failure),
-            _ => ("", theme.text_muted),
+        // ✓/✗ symbols stay on mono path (single special chars).
+        let (sym_cp, sym_color) = match local_ctx.run {
+            RunState::Ok => (Some('\u{2713}'), theme.verified),
+            RunState::Failed => (Some('\u{2717}'), theme.failure),
+            _ => (None, theme.text_muted),
         };
-        if !sym.is_empty() {
-            draw_run(raster, painter, sym, color, &mut x);
+        if let Some(cp) = sym_cp {
+            raster.glyph_at(painter, metrics, x, glyph_y, cp as u32, sym_color);
+            x += cell_w;
             if local_ctx.run_duration_ms > 0 {
                 let dur = format!(" last {}", format_duration_ms(local_ctx.run_duration_ms));
-                draw_run(raster, painter, &dur, theme.text_muted, &mut x);
+                raster.ui_line(
+                    ui_painter,
+                    &dur,
+                    x,
+                    glyph_y,
+                    STATUS_PT,
+                    UiWeight::Regular,
+                    theme.text_muted,
+                );
+                x += raster.ui_measure(ui_painter, &dur, STATUS_PT, UiWeight::Regular);
             }
         }
     }
 
     // ── Right: agent · clock ─────────────────────────────────────────────
     let agent_active = agent_snap.connection == Connection::Live;
-    let agent_text = if agent_active && agent_snap.running_count > 0 {
-        format!("\u{25cf} {} running", agent_snap.running_count)
+    // Build text after the dot so we can measure it separately.
+    let agent_tail = if agent_active && agent_snap.running_count > 0 {
+        format!(" {} running", agent_snap.running_count)
     } else {
-        "\u{25cf} idle".to_string()
+        " idle".to_string()
     };
     let sep = if !clock.is_empty() { "   " } else { "" };
-    let right_text_w =
-        (agent_text.chars().count() + sep.chars().count() + clock.chars().count()) as f64 * cell_w;
-    let right_start = (total_w - pad_x - right_text_w).max(x);
+    // Width: 1 cell for dot + tail + sep + clock (all via ui_measure for accuracy).
+    let tail_w = raster.ui_measure(ui_painter, &agent_tail, STATUS_PT, UiWeight::Regular);
+    let sep_w = raster.ui_measure(ui_painter, sep, STATUS_PT, UiWeight::Regular);
+    let clock_w = raster.ui_measure(ui_painter, clock, STATUS_PT, UiWeight::Regular);
+    let right_w = cell_w + tail_w + sep_w + clock_w; // dot is 1 cell
+    let right_start = (total_w - pad_x - right_w).max(x);
     let mut rx = right_start;
+
+    // Agent dot: single special glyph on mono path.
     let dot_color = if agent_active {
         mix_rgb(
             theme.charcoal,
@@ -153,27 +167,45 @@ pub fn draw_status_bar(
     } else {
         theme.text_subtle
     };
-    for (i, ch) in agent_text.chars().enumerate() {
-        if rx + cell_w > total_w {
-            break;
-        }
-        let fg = if i == 0 { dot_color } else { theme.text_muted };
-        raster.glyph_at(painter, metrics, rx, glyph_y, ch as u32, fg);
+    if rx + cell_w <= total_w {
+        raster.glyph_at(painter, metrics, rx, glyph_y, '\u{25cf}' as u32, dot_color);
         rx += cell_w;
     }
-    for ch in sep.chars() {
-        if rx + cell_w > total_w {
-            break;
-        }
-        raster.glyph_at(painter, metrics, rx, glyph_y, ch as u32, theme.text_muted);
-        rx += cell_w;
+    // Agent tail text.
+    if rx + tail_w <= total_w {
+        raster.ui_line(
+            ui_painter,
+            &agent_tail,
+            rx,
+            glyph_y,
+            STATUS_PT,
+            UiWeight::Regular,
+            theme.text_muted,
+        );
+        rx += tail_w;
     }
-    for ch in clock.chars() {
-        if rx + cell_w > total_w {
-            break;
-        }
-        raster.glyph_at(painter, metrics, rx, glyph_y, ch as u32, theme.text_muted);
-        rx += cell_w;
+    if rx + sep_w <= total_w {
+        raster.ui_line(
+            ui_painter,
+            sep,
+            rx,
+            glyph_y,
+            STATUS_PT,
+            UiWeight::Regular,
+            theme.text_muted,
+        );
+        rx += sep_w;
+    }
+    if rx + clock_w <= total_w && !clock.is_empty() {
+        raster.ui_line(
+            ui_painter,
+            clock,
+            rx,
+            glyph_y,
+            STATUS_PT,
+            UiWeight::Regular,
+            theme.text_muted,
+        );
     }
 }
 
@@ -189,7 +221,7 @@ fn format_duration_ms(ms: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::raster::{PixelRect, pixel_at};
+    use crate::raster::{PixelRect, UiWeight, pixel_at};
     use anvil_agent::{Connection, Snapshot};
 
     #[derive(Default)]
@@ -210,6 +242,35 @@ mod tests {
             _bh: usize,
         ) {
             self.calls.push((glyph_id, fg));
+        }
+    }
+
+    #[derive(Default)]
+    struct StubUiPainter {
+        pub draws: Vec<(String, [u8; 3])>,
+    }
+
+    impl UiTextPainter for StubUiPainter {
+        fn measure(&mut self, text: &str, _size_pt: f64, _weight: UiWeight) -> f64 {
+            text.chars().count() as f64 * 8.0
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn draw_line(
+            &mut self,
+            text: &str,
+            _x_px: f64,
+            _baseline_y_px: f64,
+            _size_pt: f64,
+            _weight: UiWeight,
+            fg: [u8; 3],
+            _pixels: &mut [u8],
+            _bitmap_w: usize,
+            _bitmap_h: usize,
+        ) {
+            if !text.is_empty() {
+                self.draws.push((text.to_string(), fg));
+            }
         }
     }
 
@@ -235,6 +296,7 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(400, 200);
         let mut painter = StubPainter::default();
+        let mut up = StubUiPainter::default();
         r.clear([0, 0, 0]);
 
         let local_ctx = LocalContext::default();
@@ -244,6 +306,7 @@ mod tests {
         draw_status_bar(
             &mut r,
             &mut painter,
+            &mut up,
             m,
             &th,
             &local_ctx,
@@ -275,6 +338,7 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(400, 200);
         let mut painter = StubPainter::default();
+        let mut up = StubUiPainter::default();
         r.clear([0, 0, 0]);
 
         let local_ctx = LocalContext {
@@ -286,6 +350,7 @@ mod tests {
         draw_status_bar(
             &mut r,
             &mut painter,
+            &mut up,
             m,
             &th,
             &local_ctx,
@@ -297,15 +362,15 @@ mod tests {
             StatusMode::default(),
         );
 
-        let muted_chars: Vec<char> = painter
-            .calls
+        // CWD now rendered via UiTextPainter.
+        let cwd_draws: Vec<_> = up
+            .draws
             .iter()
-            .filter(|(_, fg)| *fg == th.text_muted)
-            .filter_map(|(cp, _)| char::from_u32(*cp))
+            .filter(|(text, fg)| text.contains("anvil") && *fg == th.text_muted)
             .collect();
         assert!(
-            !muted_chars.is_empty(),
-            "expected cwd chars in text_muted, got no calls"
+            !cwd_draws.is_empty(),
+            "expected cwd text in text_muted via ui_painter, got no calls"
         );
     }
 
@@ -316,6 +381,7 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(400, 200);
         let mut painter = StubPainter::default();
+        let mut up = StubUiPainter::default();
         r.clear([0, 0, 0]);
 
         let local_ctx = LocalContext {
@@ -328,6 +394,7 @@ mod tests {
         draw_status_bar(
             &mut r,
             &mut painter,
+            &mut up,
             m,
             &th,
             &local_ctx,
@@ -358,6 +425,7 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(400, 200);
         let mut painter = StubPainter::default();
+        let mut up = StubUiPainter::default();
         r.clear([0, 0, 0]);
 
         let local_ctx = LocalContext {
@@ -370,6 +438,7 @@ mod tests {
         draw_status_bar(
             &mut r,
             &mut painter,
+            &mut up,
             m,
             &th,
             &local_ctx,
@@ -404,6 +473,7 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(400, 200);
         let mut painter = StubPainter::default();
+        let mut up = StubUiPainter::default();
         r.clear([0, 0, 0]);
 
         let local_ctx = LocalContext::default(); // no cwd
@@ -412,6 +482,7 @@ mod tests {
         draw_status_bar(
             &mut r,
             &mut painter,
+            &mut up,
             m,
             &th,
             &local_ctx,
@@ -423,7 +494,7 @@ mod tests {
             StatusMode::default(),
         );
 
-        // The dot (●, U+25CF) must appear in text_subtle.
+        // The dot (●, U+25CF) must appear in text_subtle via mono path.
         let dot_subtle = painter
             .calls
             .iter()
@@ -434,16 +505,15 @@ mod tests {
             painter.calls
         );
 
-        // The "idle" text chars must appear in text_muted (not agent).
-        let idle_muted: Vec<char> = painter
-            .calls
+        // "idle" text now rendered via UiTextPainter in text_muted.
+        let idle_draws: Vec<_> = up
+            .draws
             .iter()
-            .filter(|(_, fg)| *fg == th.text_muted)
-            .filter_map(|(cp, _)| char::from_u32(*cp))
+            .filter(|(text, fg)| text.contains("idle") && *fg == th.text_muted)
             .collect();
         assert!(
-            idle_muted.contains(&'i'),
-            "expected 'i' from 'idle' in text_muted when disconnected, got {idle_muted:?}"
+            !idle_draws.is_empty(),
+            "expected 'idle' in text_muted via ui_painter when disconnected"
         );
 
         // The dot must NOT appear in agent color when disconnected.
@@ -464,6 +534,7 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(400, 200);
         let mut painter = StubPainter::default();
+        let mut up = StubUiPainter::default();
         r.clear([0, 0, 0]);
 
         let local_ctx = LocalContext::default();
@@ -475,6 +546,7 @@ mod tests {
         draw_status_bar(
             &mut r,
             &mut painter,
+            &mut up,
             m,
             &th,
             &local_ctx,
@@ -486,15 +558,15 @@ mod tests {
             StatusMode::default(),
         );
 
-        let muted_chars: Vec<char> = painter
-            .calls
+        // "running" text now rendered via UiTextPainter in text_muted.
+        let running_draws: Vec<_> = up
+            .draws
             .iter()
-            .filter(|(_, fg)| *fg == th.text_muted)
-            .filter_map(|(cp, _)| char::from_u32(*cp))
+            .filter(|(text, fg)| text.contains("running") && *fg == th.text_muted)
             .collect();
         assert!(
-            muted_chars.contains(&'r'),
-            "expected 'r' from 'running' in text_muted, got {muted_chars:?}"
+            !running_draws.is_empty(),
+            "expected 'running' in text_muted via ui_painter"
         );
         // With pulsing, the dot color is a blend of charcoal→agent; it will not
         // equal th.agent exactly. Assert it is NOT the idle text_subtle color.
@@ -518,6 +590,7 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(400, 200);
         let mut painter = StubPainter::default();
+        let mut up = StubUiPainter::default();
         r.clear([0, 0, 0]);
 
         let local_ctx = LocalContext::default();
@@ -526,6 +599,7 @@ mod tests {
         draw_status_bar(
             &mut r,
             &mut painter,
+            &mut up,
             m,
             &th,
             &local_ctx,
@@ -537,16 +611,15 @@ mod tests {
             StatusMode::Editing,
         );
 
-        // The first 'E' in "EDITING" must appear in text_subtle.
-        let subtle_chars: Vec<char> = painter
-            .calls
+        // "EDITING" now rendered via UiTextPainter in text_subtle.
+        let editing_draws: Vec<_> = up
+            .draws
             .iter()
-            .filter(|(_, fg)| *fg == th.text_subtle)
-            .filter_map(|(cp, _)| char::from_u32(*cp))
+            .filter(|(text, fg)| *text == "EDITING" && *fg == th.text_subtle)
             .collect();
         assert!(
-            subtle_chars.contains(&'E'),
-            "expected 'E' from EDITING in text_subtle, got {subtle_chars:?}"
+            !editing_draws.is_empty(),
+            "expected EDITING in text_subtle via ui_painter"
         );
     }
 
@@ -559,6 +632,7 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(400, 200);
         let mut painter = StubPainter::default();
+        let mut up = StubUiPainter::default();
         r.clear([0, 0, 0]);
 
         let local_ctx = LocalContext::default();
@@ -567,6 +641,7 @@ mod tests {
         draw_status_bar(
             &mut r,
             &mut painter,
+            &mut up,
             m,
             &th,
             &local_ctx,
@@ -578,15 +653,15 @@ mod tests {
             StatusMode::Picking,
         );
 
-        let accent_chars: Vec<char> = painter
-            .calls
+        // "PICKING" now rendered via UiTextPainter in accent_primary.
+        let picking_draws: Vec<_> = up
+            .draws
             .iter()
-            .filter(|(_, fg)| *fg == th.accent_primary)
-            .filter_map(|(cp, _)| char::from_u32(*cp))
+            .filter(|(text, fg)| *text == "PICKING" && *fg == th.accent_primary)
             .collect();
         assert!(
-            accent_chars.contains(&'P'),
-            "expected 'P' from PICKING in accent_primary, got {accent_chars:?}"
+            !picking_draws.is_empty(),
+            "expected PICKING in accent_primary via ui_painter"
         );
     }
 }
