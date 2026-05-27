@@ -7,6 +7,7 @@
 //! Phase P10b: `batch` — `CellBatch` + `CellInstance` for GPU instance submission.
 
 pub mod agent_panel;
+pub mod ui_text_sizes;
 pub mod atlas;
 pub mod batch;
 pub mod cheatsheet;
@@ -34,5 +35,5 @@ pub use left_dock::{
     LeftDockHitKind, LeftDockHits, OutlineKind, OutlineRow, draw_left_dock,
     draw_left_dock_with_scroll,
 };
-pub use raster::{FontMetrics, GlyphPainter, PixelRect, Raster};
+pub use raster::{FontMetrics, GlyphPainter, PixelRect, Raster, UiTextPainter, UiWeight};
 pub use workspace::EditorTabHit;

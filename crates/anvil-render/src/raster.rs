@@ -47,6 +47,52 @@ pub struct PixelRect {
     pub h: f64,
 }
 
+/// Weight hint for the proportional UI text path.
+///
+/// The three variants map to the weight tokens available in `UiFontCfg`:
+/// `Regular` uses `weight_regular`, `Medium` and `Semibold` use `weight_strong`.
+/// Downstream callers pick the nearest semantic fit per-surface (see
+/// `crates/anvil-render/src/ui_text_sizes.rs` for the per-surface table).
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+pub enum UiWeight {
+    Regular,
+    Medium,
+    Semibold,
+}
+
+/// Trait for proportional UI text rendering.
+///
+/// Implemented by `anvil_platform::ui_text::UiPainter` (CoreText backend).
+/// Lives in `anvil-render` so the crate stays platform-free; callers in
+/// `anvil-render` accept `&mut dyn UiTextPainter` and never depend on CoreText.
+///
+/// All sizes are **logical pt**; the implementor multiplies by `backing_scale`.
+pub trait UiTextPainter {
+    /// Measure the advance width of `text` at the given logical pt size and
+    /// weight.  Returns 0.0 for empty strings.
+    fn measure(&mut self, text: &str, size_pt: f64, weight: UiWeight) -> f64;
+
+    /// Rasterize `text` into the BGRA8 `pixels` buffer, compositing it at
+    /// (`x_px`, `baseline_y_px`) in top-down device-pixel space.
+    ///
+    /// - `x_px` / `baseline_y_px` are floored to integer device pixels.
+    /// - `fg` is the text color as `[R, G, B]`; composited via tinted alpha blend.
+    /// - `pixels` / `bitmap_w` / `bitmap_h` describe the full BGRA8 frame buffer.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_line(
+        &mut self,
+        text: &str,
+        x_px: f64,
+        baseline_y_px: f64,
+        size_pt: f64,
+        weight: UiWeight,
+        fg: [u8; 3],
+        pixels: &mut [u8],
+        bitmap_w: usize,
+        bitmap_h: usize,
+    );
+}
+
 /// Trait implemented by callers that can draw a single glyph onto the pixel
 /// buffer.  `anvil-platform` will implement this with CoreText; tests supply
 /// a stub.
@@ -205,6 +251,41 @@ impl Raster {
             h: r.h * fh,
         };
         self.fill_pixel_rect_internal(rect, rgb);
+    }
+
+    /// Draw a proportional UI text line onto the raster.
+    ///
+    /// Convenience wrapper that supplies the internal pixel buffer and
+    /// dimensions to `UiTextPainter::draw_line`.  Mirrors `glyph_at` for
+    /// the proportional text path.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ui_line(
+        &mut self,
+        painter: &mut dyn UiTextPainter,
+        text: &str,
+        x_px: f64,
+        baseline_y_px: f64,
+        size_pt: f64,
+        weight: UiWeight,
+        fg: [u8; 3],
+    ) {
+        let w = self.width;
+        let h = self.height;
+        painter.draw_line(text, x_px, baseline_y_px, size_pt, weight, fg, &mut self.pixels, w, h);
+    }
+
+    /// Measure the advance width of a proportional UI text string.
+    ///
+    /// Convenience wrapper — mirrors `glyph_at` / `ui_line` for measurement.
+    /// Takes `&self` because measurement does not modify the pixel buffer.
+    pub fn ui_measure(
+        &self,
+        painter: &mut dyn UiTextPainter,
+        text: &str,
+        size_pt: f64,
+        weight: UiWeight,
+    ) -> f64 {
+        painter.measure(text, size_pt, weight)
     }
 
     /// Draw a glyph at an arbitrary pixel position — used by chrome (tab
