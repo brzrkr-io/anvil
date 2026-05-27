@@ -29,6 +29,8 @@ pub enum ExplorerHit {
 #[derive(Debug, Clone, PartialEq)]
 pub enum LeftDockHitKind {
     Explorer(ExplorerHit),
+    /// Click on the OUTLINE section header (for collapse toggle, #9).
+    OutlineHeader,
     Outline(usize),
 }
 
@@ -200,6 +202,8 @@ pub fn draw_left_dock(
         0.0,
         1.0,
         None,
+        false,
+        false,
     )
 }
 
@@ -221,6 +225,9 @@ pub fn draw_left_dock_with_scroll(
     ui_scale: f64,
     // R3: active filter string; `None` = no filter.
     explorer_filter: Option<&str>,
+    // #9: whether each section is collapsed (header-only when true).
+    explorer_collapsed: bool,
+    outline_collapsed: bool,
 ) -> LeftDockHits {
     let mut hits = LeftDockHits::default();
     if rect.w <= 0.0 || rect.h <= 0.0 {
@@ -268,8 +275,16 @@ pub fn draw_left_dock_with_scroll(
         0.28,
     );
 
-    // ── 60/40 split ───────────────────────────────────────────────────────────
-    let explorer_h = (rect.h * 0.60).floor();
+    // ── Section height: #9 collapse shrinks a section to header-only ─────────
+    let rm = RowMetrics::from_scale(ui_scale);
+    // When both are collapsed the remaining space goes to explorer.
+    let explorer_h = if explorer_collapsed {
+        rm.header_h
+    } else if outline_collapsed {
+        rect.h - rm.header_h
+    } else {
+        (rect.h * 0.60).floor()
+    };
     let outline_h = rect.h - explorer_h;
 
     let explorer_rect = Rect {
@@ -295,7 +310,6 @@ pub fn draw_left_dock_with_scroll(
     );
 
     let ui_metrics = metrics;
-    let rm = RowMetrics::from_scale(ui_scale);
     draw_explorer_section(
         raster,
         painter,
@@ -312,6 +326,7 @@ pub fn draw_left_dock_with_scroll(
         &mut hits,
         &rm,
         explorer_filter,
+        explorer_collapsed,
     );
     draw_outline_section(
         raster,
@@ -322,6 +337,7 @@ pub fn draw_left_dock_with_scroll(
         outline_rect,
         &mut hits,
         &rm,
+        outline_collapsed,
     );
     hits
 }
@@ -489,6 +505,7 @@ fn draw_explorer_section(
     hits: &mut LeftDockHits,
     rm: &RowMetrics,
     explorer_filter: Option<&str>,
+    collapsed: bool,
 ) {
     let cell_w = metrics.cell_w;
     let cell_h = metrics.cell_h;
@@ -523,13 +540,25 @@ fn draw_explorer_section(
     };
 
     let header_y = rect.y + ((header_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+    // #9: collapse chevron — ▾ when expanded, ▸ when collapsed. Drawn at pad_x.
+    let chevron = if collapsed { '▸' } else { '▾' };
+    draw_text_run(
+        raster,
+        painter,
+        metrics,
+        &chevron.to_string(),
+        theme.text_subtle,
+        rect.x + pad_x,
+        header_y,
+        rect.x + pad_x + cell_w,
+    );
     draw_text_run(
         raster,
         painter,
         metrics,
         header_label,
         theme.accent_bright,
-        rect.x + pad_x,
+        rect.x + pad_x + cell_w * 1.5,
         header_y,
         rect.x + rect.w - pad_x,
     );
@@ -548,6 +577,11 @@ fn draw_explorer_section(
     }
     // Hairline under header.
     raster.fill_pixel_rect(rect.x, rect.y + header_h - 1.0, rect.w, 1.0, theme.hairline);
+
+    // #9: section is collapsed — only the header row is shown.
+    if collapsed {
+        return;
+    }
 
     // ── Content rows ──────────────────────────────────────────────────────────
     let content_y_start = rect.y + header_h;
@@ -755,52 +789,33 @@ fn draw_explorer_section(
                 // Indent offset for nested entries.
                 let indent = *depth as f64 * indent_px;
 
-                // ── Tree branch glyphs (item 2) ───────────────────────────────
-                // For each ancestor depth d (0..depth_i): paint │ or nothing.
-                // At the row's own depth: paint ├─ or └─.
+                // ── Tree indent guides (pixel lines, not Unicode glyphs) ───────
+                // Each ancestor level that is NOT the last sibling at that depth
+                // gets a 1px vertical guide line running the full row height.
+                // This is cleaner than Unicode box-drawing at every font size.
                 let last_flags = &is_last_at_depth[slot_i];
                 if *depth > 0 {
                     for d in 0..*depth {
-                        let col_x = (rect.x + pad_x + d as f64 * indent_px).floor();
-                        let glyph = if d + 1 == *depth {
-                            // Row's own connection glyph
-                            if last_flags.get(d).copied().unwrap_or(false) {
-                                '\u{2514}' // └
-                            } else {
-                                '\u{251C}' // ├
-                            }
-                        } else {
-                            // Ancestor: vertical bar if NOT last at that depth
-                            if last_flags.get(d).copied().unwrap_or(false) {
-                                // last sibling at this depth — no vertical line
-                                continue;
-                            }
-                            '\u{2502}' // │
-                        };
-                        raster.glyph_at(
-                            painter,
-                            metrics,
-                            col_x,
-                            glyph_y,
-                            glyph as u32,
-                            theme.text_subtle,
-                        );
-                        // Horizontal stub after the connector glyph at own depth.
-                        if d + 1 == *depth {
-                            let stub_x = col_x + cell_w;
-                            raster.glyph_at(
-                                painter,
-                                metrics,
-                                stub_x,
-                                glyph_y,
-                                '\u{2500}' as u32, // ─
-                                theme.text_subtle,
-                            );
+                        // Skip the guide line if this ancestor is the last sibling
+                        // (no children follow, so no vertical continuation needed).
+                        if last_flags.get(d).copied().unwrap_or(false) {
+                            continue;
                         }
+                        // Place the guide at the center of the indent column for depth d.
+                        let guide_x =
+                            (rect.x + pad_x + d as f64 * indent_px + indent_px * 0.5).floor();
+                        raster.fill_pixel_rect_alpha(
+                            guide_x,
+                            row_top,
+                            1.0,
+                            row_h,
+                            theme.text_subtle,
+                            0.25,
+                        );
                     }
                 }
 
-                // File icon column: placed after the tree connector columns.
+                // File icon column: placed after the tree indent area.
                 let icon_x = rect.x + pad_x + indent;
 
                 // Directory chevron toggles ▸/▾ based on expanded_dirs.
@@ -810,7 +825,8 @@ fn draw_explorer_section(
                     } else {
                         '▸'
                     };
-                    (chevron, theme.foreground)
+                    // Dirs use text_muted so files (foreground) stand out more.
+                    (chevron, theme.text_muted)
                 } else {
                     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                     let (ch, col) = file_icon_colored(name, theme);
@@ -826,7 +842,8 @@ fn draw_explorer_section(
                     icon_color,
                 );
 
-                let label_x = icon_x + cell_w * 2.0;
+                // Slightly tighter icon-to-label gap: 1.5 cells instead of 2.
+                let label_x = icon_x + (cell_w * 1.5).ceil();
                 let max_x = rect.x + rect.w - pad_x;
 
                 // Name: entry filename only (not full path).
@@ -866,7 +883,15 @@ fn draw_explorer_section(
                     }
                 }
 
-                let label_color = theme.foreground;
+                // Files: foreground (or accent_primary when selected).
+                // Dirs: text_muted — visual hierarchy: files pop, dirs recede.
+                let label_color = if selected {
+                    theme.accent_primary
+                } else if *is_dir {
+                    theme.text_muted
+                } else {
+                    theme.foreground
+                };
                 // Y5: count badge "(N)" for collapsed dirs whose children are cached.
                 // Appended after the name for dirs that are NOT expanded.
                 let child_count_suffix: Option<String> = if *is_dir && !expanded_dirs.contains(path)
@@ -1032,6 +1057,7 @@ fn draw_outline_section(
     rect: Rect,
     hits: &mut LeftDockHits,
     rm: &RowMetrics,
+    collapsed: bool,
 ) {
     let cell_h = metrics.cell_h;
     let cell_w = metrics.cell_w;
@@ -1040,6 +1066,16 @@ fn draw_outline_section(
     let pad_x = rm.pad_x;
 
     // ── Header row ────────────────────────────────────────────────────────────
+    // #9: add a hit for the outline header so clicks can toggle collapse.
+    hits.hits.push(LeftDockHit {
+        rect: Rect {
+            x: rect.x,
+            y: rect.y,
+            w: rect.w,
+            h: header_h.min(rect.h),
+        },
+        kind: LeftDockHitKind::OutlineHeader,
+    });
     // Item 10: header color is text_subtle when empty, accent_bright when symbols present.
     let has_symbols = outline.is_some_and(|rows| !rows.is_empty());
     let header_color = if has_symbols {
@@ -1048,17 +1084,34 @@ fn draw_outline_section(
         theme.text_subtle
     };
     let header_y = rect.y + ((header_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+    // #9: collapse chevron.
+    let chevron = if collapsed { '▸' } else { '▾' };
+    draw_text_run(
+        raster,
+        painter,
+        metrics,
+        &chevron.to_string(),
+        theme.text_subtle,
+        rect.x + pad_x,
+        header_y,
+        rect.x + pad_x + cell_w,
+    );
     draw_text_run(
         raster,
         painter,
         metrics,
         "OUTLINE",
         header_color,
-        rect.x + pad_x,
+        rect.x + pad_x + cell_w * 1.5,
         header_y,
         rect.x + rect.w,
     );
     raster.fill_pixel_rect(rect.x, rect.y + header_h - 1.0, rect.w, 1.0, theme.hairline);
+
+    // #9: collapsed — only header shown.
+    if collapsed {
+        return;
+    }
 
     let content_y = rect.y + header_h;
     let content_h = rect.h - header_h;
@@ -1465,6 +1518,8 @@ mod tests {
             0.0,
             1.0,
             None,
+            false,
+            false,
         );
 
         assert_eq!(
@@ -1523,14 +1578,15 @@ mod tests {
         );
 
         // Dir chevron ▸ (U+25B8) icon paints in foreground for inactive dir.
+        // Dir chevron ▸ uses text_muted so files (foreground) stand out more.
         let dir_chevron: Vec<_> = p
             .glyphs
             .iter()
-            .filter(|(cp, fg)| *cp == '\u{25B8}' as u32 && *fg == th.foreground)
+            .filter(|(cp, fg)| *cp == '\u{25B8}' as u32 && *fg == th.text_muted)
             .collect();
         assert!(
             !dir_chevron.is_empty(),
-            "expected dir chevron ▸ in foreground for inactive dir"
+            "expected dir chevron ▸ in text_muted (visual hierarchy: files > dirs)"
         );
     }
 
@@ -1641,6 +1697,8 @@ mod tests {
                 0.0,
                 1.0,
                 None,
+                false,
+                false,
             );
             // Row 0 occupies y=[header_h, header_h+row_h) = [32, 60).
             // The fill rect is row_top+2 .. row_top+row_h-2 = [34, 58).
@@ -1675,6 +1733,8 @@ mod tests {
                 0.0,
                 1.0,
                 None,
+                false,
+                false,
             );
             // Left-rail pixel (x=rect.x+6=6, inside 2px rail) should be accent_primary.
             // Row 0 fill starts at row_top+2 = 28+2 = 30. Sample y=38.
@@ -1907,6 +1967,8 @@ mod tests {
                 0.0,
                 1.0,
                 None,
+                false,
+                false,
             )
         };
 
@@ -1930,6 +1992,8 @@ mod tests {
                 0.0,
                 1.0,
                 None,
+                false,
+                false,
             )
         };
 
@@ -2020,6 +2084,8 @@ mod tests {
             0.0,
             1.0,
             None,
+            false,
+            false,
         );
 
         // visible_rows should be: [/project/src (dir), /project/src/main.rs, /project/src/lib.rs, /project/Cargo.toml]
@@ -2121,8 +2187,9 @@ mod tests {
         );
     }
 
-    /// A1: top-level rows (depth 0) must not emit any tree connector glyph.
-    /// A nested row at depth 1 must emit a connector.
+    /// A1: no Unicode box-drawing connector glyphs emitted at any depth.
+    /// Indent guides are now 1px pixel rects (not glyphs), so the glyph
+    /// painter should see zero connector codepoints regardless of nesting.
     #[test]
     fn top_level_rows_have_no_connector_glyph() {
         const CONNECTORS: &[u32] = &[
@@ -2186,33 +2253,23 @@ mod tests {
             0.0,
             1.0,
             None,
+            false,
+            false,
         );
 
-        // The test rigs glyph positions by recording every (codepoint, color) pair.
-        // We check that glyphs recorded before the first nested row's glyph_y contain
-        // no connector codepoints.
-        //
-        // Simpler: count connector glyphs. Top-level rows (slot 0 = "src" at depth 0,
-        // slot 2 = "main.rs" at depth 0) must contribute zero connectors.
-        // Slot 1 = "lib.rs" at depth 1 MUST have at least one connector.
-        //
-        // Because StubPainter records all glyphs in order, we can reason about counts:
-        // - depth-0 rows add 0 connectors each.
-        // - depth-1 row adds ≥1 connector.
-        // So total connectors == connectors from depth-1 rows only.
+        // Indent guides are now pixel rects, not glyphs. Neither depth-0 nor
+        // depth-1 rows should emit any Unicode box-drawing connector codepoints.
         let connector_count = p
             .glyphs
             .iter()
             .filter(|(cp, _)| CONNECTORS.contains(cp))
             .count();
-
-        // There is exactly 1 depth-1 row (lib.rs), so at least 1 connector expected.
-        assert!(
-            connector_count >= 1,
-            "depth-1 row must emit at least one connector glyph"
+        assert_eq!(
+            connector_count, 0,
+            "indent guides are pixel rects; no connector glyphs expected (depth-1 row included)"
         );
 
-        // Now draw without expansion (all rows at depth 0). Zero connectors expected.
+        // Same for flat (all depth-0) layout.
         let mut r2 = Raster::new(800, 800);
         let mut p2 = StubPainter::default();
         draw_left_dock(
@@ -2291,6 +2348,8 @@ mod tests {
             0.0,
             1.0,
             None,
+            false,
+            false,
         );
         assert!(hits.hits.is_empty(), "dock < 60pt must be fully hidden");
     }
@@ -2341,6 +2400,8 @@ mod tests {
             0.0,
             1.0,
             None,
+            false,
+            false,
         );
         // No EXPLORER header hit in icons-only mode.
         let header_hits: Vec<_> = hits
@@ -2447,6 +2508,8 @@ mod tests {
             0.0,
             1.0,
             Some("main"),
+            false,
+            false,
         );
 
         assert_eq!(
@@ -2506,6 +2569,8 @@ mod tests {
             0.0,
             1.0,
             None,
+            false,
+            false,
         );
 
         assert_eq!(
@@ -2596,6 +2661,8 @@ mod tests {
             0.0,
             1.0,
             None,
+            false,
+            false,
         );
 
         // '(' from "(empty)" must appear in text_subtle.
@@ -2668,18 +2735,20 @@ mod tests {
             0.0,
             1.0,
             None,
+            false,
+            false,
         );
 
-        // '(' from "(2)" badge must appear in foreground (label color).
-        // The label and the badge use the same foreground color.
+        // '(' from "(2)" badge appears in text_muted (dir label color).
+        // Dirs use text_muted so files stand out; the count badge inherits it.
         let paren_fg: Vec<_> = p
             .glyphs
             .iter()
-            .filter(|(cp, fg)| *cp == '(' as u32 && *fg == th.foreground)
+            .filter(|(cp, fg)| *cp == '(' as u32 && *fg == th.text_muted)
             .collect();
         assert!(
             !paren_fg.is_empty(),
-            "collapsed dir with 2 cached children must render '(' in foreground (Y5 count badge)"
+            "collapsed dir with 2 cached children must render '(' in text_muted (dir label color)"
         );
     }
 }
