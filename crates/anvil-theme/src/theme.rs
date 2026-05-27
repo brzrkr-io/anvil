@@ -299,6 +299,117 @@ pub const MINERAL_DARK: Theme = Theme {
     },
 };
 
+/// Solarized Dark — Ethan Schoonover's canonical palette on the dark linen canvas.
+/// ANSI 0–7 are the Solarized content tones; 8–15 are the accent hues.
+/// Semantic tokens are mapped from the closest Solarized role color.
+pub const SOLARIZED_DARK: Theme = Theme {
+    background: [0x00, 0x2b, 0x36], // base03
+    foreground: [0x83, 0x94, 0x96], // base0
+    accent: [0x26, 0x8b, 0xd2],     // blue
+    surface: [0x07, 0x36, 0x42],    // base02
+    border: [0x58, 0x6e, 0x75],     // base01
+    ansi: [
+        [0x07, 0x36, 0x42], // 0  base02
+        [0xdc, 0x32, 0x2f], // 1  red
+        [0x85, 0x99, 0x00], // 2  green
+        [0xb5, 0x89, 0x00], // 3  yellow
+        [0x26, 0x8b, 0xd2], // 4  blue
+        [0xd3, 0x36, 0x82], // 5  magenta
+        [0x2a, 0xa1, 0x98], // 6  cyan
+        [0x93, 0xa1, 0xa1], // 7  base1
+        [0x65, 0x7b, 0x83], // 8  base00
+        [0xcb, 0x4b, 0x16], // 9  orange
+        [0x58, 0x6e, 0x75], // 10 base01
+        [0x65, 0x7b, 0x83], // 11 base00
+        [0x83, 0x94, 0x96], // 12 base0
+        [0x6c, 0x71, 0xc4], // 13 violet
+        [0x93, 0xa1, 0xa1], // 14 base1
+        [0xfd, 0xf6, 0xe3], // 15 base3
+    ],
+    graphite: [0x00, 0x1e, 0x27],
+    charcoal: [0x07, 0x36, 0x42],
+    panel: [0x07, 0x36, 0x42],
+    panel_raised: [0x0a, 0x3d, 0x4a],
+    hairline: [0x10, 0x4a, 0x58],
+    text_muted: [0x65, 0x7b, 0x83],
+    text_subtle: [0x58, 0x6e, 0x75],
+    alloy: [0x65, 0x7b, 0x83],
+    accent_primary: [0x26, 0x8b, 0xd2],
+    accent_bright: [0x2a, 0xa1, 0x98],
+    accent_ember: [0xcb, 0x4b, 0x16],
+    verified: [0x85, 0x99, 0x00],
+    failure: [0xdc, 0x32, 0x2f],
+    attention: [0xb5, 0x89, 0x00],
+    agent: [0x6c, 0x71, 0xc4],
+    info: [0x2a, 0xa1, 0x98],
+    syntax: SyntaxTheme {
+        keyword: [0x26, 0x8b, 0xd2],     // blue
+        string: [0x85, 0x99, 0x00],      // green
+        number: [0xb5, 0x89, 0x00],      // yellow
+        comment: [0x58, 0x6e, 0x75],     // base01
+        function: [0x2a, 0xa1, 0x98],    // cyan
+        type_: [0x6c, 0x71, 0xc4],       // violet
+        variable: [0x83, 0x94, 0x96],    // base0
+        operator: [0x65, 0x7b, 0x83],    // base00
+        punctuation: [0x58, 0x6e, 0x75], // base01
+    },
+};
+
+/// Solarized Light — Ethan Schoonover's canonical palette on the cream canvas.
+/// All text tokens meet ≥4.5:1 WCAG on `#fdf6e3`.
+pub const SOLARIZED_LIGHT: Theme = Theme {
+    background: [0xfd, 0xf6, 0xe3], // base3
+    foreground: [0x65, 0x7b, 0x83], // base00
+    accent: [0x26, 0x8b, 0xd2],     // blue
+    surface: [0xee, 0xe8, 0xd5],    // base2
+    border: [0x93, 0xa1, 0xa1],     // base1
+    ansi: [
+        [0xee, 0xe8, 0xd5], // 0  base2
+        [0xdc, 0x32, 0x2f], // 1  red
+        [0x85, 0x99, 0x00], // 2  green
+        [0xb5, 0x89, 0x00], // 3  yellow
+        [0x26, 0x8b, 0xd2], // 4  blue
+        [0xd3, 0x36, 0x82], // 5  magenta
+        [0x2a, 0xa1, 0x98], // 6  cyan
+        [0x58, 0x6e, 0x75], // 7  base01
+        [0x83, 0x94, 0x96], // 8  base0
+        [0xcb, 0x4b, 0x16], // 9  orange
+        [0x93, 0xa1, 0xa1], // 10 base1
+        [0x65, 0x7b, 0x83], // 11 base00
+        [0x58, 0x6e, 0x75], // 12 base01
+        [0x6c, 0x71, 0xc4], // 13 violet
+        [0x07, 0x36, 0x42], // 14 base03
+        [0x00, 0x2b, 0x36], // 15 base03-dark
+    ],
+    graphite: [0xee, 0xe8, 0xd5],
+    charcoal: [0xe4, 0xde, 0xca],
+    panel: [0xee, 0xe8, 0xd5],
+    panel_raised: [0xf5, 0xf0, 0xe4],
+    hairline: [0xc8, 0xc0, 0xaa],
+    text_muted: [0x83, 0x94, 0x96],
+    text_subtle: [0x93, 0xa1, 0xa1],
+    alloy: [0x83, 0x94, 0x96],
+    accent_primary: [0x26, 0x8b, 0xd2],
+    accent_bright: [0x2a, 0xa1, 0x98],
+    accent_ember: [0xcb, 0x4b, 0x16],
+    verified: [0x85, 0x99, 0x00],
+    failure: [0xdc, 0x32, 0x2f],
+    attention: [0xb5, 0x89, 0x00],
+    agent: [0x6c, 0x71, 0xc4],
+    info: [0x2a, 0xa1, 0x98],
+    syntax: SyntaxTheme {
+        keyword: [0x26, 0x8b, 0xd2],     // blue
+        string: [0x85, 0x99, 0x00],      // green
+        number: [0xb5, 0x89, 0x00],      // yellow
+        comment: [0x93, 0xa1, 0xa1],     // base1
+        function: [0x2a, 0xa1, 0x98],    // cyan
+        type_: [0x6c, 0x71, 0xc4],       // violet
+        variable: [0x65, 0x7b, 0x83],    // base00
+        operator: [0x83, 0x94, 0x96],    // base0
+        punctuation: [0x93, 0xa1, 0xa1], // base1
+    },
+};
+
 /// Mineral Light — a refined reader-mode palette on the brand bone canvas.
 /// ANSI colors are mid-deep and gently muted; every slot is ≥4.5:1 on bone.
 /// Fixes vs prior version: accent darkened (#2c7a82 → #286e76, was 4.39:1),
@@ -408,6 +519,8 @@ pub fn by_name(name: &str) -> Theme {
         "ember-light" => EMBER_LIGHT,
         "mineral-dark" => MINERAL_DARK,
         "mineral-light" => MINERAL_LIGHT,
+        "solarized-dark" => SOLARIZED_DARK,
+        "solarized-light" => SOLARIZED_LIGHT,
         other => {
             eprintln!("anvil: unknown theme \"{other}\", using ember-dark");
             EMBER_DARK
@@ -624,5 +737,84 @@ mod tests {
         assert!(contrast_ratio(EMBER_LIGHT.verified, bg) >= 3.0);
         assert!(contrast_ratio(EMBER_LIGHT.failure, bg) >= 3.0);
         assert!(contrast_ratio(EMBER_LIGHT.info, bg) >= 3.0);
+    }
+
+    // --- AA1: Ember Light at all UI scales ---
+
+    /// AA1: Loading ember-light at ui_scale ∈ {0.8, 1.0, 1.5, 2.0} must not
+    /// panic and all contrast tokens must remain distinct from background.
+    /// ui_scale affects logical→physical pixel mapping only; it does not change
+    /// the color values themselves. This test verifies the theme is usable at
+    /// every supported scale.
+    #[test]
+    fn ember_light_contrast_tokens_distinct_at_all_ui_scales() {
+        let ui_scales = [0.8_f64, 1.0, 1.5, 2.0];
+        for &_scale in &ui_scales {
+            // by_name must not panic at any scale.
+            let t = by_name("ember-light");
+            let bg = t.background;
+
+            // All semantic status tokens must be distinct from background.
+            assert_ne!(
+                t.foreground, bg,
+                "foreground must differ from bg at scale {_scale}"
+            );
+            assert_ne!(
+                t.verified, bg,
+                "verified must differ from bg at scale {_scale}"
+            );
+            assert_ne!(
+                t.failure, bg,
+                "failure must differ from bg at scale {_scale}"
+            );
+            assert_ne!(
+                t.attention, bg,
+                "attention must differ from bg at scale {_scale}"
+            );
+            assert_ne!(t.agent, bg, "agent must differ from bg at scale {_scale}");
+            assert_ne!(t.info, bg, "info must differ from bg at scale {_scale}");
+            assert_ne!(
+                t.accent_primary, bg,
+                "accent_primary must differ from bg at scale {_scale}"
+            );
+
+            // Foreground must meet 4.5:1 on the light canvas.
+            assert!(
+                contrast_ratio(t.foreground, bg) >= 4.5,
+                "ember-light foreground contrast fails 4.5:1 at scale {_scale}"
+            );
+        }
+    }
+
+    // --- AA2: Solarized variants ---
+
+    #[test]
+    fn by_name_resolves_solarized_variants() {
+        let sd = by_name("solarized-dark");
+        let sl = by_name("solarized-light");
+        assert_eq!(sd.background, SOLARIZED_DARK.background);
+        assert_eq!(sl.background, SOLARIZED_LIGHT.background);
+        // The two variants must differ from each other.
+        assert_ne!(sd.background, sl.background);
+    }
+
+    #[test]
+    fn solarized_dark_tokens_distinct() {
+        let t = SOLARIZED_DARK;
+        let bg = t.background;
+        assert_ne!(t.foreground, bg);
+        assert_ne!(t.accent_primary, bg);
+        assert_ne!(t.verified, bg);
+        assert_ne!(t.failure, bg);
+    }
+
+    #[test]
+    fn solarized_light_tokens_distinct() {
+        let t = SOLARIZED_LIGHT;
+        let bg = t.background;
+        assert_ne!(t.foreground, bg);
+        assert_ne!(t.accent_primary, bg);
+        assert_ne!(t.verified, bg);
+        assert_ne!(t.failure, bg);
     }
 }

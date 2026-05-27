@@ -1128,6 +1128,8 @@ const PICKER_THEMES: &[&str] = &[
     "ember-light",
     "mineral-dark",
     "mineral-light",
+    "solarized-dark",
+    "solarized-light",
     "system",
 ];
 
@@ -1720,6 +1722,12 @@ pub struct App {
     ctx_push_rect: Option<anvil_render::raster::PixelRect>,
     /// Pixel rect of the pull chip in the context bar. Repopulated each frame.
     ctx_pull_rect: Option<anvil_render::raster::PixelRect>,
+
+    // ── AA13: memory baseline ─────────────────────────────────────────────────
+    /// Resident-set-size at app init (bytes). Cmd+Shift+Alt+M logs
+    /// `current_rss - mem_baseline` as a quick leak indicator during dev.
+    /// TODO(anvil-AA13-mem): replace with a real RSS query when available.
+    mem_baseline: u64,
 }
 
 // ── R2: tooltip helpers ───────────────────────────────────────────────────────
@@ -2075,7 +2083,7 @@ impl App {
 
     /// Apply a freshly loaded config.
     fn apply_config(&mut self, cfg: Config) {
-        let effective = effective_theme_name(self.system_dark, &cfg.theme);
+        let effective = effective_theme_name(self.system_dark, cfg.theme.theme_name());
         self.theme = resolve_theme(effective, &cfg.theme_overrides);
         if let Some(r) = &mut self.renderer {
             r.set_clear_color(self.theme.background);
@@ -2094,8 +2102,8 @@ impl App {
     /// macOS appearance via `effective_theme_name`. Keep overrides intact so a
     /// user's configured accents survive palette switches.
     fn set_theme_mode(&mut self, mode: &str) {
-        self.config.theme = mode.to_string();
-        let effective = effective_theme_name(self.system_dark, &self.config.theme);
+        self.config.theme = anvil_config::ThemeEntry::Name(mode.to_string());
+        let effective = effective_theme_name(self.system_dark, self.config.theme.theme_name());
         self.theme = resolve_theme(effective, &self.config.theme_overrides);
         if let Some(r) = &mut self.renderer {
             r.set_clear_color(self.theme.background);
@@ -6660,7 +6668,7 @@ impl App {
             return true;
         });
         test!(kb.toggle_theme, {
-            let next = next_theme_mode(&self.config.theme);
+            let next = next_theme_mode(self.config.theme.theme_name());
             self.set_theme_mode(next);
             return true;
         });
@@ -7508,11 +7516,11 @@ impl AppHandler for AppShell {
         // theme-resolved color, so on a flip we *must* repaint the whole
         // raster — partial dirty rows would leave half the grid (and the HUD
         // strip) in the old palette.
-        if app.config.theme == "system" {
+        if app.config.theme.theme_name() == "system" {
             let now_dark = system_is_dark();
             if now_dark != app.system_dark {
                 app.system_dark = now_dark;
-                let effective = effective_theme_name(now_dark, &app.config.theme);
+                let effective = effective_theme_name(now_dark, app.config.theme.theme_name());
                 app.theme = resolve_theme(effective, &app.config.theme_overrides);
                 if let Some(r) = &mut app.renderer {
                     r.set_clear_color(app.theme.background);
@@ -8172,6 +8180,23 @@ impl AppHandler for AppShell {
                 self.app
                     .apply_editor_action(EditorAction::TrimTrailingWhitespace);
                 self.app.dirty = true;
+                return;
+            }
+
+            // AA13: Cmd+Shift+Alt+M → log RSS delta (memory leak watchdog).
+            if mods.shift
+                && mods.option
+                && matches!(event.key, KeyInput::Char('m') | KeyInput::Char('M'))
+            {
+                // TODO(anvil-AA13-mem): replace with a real RSS query via proc_info.
+                // On macOS, `task_info(mach_task_self(), TASK_BASIC_INFO, ...)` gives
+                // resident_size; using 0 here because pulling in mach bindings is
+                // invasive for a dev-only diagnostic.
+                eprintln!(
+                    "anvil: mem-baseline={} current=0 delta=(not implemented) \
+                     TODO(anvil-AA13-mem)",
+                    self.app.mem_baseline
+                );
                 return;
             }
 
@@ -9056,7 +9081,7 @@ impl AppHandler for AppShell {
             if matches!(event.key, KeyInput::Char('t') | KeyInput::Char('T')) && !event.mods.shift {
                 let current = PICKER_THEMES
                     .iter()
-                    .position(|&name| name == self.app.config.theme)
+                    .position(|&name| name == self.app.config.theme.theme_name())
                     .unwrap_or(0);
                 self.app.theme_picker = Some(ThemePickerState { selected: current });
                 self.app.dirty = true;
@@ -11994,6 +12019,11 @@ fn platform_mods_to_zig_mods(m: Modifiers) -> Mods {
 fn cursor_cfg_from_config(cfg: &Config) -> CursorConfig {
     use anvil_config::CursorStyle;
     use anvil_render::draw::CursorStyle as RCursorStyle;
+    let color = cfg
+        .cursor
+        .color
+        .as_deref()
+        .and_then(|hex| anvil_theme::hex_to_rgb(hex).ok());
     CursorConfig {
         style: match cfg.cursor.style {
             CursorStyle::Block => RCursorStyle::Block,
@@ -12001,6 +12031,7 @@ fn cursor_cfg_from_config(cfg: &Config) -> CursorConfig {
             CursorStyle::Underline => RCursorStyle::Underline,
         },
         blink: cfg.cursor.blink,
+        color,
     }
 }
 
@@ -13979,7 +14010,7 @@ fn main() -> Result<()> {
 
     // -- Theme ----------------------------------------------------------------
     let system_dark = system_is_dark();
-    let effective_name = effective_theme_name(system_dark, &config.theme);
+    let effective_name = effective_theme_name(system_dark, config.theme.theme_name());
     let theme = resolve_theme(effective_name, &config.theme_overrides);
     let cursor_cfg = cursor_cfg_from_config(&config);
     let keybindings = Keybindings::from_config(&config.keybindings);
@@ -14024,7 +14055,7 @@ fn main() -> Result<()> {
     };
     eprintln!("anvil: layout_mode = {layout_mode:?}");
 
-    let app = App {
+    let mut app = App {
         tabs,
         ptys,
         renderer: None, // filled after the Metal layer is available
@@ -14221,7 +14252,13 @@ fn main() -> Result<()> {
         git_log_palette: None,
         ctx_push_rect: None,
         ctx_pull_rect: None,
+        mem_baseline: 0, // populated below
     };
+
+    // AA13: capture RSS baseline at init.
+    // TODO(anvil-AA13-mem): use a real RSS query (e.g. proc_info on macOS).
+    // For now we use 0 so the delta always reads as "(not implemented)".
+    app.mem_baseline = 0;
 
     // -- AppKitApp: builds the window, view, timer ----------------------------
     // Two-phase init: AppKitApp needs a handler Rc now; AppShell needs the
@@ -14688,6 +14725,50 @@ mod tests {
         cfg.cursor.style = CursorStyle::Underline;
         let cc = cursor_cfg_from_config(&cfg);
         assert_eq!(cc.style, RCursorStyle::Underline);
+    }
+
+    // ── AA7: cursor color wire-up ────────────────────────────────────────────
+
+    #[test]
+    fn cursor_cfg_from_config_color_override_parsed() {
+        let mut cfg = anvil_config::Config::default();
+        cfg.cursor.color = Some("#ff4400".into());
+        let cc = cursor_cfg_from_config(&cfg);
+        assert_eq!(
+            cc.color,
+            Some([0xff, 0x44, 0x00]),
+            "AA7: cursor color override must wire through"
+        );
+    }
+
+    #[test]
+    fn cursor_cfg_from_config_no_color_yields_none() {
+        let cfg = anvil_config::Config::default();
+        let cc = cursor_cfg_from_config(&cfg);
+        assert!(cc.color.is_none(), "AA7: absent cursor.color must be None");
+    }
+
+    // ── AA8: cursor shape config verify ─────────────────────────────────────
+
+    /// AA8: cursor.style config is applied by cursor_cfg_from_config and
+    /// propagated to draw_cursor via CursorParams.  Verify all three shapes
+    /// round-trip through cursor_cfg_from_config without loss.
+    #[test]
+    fn cursor_shape_all_styles_applied() {
+        use anvil_config::CursorStyle;
+        use anvil_render::draw::CursorStyle as RCursorStyle;
+
+        let cases = [
+            (CursorStyle::Block, RCursorStyle::Block),
+            (CursorStyle::Bar, RCursorStyle::Bar),
+            (CursorStyle::Underline, RCursorStyle::Underline),
+        ];
+        for (config_style, expected) in cases {
+            let mut cfg = anvil_config::Config::default();
+            cfg.cursor.style = config_style;
+            let cc = cursor_cfg_from_config(&cfg);
+            assert_eq!(cc.style, expected, "AA8: cursor shape must be applied");
+        }
     }
 
     // ── all_pane_ids_in_tree ─────────────────────────────────────────────────
