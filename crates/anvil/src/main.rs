@@ -1504,6 +1504,16 @@ pub struct App {
     /// Set of absolute paths of directories that are expanded in the Explorer.
     /// Keyed by PathBuf so identity survives re-snapshots and depth changes.
     expanded_dirs: HashSet<PathBuf>,
+    // ── #9: per-section collapse state ────────────────────────────────────────
+    /// True when the EXPLORER section is collapsed to its header row only.
+    explorer_collapsed: bool,
+    /// True when the OUTLINE section is collapsed to its header row only.
+    outline_collapsed: bool,
+    // ── #7: tab strip horizontal scroll ───────────────────────────────────────
+    /// Horizontal scroll offset of the chrome tab strip in device pixels.
+    /// 0 = leftmost tab visible. Clipped to valid range in draw_tab_bar.
+    tab_strip_scroll_offset: f64,
+
     /// Alpha for the Explorer scroll thumb (Item 8). Driven by a decay timer.
     /// 1.0 immediately after a scroll event; decays to 0 after 600ms hold + 200ms fade.
     scroll_indicator_alpha: f32,
@@ -1810,6 +1820,7 @@ fn url_at_col(line_str: &str, col: usize) -> Option<String> {
 
 // ── App helpers ───────────────────────────────────────────────────────────────
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn explorer_path_for_hit(snapshot: &LeftDockSnapshot, hit: ExplorerHit) -> Option<PathBuf> {
     match hit {
         ExplorerHit::Header => Some(PathBuf::from(&snapshot.root)),
@@ -3349,6 +3360,32 @@ impl App {
         }
     }
 
+    /// Fix B1: after any layout switch that collapses panes, ensure `focused_id`
+    /// points to a pane that actually has a live PTY entry.  If the current
+    /// focused pane is a native editor pane (no PTY), find the first terminal
+    /// pane in the current tab and refocus it.
+    fn refocus_to_live_terminal(&mut self) {
+        let Some(tab) = self.tabs.current() else {
+            return;
+        };
+        let focused = tab.focused_id();
+        // If the focused pane already has a PTY we are fine.
+        if self.ptys.contains_key(&focused) {
+            return;
+        }
+        // Find the first pane in this tab that has a live PTY.
+        let terminal_id = tab
+            .registry
+            .iter()
+            .find(|(id, _)| self.ptys.contains_key(id))
+            .map(|(id, _)| id);
+        if let Some(id) = terminal_id {
+            if let Some(tab) = self.tabs.current_mut() {
+                tab.tree.focused = id;
+            }
+        }
+    }
+
     /// Compute the pixel (rel_x, rel_y) of `loc` relative to the focused
     /// native editor pane's draw rect.  Returns `None` if no native editor pane
     /// is focused or the mouse is outside the pane area.
@@ -4828,6 +4865,7 @@ impl App {
                 scale,
                 chrome_top,
                 &mut self.tab_bar_hits,
+                self.tab_strip_scroll_offset,
             );
         }
 
@@ -4960,6 +4998,8 @@ impl App {
                     self.scroll_indicator_alpha,
                     self.ui_scale,
                     self.explorer_filter.as_deref(),
+                    self.explorer_collapsed,
+                    self.outline_collapsed,
                 );
             } else {
                 self.left_dock_hits.clear();
@@ -5397,6 +5437,7 @@ impl App {
                 &self.theme,
                 sw,
                 dw as f64,
+                dh as f64,
                 chrome_top,
                 cw,
                 ch,
@@ -6063,9 +6104,12 @@ impl App {
             Action::LayoutTerminal => {
                 self.layout_mode = LayoutMode::Terminal;
                 self.left_dock_visible = false;
+                // B2: hide without destroying editor state.
                 if let Some(tab) = self.tabs.current_mut() {
-                    tab.normalize_terminal_surface();
+                    tab.hide_to_terminal_surface();
                 }
+                // B1: refocus to a pane that has a live PTY.
+                self.refocus_to_live_terminal();
                 self.resize_all_tabs();
                 self.dirty = true;
             }
@@ -6680,11 +6724,13 @@ impl App {
             match self.layout_mode {
                 LayoutMode::Terminal => {
                     self.left_dock_visible = false;
-                    // Normalize every tab — switching modes must be coherent
-                    // across the whole workspace, not just the active tab.
+                    // B2: hide editor panes without destroying their state so
+                    // IDE→Terminal→IDE round-trips preserve open files and cursors.
                     for tab in self.tabs.tabs.iter_mut() {
-                        tab.normalize_terminal_surface();
+                        tab.hide_to_terminal_surface();
                     }
+                    // B1: after hiding editor panes, ensure focused pane has a live PTY.
+                    self.refocus_to_live_terminal();
                 }
                 LayoutMode::Ide => {
                     self.spawn_ide_terminal_drawer();
@@ -8268,8 +8314,15 @@ impl AppHandler for AppShell {
                     self.handle_font_scale_chord(ch);
                     return;
                 }
-                // Cmd+Return — approve topmost pending approval (HUD must be visible).
+                // W5 #24: Cmd+Return — insert blank line below when editor is
+                // focused. Falls through to agent_approve when HUD is visible.
                 KeyInput::Enter if !mods.shift && !mods.control && !mods.option => {
+                    if self.app.focused_is_native_editor() && !self.app.hud_visible {
+                        self.app
+                            .apply_editor_action(EditorAction::InsertBlankLineBelow);
+                        self.app.dirty = true;
+                        return;
+                    }
                     if self.app.hud_visible {
                         if let (Some(client), Some(poller)) =
                             (&self.app.caldera_client, &self.app.caldera_poller)
@@ -8288,8 +8341,15 @@ impl AppHandler for AppShell {
                     }
                     return;
                 }
-                // Cmd+Shift+Return — start a new agent run.
+                // W6 #25: Cmd+Shift+Return — insert blank line above when editor is
+                // focused. Falls through to agent_start when HUD is visible.
                 KeyInput::Enter if mods.shift && !mods.control && !mods.option => {
+                    if self.app.focused_is_native_editor() && !self.app.hud_visible {
+                        self.app
+                            .apply_editor_action(EditorAction::InsertBlankLineAbove);
+                        self.app.dirty = true;
+                        return;
+                    }
                     if self.app.hud_visible {
                         if let (Some(client), Some(poller)) =
                             (&self.app.caldera_client, &self.app.caldera_poller)
@@ -10161,6 +10221,13 @@ impl AppHandler for AppShell {
                     self.app.dirty = true;
                     return true;
                 }
+                // W1 #18: Cmd+Shift+W → close window (Cmd+Shift+Q now closes pane).
+                KeyInput::Char('w') | KeyInput::Char('W')
+                    if event.mods.shift && !event.mods.control && !event.mods.option =>
+                {
+                    self.app.shutdown();
+                    std::process::exit(0);
+                }
                 KeyInput::Char(ch) if self.app.handle_cmd_chord(event.mods, ch, &self.webview) => {
                     return true;
                 }
@@ -10348,13 +10415,9 @@ impl AppHandler for AppShell {
                 app.focus_target = FocusTarget::Explorer;
                 match hit {
                     ExplorerHit::Header => {
-                        if let Some(snapshot) = app.fs_snapshot.clone() {
-                            if let Some(path) =
-                                explorer_path_for_hit(&snapshot, ExplorerHit::Header)
-                            {
-                                app.open_path_in_native_editor(&path);
-                            }
-                        }
+                        // #9: click on EXPLORER header → toggle section collapse.
+                        app.explorer_collapsed = !app.explorer_collapsed;
+                        app.dirty = true;
                     }
                     ExplorerHit::Row(idx) => {
                         // Track keyboard-nav selection to clicked row (item 4).
@@ -10409,6 +10472,12 @@ impl AppHandler for AppShell {
                         }
                     }
                 }
+                return;
+            }
+            // #9: Outline header click → toggle outline section collapse.
+            if let Some(LeftDockHitKind::OutlineHeader) = hit_kind {
+                app.outline_collapsed = !app.outline_collapsed;
+                app.dirty = true;
                 return;
             }
             // Outline row click (item 19): jump cursor to the symbol's line.
@@ -10572,6 +10641,20 @@ impl AppHandler for AppShell {
                     TabBarHitKind::AddTab => {
                         app.force_full_redraw = true;
                         app.add_tab();
+                    }
+                    // #7: scroll chevron clicks — step by ~3 tab widths.
+                    TabBarHitKind::ScrollLeft => {
+                        let step = app.font.metrics.cell_w * 9.0; // ~3 avg-tab-width cells
+                        app.tab_strip_scroll_offset = (app.tab_strip_scroll_offset - step).max(0.0);
+                        app.force_full_redraw = true;
+                        app.dirty = true;
+                    }
+                    TabBarHitKind::ScrollRight => {
+                        let step = app.font.metrics.cell_w * 9.0;
+                        app.tab_strip_scroll_offset += step;
+                        // draw_tab_bar will clamp to max_scroll
+                        app.force_full_redraw = true;
+                        app.dirty = true;
                     }
                 }
                 return;
@@ -11480,6 +11563,24 @@ impl AppHandler for AppShell {
     fn scroll(&mut self, dy: f64, pixel_precise: bool, shift: bool, loc: MouseLocation) {
         let app = &mut self.app;
 
+        // #7: Shift+scroll over the chrome row → scroll tab strip horizontally.
+        if shift && dy != 0.0 {
+            let (_rx, ry) = app.view_pt_to_raster_px(loc);
+            if ry < app.chrome_top_px() {
+                let cell_w_pt = (app.font.metrics.cell_w / app.window_scale) as f32;
+                let dx_px = if pixel_precise {
+                    dy as f32 / (cell_w_pt * 1.5) * app.font.metrics.cell_w as f32
+                } else {
+                    dy as f32 * app.font.metrics.cell_w as f32 * 1.5
+                };
+                app.tab_strip_scroll_offset = (app.tab_strip_scroll_offset + dx_px as f64).max(0.0);
+                // draw_tab_bar clamps to max_scroll on next draw
+                app.force_full_redraw = true;
+                app.dirty = true;
+                return;
+            }
+        }
+
         // P3: Shift+scroll → horizontal scroll in native editor pane.
         if shift && dy != 0.0 && app.focused_is_native_editor() {
             let cell_w_pt = (app.font.metrics.cell_w / app.window_scale) as f32;
@@ -12158,6 +12259,65 @@ fn all_pane_ids_in_tree(tab: &Tab) -> Vec<PaneId> {
 
 // ── Overlay render helpers (items 10, 11) ────────────────────────────────────
 
+/// Draw a full-window scrim + panel shadow so overlays feel elevated.
+///
+/// Call this BEFORE drawing the overlay panel background.
+/// - `dw` / `dh`: full device-pixel window dimensions.
+/// - `panel_x/y/w/h`: the overlay panel rectangle (device pixels).
+///
+/// The scrim is a semi-transparent black wash over the entire window (subtle,
+/// does not obscure content, just pushes the panel forward visually).
+/// The shadow is 4 expanding alpha-blended black rects below/around the panel.
+fn draw_overlay_scrim_and_shadow(
+    raster: &mut anvil_render::raster::Raster,
+    dw: f64,
+    dh: f64,
+    panel_x: f64,
+    panel_y: f64,
+    panel_w: f64,
+    panel_h: f64,
+) {
+    // Scrim: very subtle black veil over the whole window.
+    raster.fill_pixel_rect_alpha(0.0, 0.0, dw, dh, [0, 0, 0], 0.28);
+
+    // Shadow: 4 concentric rects expanding 2px per step, decreasing alpha.
+    let shadow_color = [0u8, 0u8, 0u8];
+    let steps: &[(f64, f64)] = &[(2.0, 0.18), (4.0, 0.12), (7.0, 0.07), (12.0, 0.04)];
+    for &(expand, alpha) in steps {
+        raster.fill_pixel_rect_alpha(
+            panel_x - expand,
+            panel_y - expand,
+            panel_w + expand * 2.0,
+            panel_h + expand * 2.0,
+            shadow_color,
+            alpha,
+        );
+    }
+}
+
+/// Shadow-only variant for overlays that don't have the full window height.
+/// Draws the panel drop-shadow without a full-window scrim.
+fn draw_overlay_shadow(
+    raster: &mut anvil_render::raster::Raster,
+    panel_x: f64,
+    panel_y: f64,
+    panel_w: f64,
+    panel_h: f64,
+) {
+    let shadow_color = [0u8, 0u8, 0u8];
+    let steps: &[(f64, f64)] = &[(2.0, 0.18), (4.0, 0.12), (7.0, 0.07), (12.0, 0.04)];
+    for &(expand, alpha) in steps {
+        raster.fill_pixel_rect_alpha(
+            panel_x - expand,
+            panel_y - expand,
+            panel_w + expand * 2.0,
+            panel_h + expand * 2.0,
+            shadow_color,
+            alpha,
+        );
+    }
+}
+
 /// Draw the project-wide search overlay (item 10).
 ///
 /// A centered panel with one input row and up to N result rows.
@@ -12181,6 +12341,8 @@ fn draw_project_search_overlay(
     let panel_w = (dw * 0.6).min(dw - 4.0 * cw).max(20.0 * cw);
     let panel_x = ((dw - panel_w) * 0.5).max(0.0);
     let panel_y = (chrome_top + (dh - chrome_top - chrome_bot - panel_h) * 0.2).max(chrome_top);
+
+    draw_overlay_scrim_and_shadow(raster, dw, dh, panel_x, panel_y, panel_w, panel_h);
 
     // Panel background + border.
     raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
@@ -12270,7 +12432,7 @@ fn draw_goto_line_overlay(
     theme: &anvil_theme::Theme,
     input: &str,
     dw: f64,
-    _dh: f64,
+    dh: f64,
     chrome_top: f64,
     cw: f64,
     ch: f64,
@@ -12279,6 +12441,8 @@ fn draw_goto_line_overlay(
     let panel_h = ch + 8.0;
     let panel_x = ((dw - panel_w) * 0.5).max(0.0);
     let panel_y = chrome_top + 4.0 * ch;
+
+    draw_overlay_scrim_and_shadow(raster, dw, dh, panel_x, panel_y, panel_w, panel_h);
 
     raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
     raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent);
@@ -12319,7 +12483,7 @@ fn draw_lsp_rename_overlay(
     theme: &anvil_theme::Theme,
     input: &str,
     dw: f64,
-    _dh: f64,
+    dh: f64,
     chrome_top: f64,
     cw: f64,
     ch: f64,
@@ -12328,6 +12492,8 @@ fn draw_lsp_rename_overlay(
     let panel_h = ch + 8.0;
     let panel_x = ((dw - panel_w) * 0.5).max(0.0);
     let panel_y = chrome_top + 5.0 * ch;
+
+    draw_overlay_scrim_and_shadow(raster, dw, dh, panel_x, panel_y, panel_w, panel_h);
 
     raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
     raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent);
@@ -12368,7 +12534,7 @@ fn draw_save_as_overlay(
     theme: &anvil_theme::Theme,
     input: &str,
     dw: f64,
-    _dh: f64,
+    dh: f64,
     chrome_top: f64,
     cw: f64,
     ch: f64,
@@ -12377,6 +12543,8 @@ fn draw_save_as_overlay(
     let panel_h = ch + 8.0;
     let panel_x = ((dw - panel_w) * 0.5).max(0.0);
     let panel_y = chrome_top + 4.0 * ch;
+
+    draw_overlay_scrim_and_shadow(raster, dw, dh, panel_x, panel_y, panel_w, panel_h);
 
     raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
     raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent);
@@ -12428,6 +12596,8 @@ fn draw_open_folder_overlay(
     let panel_h = ch + 8.0;
     let panel_x = ((dw - panel_w) * 0.5).max(0.0);
     let panel_y = chrome_top + 4.0 * ch;
+
+    draw_overlay_shadow(raster, panel_x, panel_y, panel_w, panel_h);
 
     raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
     raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent);
@@ -12481,6 +12651,8 @@ fn draw_theme_picker_overlay(
     let panel_h = header_h + (rows as f64) * (ch + 2.0);
     let panel_x = ((dw - panel_w) * 0.5).max(0.0);
     let panel_y = chrome_top + 2.0 * ch;
+
+    draw_overlay_shadow(raster, panel_x, panel_y, panel_w, panel_h);
 
     raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
     raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent);
@@ -12543,6 +12715,8 @@ fn draw_language_picker_overlay(
     let panel_h = header_h + (rows as f64 + 1.0) * (ch + 2.0);
     let panel_x = ((dw - panel_w) * 0.5).max(0.0);
     let panel_y = chrome_top + 2.0 * ch;
+
+    draw_overlay_shadow(raster, panel_x, panel_y, panel_w, panel_h);
 
     raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
     raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent);
@@ -12620,6 +12794,8 @@ fn draw_lsp_references_overlay(
     let panel_x = ((dw - panel_w) * 0.5).max(0.0);
     let panel_y = (chrome_top + 2.0 * ch).min(dh - panel_h).max(chrome_top);
 
+    draw_overlay_scrim_and_shadow(raster, dw, dh, panel_x, panel_y, panel_w, panel_h);
+
     // Background + border.
     raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
     raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent);
@@ -12680,6 +12856,8 @@ fn draw_workspace_symbol_overlay(
     let panel_x = ((dw - panel_w) * 0.5).max(0.0);
     let panel_y = (chrome_top + (dh - chrome_top - panel_h) * 0.2).max(chrome_top);
     let pad_x = 2.0 * cw;
+
+    draw_overlay_scrim_and_shadow(raster, dw, dh, panel_x, panel_y, panel_w, panel_h);
 
     // Background + border.
     raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
@@ -12814,6 +12992,8 @@ fn draw_buffer_symbol_overlay(
     let panel_x = ((dw - panel_w) * 0.5).max(0.0);
     let panel_y = (chrome_top + (dh - chrome_top - panel_h) * 0.2).max(chrome_top);
     let pad_x = 2.0 * cw;
+
+    draw_overlay_scrim_and_shadow(raster, dw, dh, panel_x, panel_y, panel_w, panel_h);
 
     raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
     raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.hairline);
@@ -13140,7 +13320,7 @@ fn draw_project_switcher_overlay(
     recent_projects: &[PathBuf],
     selected: usize,
     dw: f64,
-    _dh: f64,
+    dh: f64,
     chrome_top: f64,
     cw: f64,
     ch: f64,
@@ -13154,6 +13334,8 @@ fn draw_project_switcher_overlay(
     let panel_h = header_h + rows as f64 * (ch + 4.0);
     let panel_x = ((dw - panel_w) * 0.5).max(0.0);
     let panel_y = chrome_top + 2.0 * ch;
+
+    draw_overlay_scrim_and_shadow(raster, dw, dh, panel_x, panel_y, panel_w, panel_h);
 
     raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
     raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent);
@@ -13299,6 +13481,8 @@ fn draw_scm_panel_overlay(
         (total_rows as f64 * row_h + commit_input_h + 8.0).min(dh - chrome_top - chrome_bot - 20.0);
     let panel_x = ((dw - panel_w) * 0.5).max(0.0);
     let panel_y = chrome_top + 1.5 * ch;
+
+    draw_overlay_scrim_and_shadow(raster, dw, dh, panel_x, panel_y, panel_w, panel_h);
 
     raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
     raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent_bright);
@@ -13522,6 +13706,7 @@ fn draw_branch_switcher_overlay(
     theme: &anvil_theme::Theme,
     sw: &BranchSwitcher,
     dw: f64,
+    _dh: f64,
     chrome_top: f64,
     cw: f64,
     ch: f64,
@@ -13534,6 +13719,8 @@ fn draw_branch_switcher_overlay(
     let panel_h = header_h + rows as f64 * row_h + 4.0;
     let panel_x = ((dw - panel_w) * 0.5).max(0.0);
     let panel_y = chrome_top + 2.0 * ch;
+
+    draw_overlay_shadow(raster, panel_x, panel_y, panel_w, panel_h);
 
     raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
     raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent);
@@ -13628,6 +13815,8 @@ fn draw_git_log_overlay(
     let panel_h = header_h + rows as f64 * row_h + 4.0;
     let panel_x = ((dw - panel_w) * 0.5).max(0.0);
     let panel_y = chrome_top + 2.0 * ch;
+
+    draw_overlay_shadow(raster, panel_x, panel_y, panel_w, panel_h);
 
     raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
     raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent);
@@ -14189,6 +14378,9 @@ fn main() -> Result<()> {
         hovered_editor_tab: None,
         editor_tab_hits: Vec::new(),
         expanded_dirs: HashSet::new(),
+        explorer_collapsed: false,
+        outline_collapsed: false,
+        tab_strip_scroll_offset: 0.0,
         scroll_indicator_alpha: 0.0,
         scroll_indicator_last_scroll: None,
         fs_last_cwd: None,
