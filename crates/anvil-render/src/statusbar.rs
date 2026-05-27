@@ -107,7 +107,9 @@ pub fn draw_status_bar(
             UiWeight::Regular,
             color,
         );
-        x += raster.ui_measure(ui_painter, label, STATUS_PT, UiWeight::Regular) + 2.0 * cell_w;
+        // P5: 8pt inter-segment gap (was 2 cell-widths).
+        x +=
+            raster.ui_measure(ui_painter, label, STATUS_PT, UiWeight::Regular) + 8.0 * window_scale;
     }
 
     // ── Left: cwd  ✓/✗ last 0.1s ─────────────────────────────────────────
@@ -122,7 +124,8 @@ pub fn draw_status_bar(
             UiWeight::Regular,
             theme.text_muted,
         );
-        x += raster.ui_measure(ui_painter, &cwd, STATUS_PT, UiWeight::Regular) + 2.0 * cell_w;
+        // P5: 8pt inter-segment gap (was 2 cell-widths).
+        x += raster.ui_measure(ui_painter, &cwd, STATUS_PT, UiWeight::Regular) + 8.0 * window_scale;
 
         // ✓/✗ symbols stay on mono path (single special chars).
         let (sym_cp, sym_color) = match local_ctx.run {

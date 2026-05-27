@@ -17,7 +17,8 @@ pub const TAB_LABEL_PT: f64 = 13.0;
 pub const CONTEXT_BAR_PT: f64 = 12.0;
 
 /// Status bar text — Regular weight.
-pub const STATUS_PT: f64 = 12.0;
+/// P5: bumped from 12pt to 13pt so the bar text matches the explorer row weight.
+pub const STATUS_PT: f64 = 13.0;
 
 /// Overlay card title — Semibold weight.
 pub const OVERLAY_TITLE_PT: f64 = 14.0;
