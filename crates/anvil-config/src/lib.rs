@@ -229,6 +229,23 @@ pub struct EditorCfg {
     pub save_on_blur: bool,
 }
 
+/// Explorer-specific configuration options (Y1).
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ExplorerCfg {
+    /// When `true`, expanding a directory at depth > 2 collapses sibling
+    /// directories at the same depth.  Default: `false`.
+    pub auto_collapse_siblings: bool,
+}
+
+/// A named task defined in `[tasks]` (Y12).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskDef {
+    /// Shell command to run in the drawer terminal.
+    pub cmd: String,
+}
+
 /// Top-level configuration. Every field is optional in TOML; missing fields
 /// keep their defaults.
 #[derive(Clone, Debug, Deserialize)]
@@ -246,6 +263,10 @@ pub struct Config {
     pub shell_integration: bool,
     pub prompt: PromptCfg,
     pub editor: EditorCfg,
+    pub explorer: ExplorerCfg,
+    /// Named tasks (`[tasks.<name>]`). Y12.
+    #[serde(default)]
+    pub tasks: std::collections::HashMap<String, TaskDef>,
 }
 
 impl Default for Config {
@@ -262,6 +283,8 @@ impl Default for Config {
             shell_integration: true,
             prompt: PromptCfg::default(),
             editor: EditorCfg::default(),
+            explorer: ExplorerCfg::default(),
+            tasks: std::collections::HashMap::new(),
         }
     }
 }
@@ -779,5 +802,49 @@ command = "echo prod"
             assert!(s.ends_with("/.config/anvil/config.toml"), "got: {s}");
         }
         // If $HOME is unset the function returns None — that's fine.
+    }
+
+    // ── Y1: ExplorerCfg ──────────────────────────────────────────────────────
+
+    #[test]
+    fn explorer_auto_collapse_siblings_defaults_false() {
+        let cfg = Config::default();
+        assert!(
+            !cfg.explorer.auto_collapse_siblings,
+            "auto_collapse_siblings must default to false (Y1)"
+        );
+    }
+
+    #[test]
+    fn explorer_auto_collapse_siblings_parses_from_toml() {
+        let src = "[explorer]\nauto_collapse_siblings = true\n";
+        let cfg = parse_str(src).unwrap();
+        assert!(
+            cfg.explorer.auto_collapse_siblings,
+            "auto_collapse_siblings should be true when set in TOML (Y1)"
+        );
+    }
+
+    // ── Y12: Tasks ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn tasks_empty_by_default() {
+        let cfg = Config::default();
+        assert!(cfg.tasks.is_empty(), "tasks must be empty by default (Y12)");
+    }
+
+    #[test]
+    fn tasks_parses_from_toml() {
+        let src = r#"
+[tasks.test]
+cmd = "cargo test"
+
+[tasks.build]
+cmd = "cargo build"
+"#;
+        let cfg = parse_str(src).unwrap();
+        assert_eq!(cfg.tasks.len(), 2, "should parse 2 tasks (Y12)");
+        assert_eq!(cfg.tasks["test"].cmd, "cargo test");
+        assert_eq!(cfg.tasks["build"].cmd, "cargo build");
     }
 }
