@@ -1028,13 +1028,14 @@ impl Terminal {
             }
             1000 => self.modes.mouse_button = on,
             1002 => self.modes.mouse_button = on,
-            1006 => self.modes.mouse_sgr = on,
-            2004 => self.modes.bracketed_paste = on,
+            1006 => self.modes.mouse_sgr = on, // SGR mouse encoding (\x1b[?1006h) — present and working
+            2004 => self.modes.bracketed_paste = on, // bracketed paste (\x1b[?2004h) — present and working
             1049 => self.set_alt_screen(on),
             _ => {}
         }
     }
 
+    /// DECSCUSR — cursor shape via \x1b[N q, N 0..=6 (block/underline/bar) — present and working.
     fn apply_decscusr(&mut self, ps: u16) {
         match ps {
             0 => {
@@ -1382,6 +1383,9 @@ fn apply_sgr_at(pen: &mut Cell, params: &[u16], i: usize) -> usize {
     0
 }
 
+/// Parses extended color subparams for SGR 38/48:
+///   subparam 2 → 24-bit truecolor (\x1b[38;2;R;G;Bm / \x1b[48;2;R;G;Bm) — present and working
+///   subparam 5 → 256-color palette index — present and working
 fn apply_extended_color(target: &mut Color, params: &[u16], i: usize) -> usize {
     if i + 1 >= params.len() {
         return 0;
