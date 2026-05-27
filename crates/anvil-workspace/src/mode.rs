@@ -89,7 +89,7 @@ impl Docks {
             hud_visible,
             chrome_bottom_px,
             left_dock_visible,
-            300.0,
+            260.0,
             1.0,
         )
     }
@@ -268,7 +268,7 @@ mod tests {
     #[test]
     fn widths_sum_to_inner_w_ide() {
         let areas = docks_for(LayoutMode::Ide, false).compute_areas(INNER, MIN_W, MIN_H);
-        // left_w = 260; right_w = 88; pane_w = 1280-260-88 = 932
+        // left_w = 260 (D2 default); right_w = 24 (GRID_PAD, hud_visible=false); pane_w = 1280-260-24 = 996
         assert_eq!(
             areas.left_dock.w + areas.pane_area.w + areas.right_dock.w,
             INNER.w
