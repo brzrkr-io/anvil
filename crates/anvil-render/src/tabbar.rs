@@ -95,9 +95,10 @@ pub fn draw_tab_bar(
     // at chrome_top_px - 1; the strip's painted region is [0, chrome_top_px).
     raster.fill_pixel_rect(0.0, 0.0, total_w, chrome_top_px - 1.0, theme.graphite);
 
-    // Vertical baseline for chrome glyphs: cell rect's top is centred in
-    // the strip so the glyph sits visually in the middle of the chrome row.
-    let glyph_y = ((chrome_top_px - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+    // Vertical position for chrome content: cell top centred in the chrome row.
+    // glyph_at expects the cell-top (icon_top); ui_line expects the baseline.
+    let icon_top = ((chrome_top_px - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+    let glyph_y = icon_top + (cell_h - metrics.descent);
 
     // Reserve the traffic-light zone (left side of the chrome row).
     let tl_reserve_px = TRAFFIC_LIGHT_RESERVE_PT * window_scale;
@@ -112,7 +113,7 @@ pub fn draw_tab_bar(
             painter,
             metrics,
             basin_x,
-            glyph_y,
+            icon_top,
             BASIN_MARK,
             theme.accent_bright,
         );
@@ -130,7 +131,7 @@ pub fn draw_tab_bar(
         theme,
         &right_str,
         right_start_x,
-        glyph_y,
+        icon_top,
     );
 
     // ── Tabs ─────────────────────────────────────────────────────────────
@@ -180,7 +181,7 @@ pub fn draw_tab_bar(
             painter,
             metrics,
             draw_left_chevron_x,
-            glyph_y,
+            icon_top,
             '◀' as u32,
             theme.text_subtle,
         );
@@ -199,7 +200,7 @@ pub fn draw_tab_bar(
             painter,
             metrics,
             draw_right_chevron_x,
-            glyph_y,
+            icon_top,
             '▶' as u32,
             theme.text_subtle,
         );
@@ -307,7 +308,7 @@ pub fn draw_tab_bar(
                 painter,
                 metrics,
                 close_x,
-                glyph_y,
+                icon_top,
                 '×' as u32,
                 theme.text_muted,
             );
@@ -325,7 +326,7 @@ pub fn draw_tab_bar(
                 painter,
                 metrics,
                 dot_x,
-                glyph_y,
+                icon_top,
                 '·' as u32,
                 theme.attention,
             );
@@ -369,7 +370,7 @@ pub fn draw_tab_bar(
             painter,
             metrics,
             add_x,
-            glyph_y,
+            icon_top,
             '+' as u32,
             theme.text_muted,
         );
