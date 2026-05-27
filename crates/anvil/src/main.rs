@@ -8316,7 +8316,11 @@ impl AppHandler for AppShell {
                 }
                 // W5 #24: Cmd+Return — insert blank line below when editor is
                 // focused. Falls through to agent_approve when HUD is visible.
-                KeyInput::Enter if !mods.shift && !mods.control && !mods.option => {
+                // CRITICAL: must require mods.command, otherwise plain Enter is
+                // swallowed and terminal panes never receive newlines.
+                KeyInput::Enter
+                    if mods.command && !mods.shift && !mods.control && !mods.option =>
+                {
                     if self.app.focused_is_native_editor() && !self.app.hud_visible {
                         self.app
                             .apply_editor_action(EditorAction::InsertBlankLineBelow);
@@ -8338,12 +8342,15 @@ impl AppHandler for AppShell {
                                 poller.kick();
                             }
                         }
+                        return;
                     }
-                    return;
+                    // Fall through: plain Enter (no Cmd) is not handled here.
                 }
                 // W6 #25: Cmd+Shift+Return — insert blank line above when editor is
                 // focused. Falls through to agent_start when HUD is visible.
-                KeyInput::Enter if mods.shift && !mods.control && !mods.option => {
+                KeyInput::Enter
+                    if mods.command && mods.shift && !mods.control && !mods.option =>
+                {
                     if self.app.focused_is_native_editor() && !self.app.hud_visible {
                         self.app
                             .apply_editor_action(EditorAction::InsertBlankLineAbove);
@@ -8357,8 +8364,9 @@ impl AppHandler for AppShell {
                             let _ = anvil_caldera::start_run(client, "", "");
                             poller.kick();
                         }
+                        return;
                     }
-                    return;
+                    // Fall through: plain Shift+Enter is not handled here.
                 }
                 KeyInput::Char(ch) if self.app.handle_cmd_chord(mods, ch, &self.webview) => {
                     return;
