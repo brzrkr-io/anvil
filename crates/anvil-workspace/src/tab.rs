@@ -240,6 +240,19 @@ impl Tab {
         Some(terminal_id)
     }
 
+    /// Collapse a mixed IDE layout back to a single terminal pane WITHOUT
+    /// destroying editor pane state.  Editor panes remain in the registries;
+    /// only the pane-tree root is rewritten.  Use this when the user is
+    /// temporarily switching to Terminal mode and will switch back to IDE.
+    ///
+    /// Returns the terminal pane id that is now the focused root leaf.
+    pub fn hide_to_terminal_surface(&mut self) -> Option<PaneId> {
+        let terminal_id = self.first_terminal_pane_id()?;
+        *self.tree.root = PaneNode::Leaf(terminal_id);
+        self.tree.focused = terminal_id;
+        Some(terminal_id)
+    }
+
     /// Normalize IDE mode to one primary editor plus, when available, one compact
     /// bottom terminal drawer. This is intentionally opinionated for IDE mode:
     /// Cmd+E is "show the editor surface", not "keep splitting scratch panes".

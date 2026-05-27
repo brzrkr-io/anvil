@@ -328,6 +328,15 @@ pub enum EditorAction {
     /// the newline between them with a single space.  No-op on the last line.
     JoinLines,
 
+    // ── W5/W6: insert blank line ──────────────────────────────────────────────
+    /// W5 (Cmd+Return, editor-focused): insert a blank line below the cursor
+    /// line and move the cursor to it.  Does not split the current line.
+    InsertBlankLineBelow,
+
+    /// W6 (Cmd+Shift+Return, editor-focused): insert a blank line above the
+    /// cursor line and move the cursor to it.  Does not split the current line.
+    InsertBlankLineAbove,
+
     // ── Tier-X additions ─────────────────────────────────────────────────────
     /// X14 (Opt+←): move one word boundary to the left.  Word chars: alnum + `_`.
     MoveWordLeft {
@@ -2575,6 +2584,42 @@ impl EditorPaneRegistry {
                     },
                     false,
                 );
+                true
+            }
+
+            // ── W5/W6: insert blank line ──────────────────────────────────────
+            EditorAction::InsertBlankLineBelow => {
+                let line = pane.cursors[0].pos.line;
+                {
+                    let buf = self.buffers.get_mut(&buffer_id).unwrap();
+                    buf.insert_str(
+                        Position {
+                            line: line + 1,
+                            col: 0,
+                        },
+                        "\n",
+                    );
+                }
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                set_cursor(
+                    pane,
+                    Position {
+                        line: line + 1,
+                        col: 0,
+                    },
+                    false,
+                );
+                true
+            }
+
+            EditorAction::InsertBlankLineAbove => {
+                let line = pane.cursors[0].pos.line;
+                {
+                    let buf = self.buffers.get_mut(&buffer_id).unwrap();
+                    buf.insert_str(Position { line, col: 0 }, "\n");
+                }
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                set_cursor(pane, Position { line, col: 0 }, false);
                 true
             }
 
