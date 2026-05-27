@@ -464,13 +464,14 @@ fn draw_left_dock_icons_only(
             );
         }
 
+        // P4: icons-only mode — dir chevron accent_primary, files keep per-ext color.
         let (icon_ch, icon_color) = if *is_dir {
             let ch = if expanded_dirs.contains(path) {
                 '▾'
             } else {
                 '▸'
             };
-            (ch, theme.foreground)
+            (ch, theme.accent_primary)
         } else {
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             let (ch, col) = file_icon_colored(name, theme);
@@ -833,14 +834,15 @@ fn draw_explorer_section(
                 let icon_x = rect.x + pad_x + indent;
 
                 // Directory chevron toggles ▸/▾ based on expanded_dirs.
+                // P4: dir chevron → accent_primary so directories feel heavier
+                // than file rows. File icon keeps per-ext semantic color.
                 let (icon_ch, icon_color) = if *is_dir {
                     let chevron = if expanded_dirs.contains(path) {
                         '▾'
                     } else {
                         '▸'
                     };
-                    // Dirs use text_muted so files (foreground) stand out more.
-                    (chevron, theme.text_muted)
+                    (chevron, theme.accent_primary)
                 } else {
                     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                     let (ch, col) = file_icon_colored(name, theme);
@@ -893,14 +895,14 @@ fn draw_explorer_section(
                     );
                 }
 
-                // Files: foreground (or accent_primary when selected).
-                // Dirs: text_muted — visual hierarchy: files pop, dirs recede.
+                // P4: visual hierarchy — dirs are "heavier" anchors, files are
+                // quieter leaf nodes. Selected file keeps accent_primary.
+                // Dirs: text_muted (unchanged); files: text_muted (was foreground).
+                // Active file: accent_primary (already handled by selected guard).
                 let label_color = if selected {
                     theme.accent_primary
-                } else if *is_dir {
-                    theme.text_muted
                 } else {
-                    theme.foreground
+                    theme.text_muted
                 };
                 // Y5: count badge "(N)" for collapsed dirs whose children are cached.
                 // Appended after the name for dirs that are NOT expanded.
