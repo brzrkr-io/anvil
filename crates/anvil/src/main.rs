@@ -7966,9 +7966,9 @@ impl AppHandler for AppShell {
                 // V3: when animating to 0, flip left_dock_visible off at snap.
                 if app.left_dock_w_pt_target == 0.0 {
                     app.left_dock_visible = false;
-                    // Reset to default so next toggle-on starts at 300pt.
-                    app.left_dock_w_pt = 300.0;
-                    app.left_dock_w_pt_target = 300.0;
+                    // Reset to default so next toggle-on starts at 260pt (D2).
+                    app.left_dock_w_pt = 260.0;
+                    app.left_dock_w_pt_target = 260.0;
                 }
                 app.resize_all_tabs();
                 app.force_full_redraw = true;
@@ -13681,8 +13681,8 @@ fn main() -> Result<()> {
         // Explorer so file-open state is unmistakable. Users can still hide it
         // with Cmd+B.
         left_dock_visible: layout_mode == LayoutMode::Ide,
-        left_dock_w_pt: 300.0,
-        left_dock_w_pt_target: 300.0,
+        left_dock_w_pt: 260.0,
+        left_dock_w_pt_target: 260.0,
         sidebar_drag_active: false,
         drawer_drag_active: false,
         sidebar_divider_last_click: None,

@@ -141,12 +141,16 @@ pub fn draw_tab_bar(
     let tabs_end_x = (right_start_x - 2.0 * cell_w).max(tabs_start_x);
     let avail_tab_w = tabs_end_x - tabs_start_x;
 
-    // Per-tab pixel width (natural size; no compression — we scroll instead).
+    // Per-tab pixel width: proportional label measure + padding, clamped.
+    // Uses ui_painter.measure for accurate proportional width instead of
+    // cell-count estimate, so short labels don't leave blank gaps.
     let tab_widths: Vec<f64> = (0..n)
         .map(|t| {
-            let label_len = tab_label(tabs, t).chars().count();
-            let cells = (label_len + 5).clamp(9, 24) as f64;
-            cells * cell_w
+            let label = tab_label(tabs, t);
+            let label_w = ui_painter.measure(&label, TAB_LABEL_PT, UiWeight::Regular);
+            // 2× TAB_PAD for leading + trailing, plus close-× cell.
+            let pad = 2.0 * 16.0 * window_scale + cell_w;
+            (label_w + pad).max(9.0 * cell_w).min(24.0 * cell_w)
         })
         .collect();
     let total_raw_w: f64 = tab_widths.iter().sum();
