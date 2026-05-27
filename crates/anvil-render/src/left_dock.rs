@@ -77,6 +77,8 @@ impl LeftDockHits {
 pub struct DirEntry {
     pub name: String,
     pub is_dir: bool,
+    /// True when the filesystem entry is a symbolic link (Y3).
+    pub is_symlink: bool,
 }
 
 /// Snapshot of a directory's top-level entries.
@@ -368,7 +370,7 @@ fn draw_left_dock_icons_only(
         _ => return std::mem::take(hits),
     };
 
-    let mut all_rows: Vec<(PathBuf, bool, usize)> = Vec::new();
+    let mut all_rows: Vec<(PathBuf, bool, usize, bool)> = Vec::new();
     collect_visible_rows(
         snap,
         &PathBuf::from(&snap.root),
@@ -379,7 +381,7 @@ fn draw_left_dock_icons_only(
     );
 
     // Populate visible_rows (stable index for hit dispatch).
-    for (path, is_dir, _) in &all_rows {
+    for (path, is_dir, _, _) in &all_rows {
         hits.visible_rows.push((path.clone(), *is_dir));
     }
 
@@ -390,7 +392,7 @@ fn draw_left_dock_icons_only(
     let cell_w = metrics.cell_w;
     let cell_h = metrics.cell_h;
 
-    for (slot_i, (path, is_dir, _depth)) in
+    for (slot_i, (path, is_dir, _depth, _sym)) in
         all_rows.iter().enumerate().skip(first).take(available_rows)
     {
         let row_i = slot_i - first;
@@ -586,7 +588,7 @@ fn draw_explorer_section(
             // Build the flat ordered list of all visible rows by walking the
             // tree top-down: root entries, then recursively expanded children.
             // Also collect last-sibling flags per row for branch glyph rendering.
-            let mut all_rows: Vec<(PathBuf, bool, usize)> = Vec::new(); // (path, is_dir, depth)
+            let mut all_rows: Vec<(PathBuf, bool, usize, bool)> = Vec::new(); // (path, is_dir, depth, is_symlink)
             // R3: when a filter is active, expand ALL directories so we can search
             // across the full tree. Use a temporary set that contains every dir path.
             let filter_expanded: HashSet<PathBuf>;
@@ -612,7 +614,7 @@ fn draw_explorer_section(
                 let file_matches: HashSet<usize> = all_rows
                     .iter()
                     .enumerate()
-                    .filter(|(_, (p, is_dir, _))| {
+                    .filter(|(_, (p, is_dir, _, _))| {
                         !is_dir
                             && p.file_name()
                                 .and_then(|n| n.to_str())
@@ -632,7 +634,7 @@ fn draw_explorer_section(
                         p = par;
                     }
                 }
-                all_rows.retain(|(p, _, _)| keep_paths.contains(p));
+                all_rows.retain(|(p, _, _, _)| keep_paths.contains(p));
             }
 
             // Compute is_last_sibling per row at each depth level.
@@ -654,7 +656,7 @@ fn draw_explorer_section(
                             .unwrap_or(path_i.as_path())
                             .to_path_buf();
                         // is_last: no later row at depth d has anc_i as ancestor.
-                        !all_rows[i + 1..].iter().any(|(p, _, dd)| {
+                        !all_rows[i + 1..].iter().any(|(p, _, dd, _)| {
                             *dd == d && {
                                 let anc_p: PathBuf = p
                                     .ancestors()
@@ -673,26 +675,52 @@ fn draw_explorer_section(
             let total_rows = all_rows.len();
             let first = scroll_offset.min(total_rows.saturating_sub(available_rows));
 
-            for (slot_i, (path, is_dir, depth)) in
+            for (slot_i, (path, is_dir, depth, is_symlink)) in
                 all_rows.iter().enumerate().skip(first).take(available_rows)
             {
                 // slot_i is the absolute index in `all_rows`; row_i is the screen slot.
                 let row_i = slot_i - first;
                 let row_top = content_y_start + row_i as f64 * row_h;
 
+                // Y4: empty-dir sentinel rows use path ending in "\x00empty".
+                let is_empty_sentinel = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n == "\x00empty")
+                    .unwrap_or(false);
+
                 // The visible row index reported in the hit is `slot_i` so that
                 // `visible_rows[slot_i]` gives back the path.
-                hits.hits.push(LeftDockHit {
-                    rect: Rect {
-                        x: rect.x,
-                        y: row_top,
-                        w: rect.w,
-                        h: row_h.min((content_y_start + content_h - row_top).max(0.0)),
-                    },
-                    kind: LeftDockHitKind::Explorer(ExplorerHit::Row(slot_i)),
-                });
+                if !is_empty_sentinel {
+                    hits.hits.push(LeftDockHit {
+                        rect: Rect {
+                            x: rect.x,
+                            y: row_top,
+                            w: rect.w,
+                            h: row_h.min((content_y_start + content_h - row_top).max(0.0)),
+                        },
+                        kind: LeftDockHitKind::Explorer(ExplorerHit::Row(slot_i)),
+                    });
+                }
 
                 let glyph_y = row_top + ((row_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+
+                // Y4: render italic "(empty)" placeholder for empty expanded dirs.
+                if is_empty_sentinel {
+                    let indent = *depth as f64 * indent_px;
+                    let text_x = rect.x + pad_x + indent + cell_w * 2.0;
+                    draw_text_run(
+                        raster,
+                        painter,
+                        metrics,
+                        "(empty)",
+                        theme.text_subtle,
+                        text_x,
+                        glyph_y,
+                        rect.x + rect.w - pad_x,
+                    );
+                    continue;
+                }
 
                 let selected = !is_dir && active_file_path == Some(path.as_path());
                 let row_x = rect.x + 6.0;
@@ -839,26 +867,60 @@ fn draw_explorer_section(
                 }
 
                 let label_color = theme.foreground;
+                // Y5: count badge "(N)" for collapsed dirs whose children are cached.
+                // Appended after the name for dirs that are NOT expanded.
+                let child_count_suffix: Option<String> = if *is_dir && !expanded_dirs.contains(path)
+                {
+                    child_snapshots
+                        .get(path)
+                        .map(|cs| format!(" ({})", cs.entries.len()))
+                } else {
+                    None
+                };
+
                 let max_chars = ((max_x - label_x) / cell_w).floor().max(0.0) as usize;
-                let truncated = truncate_name(name, max_chars);
+                let display_name = if let Some(ref suffix) = child_count_suffix {
+                    let full = format!("{name}{suffix}");
+                    truncate_name(&full, max_chars)
+                } else {
+                    truncate_name(name, max_chars)
+                };
 
                 draw_text_run(
                     raster,
                     painter,
                     metrics,
-                    &truncated,
+                    &display_name,
                     label_color,
                     label_x,
                     glyph_y,
                     max_x,
                 );
+
+                // Y3: symlink indicator — render " →" after the name in text_subtle.
+                if *is_symlink {
+                    let label_len = display_name.chars().count();
+                    let arrow_x = label_x + label_len as f64 * cell_w + cell_w * 0.5;
+                    if arrow_x + cell_w < max_x {
+                        draw_text_run(
+                            raster,
+                            painter,
+                            metrics,
+                            "\u{2192}", // →
+                            theme.text_subtle,
+                            arrow_x,
+                            glyph_y,
+                            max_x,
+                        );
+                    }
+                }
             }
 
             // Populate visible_rows — one entry per row in all_rows (not just
             // rendered ones) so that `ExplorerHit::Row(slot_i)` indexes into it.
             // We populate all of them up-front so the index is stable.
             if hits.visible_rows.is_empty() {
-                for (path, is_dir, _depth) in &all_rows {
+                for (path, is_dir, _depth, _sym) in &all_rows {
                     hits.visible_rows.push((path.clone(), *is_dir));
                 }
             }
@@ -886,8 +948,8 @@ fn draw_explorer_section(
 }
 
 /// Recursively collect the flat, ordered list of visible rows for the tree
-/// walk. Appends `(absolute_path, is_dir, depth)` for each entry that should
-/// be rendered. Respects `expanded_dirs` and `child_snapshots`.
+/// walk. Appends `(absolute_path, is_dir, depth, is_symlink)` for each entry
+/// that should be rendered. Respects `expanded_dirs` and `child_snapshots`.
 ///
 /// `snap` is the snapshot for the directory at `dir_path`. Depth is capped at
 /// [`MAX_RENDER_DEPTH`] to prevent stack or render blowup on pathological trees.
@@ -897,24 +959,30 @@ fn collect_visible_rows(
     depth: usize,
     expanded_dirs: &HashSet<PathBuf>,
     child_snapshots: &HashMap<PathBuf, DirSnapshot>,
-    out: &mut Vec<(PathBuf, bool, usize)>,
+    out: &mut Vec<(PathBuf, bool, usize, bool)>,
 ) {
     if depth >= MAX_RENDER_DEPTH {
         return;
     }
     for entry in &snap.entries {
         let abs = dir_path.join(&entry.name);
-        out.push((abs.clone(), entry.is_dir, depth));
+        out.push((abs.clone(), entry.is_dir, depth, entry.is_symlink));
         if entry.is_dir && expanded_dirs.contains(&abs) {
             if let Some(child_snap) = child_snapshots.get(&abs) {
+                let child_depth = depth + 1;
                 collect_visible_rows(
                     child_snap,
                     &abs,
-                    depth + 1,
+                    child_depth,
                     expanded_dirs,
                     child_snapshots,
                     out,
                 );
+                // Y4: empty dir indicator — if the expanded dir has no children and
+                // we are within the depth limit, push a sentinel placeholder row.
+                if child_snap.entries.is_empty() && child_depth < MAX_RENDER_DEPTH {
+                    out.push((abs.join("\x00empty"), false, child_depth, false));
+                }
             }
         }
     }
@@ -1288,10 +1356,12 @@ mod tests {
                 DirEntry {
                     name: "src".to_string(),
                     is_dir: true,
+                    is_symlink: false,
                 },
                 DirEntry {
                     name: "main.rs".to_string(),
                     is_dir: false,
+                    is_symlink: false,
                 },
             ],
             git_marks: Default::default(),
@@ -1325,6 +1395,7 @@ mod tests {
             entries: vec![DirEntry {
                 name: "main.rs".to_string(),
                 is_dir: false,
+                is_symlink: false,
             }],
             git_marks: Default::default(),
         };
@@ -1372,6 +1443,7 @@ mod tests {
                 .map(|i| DirEntry {
                     name: format!("file-{i}.rs"),
                     is_dir: false,
+                    is_symlink: false,
                 })
                 .collect(),
             git_marks: Default::default(),
@@ -1414,10 +1486,12 @@ mod tests {
                 DirEntry {
                     name: "src".to_string(),
                     is_dir: true,
+                    is_symlink: false,
                 },
                 DirEntry {
                     name: "main.rs".to_string(),
                     is_dir: false,
+                    is_symlink: false,
                 },
             ],
             git_marks: Default::default(),
@@ -1473,10 +1547,12 @@ mod tests {
                 DirEntry {
                     name: "editor.rs".to_string(),
                     is_dir: false,
+                    is_symlink: false,
                 },
                 DirEntry {
                     name: "main.rs".to_string(),
                     is_dir: false,
+                    is_symlink: false,
                 },
             ],
             git_marks: Default::default(),
@@ -1533,10 +1609,12 @@ mod tests {
                 DirEntry {
                     name: "foo.rs".to_string(),
                     is_dir: false,
+                    is_symlink: false,
                 },
                 DirEntry {
                     name: "bar.rs".to_string(),
                     is_dir: false,
+                    is_symlink: false,
                 },
             ],
             git_marks: Default::default(),
@@ -1803,6 +1881,7 @@ mod tests {
                 .map(|i| DirEntry {
                     name: format!("f{i}.rs"),
                     is_dir: false,
+                    is_symlink: false,
                 })
                 .collect(),
             git_marks: Default::default(),
@@ -1892,10 +1971,12 @@ mod tests {
                 DirEntry {
                     name: "src".to_string(),
                     is_dir: true,
+                    is_symlink: false,
                 },
                 DirEntry {
                     name: "Cargo.toml".to_string(),
                     is_dir: false,
+                    is_symlink: false,
                 },
             ],
             git_marks: Default::default(),
@@ -1906,10 +1987,12 @@ mod tests {
                 DirEntry {
                     name: "main.rs".to_string(),
                     is_dir: false,
+                    is_symlink: false,
                 },
                 DirEntry {
                     name: "lib.rs".to_string(),
                     is_dir: false,
+                    is_symlink: false,
                 },
             ],
             git_marks: Default::default(),
@@ -1985,6 +2068,7 @@ mod tests {
                     entries: vec![DirEntry {
                         name: "sub".to_string(),
                         is_dir: true,
+                        is_symlink: false,
                     }],
                     git_marks: Default::default(),
                 }
@@ -2008,6 +2092,7 @@ mod tests {
                     entries: vec![DirEntry {
                         name: "sub".to_string(),
                         is_dir: true,
+                        is_symlink: false,
                     }],
                     git_marks: Default::default(),
                 }
@@ -2057,10 +2142,12 @@ mod tests {
                 DirEntry {
                     name: "src".to_string(),
                     is_dir: true,
+                    is_symlink: false,
                 },
                 DirEntry {
                     name: "main.rs".to_string(),
                     is_dir: false,
+                    is_symlink: false,
                 },
             ],
             git_marks: Default::default(),
@@ -2070,6 +2157,7 @@ mod tests {
             entries: vec![DirEntry {
                 name: "lib.rs".to_string(),
                 is_dir: false,
+                is_symlink: false,
             }],
             git_marks: Default::default(),
         };
@@ -2177,6 +2265,7 @@ mod tests {
             entries: vec![DirEntry {
                 name: "main.rs".to_string(),
                 is_dir: false,
+                is_symlink: false,
             }],
             git_marks: Default::default(),
         };
@@ -2219,10 +2308,12 @@ mod tests {
                 DirEntry {
                     name: "a.rs".to_string(),
                     is_dir: false,
+                    is_symlink: false,
                 },
                 DirEntry {
                     name: "b.rs".to_string(),
                     is_dir: false,
+                    is_symlink: false,
                 },
             ],
             git_marks: Default::default(),
@@ -2286,6 +2377,7 @@ mod tests {
             entries: vec![DirEntry {
                 name: "main.rs".to_string(),
                 is_dir: false,
+                is_symlink: false,
             }],
             git_marks,
         };
@@ -2322,14 +2414,17 @@ mod tests {
                 DirEntry {
                     name: "main.rs".to_string(),
                     is_dir: false,
+                    is_symlink: false,
                 },
                 DirEntry {
                     name: "lib.rs".to_string(),
                     is_dir: false,
+                    is_symlink: false,
                 },
                 DirEntry {
                     name: "README.md".to_string(),
                     is_dir: false,
+                    is_symlink: false,
                 },
             ],
             git_marks: Default::default(),
@@ -2384,10 +2479,12 @@ mod tests {
                 DirEntry {
                     name: "a.rs".to_string(),
                     is_dir: false,
+                    is_symlink: false,
                 },
                 DirEntry {
                     name: "b.rs".to_string(),
                     is_dir: false,
+                    is_symlink: false,
                 },
             ],
             git_marks: Default::default(),
@@ -2415,6 +2512,174 @@ mod tests {
             hits.visible_rows.len(),
             2,
             "no filter: all 2 rows must be visible"
+        );
+    }
+
+    // ── Y3: symlink indicator ─────────────────────────────────────────────────
+
+    /// Y3: a symlink file entry must render the → glyph (U+2192) in text_subtle.
+    #[test]
+    fn symlink_entry_renders_arrow_glyph() {
+        let m = metrics();
+        let th = theme();
+        let mut r = Raster::new(800, 800);
+        let mut p = StubPainter::default();
+
+        let snap = DirSnapshot {
+            root: "/project".to_string(),
+            entries: vec![DirEntry {
+                name: "link_to_file.rs".to_string(),
+                is_dir: false,
+                is_symlink: true,
+            }],
+            git_marks: Default::default(),
+        };
+
+        draw_left_dock(&mut r, &mut p, m, &th, Some(&snap), None, None, dock_rect());
+
+        // Arrow glyph → (U+2192) must appear in text_subtle.
+        let arrow: Vec<_> = p
+            .glyphs
+            .iter()
+            .filter(|(cp, fg)| *cp == '\u{2192}' as u32 && *fg == th.text_subtle)
+            .collect();
+        assert!(
+            !arrow.is_empty(),
+            "symlink entry must render → glyph (U+2192) in text_subtle (Y3)"
+        );
+    }
+
+    // ── Y4: empty dir indicator ───────────────────────────────────────────────
+
+    /// Y4: an expanded dir with no children must render "(empty)" in text_subtle.
+    #[test]
+    fn expanded_empty_dir_shows_empty_placeholder() {
+        let m = metrics();
+        let th = theme();
+        let mut r = Raster::new(800, 800);
+        let mut p = StubPainter::default();
+
+        let root_snap = DirSnapshot {
+            root: "/project".to_string(),
+            entries: vec![DirEntry {
+                name: "empty_dir".to_string(),
+                is_dir: true,
+                is_symlink: false,
+            }],
+            git_marks: Default::default(),
+        };
+        let empty_child = DirSnapshot {
+            root: "/project/empty_dir".to_string(),
+            entries: vec![],
+            git_marks: Default::default(),
+        };
+        let empty_dir_path = PathBuf::from("/project/empty_dir");
+
+        let mut expanded = HashSet::new();
+        expanded.insert(empty_dir_path.clone());
+        let mut children = HashMap::new();
+        children.insert(empty_dir_path, empty_child);
+
+        draw_left_dock_with_scroll(
+            &mut r,
+            &mut p,
+            m,
+            &th,
+            Some(&root_snap),
+            None,
+            None,
+            dock_rect(),
+            0,
+            None,
+            &expanded,
+            &children,
+            0.0,
+            1.0,
+            None,
+        );
+
+        // '(' from "(empty)" must appear in text_subtle.
+        let paren: Vec<_> = p
+            .glyphs
+            .iter()
+            .filter(|(cp, fg)| *cp == '(' as u32 && *fg == th.text_subtle)
+            .collect();
+        assert!(
+            !paren.is_empty(),
+            "expanded empty dir must render '(' in text_subtle for (empty) placeholder (Y4)"
+        );
+    }
+
+    // ── Y5: child count badge ─────────────────────────────────────────────────
+
+    /// Y5: a collapsed dir whose children are cached shows "(N)" after the name.
+    #[test]
+    fn collapsed_dir_with_cached_children_shows_count_badge() {
+        let m = metrics();
+        let th = theme();
+        let mut r = Raster::new(800, 800);
+        let mut p = StubPainter::default();
+
+        let root_snap = DirSnapshot {
+            root: "/project".to_string(),
+            entries: vec![DirEntry {
+                name: "src".to_string(),
+                is_dir: true,
+                is_symlink: false,
+            }],
+            git_marks: Default::default(),
+        };
+        let src_snap = DirSnapshot {
+            root: "/project/src".to_string(),
+            entries: vec![
+                DirEntry {
+                    name: "main.rs".to_string(),
+                    is_dir: false,
+                    is_symlink: false,
+                },
+                DirEntry {
+                    name: "lib.rs".to_string(),
+                    is_dir: false,
+                    is_symlink: false,
+                },
+            ],
+            git_marks: Default::default(),
+        };
+        let src_path = PathBuf::from("/project/src");
+
+        // src is NOT expanded but IS cached (children known).
+        let expanded = HashSet::new(); // empty — not expanded
+        let mut children = HashMap::new();
+        children.insert(src_path, src_snap);
+
+        draw_left_dock_with_scroll(
+            &mut r,
+            &mut p,
+            m,
+            &th,
+            Some(&root_snap),
+            None,
+            None,
+            dock_rect(),
+            0,
+            None,
+            &expanded,
+            &children,
+            0.0,
+            1.0,
+            None,
+        );
+
+        // '(' from "(2)" badge must appear in foreground (label color).
+        // The label and the badge use the same foreground color.
+        let paren_fg: Vec<_> = p
+            .glyphs
+            .iter()
+            .filter(|(cp, fg)| *cp == '(' as u32 && *fg == th.foreground)
+            .collect();
+        assert!(
+            !paren_fg.is_empty(),
+            "collapsed dir with 2 cached children must render '(' in foreground (Y5 count badge)"
         );
     }
 }
