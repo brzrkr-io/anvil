@@ -899,6 +899,13 @@ pub struct App {
     /// (Tier-B item 8).  Default 0.72.
     drawer_saved_ratio: f64,
 
+    // -- drawer multi-terminal (Y7/Y8/Y9) ---
+    /// PaneIds for terminal panes in the IDE drawer, in tab order.
+    /// Maintained by `spawn_ide_terminal_drawer` and the Cmd+T handler.
+    drawer_terminals: Vec<PaneId>,
+    /// Index into `drawer_terminals` for the currently active drawer tab.
+    drawer_active_terminal: usize,
+
     // -- UI state ---
     blink_phase: f32,
     last_blink_opacity: f32,
@@ -1911,9 +1918,67 @@ impl App {
         match Pty::spawn_shell(cols as u16, rows as u16) {
             Ok(pty) => {
                 self.ptys.insert(new_id, pty);
+                // Y7: track this pane as the first drawer terminal.
+                self.drawer_terminals.clear();
+                self.drawer_terminals.push(new_id);
+                self.drawer_active_terminal = 0;
             }
             Err(e) => {
                 eprintln!("anvil: ide drawer pty failed: {e}");
+                if let Some(tab) = self.tabs.current_mut() {
+                    tab.tree.close_leaf(new_id);
+                    tab.registry.remove(new_id);
+                }
+            }
+        }
+    }
+
+    /// Y7: spawn an additional terminal pane in the IDE drawer and add it to
+    /// `drawer_terminals`. Focuses the new pane.
+    fn spawn_drawer_terminal_tab(&mut self) {
+        if self.drawer_terminals.is_empty() {
+            self.spawn_ide_terminal_drawer();
+            return;
+        }
+        let tab = match self.tabs.current() {
+            Some(t) => t,
+            None => return,
+        };
+        if tab.tree.leaf_count() >= MAX_PANES_PER_TAB {
+            return;
+        }
+        let ir = self.pane_area_rect();
+        let ch = self.font.metrics.cell_h;
+        let cw = self.font.metrics.cell_w;
+        let drawer_h = ir.h * 0.28;
+        let cols = ((ir.w / cw) as usize).max(1);
+        let rows = ((drawer_h / ch) as usize).max(1);
+        // Focus the first drawer terminal so that split() acts on it.
+        let first_id = self.drawer_terminals[0];
+        if let Some(tab) = self.tabs.current_mut() {
+            tab.tree.focused = first_id;
+        }
+        let scrollback = self.config.scrollback;
+        let new_id = match self
+            .tabs
+            .current_mut()
+            .map(|t| t.split(SplitDir::Horizontal, cols, rows, scrollback))
+        {
+            Some(Ok(id)) => id,
+            _ => return,
+        };
+        match Pty::spawn_shell(cols as u16, rows as u16) {
+            Ok(pty) => {
+                self.ptys.insert(new_id, pty);
+                self.drawer_terminals.push(new_id);
+                self.drawer_active_terminal = self.drawer_terminals.len() - 1;
+                // Focus the new pane.
+                if let Some(tab) = self.tabs.current_mut() {
+                    tab.tree.focused = new_id;
+                }
+            }
+            Err(e) => {
+                eprintln!("anvil: drawer tab pty failed: {e}");
                 if let Some(tab) = self.tabs.current_mut() {
                     tab.tree.close_leaf(new_id);
                     tab.registry.remove(new_id);
@@ -2096,6 +2161,7 @@ impl App {
                                                 .map(|e| anvil_render::left_dock::DirEntry {
                                                     name: e.name,
                                                     is_dir: e.is_dir,
+                                                    is_symlink: e.is_symlink,
                                                 })
                                                 .collect(),
                                             git_marks: child_snap.git_marks,
@@ -2109,6 +2175,42 @@ impl App {
                 }
             }
             self.active_explorer_file = Some(path);
+        }
+    }
+
+    /// Y1: When `explorer.auto_collapse_siblings` is enabled, collapse sibling
+    /// directories at the same depth as `expanding_path` when the depth > 2.
+    fn maybe_auto_collapse_siblings(&mut self, expanding_path: &Path) {
+        if !self.config.explorer.auto_collapse_siblings {
+            return;
+        }
+        // Compute depth of expanding_path relative to the snapshot root.
+        let root = match self.fs_snapshot.as_ref() {
+            Some(s) if !s.root.is_empty() => PathBuf::from(&s.root),
+            _ => return,
+        };
+        let depth = expanding_path
+            .strip_prefix(&root)
+            .map(|rel| rel.components().count())
+            .unwrap_or(0);
+        if depth <= 2 {
+            return;
+        }
+        // Collapse all expanded siblings at the same depth.
+        let parent = match expanding_path.parent() {
+            Some(p) => p.to_path_buf(),
+            None => return,
+        };
+        let siblings_to_collapse: Vec<PathBuf> = self
+            .expanded_dirs
+            .iter()
+            .filter(|p| {
+                p.parent().map(|pp| pp == parent).unwrap_or(false) && p.as_path() != expanding_path
+            })
+            .cloned()
+            .collect();
+        for sib in siblings_to_collapse {
+            self.expanded_dirs.remove(&sib);
         }
     }
 
@@ -2168,6 +2270,7 @@ impl App {
                 .map(|e| anvil_render::left_dock::DirEntry {
                     name: e.name,
                     is_dir: e.is_dir,
+                    is_symlink: e.is_symlink,
                 })
                 .collect(),
             git_marks: snap.git_marks,
@@ -3631,6 +3734,7 @@ impl App {
                     .map(|e| anvil_render::LeftDockEntry {
                         name: e.name,
                         is_dir: e.is_dir,
+                        is_symlink: e.is_symlink,
                     })
                     .collect(),
                 git_marks: snap.git_marks,
@@ -3650,6 +3754,7 @@ impl App {
                         .map(|e| anvil_render::LeftDockEntry {
                             name: e.name,
                             is_dir: e.is_dir,
+                            is_symlink: e.is_symlink,
                         })
                         .collect(),
                     git_marks: snap.git_marks,
@@ -4732,6 +4837,127 @@ impl App {
             }
         }
 
+        // ── Y8: Drawer tab strip ──────────────────────────────────────────────
+        // When there are multiple drawer terminals, render a compact tab strip
+        // at the top of the drawer area (just below the IDE divider).
+        if self.layout_mode == LayoutMode::Ide && self.drawer_terminals.len() > 1 {
+            if let Some(div_y) = self.ide_drawer_divider_y() {
+                let strip_h = (20.0 * self.ui_scale).round();
+                let strip_y = div_y + 1.0; // 1px below the divider hairline
+                let ir = self.pane_area_rect();
+                let strip_x = ir.x;
+                let strip_w = ir.w;
+                let cell_w = self.font.metrics.cell_w;
+                let cell_h = self.font.metrics.cell_h;
+
+                // Background.
+                self.raster.fill_pixel_rect(
+                    strip_x,
+                    strip_y,
+                    strip_w,
+                    strip_h,
+                    self.theme.charcoal,
+                );
+
+                // Tab pills.
+                let tab_w =
+                    (strip_w / self.drawer_terminals.len() as f64).min(120.0 * self.ui_scale);
+                for (i, _pid) in self.drawer_terminals.iter().enumerate() {
+                    let tab_x = strip_x + i as f64 * tab_w;
+                    let active = i == self.drawer_active_terminal;
+                    if active {
+                        self.raster.fill_pixel_rect(
+                            tab_x,
+                            strip_y,
+                            tab_w,
+                            strip_h,
+                            self.theme.panel,
+                        );
+                    }
+                    // Label: "term 1", "term 2", ...
+                    let label = format!("term {}", i + 1);
+                    let label_x = tab_x + 4.0 * self.ui_scale;
+                    let label_y = strip_y
+                        + ((strip_h - cell_h) * 0.5 + self.font.metrics.descent * 0.5).max(0.0);
+                    let chrome_m = self.chrome_font.metrics;
+                    for (j, ch_c) in label.chars().enumerate() {
+                        let gx = label_x + j as f64 * chrome_m.cell_w;
+                        if gx + chrome_m.cell_w > tab_x + tab_w - 2.0 * self.ui_scale {
+                            break;
+                        }
+                        let _ = cell_w;
+                        let _ = cell_h;
+                        let _ = label_y;
+                        self.raster.glyph_at(
+                            chrome_painter,
+                            chrome_m,
+                            gx,
+                            label_y,
+                            ch_c as u32,
+                            if active {
+                                self.theme.foreground
+                            } else {
+                                self.theme.text_subtle
+                            },
+                        );
+                    }
+                }
+            }
+        }
+
+        // ── Y10: Drawer CWD strip ─────────────────────────────────────────────
+        // Show the active drawer terminal's cwd above the drawer when the
+        // drawer tab strip is not already occupying that row.
+        if self.layout_mode == LayoutMode::Ide
+            && !self.drawer_hidden
+            && self.drawer_terminals.len() <= 1
+        // only when no tab strip (Y8 takes precedence)
+        {
+            if let Some(div_y) = self.ide_drawer_divider_y() {
+                // Resolve cwd from the first drawer terminal.
+                let cwd_str: Option<String> = self
+                    .drawer_terminals
+                    .first()
+                    .copied()
+                    .and_then(|id| {
+                        self.tabs.current().and_then(|tab| {
+                            tab.registry.get(id).and_then(|pane| {
+                                pane.terminal.as_ref().map(|t| t.cwd_path().to_string())
+                            })
+                        })
+                    })
+                    .filter(|s| !s.is_empty());
+                if let Some(cwd) = cwd_str {
+                    let strip_h = (20.0 * self.ui_scale).round();
+                    let strip_y = div_y + 1.0;
+                    let ir = self.pane_area_rect();
+                    // Background.
+                    self.raster
+                        .fill_pixel_rect(ir.x, strip_y, ir.w, strip_h, self.theme.charcoal);
+                    // CWD text.
+                    let chrome_m = self.chrome_font.metrics;
+                    let text_y = strip_y
+                        + ((strip_h - chrome_m.cell_h) * 0.5 + chrome_m.descent * 0.5).max(0.0);
+                    let pad = 8.0 * self.ui_scale;
+                    let label = format!("\u{1F4C1} {cwd}"); // 📁 cwd
+                    for (i, ch_c) in label.chars().enumerate() {
+                        let gx = ir.x + pad + i as f64 * chrome_m.cell_w;
+                        if gx + chrome_m.cell_w > ir.x + ir.w - pad {
+                            break;
+                        }
+                        self.raster.glyph_at(
+                            chrome_painter,
+                            chrome_m,
+                            gx,
+                            text_y,
+                            ch_c as u32,
+                            self.theme.text_subtle,
+                        );
+                    }
+                }
+            }
+        }
+
         // ── Present ───────────────────────────────────────────────────────────
 
         if !self.use_gpu_render {
@@ -4872,6 +5098,19 @@ impl App {
                 title: "Agent: Start Run".to_string(),
                 subtitle: None,
             });
+        }
+
+        // Y11/Y12: named tasks from anvil.toml [tasks] section.
+        let mut task_names: Vec<&str> = self.config.tasks.keys().map(|k| k.as_str()).collect();
+        task_names.sort_unstable();
+        for name in task_names {
+            if let Some(task) = self.config.tasks.get(name) {
+                cmds.push(BridgeCmd {
+                    id: format!("task:run:{name}"),
+                    title: format!("> {name}"),
+                    subtitle: Some(task.cmd.clone()),
+                });
+            }
         }
 
         let theme_tokens = ThemeTokens {
@@ -5481,6 +5720,20 @@ impl App {
             };
         }
 
+        // Y7: Cmd+T when drawer is focused → new terminal tab in drawer.
+        if ascii_lower(ch) == 't'
+            && !mods.shift
+            && !mods.control
+            && !mods.option
+            && self.layout_mode == LayoutMode::Ide
+            && self.focus_target == FocusTarget::Terminal
+            && !self.drawer_terminals.is_empty()
+        {
+            self.spawn_drawer_terminal_tab();
+            self.dirty = true;
+            return true;
+        }
+
         test!(kb.new_tab, {
             self.add_tab();
             return true;
@@ -5510,6 +5763,18 @@ impl App {
             self.focus_neighbor(NavDir::Down);
             return true;
         });
+        // Y15: Cmd+\ when terminal focused → split drawer terminal horizontally.
+        if ch == '\\'
+            && !mods.shift
+            && !mods.control
+            && !mods.option
+            && self.focus_target == FocusTarget::Terminal
+            && self.layout_mode == LayoutMode::Ide
+        {
+            self.spawn_drawer_terminal_tab();
+            self.dirty = true;
+            return true;
+        }
         test!(kb.split_right, {
             self.split_focused_pane(SplitDir::Horizontal);
             return true;
@@ -5774,6 +6039,37 @@ impl App {
                 self.project_switcher_sel = 0;
                 self.dirty = true;
             }
+            return true;
+        }
+
+        // ⌘⇧R — Y2: reveal active file in Explorer.
+        if ascii_lower(ch) == 'r' && mods.shift && !mods.control && !mods.option {
+            // Ensure IDE mode with dock visible.
+            self.layout_mode = LayoutMode::Ide;
+            self.left_dock_visible = true;
+            // Expand ancestors so the active file row appears.
+            self.sync_active_explorer_file();
+            // Switch focus to Explorer.
+            self.focus_target = FocusTarget::Explorer;
+            // Scroll to the active file row.
+            if let Some(ref path) = self.active_explorer_file.clone() {
+                // Find the row index in visible_rows.
+                if let Some(row_idx) = self
+                    .left_dock_hits
+                    .visible_rows
+                    .iter()
+                    .position(|(p, _)| p == path)
+                {
+                    self.selected_explorer_row = Some(row_idx);
+                    let available = self.explorer_visible_rows();
+                    if row_idx < self.explorer_scroll_offset {
+                        self.explorer_scroll_offset = row_idx;
+                    } else if row_idx >= self.explorer_scroll_offset + available {
+                        self.explorer_scroll_offset = row_idx.saturating_sub(available / 2);
+                    }
+                }
+            }
+            self.dirty = true;
             return true;
         }
 
@@ -8117,12 +8413,15 @@ impl AppHandler for AppShell {
                                                 .map(|e| anvil_render::left_dock::DirEntry {
                                                     name: e.name,
                                                     is_dir: e.is_dir,
+                                                    is_symlink: e.is_symlink,
                                                 })
                                                 .collect(),
                                             git_marks: snap.git_marks,
                                         },
                                     );
                                 }
+                                // Y1: auto-collapse siblings when enabled.
+                                self.app.maybe_auto_collapse_siblings(&path);
                                 self.app.expanded_dirs.insert(path);
                                 self.app.dirty = true;
                             }
@@ -8204,12 +8503,15 @@ impl AppHandler for AppShell {
                                                     .map(|e| anvil_render::left_dock::DirEntry {
                                                         name: e.name,
                                                         is_dir: e.is_dir,
+                                                        is_symlink: e.is_symlink,
                                                     })
                                                     .collect(),
                                                 git_marks: snap.git_marks,
                                             },
                                         );
                                     }
+                                    // Y1: auto-collapse siblings when enabled.
+                                    self.app.maybe_auto_collapse_siblings(&path);
                                     self.app.expanded_dirs.insert(path);
                                 }
                                 self.app.dirty = true;
@@ -8346,6 +8648,7 @@ impl AppHandler for AppShell {
                                             .map(|e| anvil_render::left_dock::DirEntry {
                                                 name: e.name,
                                                 is_dir: e.is_dir,
+                                                is_symlink: e.is_symlink,
                                             })
                                             .collect(),
                                         git_marks: new_snap.git_marks,
@@ -8362,6 +8665,7 @@ impl AppHandler for AppShell {
                                             .map(|e| anvil_render::left_dock::DirEntry {
                                                 name: e.name,
                                                 is_dir: e.is_dir,
+                                                is_symlink: e.is_symlink,
                                             })
                                             .collect(),
                                         git_marks: new_snap.git_marks,
@@ -8420,6 +8724,7 @@ impl AppHandler for AppShell {
                                     .map(|e| anvil_render::left_dock::DirEntry {
                                         name: e.name,
                                         is_dir: e.is_dir,
+                                        is_symlink: e.is_symlink,
                                     })
                                     .collect(),
                                 git_marks: new_snap.git_marks,
@@ -8478,6 +8783,7 @@ impl AppHandler for AppShell {
                                         .map(|e| anvil_render::left_dock::DirEntry {
                                             name: e.name,
                                             is_dir: e.is_dir,
+                                            is_symlink: e.is_symlink,
                                         })
                                         .collect(),
                                     git_marks: new_snap.git_marks,
@@ -8860,6 +9166,32 @@ impl AppHandler for AppShell {
                     self.toggle_hud();
                     return true;
                 }
+                // Y9: Cmd+` — focus drawer and cycle drawer terminals.
+                KeyInput::Char('`')
+                    if !event.mods.shift
+                        && !event.mods.control
+                        && !event.mods.option
+                        && self.app.layout_mode == LayoutMode::Ide
+                        && !self.app.drawer_terminals.is_empty() =>
+                {
+                    // Ensure drawer is visible.
+                    if self.app.drawer_hidden {
+                        self.app.drawer_hidden = false;
+                        let r = self.app.drawer_saved_ratio.clamp(0.40, 0.95);
+                        self.app.drawer_ratio_target = Some(r);
+                    }
+                    // Cycle to next drawer terminal.
+                    let n = self.app.drawer_terminals.len();
+                    self.app.drawer_active_terminal = (self.app.drawer_active_terminal + 1) % n;
+                    let target_id = self.app.drawer_terminals[self.app.drawer_active_terminal];
+                    // Focus the target pane.
+                    if let Some(tab) = self.app.tabs.current_mut() {
+                        tab.tree.focused = target_id;
+                    }
+                    self.app.focus_target = FocusTarget::Terminal;
+                    self.app.dirty = true;
+                    return true;
+                }
                 KeyInput::Char(ch) if self.app.handle_cmd_chord(event.mods, ch, &self.webview) => {
                     return true;
                 }
@@ -9050,6 +9382,7 @@ impl AppHandler for AppShell {
                                                     .map(|e| anvil_render::left_dock::DirEntry {
                                                         name: e.name,
                                                         is_dir: e.is_dir,
+                                                        is_symlink: e.is_symlink,
                                                     })
                                                     .collect(),
                                                 git_marks: snap.git_marks,
@@ -9555,12 +9888,48 @@ impl AppHandler for AppShell {
         // Native editor drag-select: release (NE7).
         app.editor_mouse_drag_start = None;
 
-        // I3: Explorer drag: if the user dragged past the threshold and released
-        // over an editor area, open the file (it was already opened on mouse_down,
-        // so this is a no-op for the same pane, or opens in a newly focused pane).
+        // I3/Y6: Explorer drag end.
         if app.explorer_drag_cursor.is_some() {
-            if let Some((path, _)) = app.explorer_drag.take() {
-                app.open_path_in_native_editor(&path);
+            if let Some((src_path, _)) = app.explorer_drag.take() {
+                // Y6: check if release is over an Explorer row (file or dir).
+                let (rx, ry) = app.view_pt_to_raster_px(loc);
+                let drop_hit = app.left_dock_hits.at(rx, ry).cloned();
+                let moved = if let Some(anvil_render::left_dock::LeftDockHitKind::Explorer(
+                    anvil_render::left_dock::ExplorerHit::Row(row_idx),
+                )) = drop_hit
+                {
+                    if let Some((dst_path, dst_is_dir)) =
+                        app.left_dock_hits.visible_rows.get(row_idx).cloned()
+                    {
+                        let dst_dir = if dst_is_dir {
+                            dst_path.clone()
+                        } else {
+                            dst_path
+                                .parent()
+                                .map(|p| p.to_path_buf())
+                                .unwrap_or_default()
+                        };
+                        let basename = src_path
+                            .file_name()
+                            .map(|n| n.to_os_string())
+                            .unwrap_or_default();
+                        let new_path = dst_dir.join(&basename);
+                        if new_path != src_path {
+                            if let Err(e) = std::fs::rename(&src_path, &new_path) {
+                                eprintln!("anvil: drag-move failed: {e}");
+                            }
+                        }
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                // If not dropped on an Explorer row, open in editor as before (I3).
+                if !moved {
+                    app.open_path_in_native_editor(&src_path);
+                }
             }
             app.explorer_drag_cursor = None;
             app.dirty = true;
@@ -10297,6 +10666,32 @@ impl AppHandler for AppShell {
                     let path = std::path::PathBuf::from(abs_path);
                     self.app.dismiss_palette(&self.webview);
                     self.app.open_path_in_native_editor(&path);
+                } else if let Some(task_name) = id.strip_prefix("task:run:") {
+                    // Y11/Y12: run named task in the drawer terminal.
+                    self.app.dismiss_palette(&self.webview);
+                    let cmd = self.app.config.tasks.get(task_name).map(|t| t.cmd.clone());
+                    if let Some(cmd) = cmd {
+                        // Ensure drawer is visible.
+                        if self.app.drawer_hidden {
+                            self.app.toggle_ide_drawer();
+                        }
+                        if self.app.drawer_terminals.is_empty() {
+                            self.app.spawn_ide_terminal_drawer();
+                        }
+                        // Write the command to the active drawer terminal.
+                        let drawer_id = self
+                            .app
+                            .drawer_terminals
+                            .get(self.app.drawer_active_terminal)
+                            .copied()
+                            .or_else(|| self.app.drawer_terminals.first().copied());
+                        if let Some(pane_id) = drawer_id {
+                            if let Some(pty) = self.app.ptys.get(&pane_id) {
+                                let _ = pty.write(cmd.as_bytes());
+                                let _ = pty.write(b"\n");
+                            }
+                        }
+                    }
                 } else if let Some(action) = action_for_id(&id) {
                     // HudToggle needs window access — handle at AppShell level.
                     if action == Action::HudToggle {
@@ -12241,6 +12636,8 @@ fn main() -> Result<()> {
         maximized_pane_id: None,
         drawer_hidden: false,
         drawer_saved_ratio: 0.72,
+        drawer_terminals: Vec::new(),
+        drawer_active_terminal: 0,
         blink_phase: 0.0,
         last_blink_opacity: -1.0,
         search: anvil_term::Search::new(),
@@ -12315,6 +12712,7 @@ fn main() -> Result<()> {
                     .map(|e| anvil_render::left_dock::DirEntry {
                         name: e.name,
                         is_dir: e.is_dir,
+                        is_symlink: e.is_symlink,
                     })
                     .collect(),
                 git_marks: snap.git_marks,
@@ -12649,10 +13047,12 @@ mod tests {
                 anvil_render::LeftDockEntry {
                     name: "src".to_string(),
                     is_dir: true,
+                    is_symlink: false,
                 },
                 anvil_render::LeftDockEntry {
                     name: "main.rs".to_string(),
                     is_dir: false,
+                    is_symlink: false,
                 },
             ],
             git_marks: std::collections::HashMap::new(),
