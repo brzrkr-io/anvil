@@ -29,6 +29,10 @@ pub enum TabBarHitKind {
     CloseTab(usize),
     /// Open a new tab (+  button).
     AddTab,
+    /// #7: scroll the tab strip left (◀ chevron).
+    ScrollLeft,
+    /// #7: scroll the tab strip right (▶ chevron).
+    ScrollRight,
 }
 
 /// Hit regions populated by [`draw_tab_bar`] and consumed by mouse-down.
@@ -72,6 +76,8 @@ pub fn draw_tab_bar(
     window_scale: f64,
     chrome_top_px: f64,
     hits_out: &mut TabBarHits,
+    // #7: horizontal scroll offset in device pixels. 0 = leftmost tab visible.
+    tab_strip_scroll: f64,
 ) {
     hits_out.clear();
 
@@ -127,38 +133,100 @@ pub fn draw_tab_bar(
 
     // ── Tabs ─────────────────────────────────────────────────────────────
     let n = tabs.count();
+    // #7: reserve 1 cell on each side for scroll chevrons when strip overflows.
+    let chevron_w = cell_w;
     let tabs_start_x = basin_x + 2.0 * cell_w; // 2 cells of breathing after basin
     let tabs_end_x = (right_start_x - 2.0 * cell_w).max(tabs_start_x);
     let avail_tab_w = tabs_end_x - tabs_start_x;
 
-    // Per-tab pixel width: label + 2 left pad + 1 right pad + 1 gap + 1 ×.
-    let raw_widths: Vec<f64> = (0..n)
+    // Per-tab pixel width (natural size; no compression — we scroll instead).
+    let tab_widths: Vec<f64> = (0..n)
         .map(|t| {
             let label_len = tab_label(tabs, t).chars().count();
             let cells = (label_len + 5).clamp(9, 24) as f64;
             cells * cell_w
         })
         .collect();
-    let total_raw_w: f64 = raw_widths.iter().sum();
-    let tab_widths: Vec<f64> = if total_raw_w > avail_tab_w && n > 0 {
-        let min_each = 8.0 * cell_w;
-        if (n as f64) * min_each > avail_tab_w {
-            vec![min_each; n]
-        } else {
-            raw_widths
-                .iter()
-                .map(|w| (w * avail_tab_w / total_raw_w).max(min_each))
-                .collect()
-        }
+    let total_raw_w: f64 = tab_widths.iter().sum();
+
+    // #7: clamp scroll to the valid range.
+    let max_scroll = (total_raw_w - avail_tab_w).max(0.0);
+    let scroll = tab_strip_scroll.clamp(0.0, max_scroll);
+    let can_scroll_left = scroll > 0.0;
+    let can_scroll_right = scroll < max_scroll;
+
+    // #7: when scrolled, draw ◀ at the left edge of the tab area.
+    let draw_left_chevron_x = tabs_start_x;
+    let draw_right_chevron_x = tabs_end_x - chevron_w;
+    let actual_tabs_start_x = if can_scroll_left {
+        tabs_start_x + chevron_w
     } else {
-        raw_widths
+        tabs_start_x
+    };
+    let actual_tabs_end_x = if can_scroll_right {
+        tabs_end_x - chevron_w
+    } else {
+        tabs_end_x
     };
 
-    let mut x = tabs_start_x;
+    if can_scroll_left {
+        raster.glyph_at(
+            painter,
+            metrics,
+            draw_left_chevron_x,
+            glyph_y,
+            '◀' as u32,
+            theme.text_subtle,
+        );
+        hits_out.hits.push(TabBarHit {
+            rect: PixelRect {
+                x: draw_left_chevron_x,
+                y: 0.0,
+                w: chevron_w,
+                h: chrome_top_px,
+            },
+            kind: TabBarHitKind::ScrollLeft,
+        });
+    }
+    if can_scroll_right {
+        raster.glyph_at(
+            painter,
+            metrics,
+            draw_right_chevron_x,
+            glyph_y,
+            '▶' as u32,
+            theme.text_subtle,
+        );
+        hits_out.hits.push(TabBarHit {
+            rect: PixelRect {
+                x: draw_right_chevron_x,
+                y: 0.0,
+                w: chevron_w,
+                h: chrome_top_px,
+            },
+            kind: TabBarHitKind::ScrollRight,
+        });
+    }
+
+    let mut x = actual_tabs_start_x - scroll;
     for t in 0..n {
         let anim = tabs.tabs.get(t).map(|tab| tab.anim_phase).unwrap_or(1.0);
         let tw = tab_widths.get(t).unwrap_or(&(8.0 * cell_w)) * anim as f64;
         let is_active = t == tabs.active;
+
+        // Skip tabs that are entirely outside the visible tab region.
+        if x + tw < actual_tabs_start_x || x > actual_tabs_end_x {
+            x += tw;
+            continue;
+        }
+
+        // Clip draw region to the visible tab band.
+        let draw_x = x.max(actual_tabs_start_x);
+        let draw_w = ((x + tw).min(actual_tabs_end_x) - draw_x).max(0.0);
+        if draw_w <= 0.0 {
+            x += tw;
+            continue;
+        }
 
         // Active tab: charcoal panel covering the FULL chrome strip height
         // (minus the hairline), 1px vertical hairlines on both edges, then a
@@ -167,25 +235,35 @@ pub fn draw_tab_bar(
         // "sharp panels, sparse accents" — full-width rule is a deliberate
         // selection cue, not decoration.
         if is_active {
-            raster.fill_pixel_rect(x, 0.0, tw, chrome_top_px - 1.0, theme.charcoal);
+            raster.fill_pixel_rect(draw_x, 0.0, draw_w, chrome_top_px - 1.0, theme.charcoal);
             // 1px vertical hairlines — left and right edges.
-            raster.fill_pixel_rect(x, 0.0, 1.0, chrome_top_px - 1.0, theme.hairline);
-            raster.fill_pixel_rect(x + tw - 1.0, 0.0, 1.0, chrome_top_px - 1.0, theme.hairline);
+            if x >= actual_tabs_start_x {
+                raster.fill_pixel_rect(x, 0.0, 1.0, chrome_top_px - 1.0, theme.hairline);
+            }
+            if x + tw <= actual_tabs_end_x {
+                raster.fill_pixel_rect(x + tw - 1.0, 0.0, 1.0, chrome_top_px - 1.0, theme.hairline);
+            }
             // 2px accent rule inset 4pt from each edge.
             let inset = 4.0 * window_scale;
             let rule_y = chrome_top_px - 3.0;
-            raster.fill_pixel_rect(
-                x + inset,
-                rule_y,
-                tw - 2.0 * inset,
-                2.0,
-                theme.accent_primary,
-            );
+            let rule_x = (x + inset).max(actual_tabs_start_x);
+            let rule_end = (x + tw - inset).min(actual_tabs_end_x);
+            if rule_end > rule_x {
+                raster.fill_pixel_rect(
+                    rule_x,
+                    rule_y,
+                    rule_end - rule_x,
+                    2.0,
+                    theme.accent_primary,
+                );
+            }
         } else {
             // Inactive tab: 1px left-edge hairline so adjacent tabs have a
             // sharp dividing line. Right edge is provided by the next tab's
             // left hairline (or the active tab's right hairline).
-            raster.fill_pixel_rect(x, 0.0, 1.0, chrome_top_px - 1.0, theme.hairline);
+            if x >= actual_tabs_start_x {
+                raster.fill_pixel_rect(x, 0.0, 1.0, chrome_top_px - 1.0, theme.hairline);
+            }
         }
 
         // Label: pixel-positioned, sitting inside the tab with a 2-cell
@@ -199,18 +277,21 @@ pub fn draw_tab_bar(
         let fg = blend_color(fg_base, theme.graphite, anim);
         let label = tab_label(tabs, t);
         let label_x0 = x + 2.0 * cell_w;
-        let label_x_end = x + tw - 3.0 * cell_w;
+        let label_x_end = (x + tw - 3.0 * cell_w).min(actual_tabs_end_x);
         for (i, cp) in label.chars().enumerate() {
             let lx = label_x0 + i as f64 * cell_w;
-            if lx + cell_w > label_x_end {
-                break;
+            if lx < actual_tabs_start_x || lx + cell_w > label_x_end {
+                if lx + cell_w > label_x_end {
+                    break;
+                }
+                continue;
             }
             raster.glyph_at(painter, metrics, lx, glyph_y, cp as u32, fg);
         }
 
         // Close × on active tab.
         let close_x = x + tw - 2.0 * cell_w;
-        if is_active && close_x + cell_w <= total_w {
+        if is_active && close_x >= actual_tabs_start_x && close_x + cell_w <= actual_tabs_end_x {
             raster.glyph_at(
                 painter,
                 metrics,
@@ -224,7 +305,11 @@ pub fn draw_tab_bar(
         // Unread dot on background tabs with new output.
         let tab_has_unread = tabs.tabs.get(t).is_some_and(|tab| tab.has_unread);
         let dot_x = x + tw - cell_w;
-        if !is_active && tab_has_unread && dot_x + cell_w <= total_w {
+        if !is_active
+            && tab_has_unread
+            && dot_x >= actual_tabs_start_x
+            && dot_x + cell_w <= actual_tabs_end_x
+        {
             raster.glyph_at(
                 painter,
                 metrics,
@@ -239,7 +324,7 @@ pub fn draw_tab_bar(
         // hit when the click lands in the right ~2 cells. mouse_down uses
         // `find()` (first match), which would otherwise always pick Tab
         // and the × button could never fire.
-        if close_x + 2.0 * cell_w <= total_w {
+        if close_x >= actual_tabs_start_x && close_x + 2.0 * cell_w <= actual_tabs_end_x {
             hits_out.hits.push(TabBarHit {
                 rect: PixelRect {
                     x: close_x,
@@ -250,17 +335,18 @@ pub fn draw_tab_bar(
                 kind: TabBarHitKind::CloseTab(t),
             });
         }
-        // Hit rect spans the full strip vertically (clickable anywhere in
-        // the tab's chrome region).
-        hits_out.hits.push(TabBarHit {
-            rect: PixelRect {
-                x,
-                y: 0.0,
-                w: tw,
-                h: chrome_top_px,
-            },
-            kind: TabBarHitKind::Tab(t),
-        });
+        // Hit rect: only the visible portion of the tab.
+        if draw_w > 0.0 {
+            hits_out.hits.push(TabBarHit {
+                rect: PixelRect {
+                    x: draw_x,
+                    y: 0.0,
+                    w: draw_w,
+                    h: chrome_top_px,
+                },
+                kind: TabBarHitKind::Tab(t),
+            });
+        }
 
         x += tw;
     }
@@ -432,6 +518,7 @@ mod tests {
             1.0,
             m.cell_h * 2.0,
             &mut hits,
+            0.0,
         );
         // Basin mark must have been drawn (painter received U+F1396).
         let basin_calls: Vec<_> = painter
@@ -471,6 +558,7 @@ mod tests {
             1.0,
             m.cell_h * 2.0,
             &mut hits,
+            0.0,
         );
         // Chrome is rendered: basin mark present.
         let basin_calls: Vec<_> = painter
@@ -510,6 +598,7 @@ mod tests {
             1.0,
             m.cell_h * 2.0,
             &mut hits,
+            0.0,
         );
 
         let basin: Vec<_> = painter
@@ -555,6 +644,7 @@ mod tests {
             1.0,
             m.cell_h * 2.0,
             &mut hits,
+            0.0,
         );
 
         // Active tab segment should be painted with theme.charcoal.
@@ -599,6 +689,7 @@ mod tests {
             1.0,
             m.cell_h * 2.0,
             &mut hits,
+            0.0,
         );
 
         let dot_calls: Vec<_> = painter
@@ -644,6 +735,7 @@ mod tests {
             1.0,
             m.cell_h * 2.0,
             &mut hits,
+            0.0,
         );
 
         let dot_calls: Vec<_> = painter
