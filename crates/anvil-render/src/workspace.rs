@@ -319,8 +319,8 @@ fn draw_empty_pane(
 
 fn draw_terminal_drawer_chrome(
     raster: &mut Raster,
-    painter: &mut dyn crate::raster::GlyphPainter,
-    metrics: FontMetrics,
+    _painter: &mut dyn crate::raster::GlyphPainter,
+    _metrics: FontMetrics,
     theme: &Theme,
     rect: Rect,
     _active: bool,
@@ -329,27 +329,11 @@ fn draw_terminal_drawer_chrome(
         return;
     }
 
-    // 28pt charcoal header strip at the top of the drawer: "TERMINAL" label on
-    // the left. Terminal cells are drawn by draw_viewport BEFORE this function
-    // is called, so we overdraw only the top 28pt strip.
-    const HEADER_H: f64 = 28.0;
-    let strip_h = HEADER_H.min(rect.h);
-    raster.fill_pixel_rect(rect.x, rect.y, rect.w, strip_h, theme.charcoal);
+    // Top separator between editor and drawer — 1px hairline only.
+    // A full header strip would overdraw terminal cells because draw_viewport
+    // fires before this function with the same rect origin. D5 deferred until
+    // the viewport rect can be inset to reserve space.
     raster.fill_pixel_rect_alpha(rect.x, rect.y, rect.w, 1.0, theme.hairline, 0.92);
-
-    // "TERMINAL" label left-aligned in the header strip.
-    const PAD_X: f64 = 8.0;
-    let label = "TERMINAL";
-    let text_y = rect.y + ((strip_h - metrics.cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
-    let mut gx = rect.x + PAD_X;
-    let max_x = rect.x + rect.w - PAD_X;
-    for ch in label.chars() {
-        if gx + metrics.cell_w > max_x {
-            break;
-        }
-        raster.glyph_at(painter, metrics, gx, text_y, ch as u32, theme.text_subtle);
-        gx += metrics.cell_w;
-    }
 }
 
 /// Draw the collapsed drawer strip (G2): a 24pt-tall charcoal bar with
@@ -1247,7 +1231,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_drawer_chrome_paints_header_strip() {
+    fn terminal_drawer_chrome_paints_top_hairline_only() {
         let m = metrics();
         let mut r = Raster::new(220, 90);
         let mut painter = StubPainter::default();
@@ -1263,18 +1247,18 @@ mod tests {
         draw_terminal_drawer_chrome(&mut r, &mut painter, m, &theme, rect, true);
 
         let top_px = pixel_at(&r, 20, 12);
-        // D5: header strip (charcoal) is painted at the top.
-        assert_ne!(top_px, [0, 0, 0], "top header strip must be painted");
+        // Top row must have moved off raw black — hairline is painted there.
+        assert_ne!(top_px, [0, 0, 0], "top hairline must paint");
         assert_ne!(
             top_px, theme.accent_ember,
-            "drawer header must not use Ember accent"
+            "drawer hairline must not use Ember accent"
         );
-        // Body below header (y=40, outside 28pt strip) must not be overdrawn.
+        // Body must remain whatever the viewport painted under us.
         let body_px = pixel_at(&r, 20, 40);
         assert_eq!(
             body_px,
             [0, 0, 0],
-            "drawer body below header must NOT be overdrawn"
+            "drawer body must NOT be overdrawn — viewport cells must pass through"
         );
     }
 
