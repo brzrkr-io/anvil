@@ -13536,11 +13536,17 @@ fn main() -> Result<()> {
     // -- Initial tab + PTY ----------------------------------------------------
     let tab = Tab::new_single_pane(cols, rows, config.scrollback);
     let first_id = tab.focused_id();
-    let first_pty =
-        Pty::spawn_shell(cols as u16, rows as u16).expect("failed to spawn login shell");
-
     let mut ptys = HashMap::new();
-    ptys.insert(first_id, first_pty);
+    match Pty::spawn_shell(cols as u16, rows as u16) {
+        Ok(pty) => {
+            ptys.insert(first_id, pty);
+        }
+        Err(e) => {
+            // Don't crash on PTY exhaustion; launch in editor-only IDE mode.
+            // Common cause: system pty table full (many anvils leaked / dev session).
+            eprintln!("anvil: initial PTY spawn failed ({e}); launching without shell");
+        }
+    }
 
     let mut tabs = TabManager::default();
     tabs.push(tab);
