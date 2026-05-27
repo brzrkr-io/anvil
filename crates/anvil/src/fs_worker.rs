@@ -107,7 +107,10 @@ pub fn spawn_fs_worker() -> (
                     }
                 }
 
-                let snap = read_dir_snapshot(&latest, flags);
+                // AA12: wrap read_dir_snapshot in a 10-second timeout so a hung
+                // filesystem (NFS, autofs, network share) cannot block the worker
+                // indefinitely. On timeout, return an empty snapshot and log.
+                let snap = read_dir_snapshot_with_timeout(&latest, flags);
                 last_sent = Some((latest, now));
                 // Non-blocking: drop if main thread is not consuming.
                 let _ = snap_tx.try_send(snap);
@@ -168,6 +171,40 @@ pub fn read_dir_snapshot(root: &PathBuf, flags: FilterFlags) -> DirSnapshot {
         root: root.clone(),
         entries,
         git_marks,
+    }
+}
+
+/// Maximum time allowed for a single directory snapshot (AA12).
+const FS_WORKER_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Like [`read_dir_snapshot`] but bounded by [`FS_WORKER_TIMEOUT`] (AA12).
+///
+/// Runs the snapshot in a sub-thread and joins with a timeout.  If the read
+/// takes longer than 10 seconds (e.g. hung NFS mount), an empty snapshot is
+/// returned and a warning is logged to stderr.
+pub fn read_dir_snapshot_with_timeout(root: &PathBuf, flags: FilterFlags) -> DirSnapshot {
+    let root_clone = root.clone();
+    let (tx, rx) = std::sync::mpsc::sync_channel::<DirSnapshot>(1);
+
+    std::thread::spawn(move || {
+        let snap = read_dir_snapshot(&root_clone, flags);
+        let _ = tx.try_send(snap);
+    });
+
+    match rx.recv_timeout(FS_WORKER_TIMEOUT) {
+        Ok(snap) => snap,
+        Err(_) => {
+            eprintln!(
+                "anvil: fs-worker timed out after {}s reading {:?}; returning empty snapshot",
+                FS_WORKER_TIMEOUT.as_secs(),
+                root
+            );
+            DirSnapshot {
+                root: root.clone(),
+                entries: Vec::new(),
+                git_marks: HashMap::new(),
+            }
+        }
     }
 }
 
@@ -535,6 +572,20 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    // ── AA12: fs_worker timeout guard ────────────────────────────────────────
+
+    /// AA12: a path that doesn't exist returns an empty snapshot instantly —
+    /// the timeout path doesn't hang the test suite.
+    #[test]
+    fn timeout_guard_returns_empty_for_nonexistent_path() {
+        let path = PathBuf::from("/nonexistent/aa12-timeout-test-path");
+        let snap = read_dir_snapshot_with_timeout(&path, default_flags());
+        assert!(
+            snap.entries.is_empty(),
+            "AA12: nonexistent path must return empty snapshot (no hang)"
+        );
     }
 
     // ── Y3: symlink detection ─────────────────────────────────────────────────

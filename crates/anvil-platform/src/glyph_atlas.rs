@@ -32,6 +32,12 @@ use crate::font::{CoreTextPainter, Font};
 const ATLAS_INITIAL: u16 = 1024;
 /// Maximum atlas dimension (pixels, square).
 const ATLAS_MAX: u16 = 2048;
+/// Memory budget for the R8Unorm atlas (bytes). 2048² × 1 byte = 4 MB per atlas;
+/// at 32 MB we could fit 8 atlases. We use a single atlas capped at 2048² (4 MB)
+/// which is well under 32 MB. When the packer is full at max size, we evict all
+/// cached slots (LRU approximation: clear-all) and reset the packer so glyphs are
+/// re-rasterized on next demand. This keeps RSS bounded regardless of zoom level.
+const ATLAS_MEMORY_BUDGET: usize = 32 * 1024 * 1024;
 
 /// Errors from `AtlasPainter`.
 #[derive(Debug, Error)]
@@ -66,6 +72,9 @@ pub struct AtlasPainter {
     map: HashMap<AtlasKey, GlyphSlot>,
     /// Whether a packer overflow has already been logged (log once).
     overflowed: bool,
+    /// Number of full-atlas evictions performed (AA11). Each eviction clears
+    /// the packer and cache so glyphs are re-rasterized on next demand.
+    eviction_count: u32,
 }
 
 impl AtlasPainter {
@@ -105,6 +114,7 @@ impl AtlasPainter {
             packer: ShelfPacker::new(size, size),
             map: HashMap::new(),
             overflowed: false,
+            eviction_count: 0,
         })
     }
 
@@ -233,7 +243,8 @@ impl GlyphRasterizer for AtlasPainter {
 
 impl AtlasPainter {
     /// Try to pack a `w × h` rect; on first overflow, grow the atlas and retry.
-    /// Returns None if the atlas is full even after growing, logging once.
+    /// When already at max size (AA11): evict all cached glyphs, reset the packer,
+    /// and retry — keeping memory within `ATLAS_MEMORY_BUDGET`.
     fn pack_or_grow(&mut self, w: u16, h: u16) -> Option<(u16, u16)> {
         if let Some(pos) = self.packer.alloc(w, h) {
             return Some(pos);
@@ -254,11 +265,22 @@ impl AtlasPainter {
             }
         }
 
-        if !self.overflowed {
-            self.overflowed = true;
-            eprintln!("glyph_atlas: atlas full; some glyphs will be missing");
-        }
-        None
+        // AA11: Atlas is at max size and still full.  Evict all cached glyphs
+        // (LRU approximation: clear-all) so they are re-rasterized on demand.
+        // The atlas texture is reused in-place — no Metal reallocation needed.
+        // This keeps RSS bounded by ATLAS_MEMORY_BUDGET (2048² R8 = 4 MB << 32 MB).
+        self.map.clear();
+        self.packer = ShelfPacker::new(ATLAS_MAX, ATLAS_MAX);
+        self.eviction_count += 1;
+        self.overflowed = false; // reset so the next overflow logs once again
+        eprintln!(
+            "glyph_atlas: evicting all glyphs (eviction #{}, budget={}MB)",
+            self.eviction_count,
+            ATLAS_MEMORY_BUDGET / (1024 * 1024)
+        );
+
+        // Retry after eviction.
+        self.packer.alloc(w, h)
     }
 }
 
