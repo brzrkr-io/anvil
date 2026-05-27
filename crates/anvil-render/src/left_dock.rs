@@ -132,16 +132,18 @@ pub struct OutlineRow {
 // ── Row geometry ──────────────────────────────────────────────────────────────
 
 /// Base height of a section header row in points (multiplied by `ui_scale`).
-const HEADER_H_BASE: f64 = 32.0;
+const HEADER_H_BASE: f64 = 36.0;
 
 /// Base height of a content row in points (multiplied by `ui_scale`).
-const ROW_H_BASE: f64 = 28.0;
+/// Bumped from 28 → 34 so Explorer reads as IDE chrome rather than a
+/// terminal grid; gives glyph rows real breathing room.
+const ROW_H_BASE: f64 = 34.0;
 
 /// Base horizontal padding inside the dock (multiplied by `ui_scale`).
-const PAD_X_BASE: f64 = 14.0;
+const PAD_X_BASE: f64 = 18.0;
 
 /// Base indent per depth level in device pixels (multiplied by `ui_scale`).
-const INDENT_PX_BASE: f64 = 16.0;
+const INDENT_PX_BASE: f64 = 18.0;
 
 /// Derive row geometry from the current UI scale.
 struct RowMetrics {

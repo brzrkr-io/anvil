@@ -8318,9 +8318,7 @@ impl AppHandler for AppShell {
                 // focused. Falls through to agent_approve when HUD is visible.
                 // CRITICAL: must require mods.command, otherwise plain Enter is
                 // swallowed and terminal panes never receive newlines.
-                KeyInput::Enter
-                    if mods.command && !mods.shift && !mods.control && !mods.option =>
-                {
+                KeyInput::Enter if mods.command && !mods.shift && !mods.control && !mods.option => {
                     if self.app.focused_is_native_editor() && !self.app.hud_visible {
                         self.app
                             .apply_editor_action(EditorAction::InsertBlankLineBelow);
@@ -8348,9 +8346,7 @@ impl AppHandler for AppShell {
                 }
                 // W6 #25: Cmd+Shift+Return — insert blank line above when editor is
                 // focused. Falls through to agent_start when HUD is visible.
-                KeyInput::Enter
-                    if mods.command && mods.shift && !mods.control && !mods.option =>
-                {
+                KeyInput::Enter if mods.command && mods.shift && !mods.control && !mods.option => {
                     if self.app.focused_is_native_editor() && !self.app.hud_visible {
                         self.app
                             .apply_editor_action(EditorAction::InsertBlankLineAbove);
