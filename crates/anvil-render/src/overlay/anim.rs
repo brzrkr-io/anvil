@@ -32,7 +32,7 @@ impl OverlayAnim {
         Self {
             state: AnimState::Entering,
             t: 0.0,
-            duration_ms: 120.0,
+            duration_ms: 100.0,
         }
     }
 

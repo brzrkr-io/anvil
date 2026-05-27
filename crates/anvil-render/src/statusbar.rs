@@ -89,6 +89,13 @@ pub fn draw_status_bar(
             StatusMode::Renaming => ("RENAMING", theme.accent_bright),
             StatusMode::Picking => ("PICKING", theme.accent_primary),
         };
+        // EDITING mode: subtle ember dot before the label as a brand signal.
+        if matches!(mode, StatusMode::Editing) {
+            let dot_size = 3.0;
+            let dot_y = glyph_y + (cell_h - dot_size) * 0.5;
+            raster.fill_pixel_rect_alpha(x, dot_y, dot_size, dot_size, theme.accent_ember, 0.7);
+            x += dot_size + 4.0;
+        }
         raster.ui_line(
             ui_painter,
             label,

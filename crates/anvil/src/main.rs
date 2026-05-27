@@ -7919,8 +7919,8 @@ impl AppHandler for AppShell {
         };
         let blink_on = effective_blink.unwrap_or(app_blink_cfg);
         if blink_on && app.focused {
-            // 1/64 per tick at 60Hz = ~1.07s full blink cycle — calm, deliberate.
-            app.blink_phase += 1.0 / 64.0;
+            // 1/30 per tick at 60Hz = ~0.5s full blink cycle — target 500ms phase.
+            app.blink_phase += 1.0 / 30.0;
             if app.blink_phase >= 1.0 {
                 app.blink_phase -= 1.0;
             }

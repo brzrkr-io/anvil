@@ -5,7 +5,7 @@
 //!
 //! Paint order (spec § 3):
 //! 1. Scrim (#000 α 0.28 × anim_alpha) — full window.
-//! 2. Three shadow rects (offsets +2/+4/+8, α 0.10/0.06/0.03 × anim_alpha).
+//! 2. Three shadow rects (offsets +1/+3/+6, α 0.12/0.06/0.03 × anim_alpha — tighter feel).
 //! 3. Panel fill (theme.panel × anim_alpha).
 //! 4. 1px top inner highlight (theme.surface α 0.3).
 //! 5. 1px border (theme.hairline).
@@ -72,8 +72,8 @@ pub fn draw_card_chrome(raster: &mut Raster, theme: &Theme, geom: CardGeom, show
     }
 
     // 2. Shadow rects: three concentric expansions.
-    // Spec says offsets +2/+4/+8 with α 0.10/0.06/0.03.
-    let shadow_steps: &[(f64, f64)] = &[(2.0, 0.10), (4.0, 0.06), (8.0, 0.03)];
+    // Tuned to (offset 1/3/6, α 0.12/0.06/0.03) for a tighter feel.
+    let shadow_steps: &[(f64, f64)] = &[(1.0, 0.12), (3.0, 0.06), (6.0, 0.03)];
     for &(expand, base_alpha) in shadow_steps {
         raster.fill_pixel_rect_alpha(
             geom.x - expand,
