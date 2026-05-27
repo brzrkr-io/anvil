@@ -5545,6 +5545,24 @@ impl App {
             } else {
                 self.left_dock_hits.clear();
             }
+
+            // Crisp 1px divider between sidebar and editor body.
+            // Drawn at pane_area.x - 1 so it sits on the boundary regardless of
+            // whether the left dock is visible. Overdraws any bleed from the dock.
+            if self.left_dock_visible {
+                let pane_x = self.pane_area_rect().x;
+                let chrome_top = self.chrome_top_px();
+                let chrome_bot = self.chrome_bottom_px();
+                let div_h = (self.raster.height as f64 - chrome_top - chrome_bot).max(0.0);
+                self.raster.fill_pixel_rect_alpha(
+                    pane_x - 1.0,
+                    chrome_top,
+                    1.0,
+                    div_h,
+                    self.theme.hairline,
+                    0.85,
+                );
+            }
         } else {
             self.left_dock_hits.clear();
         }
@@ -7590,6 +7608,109 @@ impl App {
         self.dirty = true;
     }
 
+    /// Auto-open the most useful markdown file when no editor buffers are open.
+    ///
+    /// Called after `restore_session`. If the IDE pane has no open buffers
+    /// (empty session or first run), looks for `README.md` → `AGENTS.md` →
+    /// the first `*.md` in cwd. If none are found, leaves the scratch buffer.
+    pub fn auto_open_readme_if_empty(&mut self, cwd: &str) {
+        // Only auto-open in IDE mode; Terminal mode leaves the PTY alone.
+        if self.layout_mode != LayoutMode::Ide {
+            return;
+        }
+        // Check whether any editor pane has an open buffer already.
+        let has_open = self.tabs.current().is_some_and(|tab| {
+            tab.editor_panes
+                .panes_iter()
+                .any(|(_, ep)| !ep.open_buffers.is_empty())
+        });
+        if has_open {
+            return;
+        }
+
+        let cwd_path = std::path::PathBuf::from(cwd);
+        // Priority 1: README.md
+        // Priority 2: AGENTS.md
+        // Priority 3: first *.md in cwd (alphabetical)
+        let candidates = ["README.md", "AGENTS.md"];
+        for name in &candidates {
+            let p = cwd_path.join(name);
+            if p.is_file() {
+                self.open_path_in_native_editor(&p);
+                return;
+            }
+        }
+        // Fallback: first *.md in directory listing.
+        if let Ok(entries) = std::fs::read_dir(&cwd_path) {
+            let mut md_files: Vec<_> = entries
+                .flatten()
+                .filter(|e| {
+                    e.path()
+                        .extension()
+                        .and_then(|x| x.to_str())
+                        .map(|x| x.eq_ignore_ascii_case("md"))
+                        .unwrap_or(false)
+                })
+                .map(|e| e.path())
+                .collect();
+            md_files.sort();
+            if let Some(first) = md_files.into_iter().next() {
+                self.open_path_in_native_editor(&first);
+            }
+        }
+    }
+
+    /// Apply first-launch defaults that are not covered by session restore.
+    ///
+    /// Called once at startup after `restore_session`. Performs two actions:
+    ///
+    /// 1. Auto-expand `crates/` (or fallback `src/`) in the Explorer when no
+    ///    directories are expanded yet — matches the Cargo workspace convention
+    ///    and gives users code on first launch instead of a collapsed tree.
+    ///
+    /// 2. Show a "Welcome to Anvil" toast the very first time Anvil runs on this
+    ///    machine (detected by the sessions directory being empty or absent).
+    pub fn apply_first_launch_defaults(&mut self, cwd: &str) {
+        let cwd_path = std::path::PathBuf::from(cwd);
+
+        // ── Auto-expand crates/ or src/ ───────────────────────────────────
+        if self.expanded_dirs.is_empty() {
+            let crates_dir = cwd_path.join("crates");
+            let src_dir = cwd_path.join("src");
+            let to_expand = if crates_dir.is_dir() {
+                Some(crates_dir)
+            } else if src_dir.is_dir() {
+                Some(src_dir)
+            } else {
+                None
+            };
+            if let Some(dir) = to_expand {
+                self.expanded_dirs.insert(dir);
+                self.dirty = true;
+            }
+        }
+
+        // ── First-ever launch toast ───────────────────────────────────────
+        // Detect by checking whether the sessions directory is empty or absent.
+        let is_first_ever = std::env::var_os("HOME")
+            .map(|home| {
+                let sessions_dir = std::path::PathBuf::from(home)
+                    .join(".config")
+                    .join("anvil")
+                    .join("sessions");
+                match std::fs::read_dir(&sessions_dir) {
+                    Ok(mut rd) => rd.next().is_none(), // dir exists but empty
+                    Err(_) => true,                    // dir absent
+                }
+            })
+            .unwrap_or(false);
+        if is_first_ever {
+            self.toast_info(
+                "Welcome to Anvil. \u{2318}P opens files, \u{2318}\u{21e7}N opens nvim.",
+            );
+        }
+    }
+
     /// Returns `true` when the welcome screen should be displayed.
     ///
     /// The welcome screen is shown when the IDE layout is active and the
@@ -8189,12 +8310,12 @@ impl AppHandler for AppShell {
             app.dirty = true;
         }
 
-        // G3: smooth sidebar width easing — 3-frame settle at 0.35 factor.
+        // G3: smooth sidebar width easing — 3-frame settle at 0.25 factor.
         // V3 (#5): also handles sidebar hide animation (target = 0 → clears visible).
         {
             let delta = app.left_dock_w_pt_target - app.left_dock_w_pt;
             if delta.abs() >= 0.5 {
-                app.left_dock_w_pt += delta * 0.35;
+                app.left_dock_w_pt += delta * 0.25;
                 app.resize_all_tabs();
                 app.force_full_redraw = true;
                 app.dirty = true;
@@ -8234,7 +8355,7 @@ impl AppHandler for AppShell {
                 .unwrap_or(target);
             let delta = target - cur;
             if delta.abs() >= 0.005 {
-                let next = cur + delta * 0.35;
+                let next = cur + delta * 0.25;
                 if let Some(tab) = app.tabs.current_mut() {
                     let root = tab.tree.root.as_mut();
                     if let anvil_workspace::layout::PaneNode::Split(sp) = root {
@@ -8392,7 +8513,7 @@ impl AppHandler for AppShell {
         }
 
         // M2: Native editor smooth-scroll easing.
-        // Eases EditorPane.scroll_pos toward scroll_target at factor 0.35 per frame.
+        // Eases EditorPane.scroll_pos toward scroll_target at factor 0.25 per frame.
         // Clamps scroll_target to [0, max(0, line_count - visible_rows)] before easing.
         // Snaps when delta < 0.01 to avoid sub-pixel drift.
         {
@@ -8421,7 +8542,7 @@ impl AppHandler for AppShell {
                     ep.scroll_target = ep.scroll_target.clamp(0.0, max_scroll.max(0.0));
                     let delta = ep.scroll_target - ep.scroll_pos;
                     if delta.abs() > 0.01 {
-                        ep.scroll_pos += delta * 0.35;
+                        ep.scroll_pos += delta * 0.25;
                         app.dirty = true;
                     } else if delta.abs() > 0.0 {
                         ep.scroll_pos = ep.scroll_target.round();
@@ -14473,6 +14594,10 @@ fn main() -> Result<()> {
     // (open_path_in_native_editor triggers syntax highlighting).
     if let Some(cwd) = shell.app.current_cwd() {
         shell.app.restore_session(&cwd);
+        // Apply first-launch defaults (auto-expand, welcome toast).
+        shell.app.apply_first_launch_defaults(&cwd);
+        // Auto-open a README (or similar) when no session buffers were restored.
+        shell.app.auto_open_readme_if_empty(&cwd);
     }
     // H4: apply restored font_scale if it differs from the startup default.
     // restore_session sets the field on App; bump_font_scale lives on AppShell.

@@ -297,38 +297,96 @@ fn draw_empty_pane(
     raster.fill_pixel_rect(rect.x, rect.y, rect.w, rect.h, theme.panel);
     raster.fill_pixel_rect_alpha(rect.x, rect.y, rect.w, 1.0, theme.hairline, 0.68);
 
-    // Centered welcome block. Each hint is a fixed-width monospace row.
-    let hints: &[(&str, [u8; 3])] = &[
-        ("Anvil", theme.accent_bright),
-        ("", theme.text_subtle),
-        ("\u{2318}P  Open file", theme.text_subtle),
-        ("\u{2318}T  Open terminal", theme.text_subtle),
-        ("\u{2318}B  Toggle sidebar", theme.text_subtle),
-        ("\u{2318}\u{21e7}E  Toggle terminal mode", theme.text_subtle),
+    let cw = metrics.cell_w;
+    let ch = metrics.cell_h;
+    let row_h = ch + 4.0;
+
+    // ── Content ──────────────────────────────────────────────────────────────
+    let title = "Anvil";
+    let subtitle = "Native macOS dev environment";
+    let footer = concat!("v", env!("CARGO_PKG_VERSION"), " \u{00b7} anvil-rust");
+
+    // Two-column action grid (left col, right col).
+    let actions: &[(&str, &str)] = &[
+        ("\u{2318}P  Open file", "\u{2318}T  New terminal"),
+        ("\u{2318}E  New editor", "\u{2318}B  Toggle sidebar"),
+        (
+            "\u{2318}\u{21e7}F  Project search",
+            "\u{2318}\u{21e7}N  Open in nvim",
+        ),
     ];
 
-    let row_h = metrics.cell_h + 4.0;
-    let block_h = hints.len() as f64 * row_h;
+    // Block height: title + gap + subtitle + gap + 3 action rows + gap + footer.
+    let total_rows: usize = 1 + 1 + 1 + 1 + actions.len() + 1 + 1;
+
+    let block_h = total_rows as f64 * row_h;
     if block_h >= rect.h {
         return;
     }
     let start_y = rect.y + (rect.h - block_h) * 0.5;
-    for (i, (label, color)) in hints.iter().enumerate() {
-        let label_w = label.chars().count() as f64 * metrics.cell_w;
-        let lx = rect.x + ((rect.w - label_w) * 0.5).max(0.0);
-        let ly = start_y
-            + i as f64 * row_h
-            + ((row_h - metrics.cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
-        let max_x = rect.x + rect.w;
-        let mut gx = lx;
-        for ch in label.chars() {
-            if gx + metrics.cell_w > max_x {
+
+    // Inline helper: draw a text string centered horizontally in `rect` at `row`.
+    // Returns nothing; borrows raster + painter directly.
+    macro_rules! draw_centered {
+        ($row:expr, $text:expr, $color:expr) => {{
+            let text_w = $text.chars().count() as f64 * cw;
+            let lx = rect.x + ((rect.w - text_w) * 0.5).max(0.0);
+            let ly = start_y
+                + $row as f64 * row_h
+                + ((row_h - ch) * 0.5 + metrics.descent * 0.5).max(0.0);
+            let max_x = rect.x + rect.w;
+            let mut gx = lx;
+            for c in $text.chars() {
+                if gx + cw > max_x {
+                    break;
+                }
+                raster.glyph_at(painter, metrics, gx, ly, c as u32, $color);
+                gx += cw;
+            }
+        }};
+    }
+
+    // Row 0: title
+    draw_centered!(0usize, title, theme.accent_bright);
+    // Row 1: (gap)
+    // Row 2: subtitle
+    draw_centered!(2usize, subtitle, theme.text_muted);
+    // Row 3: (gap)
+    // Rows 4..: two-column action hints
+    let col_w = rect.w * 0.5;
+    for (i, (left, right)) in actions.iter().enumerate() {
+        let row = 4 + i;
+        let ly =
+            start_y + row as f64 * row_h + ((row_h - ch) * 0.5 + metrics.descent * 0.5).max(0.0);
+
+        // Left column: right-aligned within the left half, one cell of center gap.
+        let left_text_w = left.chars().count() as f64 * cw;
+        let left_x = (rect.x + col_w - left_text_w - cw).max(rect.x);
+        let mut gx = left_x;
+        for c in left.chars() {
+            if gx + cw > rect.x + col_w {
                 break;
             }
-            raster.glyph_at(painter, metrics, gx, ly, ch as u32, *color);
-            gx += metrics.cell_w;
+            raster.glyph_at(painter, metrics, gx, ly, c as u32, theme.text_subtle);
+            gx += cw;
+        }
+
+        // Right column: starts at center + one cell gap.
+        let right_x = rect.x + col_w + cw;
+        let max_rx = rect.x + rect.w - cw;
+        let mut gx = right_x;
+        for c in right.chars() {
+            if gx + cw > max_rx {
+                break;
+            }
+            raster.glyph_at(painter, metrics, gx, ly, c as u32, theme.text_subtle);
+            gx += cw;
         }
     }
+
+    // Last row: footer (gap row + footer row after the last action).
+    let footer_row = 4 + actions.len() + 1;
+    draw_centered!(footer_row, footer, theme.text_subtle);
 }
 
 fn draw_terminal_drawer_chrome(

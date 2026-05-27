@@ -136,6 +136,13 @@ pub fn draw_tab_bar(
 
     // ── Tabs ─────────────────────────────────────────────────────────────
     let n = tabs.count();
+    // Hide the tab strip when there is only a single tab — the chrome row
+    // (basin mark + right indicators) is always present.  With 2+ tabs the
+    // full strip is drawn normally.
+    if n < 2 {
+        raster.fill_pixel_rect(0.0, chrome_top_px - 1.0, total_w, 1.0, theme.hairline);
+        return;
+    }
     // #7: reserve 1 cell on each side for scroll chevrons when strip overflows.
     let chevron_w = cell_w;
     let tabs_start_x = basin_x + 2.0 * cell_w; // 2 cells of breathing after basin
