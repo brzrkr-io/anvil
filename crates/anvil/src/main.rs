@@ -1781,7 +1781,6 @@ pub struct App {
     // ── AA13: memory baseline ─────────────────────────────────────────────────
     /// Resident-set-size at app init (bytes). Cmd+Shift+Alt+M logs
     /// `current_rss - mem_baseline` as a quick leak indicator during dev.
-    /// TODO(anvil-AA13-mem): replace with a real RSS query when available.
     mem_baseline: u64,
 
     // ── Plugin host (Track C) ─────────────────────────────────────────────────
@@ -1790,6 +1789,37 @@ pub struct App {
 }
 
 // ── R2: tooltip helpers ───────────────────────────────────────────────────────
+
+/// AA13: query the resident set size of this process in bytes via `proc_pidinfo`.
+///
+/// Returns `0` on any failure (proc_pidinfo unavailable, permissions, etc.) so
+/// callers can fall back to "(not implemented)" rather than panicking.
+#[cfg(target_os = "macos")]
+fn current_rss_bytes() -> u64 {
+    use std::mem;
+    let pid = unsafe { libc::getpid() };
+    let mut info: libc::proc_taskinfo = unsafe { mem::zeroed() };
+    let size = mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
+    let ret = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTASKINFO,
+            0,
+            &mut info as *mut _ as *mut libc::c_void,
+            size,
+        )
+    };
+    if ret == size {
+        info.pti_resident_size
+    } else {
+        0
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn current_rss_bytes() -> u64 {
+    0
+}
 
 /// Format a byte count as a human-readable string: "12.4 KB", "3.2 MB", etc.
 fn humanize_bytes(bytes: u64) -> String {
@@ -8660,14 +8690,14 @@ impl AppHandler for AppShell {
                 && mods.option
                 && matches!(event.key, KeyInput::Char('m') | KeyInput::Char('M'))
             {
-                // TODO(anvil-AA13-mem): replace with a real RSS query via proc_info.
-                // On macOS, `task_info(mach_task_self(), TASK_BASIC_INFO, ...)` gives
-                // resident_size; using 0 here because pulling in mach bindings is
-                // invasive for a dev-only diagnostic.
+                let current = current_rss_bytes();
+                let baseline = self.app.mem_baseline;
+                let delta = current.saturating_sub(baseline);
                 eprintln!(
-                    "anvil: mem-baseline={} current=0 delta=(not implemented) \
-                     TODO(anvil-AA13-mem)",
-                    self.app.mem_baseline
+                    "anvil: mem-baseline={} current={} delta={}",
+                    humanize_bytes(baseline),
+                    humanize_bytes(current),
+                    humanize_bytes(delta),
                 );
                 return;
             }
@@ -12541,11 +12571,16 @@ impl AppHandler for AppShell {
         }
 
         // Native editor scroll (NE7 + M1): update scroll_target; easing loop applies it.
+        // Negate d: editor scroll_target=0 is the top of the file, increasing
+        // means scrolling DOWN.  AppKit delivers positive dy for upward finger
+        // motion (natural scroll), so +d would scroll DOWN when fingers go UP —
+        // the opposite of what macOS users expect.  Negating aligns with the
+        // system "natural scroll" setting automatically.
         if app.focused_is_native_editor() {
             if let Some(tab) = app.tabs.current_mut() {
                 let id = tab.focused_id();
                 if let Some(pane) = tab.editor_panes.get_pane_mut(id) {
-                    pane.scroll_target = (pane.scroll_target + d).max(0.0);
+                    pane.scroll_target = (pane.scroll_target - d).max(0.0);
                 }
             }
             // M5: trigger scrollbar fade-in on editor scroll.
@@ -14225,10 +14260,8 @@ fn main() -> Result<()> {
         plugin_host: anvil_plugin::PluginHost::new(),
     };
 
-    // AA13: capture RSS baseline at init.
-    // TODO(anvil-AA13-mem): use a real RSS query (e.g. proc_info on macOS).
-    // For now we use 0 so the delta always reads as "(not implemented)".
-    app.mem_baseline = 0;
+    // AA13: capture RSS baseline at init via proc_pidinfo.
+    app.mem_baseline = current_rss_bytes();
 
     // ── Plugin boot (Track C) ─────────────────────────────────────────────────
     {
