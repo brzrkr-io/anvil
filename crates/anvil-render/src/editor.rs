@@ -160,7 +160,7 @@ pub fn draw_editor_into(
     let full_text = buffer.to_text();
 
     // H1: compute the leading whitespace of the logical line for continuation indent.
-    // TODO(anvil-tierX-#1-word-break): break at word boundary instead of exact cell width.
+    // #1-word-break is implemented: wrap_starts pre-computed per-line; see below.
     // The `soft_wrap` flag is read per-line in the row loop below.
 
     if buffer.byte_len() == 0 {
@@ -347,6 +347,49 @@ pub fn draw_editor_into(
             max_line_len = graphemes.len();
         }
 
+        // #1-word-break: pre-compute visual wrap points when soft_wrap is on.
+        // Each entry is the grapheme index at which a new visual row begins.
+        // This lets us break at whitespace boundaries (within 20 cols of the
+        // edge) instead of the exact cell width.
+        let wrap_starts: Vec<usize> = if editor_pane.soft_wrap && content_cols > 0 {
+            let mut starts: Vec<usize> = Vec::new();
+            let mut vcol: usize = 0;
+            let mut row_start_col: usize = 0;
+            let mut last_ws_col: Option<usize> = None; // grapheme index of last whitespace
+            let mut last_ws_vcol: Option<usize> = None; // vcol of last whitespace
+            let indent = continuation_indent;
+            for (col, g) in graphemes.iter().enumerate() {
+                if vcol >= content_cols {
+                    // Try to break at the last whitespace within 20 cols.
+                    let break_col =
+                        if let (Some(ws_col), Some(ws_vcol)) = (last_ws_col, last_ws_vcol) {
+                            if vcol.saturating_sub(ws_vcol) <= 20 {
+                                ws_col + 1 // start new row after the whitespace
+                            } else {
+                                col // exact break
+                            }
+                        } else {
+                            col // no whitespace found; break exactly
+                        };
+                    starts.push(break_col);
+                    row_start_col = break_col;
+                    vcol = indent + (col - break_col);
+                    last_ws_col = None;
+                    last_ws_vcol = None;
+                }
+                if *g == " " || *g == "\t" {
+                    last_ws_col = Some(col);
+                    last_ws_vcol = Some(vcol);
+                }
+                vcol += 1;
+            }
+            let _ = row_start_col;
+            starts
+        } else {
+            Vec::new()
+        };
+        let mut next_wrap_idx: usize = 0; // index into wrap_starts
+
         // Track the byte offset within the line as we walk graphemes.
         let mut grapheme_byte = line_byte_start;
         // H1: in soft-wrap mode track position within the visual row for line breaks.
@@ -363,8 +406,12 @@ pub fn draw_editor_into(
             if !editor_pane.soft_wrap && col >= paint_limit {
                 break;
             }
-            // H1: soft-wrap — start a new visual row when we hit the right edge.
-            if editor_pane.soft_wrap && vcol_in_row >= content_cols {
+            // H1: soft-wrap — start a new visual row at pre-computed wrap points.
+            if editor_pane.soft_wrap
+                && next_wrap_idx < wrap_starts.len()
+                && col == wrap_starts[next_wrap_idx]
+            {
+                next_wrap_idx += 1;
                 vrow += 1;
                 if vrow >= visible_rows {
                     break;
