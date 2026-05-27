@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 use anvil_theme::Theme;
 use anvil_workspace::layout::Rect;
 
-use crate::raster::{FontMetrics, GlyphPainter, Raster};
+use crate::raster::{FontMetrics, GlyphPainter, Raster, UiTextPainter, UiWeight};
+use crate::ui_text_sizes::{EXPLORER_HEADER_PT, EXPLORER_ROW_PT};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExplorerHit {
@@ -181,6 +182,7 @@ impl RowMetrics {
 pub fn draw_left_dock(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
+    ui_painter: &mut dyn UiTextPainter,
     metrics: FontMetrics,
     theme: &Theme,
     snapshot: Option<&DirSnapshot>,
@@ -191,6 +193,7 @@ pub fn draw_left_dock(
     draw_left_dock_with_scroll(
         raster,
         painter,
+        ui_painter,
         metrics,
         theme,
         snapshot,
@@ -213,6 +216,7 @@ pub fn draw_left_dock(
 pub fn draw_left_dock_with_scroll(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
+    ui_painter: &mut dyn UiTextPainter,
     metrics: FontMetrics,
     theme: &Theme,
     snapshot: Option<&DirSnapshot>,
@@ -315,6 +319,7 @@ pub fn draw_left_dock_with_scroll(
     draw_explorer_section(
         raster,
         painter,
+        ui_painter,
         ui_metrics,
         theme,
         snapshot,
@@ -333,6 +338,7 @@ pub fn draw_left_dock_with_scroll(
     draw_outline_section(
         raster,
         painter,
+        ui_painter,
         ui_metrics,
         theme,
         outline,
@@ -494,6 +500,7 @@ const MAX_RENDER_DEPTH: usize = 32;
 fn draw_explorer_section(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
+    ui_painter: &mut dyn UiTextPainter,
     metrics: FontMetrics,
     theme: &Theme,
     snapshot: Option<&DirSnapshot>,
@@ -543,38 +550,40 @@ fn draw_explorer_section(
 
     let header_y = rect.y + ((header_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
     // #9: collapse chevron — ▾ when expanded, ▸ when collapsed. Drawn at pad_x.
+    // Chevrons are Nerd Font glyphs; keep on mono path.
     let chevron = if collapsed { '▸' } else { '▾' };
-    draw_text_run(
-        raster,
+    raster.glyph_at(
         painter,
         metrics,
-        &chevron.to_string(),
-        theme.text_subtle,
         rect.x + pad_x,
         header_y,
-        rect.x + pad_x + cell_w,
+        chevron as u32,
+        theme.text_subtle,
     );
-    draw_text_run(
-        raster,
-        painter,
-        metrics,
+    raster.ui_line(
+        ui_painter,
         header_label,
-        theme.accent_bright,
         rect.x + pad_x + cell_w * 1.5,
         header_y,
-        rect.x + rect.w - pad_x,
+        EXPLORER_HEADER_PT,
+        UiWeight::Semibold,
+        theme.accent_bright,
     );
     if !header_meta.is_empty() {
-        let meta_w = header_meta.chars().count() as f64 * cell_w;
-        draw_text_run(
-            raster,
-            painter,
-            metrics,
+        let meta_w = raster.ui_measure(
+            ui_painter,
             &header_meta,
-            meta_color,
-            rect.x + rect.w - pad_x - meta_w,
+            EXPLORER_HEADER_PT,
+            UiWeight::Semibold,
+        );
+        raster.ui_line(
+            ui_painter,
+            &header_meta,
+            (rect.x + rect.w - pad_x - meta_w).max(rect.x + pad_x + cell_w * 1.5),
             header_y,
-            rect.x + rect.w - pad_x,
+            EXPLORER_HEADER_PT,
+            UiWeight::Semibold,
+            meta_color,
         );
     }
     // Hairline under header.
@@ -596,28 +605,26 @@ fn draw_explorer_section(
         None => {
             // No cwd yet — waiting state.
             let row_y = content_y_start + ((row_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
-            draw_text_run(
-                raster,
-                painter,
-                metrics,
+            raster.ui_line(
+                ui_painter,
                 "Waiting for shell prompt\u{2026}",
-                theme.text_muted,
                 rect.x + pad_x,
                 row_y,
-                rect.x + rect.w,
+                EXPLORER_ROW_PT,
+                UiWeight::Regular,
+                theme.text_muted,
             );
         }
         Some(snap) if snap.entries.is_empty() => {
             let row_y = content_y_start + ((row_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
-            draw_text_run(
-                raster,
-                painter,
-                metrics,
+            raster.ui_line(
+                ui_painter,
                 "(empty)",
-                theme.text_muted,
                 rect.x + pad_x,
                 row_y,
-                rect.x + rect.w,
+                EXPLORER_ROW_PT,
+                UiWeight::Regular,
+                theme.text_muted,
             );
         }
         Some(snap) => {
@@ -745,15 +752,14 @@ fn draw_explorer_section(
                 if is_empty_sentinel {
                     let indent = *depth as f64 * indent_px;
                     let text_x = rect.x + pad_x + indent + cell_w * 2.0;
-                    draw_text_run(
-                        raster,
-                        painter,
-                        metrics,
+                    raster.ui_line(
+                        ui_painter,
                         "(empty)",
-                        theme.text_subtle,
                         text_x,
                         glyph_y,
-                        rect.x + rect.w - pad_x,
+                        EXPLORER_ROW_PT,
+                        UiWeight::Regular,
+                        theme.text_subtle,
                     );
                     continue;
                 }
@@ -863,6 +869,7 @@ fn draw_explorer_section(
                 if let Some(badge) = git_badge {
                     // Badge rendered in the gap between the file icon and the label.
                     // Color: M=attention, A=verified, ?=text_subtle, D=failure.
+                    // Single ASCII char — keep on mono path.
                     let badge_color = match badge {
                         'M' => theme.attention,
                         'A' => theme.verified,
@@ -870,19 +877,14 @@ fn draw_explorer_section(
                         _ => theme.text_subtle,
                     };
                     let badge_x = label_x - cell_w;
-                    let badge_str: &[u8] = &[badge as u8];
-                    if let Ok(s) = std::str::from_utf8(badge_str) {
-                        draw_text_run(
-                            raster,
-                            painter,
-                            metrics,
-                            s,
-                            badge_color,
-                            badge_x,
-                            glyph_y,
-                            badge_x + cell_w,
-                        );
-                    }
+                    raster.glyph_at(
+                        painter,
+                        metrics,
+                        badge_x,
+                        glyph_y,
+                        badge as u32,
+                        badge_color,
+                    );
                 }
 
                 // Files: foreground (or accent_primary when selected).
@@ -905,39 +907,48 @@ fn draw_explorer_section(
                     None
                 };
 
-                let max_chars = ((max_x - label_x) / cell_w).floor().max(0.0) as usize;
-                let display_name = if let Some(ref suffix) = child_count_suffix {
-                    let full = format!("{name}{suffix}");
-                    truncate_name(&full, max_chars)
+                let avail_w = (max_x - label_x).max(0.0);
+                let full_name = if let Some(ref suffix) = child_count_suffix {
+                    format!("{name}{suffix}")
                 } else {
-                    truncate_name(name, max_chars)
+                    name.to_string()
                 };
-
-                draw_text_run(
-                    raster,
-                    painter,
-                    metrics,
-                    &display_name,
-                    label_color,
-                    label_x,
-                    glyph_y,
-                    max_x,
+                let display_name = ui_truncate(
+                    ui_painter,
+                    &full_name,
+                    avail_w,
+                    EXPLORER_ROW_PT,
+                    UiWeight::Regular,
                 );
 
-                // Y3: symlink indicator — render " →" after the name in text_subtle.
+                raster.ui_line(
+                    ui_painter,
+                    &display_name,
+                    label_x,
+                    glyph_y,
+                    EXPLORER_ROW_PT,
+                    UiWeight::Regular,
+                    label_color,
+                );
+
+                // Y3: symlink indicator — render → after the name in text_subtle.
+                // Single Unicode glyph — keep on mono path.
                 if *is_symlink {
-                    let label_len = display_name.chars().count();
-                    let arrow_x = label_x + label_len as f64 * cell_w + cell_w * 0.5;
+                    let label_w = raster.ui_measure(
+                        ui_painter,
+                        &display_name,
+                        EXPLORER_ROW_PT,
+                        UiWeight::Regular,
+                    );
+                    let arrow_x = label_x + label_w + cell_w * 0.5;
                     if arrow_x + cell_w < max_x {
-                        draw_text_run(
-                            raster,
+                        raster.glyph_at(
                             painter,
                             metrics,
-                            "\u{2192}", // →
-                            theme.text_subtle,
                             arrow_x,
                             glyph_y,
-                            max_x,
+                            '\u{2192}' as u32,
+                            theme.text_subtle,
                         );
                     }
                 }
@@ -1053,6 +1064,7 @@ fn collect_all_dirs(
 fn draw_outline_section(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
+    ui_painter: &mut dyn UiTextPainter,
     metrics: FontMetrics,
     theme: &Theme,
     outline: Option<&[OutlineRow]>,
@@ -1086,27 +1098,24 @@ fn draw_outline_section(
         theme.text_subtle
     };
     let header_y = rect.y + ((header_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
-    // #9: collapse chevron.
+    // #9: collapse chevron — keep on mono path (Nerd Font / Unicode glyph).
     let chevron = if collapsed { '▸' } else { '▾' };
-    draw_text_run(
-        raster,
+    raster.glyph_at(
         painter,
         metrics,
-        &chevron.to_string(),
-        theme.text_subtle,
         rect.x + pad_x,
         header_y,
-        rect.x + pad_x + cell_w,
+        chevron as u32,
+        theme.text_subtle,
     );
-    draw_text_run(
-        raster,
-        painter,
-        metrics,
+    raster.ui_line(
+        ui_painter,
         "OUTLINE",
-        header_color,
         rect.x + pad_x + cell_w * 1.5,
         header_y,
-        rect.x + rect.w,
+        EXPLORER_HEADER_PT,
+        UiWeight::Semibold,
+        header_color,
     );
     raster.fill_pixel_rect(rect.x, rect.y + header_h - 1.0, rect.w, 1.0, theme.hairline);
 
@@ -1150,32 +1159,37 @@ fn draw_outline_section(
                 let x_start = rect.x + pad_x + outline_indent_px;
                 let x_max = rect.x + rect.w - pad_x;
 
-                // Kind glyph.
-                let glyph = outline_kind_glyph(row.kind);
-                draw_text_run(
-                    raster,
-                    painter,
-                    metrics,
-                    glyph,
-                    theme.accent_primary,
-                    x_start,
-                    glyph_y,
-                    x_max,
-                );
+                // Kind glyph — special Unicode/Nerd Font char, keep on mono path.
+                let glyph_ch = outline_kind_glyph(row.kind);
+                if let Some(ch) = glyph_ch.chars().next() {
+                    raster.glyph_at(
+                        painter,
+                        metrics,
+                        x_start,
+                        glyph_y,
+                        ch as u32,
+                        theme.accent_primary,
+                    );
+                }
 
                 // Name: one cell after the glyph + one space gap.
                 let name_x = x_start + cell_w * 2.0;
-                let max_name_chars = ((x_max - name_x) / cell_w).floor().max(0.0) as usize;
-                let truncated = truncate_name(&row.name, max_name_chars);
-                draw_text_run(
-                    raster,
-                    painter,
-                    metrics,
+                let avail_name_w = (x_max - name_x).max(0.0);
+                let truncated = ui_truncate(
+                    ui_painter,
+                    &row.name,
+                    avail_name_w,
+                    EXPLORER_ROW_PT,
+                    UiWeight::Regular,
+                );
+                raster.ui_line(
+                    ui_painter,
                     &truncated,
-                    theme.text_muted,
                     name_x,
                     glyph_y,
-                    x_max,
+                    EXPLORER_ROW_PT,
+                    UiWeight::Regular,
+                    theme.text_muted,
                 );
             }
         }
@@ -1245,41 +1259,36 @@ fn file_icon(name: &str) -> &'static str {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Draw a string run clipped to `max_x`. Returns the x position after the last glyph.
-#[allow(clippy::too_many_arguments)]
-fn draw_text_run(
-    raster: &mut Raster,
-    painter: &mut dyn GlyphPainter,
-    metrics: FontMetrics,
-    text: &str,
-    color: [u8; 3],
-    x_start: f64,
-    y: f64,
-    max_x: f64,
-) {
-    let mut x = x_start;
-    for ch in text.chars() {
-        if x + metrics.cell_w > max_x {
-            break;
-        }
-        raster.glyph_at(painter, metrics, x, y, ch as u32, color);
-        x += metrics.cell_w;
-    }
-}
-
-/// Truncate `name` to at most `max_chars` characters, appending `…` if clipped.
-fn truncate_name(name: &str, max_chars: usize) -> String {
-    if max_chars == 0 {
+/// Truncate `name` to fit within `max_px` device pixels using the UI text path,
+/// appending `…` if clipped.  Returns the display string unchanged when it fits.
+fn ui_truncate(
+    ui_painter: &mut dyn UiTextPainter,
+    name: &str,
+    max_px: f64,
+    size_pt: f64,
+    weight: UiWeight,
+) -> String {
+    if name.is_empty() || max_px <= 0.0 {
         return String::new();
     }
-    let chars: Vec<char> = name.chars().collect();
-    if chars.len() <= max_chars {
-        name.to_string()
-    } else {
-        let cut = max_chars.saturating_sub(1);
-        let s: String = chars[..cut].iter().collect();
-        format!("{s}\u{2026}")
+    let full_w = ui_painter.measure(name, size_pt, weight);
+    if full_w <= max_px {
+        return name.to_string();
     }
+    // Reserve space for the ellipsis.
+    let ellipsis_w = ui_painter.measure("\u{2026}", size_pt, weight);
+    let budget = (max_px - ellipsis_w).max(0.0);
+    let mut acc = 0.0;
+    let mut cut = 0;
+    for ch in name.chars() {
+        let cw = ui_painter.measure(&ch.to_string(), size_pt, weight);
+        if acc + cw > budget {
+            break;
+        }
+        acc += cw;
+        cut += ch.len_utf8();
+    }
+    format!("{}\u{2026}", &name[..cut])
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -1287,7 +1296,7 @@ fn truncate_name(name: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::raster::{PixelRect, pixel_at};
+    use crate::raster::{PixelRect, UiWeight, pixel_at};
 
     #[derive(Default)]
     struct StubPainter {
@@ -1307,6 +1316,37 @@ mod tests {
             _bh: usize,
         ) {
             self.glyphs.push((glyph_id, fg));
+        }
+    }
+
+    /// Stub UI text painter — records (text, color) of every draw_line call.
+    #[derive(Default)]
+    struct StubUiPainter {
+        pub draws: Vec<(String, [u8; 3])>,
+    }
+
+    impl UiTextPainter for StubUiPainter {
+        fn measure(&mut self, text: &str, _size_pt: f64, _weight: UiWeight) -> f64 {
+            // Return a fixed 8px per char so width math is predictable.
+            text.chars().count() as f64 * 8.0
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn draw_line(
+            &mut self,
+            text: &str,
+            _x_px: f64,
+            _baseline_y_px: f64,
+            _size_pt: f64,
+            _weight: UiWeight,
+            fg: [u8; 3],
+            _pixels: &mut [u8],
+            _bitmap_w: usize,
+            _bitmap_h: usize,
+        ) {
+            if !text.is_empty() {
+                self.draws.push((text.to_string(), fg));
+            }
         }
     }
 
@@ -1338,13 +1378,14 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 800);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
         let zero = Rect {
             x: 0.0,
             y: 0.0,
             w: 0.0,
             h: 0.0,
         };
-        draw_left_dock(&mut r, &mut p, m, &th, None, None, None, zero);
+        draw_left_dock(&mut r, &mut p, &mut up, m, &th, None, None, None, zero);
         // No panic = pass.
     }
 
@@ -1355,18 +1396,29 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 800);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
 
-        draw_left_dock(&mut r, &mut p, m, &th, None, None, None, dock_rect());
+        draw_left_dock(
+            &mut r,
+            &mut p,
+            &mut up,
+            m,
+            &th,
+            None,
+            None,
+            None,
+            dock_rect(),
+        );
 
-        // "Waiting" → 'W' codepoint 87
-        let waiting_w: Vec<_> = p
-            .glyphs
+        // "Waiting for shell prompt…" now rendered via UiTextPainter.
+        let waiting: Vec<_> = up
+            .draws
             .iter()
-            .filter(|(cp, fg)| *cp == 'W' as u32 && *fg == th.text_muted)
+            .filter(|(text, fg)| text.contains("Waiting") && *fg == th.text_muted)
             .collect();
         assert!(
-            !waiting_w.is_empty(),
-            "expected 'W' in text_muted for Waiting state"
+            !waiting.is_empty(),
+            "expected Waiting text in text_muted via ui_painter"
         );
     }
 
@@ -1377,23 +1429,34 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 800);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
 
         let snap = DirSnapshot {
             root: "/anvil".to_string(),
             entries: vec![],
             git_marks: Default::default(),
         };
-        draw_left_dock(&mut r, &mut p, m, &th, Some(&snap), None, None, dock_rect());
+        draw_left_dock(
+            &mut r,
+            &mut p,
+            &mut up,
+            m,
+            &th,
+            Some(&snap),
+            None,
+            None,
+            dock_rect(),
+        );
 
-        // "(empty)" → '(' codepoint 40
-        let paren: Vec<_> = p
-            .glyphs
+        // "(empty)" now rendered via UiTextPainter.
+        let empty_draw: Vec<_> = up
+            .draws
             .iter()
-            .filter(|(cp, fg)| *cp == '(' as u32 && *fg == th.text_muted)
+            .filter(|(text, fg)| text.contains("(empty)") && *fg == th.text_muted)
             .collect();
         assert!(
-            !paren.is_empty(),
-            "expected '(' in text_muted for empty state"
+            !empty_draw.is_empty(),
+            "expected '(empty)' in text_muted via ui_painter for empty state"
         );
     }
 
@@ -1404,6 +1467,7 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 800);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
 
         let snap = DirSnapshot {
             root: "/anvil".to_string(),
@@ -1422,7 +1486,17 @@ mod tests {
             git_marks: Default::default(),
         };
 
-        let hits = draw_left_dock(&mut r, &mut p, m, &th, Some(&snap), None, None, dock_rect());
+        let hits = draw_left_dock(
+            &mut r,
+            &mut p,
+            &mut up,
+            m,
+            &th,
+            Some(&snap),
+            None,
+            None,
+            dock_rect(),
+        );
 
         assert_eq!(
             hits.at(12.0, 18.0),
@@ -1444,6 +1518,7 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 800);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
 
         let snap = DirSnapshot {
             root: "/anvil".to_string(),
@@ -1455,7 +1530,17 @@ mod tests {
             git_marks: Default::default(),
         };
 
-        let hits = draw_left_dock(&mut r, &mut p, m, &th, Some(&snap), None, None, dock_rect());
+        let hits = draw_left_dock(
+            &mut r,
+            &mut p,
+            &mut up,
+            m,
+            &th,
+            Some(&snap),
+            None,
+            None,
+            dock_rect(),
+        );
         let row_hit = hits
             .hits
             .iter()
@@ -1488,6 +1573,7 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 800);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
 
         // Use 25 entries: with ROW_H=22 and explorer_h=480px, available_rows=20,
         // so 25 entries give 5 overflow rows and scroll_offset=1 is not clamped.
@@ -1507,6 +1593,7 @@ mod tests {
         let hits = draw_left_dock_with_scroll(
             &mut r,
             &mut p,
+            &mut up,
             m,
             &th,
             Some(&snap),
@@ -1536,6 +1623,7 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 800);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
 
         let snap = DirSnapshot {
             root: "/anvil".to_string(),
@@ -1553,17 +1641,27 @@ mod tests {
             ],
             git_marks: Default::default(),
         };
-        draw_left_dock(&mut r, &mut p, m, &th, Some(&snap), None, None, dock_rect());
+        draw_left_dock(
+            &mut r,
+            &mut p,
+            &mut up,
+            m,
+            &th,
+            Some(&snap),
+            None,
+            None,
+            dock_rect(),
+        );
 
-        // File label glyph 'm' must paint in foreground (high contrast).
-        let file_m: Vec<_> = p
-            .glyphs
+        // File label "main.rs" now rendered via UiTextPainter in foreground.
+        let file_label: Vec<_> = up
+            .draws
             .iter()
-            .filter(|(cp, fg)| *cp == 'm' as u32 && *fg == th.foreground)
+            .filter(|(text, fg)| text.contains("main.rs") && *fg == th.foreground)
             .collect();
         assert!(
-            !file_m.is_empty(),
-            "expected 'm' in foreground for file entry label"
+            !file_label.is_empty(),
+            "expected 'main.rs' in foreground via ui_painter for file entry label"
         );
 
         // File icon for `.rs` is U+E7A8 (Nerd Font rust icon, item 3) and paints in
@@ -1598,6 +1696,7 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 800);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
 
         let snap = DirSnapshot {
             root: "/anvil/src".to_string(),
@@ -1619,6 +1718,7 @@ mod tests {
         draw_left_dock(
             &mut r,
             &mut p,
+            &mut up,
             m,
             &th,
             Some(&snap),
@@ -1683,9 +1783,11 @@ mod tests {
             let mut r = Raster::new(800, 800);
             r.clear(th.charcoal);
             let mut p = StubPainter::default();
+            let mut up = StubUiPainter::default();
             draw_left_dock_with_scroll(
                 &mut r,
                 &mut p,
+                &mut up,
                 m,
                 &th,
                 Some(&snap),
@@ -1719,9 +1821,11 @@ mod tests {
             let mut r = Raster::new(800, 800);
             r.clear(th.charcoal);
             let mut p = StubPainter::default();
+            let mut up = StubUiPainter::default();
             draw_left_dock_with_scroll(
                 &mut r,
                 &mut p,
+                &mut up,
                 m,
                 &th,
                 Some(&snap),
@@ -1755,30 +1859,39 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 800);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
 
-        draw_left_dock(&mut r, &mut p, m, &th, None, None, None, dock_rect());
-
-        // "OUTLINE" header 'N' rendered in text_subtle (Item 10: empty → text_subtle).
-        let n_subtle: Vec<_> = p
-            .glyphs
-            .iter()
-            .filter(|(cp, fg)| *cp == 'N' as u32 && *fg == th.text_subtle)
-            .collect();
-        assert!(
-            !n_subtle.is_empty(),
-            "expected 'N' in text_subtle for outline header in empty state"
+        draw_left_dock(
+            &mut r,
+            &mut p,
+            &mut up,
+            m,
+            &th,
+            None,
+            None,
+            None,
+            dock_rect(),
         );
 
-        // Item 10: body copy removed. 'c' from "sour[c]e" (in "Open a source file") must
-        // not appear — 'c' is absent from all other rendered strings ("OUTLINE", "EXPLORER",
-        // "Waiting for shell prompt…").
-        let c_body: Vec<_> = p
-            .glyphs
+        // "OUTLINE" header now rendered via UiTextPainter in text_subtle.
+        let outline_subtle: Vec<_> = up
+            .draws
             .iter()
-            .filter(|(cp, _)| *cp == 'c' as u32)
+            .filter(|(text, fg)| *text == "OUTLINE" && *fg == th.text_subtle)
             .collect();
         assert!(
-            c_body.is_empty(),
+            !outline_subtle.is_empty(),
+            "expected OUTLINE header in text_subtle via ui_painter in empty state"
+        );
+
+        // Item 10: body copy removed — no draw call containing "source" should exist.
+        let source_body: Vec<_> = up
+            .draws
+            .iter()
+            .filter(|(text, _)| text.contains("source"))
+            .collect();
+        assert!(
+            source_body.is_empty(),
             "body copy 'Open a source file' must not render when outline is None"
         );
     }
@@ -1791,8 +1904,19 @@ mod tests {
         let mut r = Raster::new(800, 800);
         r.clear([0, 0, 0]);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
 
-        draw_left_dock(&mut r, &mut p, m, &th, None, None, None, dock_rect());
+        draw_left_dock(
+            &mut r,
+            &mut p,
+            &mut up,
+            m,
+            &th,
+            None,
+            None,
+            None,
+            dock_rect(),
+        );
 
         let px = pixel_at(&r, 50, 400); // middle of dock
         assert_ne!(
@@ -1817,30 +1941,39 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 800);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
 
-        draw_left_dock(&mut r, &mut p, m, &th, None, None, Some(&[]), dock_rect());
-
-        // "OUTLINE" header 'N' rendered in text_subtle (Item 10: empty → text_subtle).
-        let n_subtle: Vec<_> = p
-            .glyphs
-            .iter()
-            .filter(|(cp, fg)| *cp == 'N' as u32 && *fg == th.text_subtle)
-            .collect();
-        assert!(
-            !n_subtle.is_empty(),
-            "expected 'N' in text_subtle for outline header when Some(&[])"
+        draw_left_dock(
+            &mut r,
+            &mut p,
+            &mut up,
+            m,
+            &th,
+            None,
+            None,
+            Some(&[]),
+            dock_rect(),
         );
 
-        // No body copy: 's' from "No symbols" must not appear.
-        // 's' appears in "src" (Explorer) but not in OUTLINE body when empty.
-        // More precisely, 'y' only appears in "No symbols" and "No symbols yet".
-        let y_body: Vec<_> = p
-            .glyphs
+        // "OUTLINE" header now rendered via UiTextPainter in text_subtle.
+        let outline_subtle: Vec<_> = up
+            .draws
             .iter()
-            .filter(|(cp, _)| *cp == 'y' as u32)
+            .filter(|(text, fg)| *text == "OUTLINE" && *fg == th.text_subtle)
             .collect();
         assert!(
-            y_body.is_empty(),
+            !outline_subtle.is_empty(),
+            "expected OUTLINE header in text_subtle via ui_painter when Some(&[])"
+        );
+
+        // No body copy — no draw call containing "symbols" should exist.
+        let symbols_body: Vec<_> = up
+            .draws
+            .iter()
+            .filter(|(text, _)| text.contains("symbols"))
+            .collect();
+        assert!(
+            symbols_body.is_empty(),
             "body copy must not render when outline is Some(&[])"
         );
     }
@@ -1852,6 +1985,7 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 800);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
 
         let rows = vec![
             OutlineRow {
@@ -1867,20 +2001,30 @@ mod tests {
                 line: 5,
             },
         ];
-        draw_left_dock(&mut r, &mut p, m, &th, None, None, Some(&rows), dock_rect());
-
-        // 'm' from "my_fn" should appear in text_muted.
-        let m_muted: Vec<_> = p
-            .glyphs
-            .iter()
-            .filter(|(cp, fg)| *cp == 'm' as u32 && *fg == th.text_muted)
-            .collect();
-        assert!(
-            !m_muted.is_empty(),
-            "expected 'm' in text_muted for function symbol name"
+        draw_left_dock(
+            &mut r,
+            &mut p,
+            &mut up,
+            m,
+            &th,
+            None,
+            None,
+            Some(&rows),
+            dock_rect(),
         );
 
-        // ƒ glyph (0x0192) should appear in accent_primary.
+        // "my_fn" symbol name now rendered via UiTextPainter in text_muted.
+        let fn_label: Vec<_> = up
+            .draws
+            .iter()
+            .filter(|(text, fg)| text.contains("my_fn") && *fg == th.text_muted)
+            .collect();
+        assert!(
+            !fn_label.is_empty(),
+            "expected 'my_fn' in text_muted via ui_painter for function symbol name"
+        );
+
+        // ƒ glyph (0x0192) stays on mono path in accent_primary.
         let f_accent: Vec<_> = p
             .glyphs
             .iter()
@@ -1900,28 +2044,39 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 800);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
 
-        draw_left_dock(&mut r, &mut p, m, &th, None, None, None, dock_rect());
-
-        // 'U' from "OUTLINE" — unique to that header — must appear in text_subtle.
-        let u_subtle: Vec<_> = p
-            .glyphs
-            .iter()
-            .filter(|(cp, fg)| *cp == 'U' as u32 && *fg == th.text_subtle)
-            .collect();
-        assert!(
-            !u_subtle.is_empty(),
-            "OUTLINE header 'U' must be in text_subtle when outline is None"
+        draw_left_dock(
+            &mut r,
+            &mut p,
+            &mut up,
+            m,
+            &th,
+            None,
+            None,
+            None,
+            dock_rect(),
         );
 
-        // 'U' must NOT appear in accent_bright (that would mean the wrong color was used).
-        let u_bright: Vec<_> = p
-            .glyphs
+        // "OUTLINE" header now rendered via UiTextPainter in text_subtle.
+        let outline_subtle: Vec<_> = up
+            .draws
             .iter()
-            .filter(|(cp, fg)| *cp == 'U' as u32 && *fg == th.accent_bright)
+            .filter(|(text, fg)| *text == "OUTLINE" && *fg == th.text_subtle)
             .collect();
         assert!(
-            u_bright.is_empty(),
+            !outline_subtle.is_empty(),
+            "OUTLINE header must be in text_subtle via ui_painter when outline is None"
+        );
+
+        // "OUTLINE" must NOT appear in accent_bright.
+        let outline_bright: Vec<_> = up
+            .draws
+            .iter()
+            .filter(|(text, fg)| *text == "OUTLINE" && *fg == th.accent_bright)
+            .collect();
+        assert!(
+            outline_bright.is_empty(),
             "OUTLINE header must NOT use accent_bright when outline is None"
         );
     }
@@ -1953,9 +2108,11 @@ mod tests {
         let hits_at_0 = {
             let mut r = Raster::new(800, 800);
             let mut p = StubPainter::default();
+            let mut up = StubUiPainter::default();
             draw_left_dock_with_scroll(
                 &mut r,
                 &mut p,
+                &mut up,
                 m,
                 &th,
                 Some(&snap),
@@ -1978,9 +2135,11 @@ mod tests {
         let hits_at_5 = {
             let mut r = Raster::new(800, 800);
             let mut p = StubPainter::default();
+            let mut up = StubUiPainter::default();
             draw_left_dock_with_scroll(
                 &mut r,
                 &mut p,
+                &mut up,
                 m,
                 &th,
                 Some(&snap),
@@ -2030,6 +2189,7 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 800);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
 
         let root_snap = DirSnapshot {
             root: "/project".to_string(),
@@ -2073,6 +2233,7 @@ mod tests {
         let hits = draw_left_dock_with_scroll(
             &mut r,
             &mut p,
+            &mut up,
             m,
             &th,
             Some(&root_snap),
@@ -2239,9 +2400,11 @@ mod tests {
         // Draw with expansion.
         let mut r = Raster::new(800, 800);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
         draw_left_dock_with_scroll(
             &mut r,
             &mut p,
+            &mut up,
             m,
             &th,
             Some(&root_snap),
@@ -2274,9 +2437,11 @@ mod tests {
         // Same for flat (all depth-0) layout.
         let mut r2 = Raster::new(800, 800);
         let mut p2 = StubPainter::default();
+        let mut up2 = StubUiPainter::default();
         draw_left_dock(
             &mut r2,
             &mut p2,
+            &mut up2,
             m,
             &th,
             Some(&root_snap),
@@ -2319,6 +2484,7 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 800);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
         let snap = DirSnapshot {
             root: "/p".to_string(),
             entries: vec![DirEntry {
@@ -2337,6 +2503,7 @@ mod tests {
         let hits = draw_left_dock_with_scroll(
             &mut r,
             &mut p,
+            &mut up,
             m,
             &th,
             Some(&snap),
@@ -2363,6 +2530,7 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 800);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
         let snap = DirSnapshot {
             root: "/p".to_string(),
             entries: vec![
@@ -2389,6 +2557,7 @@ mod tests {
         let hits = draw_left_dock_with_scroll(
             &mut r,
             &mut p,
+            &mut up,
             m,
             &th,
             Some(&snap),
@@ -2432,6 +2601,7 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 800);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
 
         let mut git_marks = HashMap::new();
         git_marks.insert("main.rs".to_string(), 'M');
@@ -2445,7 +2615,17 @@ mod tests {
             git_marks,
         };
 
-        draw_left_dock(&mut r, &mut p, m, &th, Some(&snap), None, None, dock_rect());
+        draw_left_dock(
+            &mut r,
+            &mut p,
+            &mut up,
+            m,
+            &th,
+            Some(&snap),
+            None,
+            None,
+            dock_rect(),
+        );
 
         // 'M' glyph in attention color must appear.
         let badge_calls: Vec<_> = p
@@ -2470,6 +2650,7 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 800);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
 
         let snap = DirSnapshot {
             root: "/project".to_string(),
@@ -2497,6 +2678,7 @@ mod tests {
         let hits = draw_left_dock_with_scroll(
             &mut r,
             &mut p,
+            &mut up,
             m,
             &th,
             Some(&snap),
@@ -2537,6 +2719,7 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 800);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
 
         let snap = DirSnapshot {
             root: "/project".to_string(),
@@ -2558,6 +2741,7 @@ mod tests {
         let hits = draw_left_dock_with_scroll(
             &mut r,
             &mut p,
+            &mut up,
             m,
             &th,
             Some(&snap),
@@ -2591,6 +2775,7 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 800);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
 
         let snap = DirSnapshot {
             root: "/project".to_string(),
@@ -2602,7 +2787,17 @@ mod tests {
             git_marks: Default::default(),
         };
 
-        draw_left_dock(&mut r, &mut p, m, &th, Some(&snap), None, None, dock_rect());
+        draw_left_dock(
+            &mut r,
+            &mut p,
+            &mut up,
+            m,
+            &th,
+            Some(&snap),
+            None,
+            None,
+            dock_rect(),
+        );
 
         // Arrow glyph → (U+2192) must appear in text_subtle.
         let arrow: Vec<_> = p
@@ -2625,6 +2820,7 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 800);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
 
         let root_snap = DirSnapshot {
             root: "/project".to_string(),
@@ -2650,6 +2846,7 @@ mod tests {
         draw_left_dock_with_scroll(
             &mut r,
             &mut p,
+            &mut up,
             m,
             &th,
             Some(&root_snap),
@@ -2667,15 +2864,15 @@ mod tests {
             false,
         );
 
-        // '(' from "(empty)" must appear in text_subtle.
-        let paren: Vec<_> = p
-            .glyphs
+        // "(empty)" placeholder now rendered via UiTextPainter in text_subtle.
+        let empty_draw: Vec<_> = up
+            .draws
             .iter()
-            .filter(|(cp, fg)| *cp == '(' as u32 && *fg == th.text_subtle)
+            .filter(|(text, fg)| text.contains("(empty)") && *fg == th.text_subtle)
             .collect();
         assert!(
-            !paren.is_empty(),
-            "expanded empty dir must render '(' in text_subtle for (empty) placeholder (Y4)"
+            !empty_draw.is_empty(),
+            "expanded empty dir must render '(empty)' in text_subtle via ui_painter (Y4)"
         );
     }
 
@@ -2688,6 +2885,7 @@ mod tests {
         let th = theme();
         let mut r = Raster::new(800, 800);
         let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
 
         let root_snap = DirSnapshot {
             root: "/project".to_string(),
@@ -2724,6 +2922,7 @@ mod tests {
         draw_left_dock_with_scroll(
             &mut r,
             &mut p,
+            &mut up,
             m,
             &th,
             Some(&root_snap),
@@ -2741,16 +2940,17 @@ mod tests {
             false,
         );
 
-        // '(' from "(2)" badge appears in text_muted (dir label color).
-        // Dirs use text_muted so files stand out; the count badge inherits it.
-        let paren_fg: Vec<_> = p
-            .glyphs
+        // Dir label "src (2)" now rendered via UiTextPainter in text_muted.
+        let badge_draw: Vec<_> = up
+            .draws
             .iter()
-            .filter(|(cp, fg)| *cp == '(' as u32 && *fg == th.text_muted)
+            .filter(|(text, fg)| {
+                text.contains("src") && text.contains("(2)") && *fg == th.text_muted
+            })
             .collect();
         assert!(
-            !paren_fg.is_empty(),
-            "collapsed dir with 2 cached children must render '(' in text_muted (dir label color)"
+            !badge_draw.is_empty(),
+            "collapsed dir with 2 cached children must render 'src (2)' in text_muted via ui_painter"
         );
     }
 }

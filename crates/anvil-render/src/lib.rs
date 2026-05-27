@@ -7,7 +7,6 @@
 //! Phase P10b: `batch` — `CellBatch` + `CellInstance` for GPU instance submission.
 
 pub mod agent_panel;
-pub mod ui_text_sizes;
 pub mod atlas;
 pub mod batch;
 pub mod cheatsheet;
@@ -20,6 +19,7 @@ pub mod raster;
 pub mod searchbar;
 pub mod statusbar;
 pub mod tabbar;
+pub mod ui_text_sizes;
 pub mod workspace;
 
 pub use atlas::{GlyphRasterizer, GlyphSlot, ShelfPacker};

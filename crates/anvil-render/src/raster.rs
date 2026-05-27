@@ -271,7 +271,17 @@ impl Raster {
     ) {
         let w = self.width;
         let h = self.height;
-        painter.draw_line(text, x_px, baseline_y_px, size_pt, weight, fg, &mut self.pixels, w, h);
+        painter.draw_line(
+            text,
+            x_px,
+            baseline_y_px,
+            size_pt,
+            weight,
+            fg,
+            &mut self.pixels,
+            w,
+            h,
+        );
     }
 
     /// Measure the advance width of a proportional UI text string.
