@@ -3427,7 +3427,22 @@ impl App {
                 }
             }
             if close_tab {
-                if !self.tabs.close_at(tab_i) {
+                // If we're in IDE mode and would lose the last tab, replace
+                // the would-be-empty tab with a fresh native-editor pane
+                // instead of terminating. Avoids the crash path when the
+                // initial PTY couldn't spawn (ENXIO) — user still gets an
+                // editor surface.
+                if self.layout_mode == LayoutMode::Ide && self.tabs.tabs.len() == 1 {
+                    let new_id = self.tabs.tabs[tab_i].registry.peek_next_id();
+                    let buffer_id = self.tabs.tabs[tab_i].editor_panes.new_pane(new_id);
+                    let assigned = self.tabs.tabs[tab_i]
+                        .registry
+                        .create_and_register_editor(buffer_id);
+                    debug_assert_eq!(assigned, new_id);
+                    *self.tabs.tabs[tab_i].tree.root =
+                        anvil_workspace::layout::PaneNode::Leaf(new_id);
+                    self.tabs.tabs[tab_i].tree.focused = new_id;
+                } else if !self.tabs.close_at(tab_i) {
                     terminate_app();
                     return;
                 }
@@ -7450,7 +7465,7 @@ impl AppShell {
         // Rebuild font at font_size_pt * window_scale * font_scale.
         let pixel_size = self.app.font_size_pt * self.app.window_scale * self.app.font_scale;
         let names: Vec<&str> = vec![
-            "BlexMono Nerd Font Mono",
+            "IBM Plex Mono",
             self.app.font_family.as_str(),
             "SFMono-Regular",
             "Menlo",
@@ -7527,7 +7542,7 @@ impl AppShell {
         // Rebuild font at the new effective pixel size.
         let pixel_size = self.app.font_size_pt * self.app.window_scale * self.app.ui_scale;
         let names: Vec<&str> = vec![
-            "BlexMono Nerd Font Mono",
+            "IBM Plex Mono",
             self.app.font_family.as_str(),
             "SFMono-Regular",
             "Menlo",
@@ -7604,7 +7619,7 @@ impl AppShell {
         }
         let pixel_size = new_pt * self.app.window_scale;
         let names: Vec<&str> = vec![
-            "BlexMono Nerd Font Mono",
+            "IBM Plex Mono",
             self.app.font_family.as_str(),
             "SFMono-Regular",
             "Menlo",
@@ -12873,7 +12888,10 @@ fn terminate_app() {
         if let Some(cls) = cls {
             let app: *mut objc2::runtime::AnyObject = msg_send![cls, sharedApplication];
             if !app.is_null() {
-                let nil: *const std::ffi::c_void = std::ptr::null();
+                // terminate: expects id (typed AnyObject*), not a void*.
+                // objc2 0.6 enforces the type check strictly — passing a
+                // *const c_void here panics with "expected '@' found '^v'".
+                let nil: *mut objc2::runtime::AnyObject = std::ptr::null_mut();
                 let _: () = msg_send![app, terminate: nil];
             }
         }
@@ -13359,7 +13377,7 @@ fn main() -> Result<()> {
     // Save font family + size as owned values so they outlive the `config` move.
     let font_family = config.font.family.clone();
     let font_names: Vec<&str> = vec![
-        "BlexMono Nerd Font Mono",
+        "IBM Plex Mono",
         font_family.as_str(),
         "SFMono-Regular",
         "Menlo",

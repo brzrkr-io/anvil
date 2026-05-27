@@ -457,7 +457,7 @@ impl Default for Config {
             cursor: CursorCfg::new_default(),
             window: WindowCfg::default(),
             theme: ThemeEntry::default(),
-            layout_mode: StartupLayout::Terminal,
+            layout_mode: StartupLayout::Ide,
             theme_overrides: ThemeOverrides::default(),
             keybindings: Keybindings::default(),
             shell_integration: true,
@@ -685,7 +685,7 @@ accent = "#3aa0a8"
         assert_eq!(cfg.cursor.style, CursorStyle::Bar);
         assert!(!cfg.cursor.blink);
         assert_eq!(cfg.theme.theme_name(), "mineral-light");
-        assert_eq!(cfg.layout_mode, StartupLayout::Terminal); // default when not set
+        assert_eq!(cfg.layout_mode, StartupLayout::Ide); // default when not set
         assert_eq!(cfg.theme_overrides.accent.as_deref(), Some("#3aa0a8"));
     }
 
@@ -696,7 +696,7 @@ accent = "#3aa0a8"
         assert_eq!(cfg.font.family, "IBM Plex Mono");
         assert_eq!(cfg.cursor.style, CursorStyle::Block);
         assert_eq!(cfg.theme.theme_name(), "ember-dark");
-        assert_eq!(cfg.layout_mode, StartupLayout::Terminal); // default when not set
+        assert_eq!(cfg.layout_mode, StartupLayout::Ide); // default when not set
     }
 
     #[test]
@@ -755,7 +755,7 @@ height = 1.0
         assert_eq!(cfg.font.family, "IBM Plex Mono");
         assert!(cfg.cursor.blink);
         assert_eq!(cfg.theme.theme_name(), "ember-dark");
-        assert_eq!(cfg.layout_mode, StartupLayout::Terminal);
+        assert_eq!(cfg.layout_mode, StartupLayout::Ide);
         assert!(cfg.shell_integration);
         assert!(cfg.prompt.enabled);
         assert!(cfg.prompt.transient);
