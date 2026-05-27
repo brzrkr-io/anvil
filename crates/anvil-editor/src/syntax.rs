@@ -51,6 +51,16 @@ fn capture_name_to_role(name: &str) -> SyntaxRole {
         "variable" | "parameter" | "property" => SyntaxRole::Variable,
         "operator" => SyntaxRole::Operator,
         "punctuation" | "delimiter" | "bracket" => SyntaxRole::Punctuation,
+        // Markdown (tree-sitter-md) uses "text.*" capture names.
+        // Map the sub-segments to the closest existing roles so that headers,
+        // code spans, and links get syntax colour in the editor.
+        "text" => match name {
+            "text.title" => SyntaxRole::Keyword, // accent_bright — matches `^#+` headings
+            "text.literal" => SyntaxRole::String, // code spans / fenced code blocks
+            "text.uri" => SyntaxRole::Function,  // link destinations / URLs
+            "text.reference" => SyntaxRole::Type, // link labels
+            _ => SyntaxRole::Plain,
+        },
         _ => SyntaxRole::Plain,
     }
 }
@@ -654,5 +664,40 @@ mod tests {
         assert_eq!(rows.len(), 2, "expected 2 symbols; got {rows:?}");
         assert_eq!(rows[0].line, 0, "first fn is on line 0");
         assert_eq!(rows[1].line, 2, "second fn is on line 2");
+    }
+
+    // ── G3: markdown syntax highlighting ─────────────────────────────────────
+
+    /// Markdown headings must resolve to SyntaxRole::Keyword (accent_bright).
+    /// The tree-sitter-md grammar emits "text.title" for `(atx_heading (inline))`.
+    #[test]
+    fn syntax_markdown_heading_resolves_to_keyword() {
+        let src = "# Hello World\n\nsome body text\n";
+        let mut layer = SyntaxLayer::new();
+        layer.set_language_from_path(&path("README.md"));
+        layer.parse(src);
+
+        let spans = layer.highlights_for_range(0, src.len(), src);
+        let has_heading = spans.iter().any(|(_, role)| *role == SyntaxRole::Keyword);
+        assert!(
+            has_heading,
+            "expected a Keyword role for markdown heading; got: {spans:?}"
+        );
+    }
+
+    /// Markdown fenced code blocks must resolve to SyntaxRole::String.
+    #[test]
+    fn syntax_markdown_code_block_resolves_to_string() {
+        let src = "```\nlet x = 1;\n```\n";
+        let mut layer = SyntaxLayer::new();
+        layer.set_language_from_path(&path("notes.md"));
+        layer.parse(src);
+
+        let spans = layer.highlights_for_range(0, src.len(), src);
+        let has_literal = spans.iter().any(|(_, role)| *role == SyntaxRole::String);
+        assert!(
+            has_literal,
+            "expected a String role for markdown code block; got: {spans:?}"
+        );
     }
 }
