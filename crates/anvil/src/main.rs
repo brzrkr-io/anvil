@@ -3137,8 +3137,7 @@ impl App {
             None => return,
         };
 
-        let path_str = path.to_string_lossy().into_owned();
-        let argv: Vec<String> = vec!["/usr/bin/env".to_owned(), "nvim".to_owned(), path_str];
+        let argv = nvim_pane_argv(&path.to_string_lossy());
         let argv_refs: Vec<&str> = argv.iter().map(|s| s.as_str()).collect();
         match Pty::spawn(argv_refs.as_slice(), cols as u16, rows as u16) {
             Ok(pty) => {
@@ -12512,6 +12511,33 @@ impl AppHandler for AppShell {
             eprintln!("anvil-perf: scroll dy={dy:.2} pp={pixel_precise} d={d:.3}");
         }
 
+        // EE15: wheel over the IDE drawer terminal scrolls the drawer, not the
+        // focused editor pane.  Check this before the native-editor path so that
+        // scrolling with the cursor above the divider still reaches the editor.
+        if let Some(div_y) = app.ide_drawer_divider_y() {
+            if ry > div_y && !app.drawer_terminals.is_empty() {
+                let drawer_id = app
+                    .drawer_terminals
+                    .get(app.drawer_active_terminal)
+                    .copied()
+                    .or_else(|| app.drawer_terminals.first().copied());
+                if let Some(did) = drawer_id {
+                    if let Some(tab) = app.tabs.current_mut() {
+                        if let Some(pane) = tab.registry.get_mut(did) {
+                            if let Some(terminal) = &mut pane.terminal {
+                                let max_pos = terminal.scrollback_len() as f32;
+                                let np = (pane.scroll_target + d).clamp(0.0, max_pos);
+                                pane.scroll_target = np;
+                                terminal.set_viewport_offset(np.round() as usize);
+                            }
+                        }
+                    }
+                }
+                app.dirty = true;
+                return;
+            }
+        }
+
         // Native editor scroll (NE7 + M1): update scroll_target; easing loop applies it.
         if app.focused_is_native_editor() {
             if let Some(tab) = app.tabs.current_mut() {
@@ -13023,6 +13049,15 @@ fn ascii_lower(ch: char) -> char {
     } else {
         ch
     }
+}
+
+/// Build the argv for an nvim terminal pane: `["/usr/bin/env", "nvim", <path>]`.
+fn nvim_pane_argv(path_str: &str) -> Vec<String> {
+    vec![
+        "/usr/bin/env".to_owned(),
+        "nvim".to_owned(),
+        path_str.to_owned(),
+    ]
 }
 
 fn format_hex(rgb: [u8; 3]) -> String {
@@ -14945,5 +14980,36 @@ body = "impl ${1:Type} {}"
         assert_eq!(snippets.len(), 2);
         assert!(snippets.contains_key("fn"));
         assert!(snippets.contains_key("impl"));
+    }
+
+    // ── EE11: file:open prefix routing ───────────────────────────────────────
+
+    /// The Invoke handler strips "file:open:" and returns the abs path.
+    /// This test mirrors the routing logic at the Inbound::Invoke site.
+    #[test]
+    fn file_open_prefix_strips_to_abs_path() {
+        let id = "file:open:/home/user/project/src/main.rs";
+        let abs_path = id.strip_prefix("file:open:").expect("prefix must match");
+        assert_eq!(abs_path, "/home/user/project/src/main.rs");
+    }
+
+    #[test]
+    fn file_open_prefix_does_not_match_other_commands() {
+        let id = "task:run:build";
+        assert!(
+            id.strip_prefix("file:open:").is_none(),
+            "non-file:open: id must not match the file:open prefix"
+        );
+    }
+
+    // ── EE14: nvim pane argv construction ────────────────────────────────────
+
+    #[test]
+    fn nvim_pane_argv_has_correct_shape() {
+        let argv = nvim_pane_argv("/workspace/foo.rs");
+        assert_eq!(argv.len(), 3);
+        assert_eq!(argv[0], "/usr/bin/env");
+        assert_eq!(argv[1], "nvim");
+        assert_eq!(argv[2], "/workspace/foo.rs");
     }
 }
