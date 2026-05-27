@@ -7260,6 +7260,7 @@ impl App {
         }
 
         session::SessionState {
+            version: session::CURRENT_VERSION,
             ui_scale: self.ui_scale,
             font_scale: self.font_scale,
             left_dock_w_pt: self.left_dock_w_pt,

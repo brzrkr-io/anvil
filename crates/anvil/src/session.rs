@@ -25,8 +25,17 @@ use serde::{Deserialize, Serialize};
 ///
 /// Stored as a flat JSON object; adding new optional fields is
 /// backwards-compatible.
+/// Bump on any default change that should invalidate older saved sessions.
+/// Older sessions with `version < CURRENT_VERSION` are ignored on load.
+pub const CURRENT_VERSION: u32 = 2;
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct SessionState {
+    /// Schema version. Sessions with `version < CURRENT_VERSION` are ignored
+    /// on load to prevent stale defaults from clobbering new ones.
+    #[serde(default)]
+    pub version: u32,
+
     /// Global UI scale multiplier (Cmd+=/Cmd+- zoom).  Default 1.0.
     pub ui_scale: f64,
 
@@ -137,7 +146,18 @@ pub fn load_session(cwd: &Path) -> Option<SessionState> {
         Err(_) => return None, // file not found → silent no-op
     };
     match serde_json::from_slice::<SessionState>(&bytes) {
-        Ok(s) => Some(s),
+        Ok(s) => {
+            if s.version < CURRENT_VERSION {
+                eprintln!(
+                    "anvil-session: {} has version {} < {}; ignoring and starting fresh",
+                    path.display(),
+                    s.version,
+                    CURRENT_VERSION
+                );
+                return None;
+            }
+            Some(s)
+        }
         Err(e) => {
             eprintln!(
                 "anvil-session: failed to parse {}, starting fresh: {e}",
@@ -178,6 +198,7 @@ mod tests {
         let cwd = dir.path();
 
         let state = SessionState {
+            version: CURRENT_VERSION,
             ui_scale: 1.25,
             font_scale: 1.1,
             left_dock_w_pt: 320.0,
@@ -238,6 +259,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let cwd = dir.path();
         let state = SessionState {
+            version: CURRENT_VERSION,
             ui_scale: 1.0,
             font_scale: 1.0,
             left_dock_w_pt: 300.0,
@@ -268,7 +290,7 @@ mod tests {
         // deserialise fine (serde default).
         let dir = tempfile::tempdir().expect("tempdir");
         let cwd = dir.path();
-        let old_json = r#"{"ui_scale":1.0,"left_dock_w_pt":300.0,"layout_mode":"terminal","editor_split_ratio":0.0,"expanded_dirs":[],"open_buffers":[]}"#;
+        let old_json = r#"{"version":2,"ui_scale":1.0,"left_dock_w_pt":300.0,"layout_mode":"terminal","editor_split_ratio":0.0,"expanded_dirs":[],"open_buffers":[]}"#;
         if let Some(path) = session_path(cwd) {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, old_json.as_bytes()).unwrap();
@@ -286,6 +308,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let cwd = dir.path();
         let state = SessionState {
+            version: CURRENT_VERSION,
             ui_scale: 1.0,
             font_scale: 1.3,
             left_dock_w_pt: 300.0,
@@ -311,7 +334,7 @@ mod tests {
     fn session_font_scale_missing_defaults_to_zero() {
         let dir = tempfile::tempdir().expect("tempdir");
         let cwd = dir.path();
-        let old_json = r#"{"ui_scale":1.0,"left_dock_w_pt":300.0,"layout_mode":"terminal","editor_split_ratio":0.0,"expanded_dirs":[],"open_buffers":[]}"#;
+        let old_json = r#"{"version":2,"ui_scale":1.0,"left_dock_w_pt":300.0,"layout_mode":"terminal","editor_split_ratio":0.0,"expanded_dirs":[],"open_buffers":[]}"#;
         if let Some(path) = session_path(cwd) {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, old_json.as_bytes()).unwrap();
