@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 /// backwards-compatible.
 /// Bump on any default change that should invalidate older saved sessions.
 /// Older sessions with `version < CURRENT_VERSION` are ignored on load.
-pub const CURRENT_VERSION: u32 = 2;
+pub const CURRENT_VERSION: u32 = 3;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct SessionState {
@@ -290,7 +290,7 @@ mod tests {
         // deserialise fine (serde default).
         let dir = tempfile::tempdir().expect("tempdir");
         let cwd = dir.path();
-        let old_json = r#"{"version":2,"ui_scale":1.0,"left_dock_w_pt":300.0,"layout_mode":"terminal","editor_split_ratio":0.0,"expanded_dirs":[],"open_buffers":[]}"#;
+        let old_json = r#"{"version":3,"ui_scale":1.0,"left_dock_w_pt":300.0,"layout_mode":"terminal","editor_split_ratio":0.0,"expanded_dirs":[],"open_buffers":[]}"#;
         if let Some(path) = session_path(cwd) {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, old_json.as_bytes()).unwrap();
@@ -334,7 +334,7 @@ mod tests {
     fn session_font_scale_missing_defaults_to_zero() {
         let dir = tempfile::tempdir().expect("tempdir");
         let cwd = dir.path();
-        let old_json = r#"{"version":2,"ui_scale":1.0,"left_dock_w_pt":300.0,"layout_mode":"terminal","editor_split_ratio":0.0,"expanded_dirs":[],"open_buffers":[]}"#;
+        let old_json = r#"{"version":3,"ui_scale":1.0,"left_dock_w_pt":300.0,"layout_mode":"terminal","editor_split_ratio":0.0,"expanded_dirs":[],"open_buffers":[]}"#;
         if let Some(path) = session_path(cwd) {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, old_json.as_bytes()).unwrap();
