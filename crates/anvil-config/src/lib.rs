@@ -202,7 +202,7 @@ impl Default for Keybindings {
             cheatsheet_toggle: "cmd+/".into(),
             split_right: "cmd+d".into(),
             split_down: "cmd+shift+d".into(),
-            close_pane: "cmd+shift+w".into(),
+            close_pane: "cmd+shift+q".into(),
             focus_left: "cmd+shift+h".into(),
             focus_right: "cmd+shift+l".into(),
             focus_up: "cmd+shift+k".into(),
@@ -872,7 +872,7 @@ new_tab = "ctrl+n"
 "#;
         let cfg = parse_str(src).unwrap();
         assert_eq!(cfg.keybindings.new_tab, "ctrl+n");
-        assert_eq!(cfg.keybindings.close_tab, "cmd+w"); // pane close is cmd+shift+w
+        assert_eq!(cfg.keybindings.close_tab, "cmd+w"); // pane close is cmd+shift+q (W1#18)
     }
 
     // NE15: Cmd+E is the sole editor pane keybind (nvim path removed).
