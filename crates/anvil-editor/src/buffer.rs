@@ -258,6 +258,9 @@ pub struct Buffer {
     /// U1: deferred syntax parse. Set when a file is too large (> 256 KB) to
     /// parse synchronously at load time. Cleared after the async parse completes.
     pub syntax_pending: bool,
+    /// Z4: when `true`, the renderer colorizes lines by their leading `+`/`-`
+    /// character (git diff output).  Set on virtual diff buffers only.
+    pub diff_view: bool,
 }
 
 /// Byte threshold above which the initial syntax parse is deferred (U1).
@@ -282,6 +285,7 @@ impl Buffer {
             git_gutter: None,
             language_override: None,
             syntax_pending: false,
+            diff_view: false,
         }
     }
 
@@ -302,6 +306,7 @@ impl Buffer {
             git_gutter: None,
             language_override: None,
             syntax_pending: false,
+            diff_view: false,
         }
     }
 
@@ -406,6 +411,11 @@ impl Buffer {
     /// `None` when no path has been set (e.g. a fresh scratch buffer).
     pub fn tracked_path(&self) -> Option<&std::path::Path> {
         self.tracked_path.as_deref()
+    }
+
+    /// Override the tracked path (used for virtual/synthetic buffers like diff views).
+    pub fn set_tracked_path(&mut self, path: PathBuf) {
+        self.tracked_path = Some(path);
     }
 
     /// Indent style detected from the first 100 non-blank lines of the buffer (H3).
@@ -1119,6 +1129,7 @@ impl Buffer {
             git_gutter: None,
             language_override: None,
             syntax_pending: false,
+            diff_view: false,
         }
     }
 

@@ -23,6 +23,7 @@ use unicode_segmentation::UnicodeSegmentation as _;
 
 use anvil_editor::{
     Buffer, FoldRange, GitChange, GitGutter, IndentStyle, SyntaxRole, derive_fold_ranges,
+    derive_outline_rows,
 };
 use anvil_theme::Theme;
 use anvil_workspace::{
@@ -193,6 +194,56 @@ pub fn draw_editor_into(
         }
     }
 
+    // ── X2: sticky scroll header ──────────────────────────────────────────────
+    // When the user has scrolled past a scope boundary, show the innermost
+    // enclosing symbol header pinned to the top of the content area.  The
+    // sticky strip occupies 1 row of height; the row loop's `rect` is not
+    // adjusted (the strip overdraws row 0 of the viewport, which is harmless
+    // because the original row content is visible just below the pin).
+    //
+    // Only shown when scroll_line > 0 and the syntax tree has symbols.
+    if scroll_line > 0 && !buffer.diff_view {
+        let symbols = derive_outline_rows(buffer.syntax(), &full_text);
+        // Find the deepest symbol whose start line is < scroll_line.
+        let sticky = symbols.iter().rev().find(|s| s.line < scroll_line);
+        if let Some(sym) = sticky {
+            let strip_y = rect.y;
+            // Graphite strip same width as editor body.
+            raster.fill_pixel_rect(rect.x, strip_y, rect.w, ch, theme.graphite);
+            // Bottom hairline to separate from the scrolled content.
+            raster.fill_pixel_rect_alpha(
+                rect.x,
+                strip_y + ch - 1.0,
+                rect.w,
+                1.0,
+                theme.hairline,
+                0.70,
+            );
+            // Symbol label: "fn foo" / "impl Bar" in text_muted, right of gutter.
+            use anvil_editor::OutlineSymbolKind;
+            let prefix = match sym.kind {
+                OutlineSymbolKind::Function => "fn ",
+                OutlineSymbolKind::Impl => "impl ",
+                OutlineSymbolKind::Struct => "struct ",
+                OutlineSymbolKind::Enum => "enum ",
+                OutlineSymbolKind::Trait => "trait ",
+                OutlineSymbolKind::Other => "",
+            };
+            let label = format!("{}{}", prefix, sym.name);
+            let text_x = rect.x + gutter_w + cw;
+            let text_y = strip_y;
+            let max_x = rect.x + rect.w - cw;
+            let mut gx = text_x;
+            for ch_g in label.chars() {
+                if gx + cw > max_x {
+                    break;
+                }
+                raster.glyph_at(painter, metrics, gx, text_y, ch_g as u32, theme.text_muted);
+                gx += cw;
+            }
+        }
+    }
+
     // ── Row loop ──────────────────────────────────────────────────────────────
     // When folds are active we skip hidden lines but still count visual rows.
     let mut vrow = 0usize;
@@ -227,6 +278,32 @@ pub fn draw_editor_into(
             raster.fill_pixel_rect_alpha(rect.x, row_y, rect.w, ch, stripe_color, 0.06);
             // 4 px wide stripe at the left edge of the gutter.
             raster.fill_pixel_rect(rect.x, row_y, 4.0, ch, stripe_color);
+        }
+
+        // ── Z4: diff-view row colorization ───────────────────────────────────
+        // When the buffer is a virtual git diff, tint added lines green
+        // and removed lines red before drawing any glyphs.
+        if buffer.diff_view {
+            let first_char = buffer.line(line_idx).chars().next();
+            match first_char {
+                Some('+') => {
+                    raster.fill_pixel_rect_alpha(rect.x, row_y, rect.w, ch, theme.verified, 0.12);
+                }
+                Some('-') => {
+                    raster.fill_pixel_rect_alpha(rect.x, row_y, rect.w, ch, theme.failure, 0.12);
+                }
+                Some('@') => {
+                    raster.fill_pixel_rect_alpha(
+                        rect.x,
+                        row_y,
+                        rect.w,
+                        ch,
+                        theme.accent_primary,
+                        0.06,
+                    );
+                }
+                _ => {}
+            }
         }
 
         // ── Selection wash for this row ───────────────────────────────────────
@@ -557,6 +634,24 @@ pub fn draw_editor_into(
                 }
             }
         } // end if !editor_pane.soft_wrap (diagnostic label)
+
+        // ── Lightbulb gutter indicator (X3) ───────────────────────────────────
+        // When a code-actions popup is anchored to this line, show a lightbulb
+        // glyph (U+F0336, Nerd Fonts) in the gutter gap column just right of
+        // the line number.  The glyph indicates a quick-fix is available.
+        if let Some(cap) = &editor_pane.code_actions_popup {
+            if cap.anchor.line == line_idx && !cap.items.is_empty() {
+                let gx = rect.x + digit_cols as f64 * cw;
+                raster.glyph_at(
+                    painter,
+                    metrics,
+                    gx,
+                    row_y,
+                    '\u{F0336}' as u32, // nf-md-lightbulb
+                    theme.attention,
+                );
+            }
+        }
 
         // ── Fold chevron in gutter (item 13) ──────────────────────────────────
         // Paint ▾ (open) or ▸ (folded) in the last gutter column for lines that

@@ -849,6 +849,23 @@ define_class!(
     }
 );
 
+// ── SpawnedWindow ─────────────────────────────────────────────────────────────
+
+/// A second (or later) native window spawned by [`AppKitApp::spawn_window`].
+///
+/// Holds the `NSWindow` + `NSView` alive; the caller must build a `Renderer`
+/// from the view's `CAMetalLayer` before the window becomes visible.
+pub struct SpawnedWindow {
+    /// The native window — keep this alive for the window's lifetime.
+    pub window: Retained<NSWindow>,
+    /// The Metal-backed content view.
+    pub view: Retained<NSView>,
+    /// Backing-scale factor at spawn time.
+    pub scale: f64,
+    /// Keeps the handler Rc alive.
+    _handler_rc: Rc<RefCell<dyn AppHandler>>,
+}
+
 // ── Public AppKitApp ──────────────────────────────────────────────────────────
 
 /// The AppKit shell.  Create with [`AppKitApp::new`], then call [`run`].
@@ -1095,6 +1112,137 @@ impl AppKitApp {
     /// Return the Metal backing-scale factor of the window.
     pub fn backing_scale_factor(&self) -> f64 {
         self.window.backingScaleFactor()
+    }
+
+    /// Open a second (or subsequent) native window for `handler`.
+    ///
+    /// Does NOT reinitialise `NSApplication` — safe to call after `AppKitApp::new`.
+    /// The returned `SpawnedWindow` carries the `NSWindow`, `NSView` (Metal-backed),
+    /// and backing-scale factor.  The caller must build a `Renderer` from the view's
+    /// CAMetalLayer before the next run-loop tick.
+    pub fn spawn_window(
+        handler: Rc<RefCell<dyn AppHandler>>,
+        width: f64,
+        height: f64,
+        title: &str,
+    ) -> SpawnedWindow {
+        let mtm = MainThreadMarker::new().expect("spawn_window must be called on the main thread");
+
+        let style = NSWindowStyleMask::Titled
+            | NSWindowStyleMask::Closable
+            | NSWindowStyleMask::Miniaturizable
+            | NSWindowStyleMask::Resizable
+            | NSWindowStyleMask::FullSizeContentView;
+
+        let content_rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, height));
+
+        let window = unsafe {
+            NSWindow::initWithContentRect_styleMask_backing_defer(
+                NSWindow::alloc(mtm),
+                content_rect,
+                style,
+                NSBackingStoreType::Buffered,
+                false,
+            )
+        };
+        unsafe { window.setReleasedWhenClosed(false) };
+        window.setTitle(&NSString::from_str(title));
+        window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
+        window.setTitlebarAppearsTransparent(true);
+        let dark = NSAppearance::appearanceNamed(&NSString::from_str("NSAppearanceNameDarkAqua"));
+        if let Some(dark) = dark {
+            let _: () = unsafe { msg_send![&*window, setAppearance: &*dark] };
+        }
+        unsafe {
+            let cls_name = c"NSColor";
+            let cls = objc2::runtime::AnyClass::get(cls_name).expect("NSColor must exist");
+            let bg: Retained<NSObject> = msg_send![
+                cls,
+                colorWithRed: (22.0_f64 / 255.0),
+                green: (17.0_f64 / 255.0),
+                blue: (13.0_f64 / 255.0),
+                alpha: 1.0_f64
+            ];
+            let _: () = msg_send![&*window, setBackgroundColor: &*bg];
+        }
+
+        // AnvilView
+        let view_box: Box<Rc<RefCell<dyn AppHandler>>> = Box::new(Rc::clone(&handler));
+        let view_ptr = Box::into_raw(view_box);
+        let view_ivars = ViewIvars {
+            handler: HandlerPtr(view_ptr),
+        };
+        let view_alloc = AnvilView::alloc(mtm);
+        let view_with_ivars = view_alloc.set_ivars(view_ivars);
+        let anvil_view: Retained<AnvilView> =
+            unsafe { msg_send![super(view_with_ivars), initWithFrame: content_rect] };
+        unsafe {
+            let cls_name = c"CAMetalLayer";
+            let cls = objc2::runtime::AnyClass::get(cls_name).expect("CAMetalLayer must exist");
+            let layer: Retained<NSObject> = msg_send![cls, layer];
+            let _: () = msg_send![&*anvil_view, setLayer: &*layer];
+            let _: () = msg_send![&*anvil_view, setWantsLayer: true];
+            let _: () = msg_send![&*layer, setCornerRadius: 10.0_f64];
+            let _: () = msg_send![&*layer, setMasksToBounds: true];
+        }
+        unsafe {
+            use objc2_app_kit::NSPasteboardTypeFileURL;
+            let types: Retained<NSArray<NSString>> =
+                NSArray::from_retained_slice(&[Retained::from(NSPasteboardTypeFileURL)]);
+            anvil_view.registerForDraggedTypes(&types);
+        }
+        let view: Retained<NSView> = unsafe { Retained::cast_unchecked(anvil_view) };
+
+        // AnvilDelegate (window-only; no NSApplicationDelegate setup)
+        let delegate_box: Box<Rc<RefCell<dyn AppHandler>>> = Box::new(Rc::clone(&handler));
+        let delegate_ptr = Box::into_raw(delegate_box);
+        let delegate_ivars = DelegateIvars {
+            handler: HandlerPtr(delegate_ptr),
+            view: std::cell::OnceCell::new(),
+        };
+        let delegate_alloc = AnvilDelegate::alloc(mtm);
+        let delegate_with_ivars = delegate_alloc.set_ivars(delegate_ivars);
+        let anvil_delegate: Retained<AnvilDelegate> =
+            unsafe { msg_send![super(delegate_with_ivars), init] };
+        anvil_delegate
+            .ivars()
+            .view
+            .set(view.clone())
+            .expect("view OnceCell must be set exactly once");
+
+        window.setContentView(Some(&view));
+        let delegate_as_win: &ProtocolObject<dyn NSWindowDelegate> =
+            ProtocolObject::from_ref(&*anvil_delegate);
+        window.setDelegate(Some(delegate_as_win));
+        window.setContentMinSize(NSSize::new(640.0, 400.0));
+        window.center();
+        window.makeKeyAndOrderFront(None);
+        unsafe {
+            use objc2_app_kit::NSResponder;
+            window.makeFirstResponder(Some(
+                &*(view.as_ref() as *const NSView as *const NSResponder),
+            ))
+        };
+        view.updateTrackingAreas();
+
+        // NSTimer at ~60 fps for this window
+        let timer_box: Box<Rc<RefCell<dyn AppHandler>>> = Box::new(Rc::clone(&handler));
+        let timer_ptr = Box::into_raw(timer_box);
+        let tick_block = RcBlock::new(move |_timer: std::ptr::NonNull<NSTimer>| {
+            let rc: &Rc<RefCell<dyn AppHandler>> = unsafe { &*timer_ptr };
+            rc.borrow_mut().tick();
+        });
+        unsafe {
+            NSTimer::scheduledTimerWithTimeInterval_repeats_block(1.0 / 60.0, true, &tick_block)
+        };
+
+        let scale = window.backingScaleFactor();
+        SpawnedWindow {
+            window,
+            view,
+            scale,
+            _handler_rc: handler,
+        }
     }
 }
 

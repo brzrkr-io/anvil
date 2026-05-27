@@ -665,6 +665,108 @@ impl EditorPaneRegistry {
         }
     }
 
+    /// Open `text` as a new virtual tab in `pane_id` with a display label of
+    /// `label` (used as the tab title via a virtual path `/dev/null/<label>`).
+    ///
+    /// If a buffer with the same virtual label is already open, it is replaced
+    /// with the new content and re-activated (refresh semantics).
+    ///
+    /// Returns the `BufferId` of the new (or replaced) buffer.
+    pub fn open_text_tab(&mut self, pane_id: PaneId, label: &str, text: &str) -> BufferId {
+        use std::path::PathBuf;
+        // Use a virtual path under /dev/null so file_name() → label,
+        // and there's no risk of accidentally matching a real file.
+        let virtual_path = PathBuf::from("/dev/null").join(label);
+
+        // If this label is already open in the pane, replace its content.
+        if let Some(pane) = self.panes.get(&pane_id) {
+            for &bid in &pane.open_buffers {
+                if self
+                    .buffers
+                    .get(&bid)
+                    .and_then(|b| b.tracked_path())
+                    .map(|p| p == virtual_path.as_path())
+                    .unwrap_or(false)
+                {
+                    // Replace content and re-activate.
+                    if let Some(buf) = self.buffers.get_mut(&bid) {
+                        *buf = Buffer::from_text(text);
+                        buf.set_tracked_path(virtual_path);
+                    }
+                    if let Some(pane) = self.panes.get_mut(&pane_id) {
+                        pane.buffer_id = bid;
+                    }
+                    return bid;
+                }
+            }
+        }
+
+        // Allocate a fresh buffer.
+        let buffer_id = self.next_buffer_id;
+        self.next_buffer_id += 1;
+        let mut buf = Buffer::from_text(text);
+        buf.set_tracked_path(virtual_path);
+        self.buffers.insert(buffer_id, buf);
+
+        // Append to pane tab list (or create pane if absent).
+        let pane = self.panes.entry(pane_id).or_insert_with(|| {
+            let origin = Position { line: 0, col: 0 };
+            EditorPane {
+                buffer_id,
+                open_buffers: vec![],
+                cursors: vec![Cursor {
+                    pos: origin,
+                    anchor: origin,
+                }],
+                selection: Selection::default(),
+                scroll_pos: 0.0,
+                scroll_target: 0.0,
+                scroll_vel: 0.0,
+                search: None,
+                hover_popup: None,
+                completion_popup: None,
+                code_actions_popup: None,
+                folds: std::collections::HashMap::new(),
+                soft_wrap: false,
+                show_whitespace: false,
+                scroll_x: 0.0,
+            }
+        });
+        if pane.open_buffers.len() >= MAX_TABS_PER_PANE {
+            if let Some(oldest) = pane.open_buffers.first().copied() {
+                pane.open_buffers.remove(0);
+                self.buffers.remove(&oldest);
+                self.buffer_scroll.remove(&oldest);
+            }
+        }
+        // Evict sole scratch buffer (no tracked path, empty content) on first
+        // real open — same convention as open_path_as_tab.
+        if pane.open_buffers.len() == 1 {
+            let sole = pane.open_buffers[0];
+            let is_scratch = self
+                .buffers
+                .get(&sole)
+                .map(|b| b.tracked_path().is_none() && b.byte_len() == 0)
+                .unwrap_or(false);
+            if is_scratch {
+                pane.open_buffers.clear();
+                self.buffers.remove(&sole);
+                self.buffer_scroll.remove(&sole);
+            }
+        }
+        pane.open_buffers.push(buffer_id);
+        pane.buffer_id = buffer_id;
+        // Reset cursor and scroll for the incoming virtual buffer.
+        let origin = Position { line: 0, col: 0 };
+        pane.cursors = vec![Cursor {
+            pos: origin,
+            anchor: origin,
+        }];
+        pane.scroll_pos = 0.0;
+        pane.scroll_target = 0.0;
+        buffer_id
+    }
+
     /// Close `buffer_id` in `pane_id`.
     ///
     /// Returns the new active `BufferId`, or `None` if no buffers remain (the

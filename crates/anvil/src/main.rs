@@ -31,7 +31,7 @@ use anvil_platform::AtlasPainter;
 use anvil_platform::UiPainter;
 use anvil_platform::appkit::{
     AppHandler, AppKitApp, ContextAction, CursorKind, KeyEvent, KeyInput, Modifiers, MouseLocation,
-    RightClickZone,
+    RightClickZone, SpawnedWindow,
 };
 use anvil_platform::font::{CHROME_PT, Font, FontFace, register_bundled};
 use anvil_platform::metal::{PresentMode, Renderer, present_mode};
@@ -75,6 +75,14 @@ fn kill_registered_ptys() {
             unsafe { libc::kill(pid, libc::SIGTERM) };
         }
     }
+}
+
+// ── item 20: spawned-window keeper ────────────────────────────────────────────
+//
+// `SpawnedWindow` contains `Rc` (not `Send`), so it must live on the main thread.
+// This thread-local Vec keeps each spawned window alive until the process exits.
+thread_local! {
+    static SPAWNED_WINDOWS: RefCell<Vec<SpawnedWindow>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Minimum and maximum HUD width in terminal columns. The drag handler
@@ -816,6 +824,22 @@ fn git_checkout(cwd: &std::path::Path, branch: &str) -> Result<(), String> {
     } else {
         Err(String::from_utf8_lossy(&out.stderr).trim_end().to_owned())
     }
+}
+
+/// Run `git diff HEAD -- <path>` (unstaged) or `git diff --cached -- <path>`
+/// (staged) and return the diff text.  Returns an empty string on error.
+fn git_diff_for_file(cwd: &std::path::Path, path: &str, staged: bool) -> String {
+    let mut cmd = std::process::Command::new("git");
+    if staged {
+        cmd.args(["diff", "--cached", "--", path]);
+    } else {
+        cmd.args(["diff", "HEAD", "--", path]);
+    }
+    cmd.current_dir(cwd)
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .unwrap_or_default()
 }
 
 /// Run `git stash apply stash@{N}`.
@@ -1786,6 +1810,12 @@ pub struct App {
     // ── Plugin host (Track C) ─────────────────────────────────────────────────
     /// Plugin subsystem: loads Lua plugins, manages worker threads.
     plugin_host: anvil_plugin::PluginHost,
+
+    // ── Multi-window (item 20) ────────────────────────────────────────────────
+    /// Set by `request_new_window()` so `AppShell::tick` can spawn on the next
+    /// run-loop tick (AppKit objects cannot be created from within an event handler
+    /// on some AppKit paths).
+    open_new_window_requested: bool,
 }
 
 // ── R2: tooltip helpers ───────────────────────────────────────────────────────
@@ -2427,6 +2457,73 @@ impl App {
     }
 
     // ── Z1: SCM panel ─────────────────────────────────────────────────────────
+
+    /// Z4: open the git diff for the currently selected SCM file in the editor.
+    ///
+    /// Runs `git diff HEAD` (unstaged) or `git diff --cached` (staged) for the
+    /// selected file, then opens the output as a virtual diff-view buffer named
+    /// `git-diff:<basename>` in the focused editor pane.
+    fn scm_open_diff(&mut self) {
+        let Some(panel) = &self.scm_panel else { return };
+        let cwd = PathBuf::from(self.local_ctx.cwd.clone());
+
+        // Resolve the selected file.
+        let n_staged = panel.staged.len();
+        let sel = panel.selected;
+        let (path, staged) = if sel < n_staged {
+            (panel.staged[sel].path.clone(), true)
+        } else if sel < n_staged + panel.unstaged.len() {
+            (panel.unstaged[sel - n_staged].path.clone(), false)
+        } else {
+            return; // stash / PR row — no diff
+        };
+
+        let path_str = path.to_string_lossy();
+        let diff_text = git_diff_for_file(&cwd, path_str.as_ref(), staged);
+        if diff_text.is_empty() {
+            self.toast_info("No diff available for this file.");
+            return;
+        }
+
+        // Ensure IDE mode and an editor pane exist.
+        if self.layout_mode != LayoutMode::Ide {
+            self.layout_mode = LayoutMode::Ide;
+        }
+        if !self.focused_is_native_editor() {
+            self.new_native_editor_pane();
+        }
+
+        let Some(tab) = self.tabs.current_mut() else {
+            return;
+        };
+        let pane_id = tab.focused_id();
+        let basename = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(path_str.as_ref())
+            .to_string();
+        let label = format!("git-diff:{basename}");
+        let buffer_id = tab.editor_panes.open_text_tab(pane_id, &label, &diff_text);
+
+        // Mark the buffer as a diff view so the renderer colorizes it.
+        if let Some(buf) = tab.editor_panes.get_buffer_mut(buffer_id) {
+            buf.diff_view = true;
+        }
+
+        if let Some(pane) = tab.registry.get_mut(pane_id) {
+            pane.editor_id = Some(buffer_id);
+        }
+
+        // Close SCM panel after opening the diff.
+        self.scm_panel = None;
+        self.overlays
+            .remove_by_id(anvil_render::overlay::OverlayId::ScmPanel);
+        self.search_open = false;
+        self.resize_all_tabs();
+        self.snap_anim();
+        self.force_full_redraw = true;
+        self.dirty = true;
+    }
 
     fn open_scm_panel(&mut self) {
         let cwd = PathBuf::from(self.local_ctx.cwd.clone());
@@ -3479,11 +3576,15 @@ impl App {
                 }
             }
         }
-        eprintln!(
-            "anvil-window: multi-window detach not yet implemented; \
-             buffer removed from source pane only"
-        );
         self.dirty = true;
+    }
+
+    /// Request that `AppShell::tick` open a new native window on the next tick.
+    ///
+    /// The actual spawn happens in tick so AppKit objects are created on the
+    /// run-loop, not mid-event (item 20).
+    pub fn request_new_window(&mut self) {
+        self.open_new_window_requested = true;
     }
 
     fn add_tab(&mut self) {
@@ -6907,9 +7008,9 @@ impl App {
             }
         }
 
-        // Cmd+Shift+N → open selected Explorer file (or prompt) in nvim.
+        // Cmd+Shift+N → open a new native window (item 20).
         if ascii_lower(ch) == 'n' && mods.shift && !mods.control && !mods.option {
-            self.open_in_nvim(None);
+            self.request_new_window();
             return true;
         }
 
@@ -8767,6 +8868,12 @@ impl AppHandler for AppShell {
             }
         }
 
+        // ── item 20: deferred new-window spawn ───────────────────────────────
+        if app.open_new_window_requested {
+            app.open_new_window_requested = false;
+            spawn_second_window(app);
+        }
+
         if app.dirty {
             let mut grid_painters = GridPainters {
                 regular: &mut self.painter,
@@ -8994,18 +9101,27 @@ impl AppHandler for AppShell {
                     }
                 }
                 KeyInput::Enter => {
-                    // Enter on a file row: toggle stage.
+                    // Enter on a file row: open diff view (Z4).
+                    // Enter in commit input: no-op (Cmd+Enter commits).
                     if !self
                         .app
                         .scm_panel
                         .as_ref()
                         .is_some_and(|p| p.commit_input_active)
                     {
-                        self.app.scm_toggle_stage();
-                    } else if let Some(ref mut p) = self.app.scm_panel {
-                        // Enter in commit input: newline? No — Cmd+Enter commits.
-                        let _ = p; // no-op; Cmd+Enter is the commit gesture
+                        self.app.scm_open_diff();
                     }
+                    self.app.dirty = true;
+                }
+                KeyInput::Char(' ')
+                    if self
+                        .app
+                        .scm_panel
+                        .as_ref()
+                        .is_some_and(|p| !p.commit_input_active) =>
+                {
+                    // Space on a file row: toggle stage/unstage.
+                    self.app.scm_toggle_stage();
                 }
                 KeyInput::Tab => {
                     // Tab: switch focus to/from commit input.
@@ -13723,6 +13839,579 @@ fn picker_filtered<'a>(langs: &[&'a str], query: &str) -> Vec<&'a str> {
 
 // ── CC3: orphan-shell sweep ───────────────────────────────────────────────────
 
+/// Spawn a fresh second (or later) native window with its own App + AppShell.
+///
+/// Called from `AppShell::tick` when `app.open_new_window_requested` is set.
+/// The new window gets its own terminal pane, workers, font, and renderer.
+/// Config and font metrics are inherited from `parent`.
+///
+/// The `SpawnedWindow` (NSWindow + handler Rc) is stored in SPAWNED_WINDOWS
+/// so it isn't dropped when this function returns.
+fn spawn_second_window(parent: &App) {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    // -- Inherit config and font metrics from the parent window.
+    let config = parent.config.clone();
+    let font_family = parent.font_family.clone();
+    let font_size_pt = parent.font_size_pt;
+    let win_w = parent.view_width_pt;
+    let win_h = parent.view_height_pt;
+    let layout_mode = parent.layout_mode;
+
+    // -- Backing scale (use parent's for consistency).
+    let window_scale = parent.window_scale;
+    let pixel_size = font_size_pt * window_scale;
+    let chrome_pixel_size = CHROME_PT * window_scale;
+
+    let font_names: Vec<&str> = vec![
+        "IBM Plex Mono",
+        font_family.as_str(),
+        "SFMono-Regular",
+        "Menlo",
+    ];
+    let font: Box<Font> = Box::new(
+        Font::init_first_available(&font_names, pixel_size)
+            .or_else(|_| Font::init("Menlo", pixel_size))
+            .expect("font must be available"),
+    );
+    let bold_font: Box<Font> = Box::new(
+        Font::init_face(&font_names, pixel_size, FontFace::Bold, true).unwrap_or_else(|_| {
+            Font::init_first_available(&font_names, pixel_size)
+                .or_else(|_| Font::init("Menlo", pixel_size))
+                .expect("bold font must be available")
+        }),
+    );
+    let italic_font: Box<Font> = Box::new(
+        Font::init_face(&font_names, pixel_size, FontFace::Italic, true).unwrap_or_else(|_| {
+            Font::init_first_available(&font_names, pixel_size)
+                .or_else(|_| Font::init("Menlo", pixel_size))
+                .expect("italic font must be available")
+        }),
+    );
+    let bold_italic_font: Box<Font> = Box::new(
+        Font::init_face(&font_names, pixel_size, FontFace::BoldItalic, true).unwrap_or_else(|_| {
+            Font::init_first_available(&font_names, pixel_size)
+                .or_else(|_| Font::init("Menlo", pixel_size))
+                .expect("bold-italic font must be available")
+        }),
+    );
+    let chrome_font: Box<Font> = Box::new(
+        Font::init_face(&font_names, chrome_pixel_size, FontFace::Chrome, false)
+            .or_else(|_| Font::init("Menlo", chrome_pixel_size))
+            .expect("chrome font must be available"),
+    );
+
+    let cw = font.metrics.cell_w as usize;
+    let ch = font.metrics.cell_h as usize;
+    let dw = ((win_w * window_scale) as usize).max(1);
+    let dh = ((win_h * window_scale) as usize).max(1);
+    let cols = (dw.saturating_sub(2 * GRID_PAD) / cw).max(1);
+    let chrome_top_px_init = (36.0 * window_scale) as usize;
+    let chrome_bottom_px_init = (24.0 * window_scale) as usize;
+    let rows = ((dh
+        .saturating_sub(chrome_top_px_init)
+        .saturating_sub(chrome_bottom_px_init))
+        / ch)
+        .max(1);
+
+    // -- Initial tab + PTY
+    let tab = Tab::new_single_pane(cols, rows, config.scrollback);
+    let first_id = tab.focused_id();
+    let mut ptys = HashMap::new();
+    if let Ok(pty) = Pty::spawn_shell(cols as u16, rows as u16) {
+        register_pty_pid(pty.child_pid());
+        ptys.insert(first_id, pty);
+    }
+    let mut tabs = TabManager::default();
+    tabs.push(tab);
+
+    // -- Workers (same pattern as main())
+    let (git_tx, git_work_rx) = mpsc::sync_channel::<PathBuf>(1);
+    let (git_result_tx, git_rx) = mpsc::channel::<GitResult>();
+    thread::spawn(move || {
+        for cwd in git_work_rx {
+            let info = anvil_prompt_core::git::query(&cwd);
+            let result = match info {
+                Some(i) => {
+                    let (head_short, head_subject) = git_head_oneline(&cwd);
+                    let ports = detect_ports();
+                    let project_kind = detect_project_kind(&cwd);
+                    GitResult {
+                        state: if i.dirty > 0 {
+                            GitState::Dirty
+                        } else {
+                            GitState::Ok
+                        },
+                        branch: i.branch,
+                        dirty: i.dirty,
+                        ahead: i.ahead,
+                        behind: i.behind,
+                        head_short,
+                        head_subject,
+                        ports,
+                        project_kind,
+                    }
+                }
+                None => {
+                    let ports = detect_ports();
+                    let project_kind = detect_project_kind(&cwd);
+                    GitResult {
+                        state: GitState::NoRepo,
+                        branch: String::new(),
+                        dirty: 0,
+                        ahead: 0,
+                        behind: 0,
+                        head_short: String::new(),
+                        head_subject: String::new(),
+                        ports,
+                        project_kind,
+                    }
+                }
+            };
+            let _ = git_result_tx.send(result);
+        }
+    });
+
+    let (gutter_tx, gutter_work_rx) = mpsc::sync_channel::<GutterRequest>(8);
+    let (gutter_result_tx, gutter_rx) = mpsc::sync_channel::<GutterResult>(8);
+    thread::Builder::new()
+        .name("anvil-gutter-worker-2".to_string())
+        .spawn(move || {
+            for req in gutter_work_rx {
+                let gutter = anvil_editor::GitGutter::compute(&req.text, &req.path);
+                let _ = gutter_result_tx.try_send(GutterResult {
+                    buffer_id: req.buffer_id,
+                    gutter,
+                });
+            }
+        })
+        .expect("gutter worker spawn");
+
+    let (blame_tx, blame_work_rx) = mpsc::sync_channel::<BlameRequest>(4);
+    let (blame_result_tx, blame_rx) = mpsc::sync_channel::<BlameResult>(4);
+    thread::Builder::new()
+        .name("anvil-blame-worker-2".to_string())
+        .spawn(move || {
+            for req in blame_work_rx {
+                let entry = run_git_blame(&req.path, req.line);
+                let _ = blame_result_tx.try_send(BlameResult {
+                    path: req.path,
+                    line: req.line,
+                    entry,
+                });
+            }
+        })
+        .expect("blame worker spawn");
+
+    let (recent_cwd_tx, recent_cwd_rx) = mpsc::sync_channel::<PathBuf>(1);
+    let (recent_tx, recent_rx) = mpsc::sync_channel::<RecentResult>(1);
+    thread::spawn(move || {
+        use std::time::Duration;
+        let mut last_cwd: Option<PathBuf> = std::env::current_dir().ok();
+        loop {
+            while let Ok(cwd) = recent_cwd_rx.try_recv() {
+                last_cwd = Some(cwd);
+            }
+            if let Some(ref cwd) = last_cwd {
+                let files = recent_files_in_dir(cwd, 5);
+                let _ = recent_tx.try_send(RecentResult { files });
+            }
+            thread::sleep(Duration::from_secs(4));
+        }
+    });
+
+    let (kube_tx, kube_rx) = mpsc::sync_channel::<anvil_prompt_core::KubeCtx>(1);
+    kube::spawn_kube_worker(kube_tx);
+
+    let (fs_tx, fs_rx, fs_hidden_tx) = fs_worker::spawn_fs_worker();
+    let (child_fs_tx, child_fs_rx) = fs_worker::spawn_child_fs_worker();
+
+    let (file_watch_work_tx, file_watch_work_rx) =
+        mpsc::sync_channel::<(anvil_editor::BufferId, PathBuf)>(64);
+    let (file_watch_result_tx, file_watch_rx) = mpsc::channel::<FileWatchEvent>();
+    {
+        use std::collections::HashMap as WMap;
+        use std::time::{Duration, SystemTime};
+        thread::spawn(move || {
+            let mut watched: WMap<anvil_editor::BufferId, (PathBuf, Option<SystemTime>)> =
+                WMap::new();
+            loop {
+                while let Ok((bid, path)) = file_watch_work_rx.try_recv() {
+                    let mtime = std::fs::metadata(&path)
+                        .ok()
+                        .and_then(|m| m.modified().ok());
+                    watched.insert(bid, (path, mtime));
+                }
+                for (&bid, entry) in &mut watched {
+                    let (ref path, ref mut known_mtime) = *entry;
+                    let Ok(meta) = std::fs::metadata(path) else {
+                        continue;
+                    };
+                    let Ok(current_mtime) = meta.modified() else {
+                        continue;
+                    };
+                    let changed = known_mtime.is_none_or(|k| k != current_mtime);
+                    if changed {
+                        *known_mtime = Some(current_mtime);
+                        let _ = file_watch_result_tx.send(FileWatchEvent { buffer_id: bid });
+                    }
+                }
+                thread::sleep(Duration::from_secs(1));
+            }
+        });
+    }
+
+    let system_dark = system_is_dark();
+    let effective_name = effective_theme_name(system_dark, config.theme.theme_name());
+    let theme = resolve_theme(effective_name, &config.theme_overrides);
+    let cursor_cfg = cursor_cfg_from_config(&config);
+    let keybindings = Keybindings::from_config(&config.keybindings);
+    let use_gpu_render = matches!(std::env::var("ANVIL_RENDER").as_deref(), Ok("gpu"));
+
+    let mut raster = Raster::new(dw, dh);
+    raster.pad_x = GRID_PAD as f64;
+    raster.pad_y = chrome_top_px_init as f64;
+
+    let font_size_pt_init = font_size_pt;
+
+    let mut app2 = App {
+        tabs,
+        ptys,
+        renderer: None,
+        raster,
+        font,
+        bold_font,
+        italic_font,
+        bold_italic_font,
+        chrome_font,
+        dirty: true,
+        force_full_redraw: true,
+        cursor_row_prev: HashMap::new(),
+        scrollback_len_prev: HashMap::new(),
+        last_scroll_pos: 0.0,
+        last_viewport_offset: 0,
+        #[cfg(debug_assertions)]
+        debug_render_frame: 0,
+        #[cfg(debug_assertions)]
+        debug_render_last_report: None,
+        perf_log_last: None,
+        use_gpu_render,
+        cell_batch: CellBatch::new(),
+        atlas_painter: None,
+        theme,
+        cursor_cfg,
+        config,
+        watcher: None,
+        keybindings,
+        system_dark,
+        window_scale,
+        layout_mode,
+        left_dock_visible: layout_mode == LayoutMode::Ide,
+        left_dock_w_pt: 260.0,
+        left_dock_w_pt_target: 260.0,
+        sidebar_drag_active: false,
+        drawer_drag_active: false,
+        sidebar_divider_last_click: None,
+        drawer_divider_last_click: None,
+        drawer_ratio_target: None,
+        maximized_pane_id: None,
+        drawer_hidden: false,
+        drawer_saved_ratio: 0.72,
+        drawer_terminals: Vec::new(),
+        drawer_active_terminal: 0,
+        blink_phase: 0.0,
+        last_blink_opacity: -1.0,
+        search: anvil_term::Search::new(),
+        search_open: false,
+        hud_visible: false,
+        hud_tick: 0,
+        hud_cols: HUD_COLS_DEFAULT,
+        hud_drag_active: false,
+        divider_drag: None,
+        divider_hover: None,
+        hscroll_drag_active: false,
+        tab_bar_hits: TabBarHits::default(),
+        left_dock_hits: LeftDockHits::default(),
+        hud_hits: Vec::new(),
+        hud_section_order: load_hud_section_order()
+            .unwrap_or_else(|| SectionId::DEFAULT_ORDER.to_vec()),
+        hud_section_hits: Vec::new(),
+        hud_section_drag: None,
+        tab_drag: None,
+        editor_tab_drag: None,
+        recent_file_list: Vec::new(),
+        font_size_pt: font_size_pt_init,
+        font_family,
+        cheatsheet_visible: false,
+        focused: true,
+        agent_snap: AgentSnapshot::default(),
+        local_ctx: LocalContext {
+            cwd: std::env::current_dir()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            ..LocalContext::default()
+        },
+        caldera_poller: None,
+        caldera_client: None,
+        editor_mouse_drag_start: None,
+        git_tx,
+        git_rx,
+        gutter_tx,
+        gutter_rx,
+        blame_tx,
+        blame_rx,
+        blame_cache: std::collections::HashMap::new(),
+        blame_hover: None,
+        blame_popup: None,
+        recent_cwd_tx,
+        recent_rx,
+        kube_rx,
+        fs_tx,
+        fs_rx,
+        fs_hidden_tx,
+        child_fs_tx,
+        child_fs_rx,
+        fs_snapshot: None,
+        child_snapshots: HashMap::new(),
+        active_explorer_file: None,
+        explorer_scroll_offset: 0,
+        hovered_explorer_row: None,
+        hovered_editor_tab: None,
+        editor_tab_hits: Vec::new(),
+        expanded_dirs: HashSet::new(),
+        explorer_collapsed: false,
+        outline_collapsed: false,
+        tab_strip_scroll_offset: 0.0,
+        scroll_indicator_alpha: 0.0,
+        scroll_indicator_last_scroll: None,
+        fs_last_cwd: None,
+        agent_pulse_phase: 0.0,
+        last_agent_pulse_opacity: -1.0,
+        running_pulse_phase: 0.0,
+        palette: Palette::default(),
+        project_search: anvil_workspace::project_search::ProjectSearch::new(),
+        overlays: anvil_render::overlay::OverlayStack::new(),
+        view_width_pt: win_w,
+        view_height_pt: win_h,
+        lsp_manager: anvil_editor::LspManager::new(),
+        lsp_last_sync: HashMap::new(),
+        pending_hover: None,
+        hover_mouse_pos: None,
+        hover_mouse_time: None,
+        pending_definition: None,
+        pending_completion: None,
+        pending_rename: None,
+        pending_code_actions: None,
+        pending_references: None,
+        code_actions_pending_edits: Vec::new(),
+        lsp_rename_input: None,
+        lsp_references: None,
+        workspace_symbol_search: None,
+        buffer_symbol_search: None,
+        ui_scale: 1.0,
+        font_scale: 1.0,
+        pending_chord_k: false,
+        focus_target: FocusTarget::default(),
+        selected_explorer_row: None,
+        explorer_rename: None,
+        explorer_new_item: None,
+        explorer_delete_confirm: None,
+        goto_line_input: None,
+        save_as_input: None,
+        replace_row_active: false,
+        file_watch_rx,
+        file_watch_tx: file_watch_work_tx,
+        disk_changed_dirty: HashMap::new(),
+        recent_projects: Vec::new(),
+        project_switcher_open: false,
+        project_switcher_sel: 0,
+        right_click_path: None,
+        right_click_tab_index: None,
+        explorer_drag: None,
+        explorer_drag_cursor: None,
+        toasts: std::collections::VecDeque::new(),
+        lsp_failed_toasted: HashSet::new(),
+        search_bar_hits: anvil_render::searchbar::SearchBarArrowHits::default(),
+        show_hidden_files: false,
+        show_gitignored_files: false,
+        closed_tabs: std::collections::VecDeque::new(),
+        language_picker: None,
+        theme_picker: None,
+        open_folder_input: None,
+        explorer_hover_row: None,
+        explorer_hover_meta: None,
+        explorer_filter: None,
+        snippets: load_snippets(),
+        scm_panel: None,
+        branch_switcher: None,
+        git_log_palette: None,
+        ctx_push_rect: None,
+        ctx_pull_rect: None,
+        mem_baseline: 0,
+        plugin_host: anvil_plugin::PluginHost::new(),
+        open_new_window_requested: false,
+    };
+
+    // -- ForwardingHandler wrapping a fresh AppShell
+    let shell_slot: Rc<RefCell<Option<AppShell>>> = Rc::new(RefCell::new(None));
+
+    struct SecondWindowHandler(Rc<RefCell<Option<AppShell>>>);
+    impl AppHandler for SecondWindowHandler {
+        fn tick(&mut self) {
+            if let Some(h) = &mut *self.0.borrow_mut() {
+                h.tick()
+            }
+        }
+        fn key_down(&mut self, e: KeyEvent) {
+            if let Some(h) = &mut *self.0.borrow_mut() {
+                h.key_down(e)
+            }
+        }
+        fn perform_key_equivalent(&mut self, e: KeyEvent) -> bool {
+            self.0
+                .borrow_mut()
+                .as_mut()
+                .is_some_and(|h| h.perform_key_equivalent(e))
+        }
+        fn mouse_down(&mut self, l: MouseLocation, m: Modifiers, cc: u32, b: (f64, f64)) {
+            if let Some(h) = &mut *self.0.borrow_mut() {
+                h.mouse_down(l, m, cc, b)
+            }
+        }
+        fn mouse_up(&mut self, l: MouseLocation, m: Modifiers) {
+            if let Some(h) = &mut *self.0.borrow_mut() {
+                h.mouse_up(l, m)
+            }
+        }
+        fn mouse_dragged(&mut self, l: MouseLocation) {
+            if let Some(h) = &mut *self.0.borrow_mut() {
+                h.mouse_dragged(l)
+            }
+        }
+        fn mouse_moved(&mut self, l: MouseLocation) -> CursorKind {
+            self.0
+                .borrow_mut()
+                .as_mut()
+                .map_or(CursorKind::Arrow, |h| h.mouse_moved(l))
+        }
+        fn scroll(&mut self, dy: f64, pp: bool, shift: bool, l: MouseLocation) {
+            if let Some(h) = &mut *self.0.borrow_mut() {
+                h.scroll(dy, pp, shift, l)
+            }
+        }
+        fn resize(&mut self, w: f64, h: f64, live: bool) {
+            if let Some(sh) = &mut *self.0.borrow_mut() {
+                sh.resize(w, h, live)
+            }
+        }
+        fn live_resize_ended(&mut self) {
+            if let Some(h) = &mut *self.0.borrow_mut() {
+                h.live_resize_ended()
+            }
+        }
+        fn focus_gained(&mut self) {
+            if let Some(h) = &mut *self.0.borrow_mut() {
+                h.focus_gained()
+            }
+        }
+        fn focus_lost(&mut self) {
+            if let Some(h) = &mut *self.0.borrow_mut() {
+                h.focus_lost()
+            }
+        }
+        fn should_terminate(&mut self) -> bool {
+            self.0
+                .borrow_mut()
+                .as_mut()
+                .is_none_or(|h| h.should_terminate())
+        }
+        fn webview_message(&mut self, json: String) {
+            if let Some(h) = &mut *self.0.borrow_mut() {
+                h.webview_message(json)
+            }
+        }
+        fn context_action(&mut self, action: ContextAction) {
+            if let Some(h) = &mut *self.0.borrow_mut() {
+                h.context_action(action)
+            }
+        }
+        fn right_click_zone(&mut self, l: MouseLocation) -> RightClickZone {
+            self.0
+                .borrow_mut()
+                .as_mut()
+                .map(|h| h.right_click_zone(l))
+                .unwrap_or(RightClickZone::Terminal)
+        }
+        fn dropped_files(&mut self, paths: Vec<PathBuf>) {
+            if let Some(h) = &mut *self.0.borrow_mut() {
+                h.dropped_files(paths)
+            }
+        }
+    }
+
+    let fwd_rc: Rc<RefCell<dyn AppHandler>> =
+        Rc::new(RefCell::new(SecondWindowHandler(Rc::clone(&shell_slot))));
+
+    // -- Spawn the NSWindow
+    let spawned = AppKitApp::spawn_window(Rc::clone(&fwd_rc), win_w, win_h, "Anvil");
+
+    // -- Init Metal renderer from the new window's CAMetalLayer
+    let layer = {
+        use objc2::msg_send;
+        use objc2_quartz_core::CAMetalLayer;
+        unsafe {
+            let view_ptr: *const objc2_app_kit::NSView = objc2::rc::Retained::as_ptr(&spawned.view);
+            let layer_raw: *mut objc2::runtime::AnyObject = msg_send![view_ptr, layer];
+            assert!(
+                !layer_raw.is_null(),
+                "spawned view CAMetalLayer must not be null"
+            );
+            objc2::rc::Retained::retain(layer_raw as *mut CAMetalLayer)
+                .expect("CAMetalLayer retain must succeed")
+        }
+    };
+    let mut renderer = Renderer::init(layer, dw, dh).expect("second-window Metal renderer");
+    renderer.set_clear_color(app2.theme.background);
+    app2.renderer = Some(renderer);
+    app2.window_scale = spawned.scale;
+    app2.raster.resize(dw, dh);
+
+    // -- Webview for command palette in the second window
+    let webview = {
+        use objc2_foundation::MainThreadMarker;
+        let mtm2 =
+            MainThreadMarker::new().expect("spawn_second_window must be called on the main thread");
+        let webview_box: Box<Rc<RefCell<dyn AppHandler>>> = Box::new(Rc::clone(&fwd_rc));
+        let webview_ptr = Box::into_raw(webview_box);
+        Webview::init(WebviewConfig {
+            window: spawned.window.clone(),
+            container: &spawned.view,
+            terminal_view: spawned.view.clone(),
+            width: win_w,
+            height: win_h,
+            html: PALETTE_HTML,
+            handler_ptr: webview_ptr,
+            mtm: mtm2,
+        })
+    };
+
+    // -- Build AppShell and stash in slot
+    let mut shell2 = AppShell::new(app2, webview, spawned.window.clone());
+    shell2.painter.warm_ascii();
+    shell2.bold_painter.warm_ascii();
+    shell2.italic_painter.warm_ascii();
+    shell2.bold_italic_painter.warm_ascii();
+    shell2.app.snap_anim();
+
+    *shell_slot.borrow_mut() = Some(shell2);
+
+    // Keep the SpawnedWindow alive (NSWindow + handler Rc).
+    SPAWNED_WINDOWS.with(|sw| sw.borrow_mut().push(spawned));
+
+    eprintln!("anvil: second window opened");
+}
+
 /// Kill zsh/bash processes that were spawned by a previous Anvil instance and
 /// are now orphaned (PPID == 1).  Identified by the `ANVIL_SHELL` marker in
 /// their command line, which the shell integration hook sets via
@@ -14379,6 +15068,7 @@ fn main() -> Result<()> {
         ctx_pull_rect: None,
         mem_baseline: 0, // populated below
         plugin_host: anvil_plugin::PluginHost::new(),
+        open_new_window_requested: false,
     };
 
     // AA13: capture RSS baseline at init via proc_pidinfo.
