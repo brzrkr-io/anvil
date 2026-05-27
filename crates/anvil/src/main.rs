@@ -1693,6 +1693,8 @@ pub struct App {
     // ── Context-menu target path (I1/I2) ─────────────────────────────────────
     /// Path resolved during `right_click_zone`; consumed by `context_action`.
     right_click_path: Option<PathBuf>,
+    /// Tab index resolved during `right_click_zone` when clicking on a tab (FF20).
+    right_click_tab_index: Option<usize>,
 
     // ── Explorer-drag state (I3) ──────────────────────────────────────────────
     /// File path being dragged from the Explorer, plus the mouse location at
@@ -12858,6 +12860,14 @@ impl AppHandler for AppShell {
                 self.app
                     .apply_editor_action(EditorAction::ToggleLineComment);
             }
+
+            // ── Tab bar context menu (FF20) ────────────────────────────────────
+            ContextAction::TabPinToggle => {
+                if let Some(idx) = self.app.right_click_tab_index.take() {
+                    self.app.tabs.pin_tab(idx);
+                    self.app.force_full_redraw = true;
+                }
+            }
         }
         self.app.dirty = true;
     }
@@ -12865,6 +12875,33 @@ impl AppHandler for AppShell {
     fn right_click_zone(&mut self, loc: MouseLocation) -> RightClickZone {
         let app = &mut self.app;
         let (rx, ry) = app.view_pt_to_raster_px(loc);
+
+        // FF20: check if click is on a tab in the tab bar.
+        if app.tabs.bar_visible() {
+            let hit = app
+                .tab_bar_hits
+                .hits
+                .iter()
+                .find(|h| {
+                    let r = &h.rect;
+                    rx >= r.x && rx < r.x + r.w && ry >= r.y && ry < r.y + r.h
+                })
+                .and_then(|h| {
+                    if let TabBarHitKind::Tab(t) = h.kind {
+                        Some(t)
+                    } else {
+                        None
+                    }
+                });
+            if let Some(t) = hit {
+                let is_pinned = app.tabs.tabs.get(t).is_some_and(|tab| tab.is_pinned);
+                app.right_click_tab_index = Some(t);
+                return RightClickZone::TabBar {
+                    tab_index: t,
+                    is_pinned,
+                };
+            }
+        }
 
         // Check if click is on an Explorer row.
         if app.left_dock_visible {
@@ -14163,6 +14200,7 @@ fn main() -> Result<()> {
         project_switcher_open: false,
         project_switcher_sel: 0,
         right_click_path: None,
+        right_click_tab_index: None,
         explorer_drag: None,
         explorer_drag_cursor: None,
         toasts: std::collections::VecDeque::new(),

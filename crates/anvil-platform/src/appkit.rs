@@ -123,6 +123,8 @@ pub enum ContextAction {
     EditorRenameSymbol,
     EditorFormatFile,
     EditorToggleComment,
+    // Tab bar context menu (FF20)
+    TabPinToggle,
 }
 
 /// Which surface the cursor is over when the user right-clicks.
@@ -134,6 +136,8 @@ pub enum RightClickZone {
     Editor { has_lsp: bool },
     /// Right-click anywhere else (terminal pane, chrome, etc.).
     Terminal,
+    /// FF20: right-click on a tab in the tab bar; `is_pinned` reflects current state.
+    TabBar { tab_index: usize, is_pinned: bool },
 }
 
 // ── AppHandler trait ──────────────────────────────────────────────────────────
@@ -591,6 +595,11 @@ define_class!(
                     menu.addItem(&add_item("Split Right", objc2::sel!(anvilContextSplitRight:)));
                     menu.addItem(&add_item("Split Down",  objc2::sel!(anvilContextSplitDown:)));
                 }
+                // FF20: tab bar right-click → "Pin Tab" / "Unpin Tab"
+                RightClickZone::TabBar { is_pinned, .. } => {
+                    let pin_label = if is_pinned { "Unpin Tab" } else { "Pin Tab" };
+                    menu.addItem(&add_item(pin_label, objc2::sel!(anvilContextTabPin:)));
+                }
             }
 
             // SAFETY: popUpContextMenu:withEvent:forView: is a valid class method.
@@ -697,6 +706,14 @@ define_class!(
         fn anvil_context_editor_toggle_comment(&self, _sender: *mut objc2::runtime::AnyObject) {
             let mut h = unsafe { self.ivars().handler.borrow_mut() };
             h.context_action(ContextAction::EditorToggleComment);
+        }
+
+        // ── Tab bar context menu selectors (FF20) ─────────────────────────────
+
+        #[unsafe(method(anvilContextTabPin:))]
+        fn anvil_context_tab_pin(&self, _sender: *mut objc2::runtime::AnyObject) {
+            let mut h = unsafe { self.ivars().handler.borrow_mut() };
+            h.context_action(ContextAction::TabPinToggle);
         }
 
         // ── Finder-drop destination (I4) ─────────────────────────────────────

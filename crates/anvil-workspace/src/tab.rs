@@ -86,6 +86,10 @@ pub struct Tab {
     pub anim_phase: f32,
     /// Target for `anim_phase`: 1.0 when opening, 0.0 when closing.
     pub target_phase: f32,
+    /// When true the tab is pinned: it stays at the left of the strip and
+    /// renders a ● glyph before its label.  Pinned tabs cannot be reordered
+    /// past other pinned tabs.
+    pub is_pinned: bool,
 }
 
 impl Tab {
@@ -99,6 +103,7 @@ impl Tab {
             has_unread: false,
             anim_phase: 0.0,
             target_phase: 1.0,
+            is_pinned: false,
         }
     }
 
@@ -134,6 +139,7 @@ impl Tab {
             has_unread: false,
             anim_phase: 0.0,
             target_phase: 1.0,
+            is_pinned: false,
         }
     }
 
@@ -473,6 +479,29 @@ impl TabManager {
         } else {
             active_idx
         };
+    }
+
+    /// Toggle the pinned state of the tab at `index`.  When a tab is pinned it
+    /// moves to the leftmost unpinned slot so that all pinned tabs stay at the
+    /// left of the strip.  When unpinned it moves to just after the last pinned
+    /// tab.  If `index` is out of bounds this is a no-op.
+    pub fn pin_tab(&mut self, index: usize) {
+        if index >= self.tabs.len() {
+            return;
+        }
+        let was_pinned = self.tabs[index].is_pinned;
+        self.tabs[index].is_pinned = !was_pinned;
+        if !was_pinned {
+            // Moving to pinned: place at end of current pinned group (all
+            // previously-pinned tabs before `index`).
+            let pinned_end = self.tabs.iter().take(index).filter(|t| t.is_pinned).count();
+            self.move_tab(index, pinned_end);
+        } else {
+            // Moving to unpinned: place just after all remaining pinned tabs.
+            // `tabs[index]` is already false; count all still-pinned tabs.
+            let pinned_count = self.tabs.iter().filter(|t| t.is_pinned).count();
+            self.move_tab(index, pinned_count);
+        }
     }
 }
 
@@ -1101,6 +1130,52 @@ mod tests {
             (dr - 0.28).abs() < 1e-9,
             "drawer mid-point must be 0.28; got {dr}"
         );
+    }
+
+    // ── FF20: pin_tab ─────────────────────────────────────────────────────────
+
+    /// Pinning a tab moves it to the left of unpinned tabs.
+    #[test]
+    fn pin_tab_moves_to_pinned_group() {
+        let mut mgr = TabManager::default();
+        for _ in 0..3 {
+            mgr.push(Tab::new_single_pane(1, 1, 0));
+        }
+        // Pin tab 2 (the rightmost). It should move to index 0.
+        mgr.pin_tab(2);
+        assert!(mgr.tabs[0].is_pinned, "pinned tab must be at index 0");
+        assert!(!mgr.tabs[1].is_pinned);
+        assert!(!mgr.tabs[2].is_pinned);
+    }
+
+    /// Unpinning a tab moves it to the start of the unpinned group.
+    #[test]
+    fn unpin_tab_moves_out_of_pinned_group() {
+        let mut mgr = TabManager::default();
+        for _ in 0..3 {
+            mgr.push(Tab::new_single_pane(1, 1, 0));
+        }
+        // Pin tabs 0 and 1, then unpin tab 0.
+        mgr.pin_tab(0);
+        mgr.pin_tab(1); // moves original tab[1] to index 1 (after the first pinned)
+        // Two pinned tabs at indices 0 and 1.
+        assert!(mgr.tabs[0].is_pinned);
+        assert!(mgr.tabs[1].is_pinned);
+        // Unpin the first pinned tab.
+        mgr.pin_tab(0);
+        // Now one pinned tab remains at index 0.
+        assert!(mgr.tabs[0].is_pinned);
+        assert!(!mgr.tabs[1].is_pinned);
+        assert!(!mgr.tabs[2].is_pinned);
+    }
+
+    /// Out-of-bounds index is a no-op.
+    #[test]
+    fn pin_tab_out_of_bounds_is_noop() {
+        let mut mgr = TabManager::default();
+        mgr.push(Tab::new_single_pane(1, 1, 0));
+        mgr.pin_tab(99); // should not panic
+        assert!(!mgr.tabs[0].is_pinned);
     }
 
     // ── Item 5: normalize_ide_editor_drawer with no terminal pane ───────────

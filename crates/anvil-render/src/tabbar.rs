@@ -282,7 +282,24 @@ pub fn draw_tab_bar(
         };
         let fg = blend_color(fg_base, theme.graphite, anim);
         let label = tab_label(tabs, t);
-        let label_x0 = (x + 2.0 * cell_w).max(actual_tabs_start_x);
+        let is_tab_pinned = tabs.tabs.get(t).is_some_and(|tab| tab.is_pinned);
+        // FF20: pinned tabs show a ● glyph before the label (mono path).
+        let label_x0 = if is_tab_pinned {
+            let pin_x = (x + cell_w).max(actual_tabs_start_x);
+            if pin_x + cell_w <= actual_tabs_end_x {
+                raster.glyph_at(
+                    painter,
+                    metrics,
+                    pin_x,
+                    icon_top,
+                    '\u{25CF}' as u32, // ● BLACK CIRCLE
+                    theme.accent_primary,
+                );
+            }
+            (x + 2.5 * cell_w).max(actual_tabs_start_x)
+        } else {
+            (x + 2.0 * cell_w).max(actual_tabs_start_x)
+        };
         let label_x_end = (x + tw - 3.0 * cell_w).min(actual_tabs_end_x);
         let weight = if is_active {
             UiWeight::Medium
