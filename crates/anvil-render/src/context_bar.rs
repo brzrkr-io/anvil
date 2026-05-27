@@ -9,7 +9,7 @@ use anvil_theme::Theme;
 use anvil_workspace::layout::Rect;
 
 use crate::agent_panel::{GitState, LocalContext};
-use crate::raster::{FontMetrics, GlyphPainter, Raster};
+use crate::raster::{FontMetrics, GlyphPainter, PixelRect, Raster};
 
 /// Editor-segment input for the context bar.
 ///
@@ -152,6 +152,77 @@ pub fn draw_context_bar(
             dirty,
         );
     }
+}
+
+/// Draw `↑ push` and `↓ pull` chips on the left side of the context bar (Z9).
+///
+/// Chips appear between the IDE chip and the cwd path text.  Returns
+/// `(push_rect, pull_rect)` so the caller can route mouse clicks.
+/// Returns `None` when the git state is `NoRepo` or the bar is too narrow.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_push_pull_chips(
+    raster: &mut Raster,
+    painter: &mut dyn GlyphPainter,
+    metrics: FontMetrics,
+    theme: &Theme,
+    local: &LocalContext,
+    rect: Rect,
+) -> Option<(PixelRect, PixelRect)> {
+    if local.git == GitState::NoRepo || rect.w < 200.0 {
+        return None;
+    }
+    // Left anchor: same as draw_context_bar's `x` after IDE chip.
+    let bx = rect.x;
+    let by = rect.y;
+    let bar_h = rect.h;
+    // Start x: 12 (left margin) + 80 (traffic-light area) + IDE chip width + 10 gap.
+    let ide_w = "IDE".chars().count() as f64 * metrics.cell_w + 14.0;
+    let mut x = bx + 12.0 + 80.0 + ide_w + 10.0;
+
+    let push_w = "\u{2191} push".chars().count() as f64 * metrics.cell_w + 14.0;
+    let push_x = x;
+    draw_chip(
+        raster,
+        painter,
+        metrics,
+        theme,
+        "\u{2191} push",
+        x,
+        by,
+        bar_h,
+        false,
+    );
+    x += push_w + 6.0;
+
+    let pull_w = "\u{2193} pull".chars().count() as f64 * metrics.cell_w + 14.0;
+    let pull_x = x;
+    draw_chip(
+        raster,
+        painter,
+        metrics,
+        theme,
+        "\u{2193} pull",
+        x,
+        by,
+        bar_h,
+        false,
+    );
+
+    let chip_y = by + ((bar_h - 20.0) * 0.5).max(0.0);
+    Some((
+        PixelRect {
+            x: push_x,
+            y: chip_y,
+            w: push_w,
+            h: 20.0,
+        },
+        PixelRect {
+            x: pull_x,
+            y: chip_y,
+            w: pull_w,
+            h: 20.0,
+        },
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]

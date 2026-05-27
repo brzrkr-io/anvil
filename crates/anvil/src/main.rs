@@ -507,6 +507,341 @@ fn git_head_oneline(cwd: &std::path::Path) -> (String, String) {
     }
 }
 
+// ── Z1/Z2/Z3/Z5/Z6/Z8/Z12: git / gh shell-outs ──────────────────────────────
+
+/// Run `git status --porcelain` and return staged/unstaged file lists.
+fn git_status_files(cwd: &std::path::Path) -> (Vec<ScmFile>, Vec<ScmFile>) {
+    let output = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(cwd)
+        .output();
+    let Ok(out) = output else {
+        return (Vec::new(), Vec::new());
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut staged = Vec::new();
+    let mut unstaged = Vec::new();
+    for line in text.lines() {
+        if line.len() < 4 {
+            continue;
+        }
+        let x = line.chars().next().unwrap_or(' ');
+        let y = line.chars().nth(1).unwrap_or(' ');
+        let path_part = line[3..].trim_matches('"');
+        // Rename: take destination.
+        let path_str = if let Some(arrow) = path_part.find(" -> ") {
+            &path_part[arrow + 4..]
+        } else {
+            path_part
+        };
+        let abs = cwd.join(path_str);
+        // Index (X col) — staged.
+        if x != ' ' && x != '?' {
+            let mark = match x {
+                'A' => 'A',
+                'D' => 'D',
+                _ => 'M',
+            };
+            staged.push(ScmFile {
+                path: abs.clone(),
+                mark,
+                staged: true,
+            });
+        }
+        // Work-tree (Y col) — unstaged or untracked.
+        if y != ' ' || x == '?' {
+            let mark = if x == '?' && y == '?' {
+                '?'
+            } else {
+                match y {
+                    'D' => 'D',
+                    _ => 'M',
+                }
+            };
+            unstaged.push(ScmFile {
+                path: abs,
+                mark,
+                staged: false,
+            });
+        }
+    }
+    (staged, unstaged)
+}
+
+/// Run `git branch` and return (branch names, index of current branch).
+fn git_branch_list(cwd: &std::path::Path) -> (Vec<String>, Option<usize>) {
+    let output = std::process::Command::new("git")
+        .args(["branch"])
+        .current_dir(cwd)
+        .output();
+    let Ok(out) = output else {
+        return (Vec::new(), None);
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut branches = Vec::new();
+    let mut current = None;
+    for (i, line) in text.lines().enumerate() {
+        if let Some(stripped) = line.strip_prefix("* ") {
+            current = Some(i);
+            branches.push(stripped.trim().to_string());
+        } else {
+            branches.push(line.trim().to_string());
+        }
+    }
+    (branches, current)
+}
+
+/// Run `git log --oneline -50` and return entries.
+fn git_log_entries(cwd: &std::path::Path) -> Vec<GitLogEntry> {
+    let output = std::process::Command::new("git")
+        .args(["log", "--oneline", "-50"])
+        .current_dir(cwd)
+        .output();
+    let Ok(out) = output else {
+        return Vec::new();
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.lines()
+        .filter_map(|line| {
+            let (hash, rest) = line.split_once(' ')?;
+            Some(GitLogEntry {
+                hash: hash.to_string(),
+                subject: rest.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Run `git stash list` and return stash entries.
+fn git_stash_list(cwd: &std::path::Path) -> Vec<StashEntry> {
+    let output = std::process::Command::new("git")
+        .args(["stash", "list"])
+        .current_dir(cwd)
+        .output();
+    let Ok(out) = output else {
+        return Vec::new();
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.lines()
+        .enumerate()
+        .map(|(i, line)| StashEntry {
+            idx: i,
+            message: line.to_string(),
+        })
+        .collect()
+}
+
+/// Run `gh pr list --json number,title,headRefName` and return entries.
+/// Returns empty vec when gh is not on PATH or the command fails.
+fn gh_pr_list(cwd: &std::path::Path) -> Vec<PrEntry> {
+    let output = std::process::Command::new("gh")
+        .args(["pr", "list", "--json", "number,title,headRefName"])
+        .current_dir(cwd)
+        .output();
+    let Ok(out) = output else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    // Minimal JSON parse — look for {"number":N,"title":"...","headRefName":"..."} objects.
+    // Use a simple regex-free approach: split on },{.
+    parse_gh_pr_json(&text)
+}
+
+fn parse_gh_pr_json(text: &str) -> Vec<PrEntry> {
+    // Expected format: [{"number":1,"title":"foo","headRefName":"bar"},...].
+    // Extract each {...} object naively.
+    let mut entries = Vec::new();
+    let mut depth = 0i32;
+    let mut obj_start = None;
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '{' => {
+                depth += 1;
+                if depth == 1 {
+                    obj_start = Some(i);
+                }
+            }
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    if let Some(start) = obj_start.take() {
+                        let obj: String = chars[start..=i].iter().collect();
+                        if let Some(e) = parse_gh_pr_obj(&obj) {
+                            entries.push(e);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    entries
+}
+
+fn parse_gh_pr_obj(obj: &str) -> Option<PrEntry> {
+    let number = extract_json_number(obj, "number")?;
+    let title = extract_json_string(obj, "title").unwrap_or_default();
+    let head = extract_json_string(obj, "headRefName").unwrap_or_default();
+    Some(PrEntry {
+        number,
+        title,
+        head,
+    })
+}
+
+fn extract_json_number(obj: &str, key: &str) -> Option<u32> {
+    let needle = format!("\"{}\":", key);
+    let start = obj.find(&needle)? + needle.len();
+    let rest = obj[start..].trim_start();
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    rest[..end].parse().ok()
+}
+
+fn extract_json_string(obj: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{}\":\"", key);
+    let start = obj.find(&needle)? + needle.len();
+    let rest = &obj[start..];
+    // Read until unescaped closing quote.
+    let mut result = String::new();
+    let mut escaped = false;
+    for ch in rest.chars() {
+        if escaped {
+            result.push(ch);
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == '"' {
+            break;
+        } else {
+            result.push(ch);
+        }
+    }
+    Some(result)
+}
+
+/// Run `git add <path>` to stage a file. Returns Ok(()) on success.
+fn git_add(cwd: &std::path::Path, path: &std::path::Path) -> Result<(), String> {
+    let out = std::process::Command::new("git")
+        .args(["add", "--", &path.to_string_lossy()])
+        .current_dir(cwd)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).into_owned())
+    }
+}
+
+/// Run `git reset HEAD <path>` to unstage a file.
+fn git_reset_head(cwd: &std::path::Path, path: &std::path::Path) -> Result<(), String> {
+    let out = std::process::Command::new("git")
+        .args(["reset", "HEAD", "--", &path.to_string_lossy()])
+        .current_dir(cwd)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).into_owned())
+    }
+}
+
+/// Run `git commit -m <msg>`.
+fn git_commit(cwd: &std::path::Path, msg: &str) -> Result<(), String> {
+    let out = std::process::Command::new("git")
+        .args(["commit", "-m", msg])
+        .current_dir(cwd)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim_end().to_owned())
+    }
+}
+
+/// Run `git checkout <branch>`.
+fn git_checkout(cwd: &std::path::Path, branch: &str) -> Result<(), String> {
+    let out = std::process::Command::new("git")
+        .args(["checkout", branch])
+        .current_dir(cwd)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim_end().to_owned())
+    }
+}
+
+/// Run `git stash apply stash@{N}`.
+fn git_stash_apply(cwd: &std::path::Path, idx: usize) -> Result<(), String> {
+    let stash_ref = format!("stash@{{{idx}}}");
+    let out = std::process::Command::new("git")
+        .args(["stash", "apply", &stash_ref])
+        .current_dir(cwd)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim_end().to_owned())
+    }
+}
+
+/// Run `git push` in a background thread; result sent back via channel.
+fn spawn_git_push(cwd: std::path::PathBuf, tx: std::sync::mpsc::Sender<Result<(), String>>) {
+    std::thread::spawn(move || {
+        let out = std::process::Command::new("git")
+            .arg("push")
+            .current_dir(&cwd)
+            .output();
+        let result = match out {
+            Ok(o) if o.status.success() => Ok(()),
+            Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim_end().to_owned()),
+            Err(e) => Err(e.to_string()),
+        };
+        let _ = tx.send(result);
+    });
+}
+
+/// Run `git pull` in a background thread; result sent back via channel.
+fn spawn_git_pull(cwd: std::path::PathBuf, tx: std::sync::mpsc::Sender<Result<(), String>>) {
+    std::thread::spawn(move || {
+        let out = std::process::Command::new("git")
+            .arg("pull")
+            .current_dir(&cwd)
+            .output();
+        let result = match out {
+            Ok(o) if o.status.success() => Ok(()),
+            Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim_end().to_owned()),
+            Err(e) => Err(e.to_string()),
+        };
+        let _ = tx.send(result);
+    });
+}
+
+/// Run `git show <hash>` and return the output as a String.
+fn git_show(cwd: &std::path::Path, hash: &str) -> String {
+    let out = std::process::Command::new("git")
+        .args(["show", hash])
+        .current_dir(cwd)
+        .output();
+    match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
+        _ => format!("git show {hash}: failed"),
+    }
+}
+
 // ── git blame shell-out (T2) ─────────────────────────────────────────────────
 
 /// Run `git blame -L<line>,<line> --porcelain <path>` and parse the first entry.
@@ -795,6 +1130,132 @@ const PICKER_THEMES: &[&str] = &[
     "mineral-light",
     "system",
 ];
+
+// ── Z1: Source-control panel (Cmd+Shift+G) ────────────────────────────────────
+
+/// A single file row in the source-control panel.
+#[derive(Clone, Debug)]
+struct ScmFile {
+    /// Absolute path.
+    path: PathBuf,
+    /// 'M' modified, 'A' added, '?' untracked, 'D' deleted.
+    mark: char,
+    /// True = staged (index), false = unstaged / untracked.
+    staged: bool,
+}
+
+/// A single stash entry (Z5).
+#[derive(Clone, Debug)]
+struct StashEntry {
+    /// stash@{N} index used by git_stash_apply.
+    idx: usize,
+    /// Message, e.g. "WIP on main: ...".
+    message: String,
+}
+
+/// PR list entry (Z12).
+#[derive(Clone, Debug)]
+struct PrEntry {
+    number: u32,
+    title: String,
+    /// Head branch name (for display).
+    #[allow(dead_code)]
+    head: String,
+}
+
+/// State for the source-control panel overlay (Z1/Z2/Z3/Z5/Z7/Z12).
+struct ScmPanel {
+    /// Staged files (index-modified).
+    staged: Vec<ScmFile>,
+    /// Unstaged / untracked files.
+    unstaged: Vec<ScmFile>,
+    /// Currently selected row (0-based across both sections).
+    selected: usize,
+    /// Commit message text input (Z3).
+    commit_msg: String,
+    /// Whether the commit-message input has keyboard focus (Z3).
+    commit_input_active: bool,
+    /// Stash entries (Z5). Empty when none / not in a repo.
+    stashes: Vec<StashEntry>,
+    /// Whether the stash section is expanded.
+    stashes_expanded: bool,
+    /// PR entries from `gh` (Z12). Empty when gh not available.
+    prs: Vec<PrEntry>,
+    /// Whether the PR section is expanded.
+    prs_expanded: bool,
+}
+
+impl ScmPanel {
+    fn new() -> Self {
+        Self {
+            staged: Vec::new(),
+            unstaged: Vec::new(),
+            selected: 0,
+            commit_msg: String::new(),
+            commit_input_active: false,
+            stashes: Vec::new(),
+            stashes_expanded: false,
+            prs: Vec::new(),
+            prs_expanded: false,
+        }
+    }
+
+    /// Total selectable file rows (staged + unstaged).
+    fn total_rows(&self) -> usize {
+        self.staged.len() + self.unstaged.len()
+    }
+
+    /// Returns the selected ScmFile (if any).
+    fn selected_file(&self) -> Option<&ScmFile> {
+        let n_staged = self.staged.len();
+        if self.selected < n_staged {
+            self.staged.get(self.selected)
+        } else {
+            self.unstaged.get(self.selected - n_staged)
+        }
+    }
+}
+
+// ── Z6: Branch switcher (Cmd+Shift+B) ────────────────────────────────────────
+
+/// State for the branch-switcher palette (Z6).
+struct BranchSwitcher {
+    /// All local branches, output of `git branch`.
+    branches: Vec<String>,
+    /// Index of the currently checked-out branch.
+    current_idx: Option<usize>,
+    /// Filter text.
+    query: String,
+    /// Currently selected row in the *filtered* list.
+    selected: usize,
+}
+
+impl BranchSwitcher {
+    fn filtered(&self) -> Vec<usize> {
+        let q = self.query.to_ascii_lowercase();
+        self.branches
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| q.is_empty() || b.to_ascii_lowercase().contains(&q))
+            .map(|(i, _)| i)
+            .collect()
+    }
+}
+
+// ── Z8: Git-log palette (Cmd+K Cmd+G) ────────────────────────────────────────
+
+/// One entry from `git log --oneline -50`.
+#[derive(Clone, Debug)]
+struct GitLogEntry {
+    hash: String,
+    subject: String,
+}
+
+/// State for the git-log palette (Z8).
+struct GitLogPalette {
+    entries: Vec<GitLogEntry>,
+    selected: usize,
+}
 
 // ── App ───────────────────────────────────────────────────────────────────────
 
@@ -1241,6 +1702,24 @@ pub struct App {
     /// User snippets loaded from `~/.config/anvil/snippets.toml`.
     /// Keys are trigger words; values are body templates.
     snippets: HashMap<String, String>,
+
+    // ── Source-control panel (Z1/Z2/Z3/Z5/Z7/Z12) ────────────────────────────
+    /// When `Some`, the source-control panel overlay is open.
+    scm_panel: Option<ScmPanel>,
+
+    // ── Branch switcher (Z6) ─────────────────────────────────────────────────
+    /// When `Some`, the branch-switcher palette overlay is open.
+    branch_switcher: Option<BranchSwitcher>,
+
+    // ── Git-log palette (Z8) ─────────────────────────────────────────────────
+    /// When `Some`, the git-log palette overlay is open.
+    git_log_palette: Option<GitLogPalette>,
+
+    // ── Push/pull chip click rects (Z9) ──────────────────────────────────────
+    /// Pixel rect of the push chip in the context bar. Repopulated each frame.
+    ctx_push_rect: Option<anvil_render::raster::PixelRect>,
+    /// Pixel rect of the pull chip in the context bar. Repopulated each frame.
+    ctx_pull_rect: Option<anvil_render::raster::PixelRect>,
 }
 
 // ── R2: tooltip helpers ───────────────────────────────────────────────────────
@@ -1755,6 +2234,208 @@ impl App {
             filtered,
             selected: 0,
         });
+        self.dirty = true;
+        self.force_full_redraw = true;
+    }
+
+    // ── Z1: SCM panel ─────────────────────────────────────────────────────────
+
+    fn open_scm_panel(&mut self) {
+        let cwd = PathBuf::from(self.local_ctx.cwd.clone());
+        let (staged, unstaged) = git_status_files(&cwd);
+        let stashes = git_stash_list(&cwd);
+        let prs = gh_pr_list(&cwd);
+        let panel = self.scm_panel.get_or_insert_with(ScmPanel::new);
+        panel.staged = staged;
+        panel.unstaged = unstaged;
+        panel.stashes = stashes;
+        panel.prs = prs;
+        panel.selected = 0;
+        self.dirty = true;
+        self.force_full_redraw = true;
+    }
+
+    fn toggle_scm_panel(&mut self) {
+        if self.scm_panel.is_some() {
+            self.scm_panel = None;
+            self.dirty = true;
+        } else {
+            self.open_scm_panel();
+        }
+    }
+
+    fn scm_refresh(&mut self) {
+        if self.scm_panel.is_some() {
+            self.open_scm_panel();
+        }
+    }
+
+    /// Stage or unstage the currently selected file in the SCM panel (Z2),
+    /// or apply the selected stash (Z5).
+    fn scm_toggle_stage(&mut self) {
+        let cwd = PathBuf::from(self.local_ctx.cwd.clone());
+        // Check if the selected row is a stash entry (beyond file rows).
+        let (is_stash, stash_idx) = if let Some(panel) = &self.scm_panel {
+            let file_rows = panel.staged.len() + panel.unstaged.len();
+            if panel.selected >= file_rows {
+                let stash_row = panel.selected - file_rows;
+                if let Some(st) = panel.stashes.get(stash_row) {
+                    (true, st.idx)
+                } else {
+                    (false, 0)
+                }
+            } else {
+                (false, 0)
+            }
+        } else {
+            return;
+        };
+        if is_stash {
+            match git_stash_apply(&cwd, stash_idx) {
+                Ok(()) => self.toast_success(&format!("Applied stash@{{{stash_idx}}}")),
+                Err(e) => self.toast_error(&format!("stash apply: {e}")),
+            }
+            self.scm_refresh();
+            return;
+        }
+        // File row: stage or unstage.
+        let (path, staged) = if let Some(panel) = &self.scm_panel {
+            if let Some(f) = panel.selected_file() {
+                (f.path.clone(), f.staged)
+            } else {
+                return;
+            }
+        } else {
+            return;
+        };
+        let result = if staged {
+            git_reset_head(&cwd, &path)
+        } else {
+            git_add(&cwd, &path)
+        };
+        match result {
+            Ok(()) => {
+                let op = if staged { "unstaged" } else { "staged" };
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+                self.toast_success(&format!("{op}: {name}"));
+            }
+            Err(e) => self.toast_error(&format!("git: {e}")),
+        }
+        self.scm_refresh();
+    }
+
+    /// Commit staged files with the current commit message (Z3).
+    fn scm_commit(&mut self) {
+        let cwd = PathBuf::from(self.local_ctx.cwd.clone());
+        let msg = self
+            .scm_panel
+            .as_ref()
+            .map(|p| p.commit_msg.clone())
+            .unwrap_or_default();
+        if msg.trim().is_empty() {
+            self.toast_error("Empty commit message");
+            return;
+        }
+        match git_commit(&cwd, &msg) {
+            Ok(()) => {
+                if let Some(panel) = &mut self.scm_panel {
+                    panel.commit_msg.clear();
+                    panel.commit_input_active = false;
+                }
+                self.toast_success("Committed");
+                self.scm_refresh();
+            }
+            Err(e) => self.toast_error(&format!("commit failed: {e}")),
+        }
+    }
+
+    // ── Z6: Branch switcher ───────────────────────────────────────────────────
+
+    fn open_branch_switcher(&mut self) {
+        let cwd = PathBuf::from(self.local_ctx.cwd.clone());
+        let (branches, current_idx) = git_branch_list(&cwd);
+        self.branch_switcher = Some(BranchSwitcher {
+            branches,
+            current_idx,
+            query: String::new(),
+            selected: 0,
+        });
+        self.dirty = true;
+        self.force_full_redraw = true;
+    }
+
+    fn branch_switcher_confirm(&mut self) {
+        let (cwd, branch) = if let Some(sw) = &self.branch_switcher {
+            let filtered = sw.filtered();
+            let idx = filtered.get(sw.selected).copied();
+            let branch = idx
+                .and_then(|i| sw.branches.get(i))
+                .cloned()
+                .unwrap_or_default();
+            (self.local_ctx.cwd.clone(), branch)
+        } else {
+            return;
+        };
+        self.branch_switcher = None;
+        if branch.is_empty() {
+            return;
+        }
+        match git_checkout(&PathBuf::from(&cwd), &branch) {
+            Ok(()) => self.toast_success(&format!("Switched to {branch}")),
+            Err(e) => self.toast_error(&format!("checkout failed: {e}")),
+        }
+        self.dirty = true;
+    }
+
+    // ── Z8: Git-log palette ───────────────────────────────────────────────────
+
+    fn open_git_log_palette(&mut self) {
+        let cwd = PathBuf::from(self.local_ctx.cwd.clone());
+        let entries = git_log_entries(&cwd);
+        self.git_log_palette = Some(GitLogPalette {
+            entries,
+            selected: 0,
+        });
+        self.dirty = true;
+        self.force_full_redraw = true;
+    }
+
+    fn git_log_confirm(&mut self) {
+        let (cwd, hash) = if let Some(pal) = &self.git_log_palette {
+            let hash = pal
+                .entries
+                .get(pal.selected)
+                .map(|e| e.hash.clone())
+                .unwrap_or_default();
+            (self.local_ctx.cwd.clone(), hash)
+        } else {
+            return;
+        };
+        self.git_log_palette = None;
+        if hash.is_empty() {
+            return;
+        }
+        let content = git_show(&PathBuf::from(&cwd), &hash);
+        // Open in a scratch native editor buffer.
+        self.layout_mode = LayoutMode::Ide;
+        self.left_dock_visible = true;
+        self.new_native_editor_pane();
+        if let Some(tab) = self.tabs.current_mut() {
+            let id = tab.focused_id();
+            if let Some(ep) = tab.editor_panes.get_pane(id) {
+                let bid = ep.buffer_id;
+                if let Some(buf) = tab.editor_panes.get_buffer_mut(bid) {
+                    let edit = anvil_editor::Edit {
+                        range: anvil_editor::Range {
+                            start: anvil_editor::Position { line: 0, col: 0 },
+                            end: anvil_editor::Position { line: 0, col: 0 },
+                        },
+                        replacement: content,
+                    };
+                    buf.apply_edit(edit);
+                }
+            }
+        }
         self.dirty = true;
         self.force_full_redraw = true;
     }
@@ -4188,6 +4869,22 @@ impl App {
                 editor_ctx,
                 areas.top_bar,
             );
+            // Z9: push/pull chips in context bar.
+            let pp = anvil_render::draw_push_pull_chips(
+                &mut self.raster,
+                chrome_painter,
+                chrome_metrics,
+                &self.theme,
+                &self.local_ctx,
+                areas.top_bar,
+            );
+            if let Some((push_r, pull_r)) = pp {
+                self.ctx_push_rect = Some(push_r);
+                self.ctx_pull_rect = Some(pull_r);
+            } else {
+                self.ctx_push_rect = None;
+                self.ctx_pull_rect = None;
+            }
             // NE9/item-19: derive outline from the active buffer's syntax tree.
             // For Rust buffers uses tree-sitter node walk; falls back to line-regex
             // for other languages. Non-Rust buffers produce an empty list (header-only).
@@ -4655,6 +5352,60 @@ impl App {
                 self.project_switcher_sel,
                 dw as f64,
                 dh as f64,
+                chrome_top,
+                cw,
+                ch,
+            );
+        }
+
+        // ── Z1: SCM panel overlay ────────────────────────────────────────────
+        if let Some(ref panel) = self.scm_panel {
+            let cw = self.font.metrics.cell_w;
+            let chrome_top = self.chrome_top_px();
+            let chrome_bot = self.chrome_bottom_px();
+            draw_scm_panel_overlay(
+                &mut self.raster,
+                chrome_painter,
+                chrome_metrics,
+                &self.theme,
+                panel,
+                dw as f64,
+                dh as f64,
+                chrome_top,
+                chrome_bot,
+                cw,
+                ch,
+            );
+        }
+
+        // ── Z6: Branch switcher overlay ───────────────────────────────────────
+        if let Some(ref sw) = self.branch_switcher {
+            let cw = self.font.metrics.cell_w;
+            let chrome_top = self.chrome_top_px();
+            draw_branch_switcher_overlay(
+                &mut self.raster,
+                chrome_painter,
+                chrome_metrics,
+                &self.theme,
+                sw,
+                dw as f64,
+                chrome_top,
+                cw,
+                ch,
+            );
+        }
+
+        // ── Z8: Git-log palette overlay ───────────────────────────────────────
+        if let Some(ref pal) = self.git_log_palette {
+            let cw = self.font.metrics.cell_w;
+            let chrome_top = self.chrome_top_px();
+            draw_git_log_overlay(
+                &mut self.raster,
+                chrome_painter,
+                chrome_metrics,
+                &self.theme,
+                pal,
+                dw as f64,
                 chrome_top,
                 cw,
                 ch,
@@ -6123,6 +6874,18 @@ impl App {
             return true;
         }
 
+        // ⌘⇧G — source-control / git-status panel (Z1 / Z7).
+        if ascii_lower(ch) == 'g' && mods.shift && !mods.control && !mods.option {
+            self.toggle_scm_panel();
+            return true;
+        }
+
+        // ⌘⇧B — branch switcher palette (Z6).
+        if ascii_lower(ch) == 'b' && mods.shift && !mods.control && !mods.option {
+            self.open_branch_switcher();
+            return true;
+        }
+
         // ⌘⇧A — send current selection to the active agent as context.
         // Until a real agent IPC ships, we (a) copy the captured text to the
         // clipboard and (b) write it to /tmp/anvil-agent-context.md as a
@@ -7534,6 +8297,182 @@ impl AppHandler for AppShell {
             return;
         }
 
+        // ── Z1: SCM panel key handling ───────────────────────────────────────
+        if self.app.scm_panel.is_some() {
+            match event.key {
+                KeyInput::Escape => {
+                    if let Some(ref mut p) = self.app.scm_panel {
+                        if p.commit_input_active {
+                            p.commit_input_active = false;
+                        } else {
+                            self.app.scm_panel = None;
+                        }
+                    }
+                    self.app.dirty = true;
+                }
+                KeyInput::Enter if event.mods.command => {
+                    // Z3: Cmd+Enter commits.
+                    if self
+                        .app
+                        .scm_panel
+                        .as_ref()
+                        .is_some_and(|p| p.commit_input_active)
+                    {
+                        self.app.scm_commit();
+                    } else {
+                        // If not in commit input, toggle stage on selected row.
+                        self.app.scm_toggle_stage();
+                    }
+                }
+                KeyInput::Enter => {
+                    // Enter on a file row: toggle stage.
+                    if !self
+                        .app
+                        .scm_panel
+                        .as_ref()
+                        .is_some_and(|p| p.commit_input_active)
+                    {
+                        self.app.scm_toggle_stage();
+                    } else if let Some(ref mut p) = self.app.scm_panel {
+                        // Enter in commit input: newline? No — Cmd+Enter commits.
+                        let _ = p; // no-op; Cmd+Enter is the commit gesture
+                    }
+                }
+                KeyInput::Tab => {
+                    // Tab: switch focus to/from commit input.
+                    if let Some(ref mut p) = self.app.scm_panel {
+                        p.commit_input_active = !p.commit_input_active;
+                    }
+                    self.app.dirty = true;
+                }
+                KeyInput::Up => {
+                    if let Some(ref mut p) = self.app.scm_panel {
+                        if !p.commit_input_active && p.selected > 0 {
+                            p.selected -= 1;
+                        }
+                    }
+                    self.app.dirty = true;
+                }
+                KeyInput::Down => {
+                    if let Some(ref mut p) = self.app.scm_panel {
+                        if !p.commit_input_active {
+                            let max = p.total_rows().saturating_sub(1);
+                            if p.selected < max {
+                                p.selected += 1;
+                            }
+                        }
+                    }
+                    self.app.dirty = true;
+                }
+                KeyInput::Backspace => {
+                    if let Some(ref mut p) = self.app.scm_panel {
+                        if p.commit_input_active {
+                            let mut bytes = p.commit_msg.as_bytes().to_vec();
+                            while !bytes.is_empty() && (bytes[bytes.len() - 1] & 0xC0) == 0x80 {
+                                bytes.pop();
+                            }
+                            bytes.pop();
+                            p.commit_msg = String::from_utf8_lossy(&bytes).into_owned();
+                        }
+                    }
+                    self.app.dirty = true;
+                }
+                KeyInput::Char(ch) => {
+                    if let Some(ref mut p) = self.app.scm_panel {
+                        if p.commit_input_active {
+                            p.commit_msg.push(ch);
+                        }
+                    }
+                    self.app.dirty = true;
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // ── Z6: Branch switcher key handling ─────────────────────────────────
+        if self.app.branch_switcher.is_some() {
+            match event.key {
+                KeyInput::Escape => {
+                    self.app.branch_switcher = None;
+                    self.app.dirty = true;
+                }
+                KeyInput::Enter => {
+                    self.app.branch_switcher_confirm();
+                }
+                KeyInput::Up => {
+                    if let Some(ref mut sw) = self.app.branch_switcher {
+                        if sw.selected > 0 {
+                            sw.selected -= 1;
+                        }
+                    }
+                    self.app.dirty = true;
+                }
+                KeyInput::Down => {
+                    if let Some(ref mut sw) = self.app.branch_switcher {
+                        let max = sw.filtered().len().saturating_sub(1);
+                        if sw.selected < max {
+                            sw.selected += 1;
+                        }
+                    }
+                    self.app.dirty = true;
+                }
+                KeyInput::Backspace => {
+                    if let Some(ref mut sw) = self.app.branch_switcher {
+                        let mut bytes = sw.query.as_bytes().to_vec();
+                        while !bytes.is_empty() && (bytes[bytes.len() - 1] & 0xC0) == 0x80 {
+                            bytes.pop();
+                        }
+                        bytes.pop();
+                        sw.query = String::from_utf8_lossy(&bytes).into_owned();
+                        sw.selected = 0;
+                    }
+                    self.app.dirty = true;
+                }
+                KeyInput::Char(ch) => {
+                    if let Some(ref mut sw) = self.app.branch_switcher {
+                        sw.query.push(ch);
+                        sw.selected = 0;
+                    }
+                    self.app.dirty = true;
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // ── Z8: Git-log palette key handling ─────────────────────────────────
+        if self.app.git_log_palette.is_some() {
+            match event.key {
+                KeyInput::Escape => {
+                    self.app.git_log_palette = None;
+                    self.app.dirty = true;
+                }
+                KeyInput::Enter => {
+                    self.app.git_log_confirm();
+                }
+                KeyInput::Up => {
+                    if let Some(ref mut pal) = self.app.git_log_palette {
+                        if pal.selected > 0 {
+                            pal.selected -= 1;
+                        }
+                    }
+                    self.app.dirty = true;
+                }
+                KeyInput::Down => {
+                    if let Some(ref mut pal) = self.app.git_log_palette {
+                        let max = pal.entries.len().saturating_sub(1);
+                        if pal.selected < max {
+                            pal.selected += 1;
+                        }
+                    }
+                    self.app.dirty = true;
+                }
+                _ => {}
+            }
+            return;
+        }
+
         // ── Project search overlay key handling (item 10) ────────────────────
         if self.app.project_search.visible {
             match event.key {
@@ -8074,6 +9013,11 @@ impl AppHandler for AppShell {
         // The next plain (non-Cmd) key completes or cancels the chord.
         if self.app.pending_chord_k {
             self.app.pending_chord_k = false;
+            // Z8: Cmd+K G → git-log palette (global).
+            if matches!(event.key, KeyInput::Char('g') | KeyInput::Char('G')) {
+                self.app.open_git_log_palette();
+                return;
+            }
             // Q19: Cmd+K O → open folder (global — no editor focus required).
             if matches!(event.key, KeyInput::Char('o') | KeyInput::Char('O')) {
                 let cwd = self.app.current_cwd().unwrap_or_else(|| String::from("/"));
@@ -9210,6 +10154,43 @@ impl AppHandler for AppShell {
     ) {
         let app = &mut self.app;
         let _ = view_bounds;
+
+        // Z9: push/pull chip click in context bar.
+        {
+            let (rx, ry) = app.view_pt_to_raster_px(loc);
+            let hit_px = |r: &anvil_render::raster::PixelRect| {
+                rx >= r.x && rx < r.x + r.w && ry >= r.y && ry < r.y + r.h
+            };
+            if let Some(r) = app.ctx_push_rect {
+                if hit_px(&r) {
+                    let cwd = PathBuf::from(&app.local_ctx.cwd);
+                    let (tx, rx_r) = std::sync::mpsc::channel::<Result<(), String>>();
+                    spawn_git_push(cwd, tx);
+                    // Block briefly; push/pull completes in the worker thread.
+                    match rx_r.recv_timeout(std::time::Duration::from_secs(30)) {
+                        Ok(Ok(())) => app.toast_success("git push OK"),
+                        Ok(Err(e)) => app.toast_error(&format!("push: {e}")),
+                        Err(_) => app.toast_info("git push: timed out"),
+                    }
+                    app.dirty = true;
+                    return;
+                }
+            }
+            if let Some(r) = app.ctx_pull_rect {
+                if hit_px(&r) {
+                    let cwd = PathBuf::from(&app.local_ctx.cwd);
+                    let (tx, rx_r) = std::sync::mpsc::channel::<Result<(), String>>();
+                    spawn_git_pull(cwd, tx);
+                    match rx_r.recv_timeout(std::time::Duration::from_secs(30)) {
+                        Ok(Ok(())) => app.toast_success("git pull OK"),
+                        Ok(Err(e)) => app.toast_error(&format!("pull: {e}")),
+                        Err(_) => app.toast_info("git pull: timed out"),
+                    }
+                    app.dirty = true;
+                    return;
+                }
+            }
+        }
 
         // HUD left-edge resize handle. The 1px hairline sits at the left of
         // the HUD's surface rect; we accept clicks within `HUD_DRAG_HIT_PX`
@@ -12224,6 +13205,458 @@ fn picker_filtered<'a>(langs: &[&'a str], query: &str) -> Vec<&'a str> {
     }
 }
 
+// ── Z1/Z2/Z3/Z5/Z12: SCM panel draw ─────────────────────────────────────────
+
+/// Draw one text row at `y`, advance y by `row_h`, return new y.
+#[allow(clippy::too_many_arguments)]
+fn scm_draw_row(
+    raster: &mut anvil_render::raster::Raster,
+    painter: &mut dyn anvil_render::raster::GlyphPainter,
+    metrics: anvil_render::raster::FontMetrics,
+    label: &str,
+    color: [u8; 3],
+    panel_x: f64,
+    panel_w: f64,
+    pad_x: f64,
+    cw: f64,
+    y: f64,
+    row_h: f64,
+) -> f64 {
+    let glyph_y = y + 2.0;
+    let mut rx = panel_x + pad_x;
+    for ch_c in label.chars() {
+        if rx + cw > panel_x + panel_w - pad_x {
+            break;
+        }
+        raster.glyph_at(painter, metrics, rx, glyph_y, ch_c as u32, color);
+        rx += cw;
+    }
+    y + row_h
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_scm_panel_overlay(
+    raster: &mut anvil_render::raster::Raster,
+    painter: &mut dyn anvil_render::raster::GlyphPainter,
+    metrics: anvil_render::raster::FontMetrics,
+    theme: &anvil_theme::Theme,
+    panel: &ScmPanel,
+    dw: f64,
+    dh: f64,
+    chrome_top: f64,
+    chrome_bot: f64,
+    cw: f64,
+    ch: f64,
+) {
+    let row_h = ch + 4.0;
+    let panel_w = (55.0 * cw).min(dw * 0.72);
+    let header_rows = 2usize; // STAGED / UNSTAGED section headers
+    let file_rows = panel.staged.len() + panel.unstaged.len();
+    let stash_rows = if panel.stashes_expanded {
+        panel.stashes.len()
+    } else {
+        0
+    };
+    let pr_rows = if panel.prs_expanded {
+        panel.prs.len().min(8)
+    } else {
+        0
+    };
+    let commit_input_h = row_h + 4.0;
+    let total_rows = header_rows + file_rows + 2 + stash_rows + pr_rows;
+    let panel_h =
+        (total_rows as f64 * row_h + commit_input_h + 8.0).min(dh - chrome_top - chrome_bot - 20.0);
+    let panel_x = ((dw - panel_w) * 0.5).max(0.0);
+    let panel_y = chrome_top + 1.5 * ch;
+
+    raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
+    raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent_bright);
+    raster.fill_pixel_rect(
+        panel_x,
+        panel_y + panel_h - 1.0,
+        panel_w,
+        1.0,
+        theme.accent_bright,
+    );
+    raster.fill_pixel_rect(panel_x, panel_y, 1.0, panel_h, theme.accent_bright);
+    raster.fill_pixel_rect(
+        panel_x + panel_w - 1.0,
+        panel_y,
+        1.0,
+        panel_h,
+        theme.accent_bright,
+    );
+
+    let pad_x = 1.5 * cw;
+    let mut y = panel_y + 2.0;
+
+    // STAGED section.
+    y = scm_draw_row(
+        raster,
+        painter,
+        metrics,
+        "STAGED",
+        theme.text_subtle,
+        panel_x,
+        panel_w,
+        pad_x,
+        cw,
+        y,
+        row_h,
+    );
+    for (i, f) in panel.staged.iter().enumerate() {
+        let is_sel = i == panel.selected;
+        if is_sel {
+            raster.fill_pixel_rect_alpha(panel_x, y, panel_w, row_h, theme.accent, 0.14);
+        }
+        let name = f.path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+        let label = format!("{} {name}", f.mark);
+        let color = if is_sel {
+            theme.foreground
+        } else {
+            theme.verified
+        };
+        y = scm_draw_row(
+            raster, painter, metrics, &label, color, panel_x, panel_w, pad_x, cw, y, row_h,
+        );
+    }
+
+    // UNSTAGED section.
+    raster.fill_pixel_rect(
+        panel_x + pad_x,
+        y,
+        panel_w - pad_x * 2.0,
+        1.0,
+        theme.hairline,
+    );
+    y = scm_draw_row(
+        raster,
+        painter,
+        metrics,
+        "UNSTAGED",
+        theme.text_subtle,
+        panel_x,
+        panel_w,
+        pad_x,
+        cw,
+        y,
+        row_h,
+    );
+    for (i, f) in panel.unstaged.iter().enumerate() {
+        let abs_i = panel.staged.len() + i;
+        let is_sel = abs_i == panel.selected;
+        if is_sel {
+            raster.fill_pixel_rect_alpha(panel_x, y, panel_w, row_h, theme.accent, 0.14);
+        }
+        let name = f.path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+        let label = format!("{} {name}", f.mark);
+        let color = if is_sel {
+            theme.foreground
+        } else {
+            theme.attention
+        };
+        y = scm_draw_row(
+            raster, painter, metrics, &label, color, panel_x, panel_w, pad_x, cw, y, row_h,
+        );
+    }
+
+    // STASHES section (Z5).
+    raster.fill_pixel_rect(
+        panel_x + pad_x,
+        y,
+        panel_w - pad_x * 2.0,
+        1.0,
+        theme.hairline,
+    );
+    let stash_label = if panel.stashes_expanded {
+        format!("v STASHES ({})", panel.stashes.len())
+    } else {
+        format!("> STASHES ({})", panel.stashes.len())
+    };
+    y = scm_draw_row(
+        raster,
+        painter,
+        metrics,
+        &stash_label,
+        theme.text_subtle,
+        panel_x,
+        panel_w,
+        pad_x,
+        cw,
+        y,
+        row_h,
+    );
+    if panel.stashes_expanded {
+        for st in &panel.stashes {
+            let label = format!("  {}", &st.message);
+            y = scm_draw_row(
+                raster,
+                painter,
+                metrics,
+                &label,
+                theme.text_muted,
+                panel_x,
+                panel_w,
+                pad_x,
+                cw,
+                y,
+                row_h,
+            );
+        }
+    }
+
+    // PULL REQUESTS section (Z12).
+    raster.fill_pixel_rect(
+        panel_x + pad_x,
+        y,
+        panel_w - pad_x * 2.0,
+        1.0,
+        theme.hairline,
+    );
+    let pr_label = if panel.prs_expanded {
+        format!("v PULL REQUESTS ({})", panel.prs.len())
+    } else {
+        format!("> PULL REQUESTS ({})", panel.prs.len())
+    };
+    y = scm_draw_row(
+        raster,
+        painter,
+        metrics,
+        &pr_label,
+        theme.text_subtle,
+        panel_x,
+        panel_w,
+        pad_x,
+        cw,
+        y,
+        row_h,
+    );
+    if panel.prs_expanded {
+        for pr in panel.prs.iter().take(8) {
+            let label = format!("  #{} {}", pr.number, pr.title);
+            y = scm_draw_row(
+                raster, painter, metrics, &label, theme.info, panel_x, panel_w, pad_x, cw, y, row_h,
+            );
+        }
+    }
+
+    // Commit message input (Z3).
+    raster.fill_pixel_rect(
+        panel_x + pad_x,
+        y,
+        panel_w - pad_x * 2.0,
+        1.0,
+        theme.hairline,
+    );
+    let commit_bg = if panel.commit_input_active {
+        theme.panel
+    } else {
+        theme.surface
+    };
+    raster.fill_pixel_rect(panel_x, y + 2.0, panel_w, commit_input_h - 2.0, commit_bg);
+    let commit_text: &str = if !panel.commit_msg.is_empty() {
+        &panel.commit_msg
+    } else if !panel.commit_input_active {
+        "Commit message (Tab to focus, Cmd+Enter to commit)"
+    } else {
+        ""
+    };
+    let commit_color = if panel.commit_msg.is_empty() {
+        theme.text_subtle
+    } else {
+        theme.foreground
+    };
+    let mut rx = panel_x + pad_x;
+    let glyph_y = y + 4.0;
+    for ch_c in commit_text.chars() {
+        if rx + cw > panel_x + panel_w - pad_x {
+            break;
+        }
+        raster.glyph_at(painter, metrics, rx, glyph_y, ch_c as u32, commit_color);
+        rx += cw;
+    }
+    if panel.commit_input_active {
+        let cursor_x = panel_x + pad_x + panel.commit_msg.chars().count() as f64 * cw;
+        raster.fill_pixel_rect(cursor_x, y + 3.0, 2.0, ch, theme.accent);
+    }
+}
+
+// ── Z6: Branch switcher draw ──────────────────────────────────────────────────
+
+#[allow(clippy::too_many_arguments)]
+fn draw_branch_switcher_overlay(
+    raster: &mut anvil_render::raster::Raster,
+    painter: &mut dyn anvil_render::raster::GlyphPainter,
+    metrics: anvil_render::raster::FontMetrics,
+    theme: &anvil_theme::Theme,
+    sw: &BranchSwitcher,
+    dw: f64,
+    chrome_top: f64,
+    cw: f64,
+    ch: f64,
+) {
+    let filtered = sw.filtered();
+    let rows = filtered.len().min(15);
+    let row_h = ch + 4.0;
+    let panel_w = (50.0 * cw).min(dw * 0.7);
+    let header_h = row_h + 2.0; // "git checkout" label + filter input
+    let panel_h = header_h + rows as f64 * row_h + 4.0;
+    let panel_x = ((dw - panel_w) * 0.5).max(0.0);
+    let panel_y = chrome_top + 2.0 * ch;
+
+    raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
+    raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent);
+    raster.fill_pixel_rect(panel_x, panel_y + panel_h - 1.0, panel_w, 1.0, theme.accent);
+    raster.fill_pixel_rect(panel_x, panel_y, 1.0, panel_h, theme.accent);
+    raster.fill_pixel_rect(panel_x + panel_w - 1.0, panel_y, 1.0, panel_h, theme.accent);
+
+    let pad_x = 1.5 * cw;
+
+    // Header label.
+    let mut rx = panel_x + pad_x;
+    let header_y = panel_y + 2.0;
+    for c in "git checkout".chars() {
+        if rx + cw > panel_x + panel_w - pad_x {
+            break;
+        }
+        raster.glyph_at(painter, metrics, rx, header_y, c as u32, theme.text_subtle);
+        rx += cw;
+    }
+
+    // Filter input row.
+    let filter_y = panel_y + row_h;
+    let filter_label = format!("> {}", sw.query);
+    let mut rx = panel_x + pad_x;
+    for c in filter_label.chars() {
+        if rx + cw > panel_x + panel_w - pad_x {
+            break;
+        }
+        raster.glyph_at(painter, metrics, rx, filter_y, c as u32, theme.foreground);
+        rx += cw;
+    }
+    // Cursor.
+    let cursor_x = panel_x + pad_x + (2 + sw.query.chars().count()) as f64 * cw;
+    raster.fill_pixel_rect(cursor_x, filter_y - 1.0, 2.0, ch, theme.accent);
+
+    raster.fill_pixel_rect(
+        panel_x,
+        panel_y + header_h - 1.0,
+        panel_w,
+        1.0,
+        theme.hairline,
+    );
+
+    // Branch rows.
+    for (ri, &branch_idx) in filtered.iter().take(rows).enumerate() {
+        let branch = &sw.branches[branch_idx];
+        let is_current = sw.current_idx == Some(branch_idx);
+        let is_sel = ri == sw.selected;
+        let row_y = panel_y + header_h + ri as f64 * row_h;
+        if is_sel {
+            raster.fill_pixel_rect_alpha(panel_x, row_y, panel_w, row_h, theme.accent, 0.15);
+        }
+        let prefix = if is_current { "* " } else { "  " };
+        let label = format!("{prefix}{branch}");
+        let color = if is_sel {
+            theme.foreground
+        } else if is_current {
+            theme.verified
+        } else {
+            theme.text_muted
+        };
+        let glyph_y = row_y + 2.0;
+        let mut rx = panel_x + pad_x;
+        for c in label.chars() {
+            if rx + cw > panel_x + panel_w - pad_x {
+                break;
+            }
+            raster.glyph_at(painter, metrics, rx, glyph_y, c as u32, color);
+            rx += cw;
+        }
+    }
+}
+
+// ── Z8: Git-log palette draw ──────────────────────────────────────────────────
+
+#[allow(clippy::too_many_arguments)]
+fn draw_git_log_overlay(
+    raster: &mut anvil_render::raster::Raster,
+    painter: &mut dyn anvil_render::raster::GlyphPainter,
+    metrics: anvil_render::raster::FontMetrics,
+    theme: &anvil_theme::Theme,
+    pal: &GitLogPalette,
+    dw: f64,
+    chrome_top: f64,
+    cw: f64,
+    ch: f64,
+) {
+    let rows = pal.entries.len().min(20);
+    let row_h = ch + 4.0;
+    let panel_w = (72.0 * cw).min(dw * 0.9);
+    let header_h = row_h;
+    let panel_h = header_h + rows as f64 * row_h + 4.0;
+    let panel_x = ((dw - panel_w) * 0.5).max(0.0);
+    let panel_y = chrome_top + 2.0 * ch;
+
+    raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
+    raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent);
+    raster.fill_pixel_rect(panel_x, panel_y + panel_h - 1.0, panel_w, 1.0, theme.accent);
+    raster.fill_pixel_rect(panel_x, panel_y, 1.0, panel_h, theme.accent);
+    raster.fill_pixel_rect(panel_x + panel_w - 1.0, panel_y, 1.0, panel_h, theme.accent);
+
+    let pad_x = 1.5 * cw;
+
+    // Header.
+    let header_y = panel_y + 2.0;
+    let mut rx = panel_x + pad_x;
+    for c in "git log (Enter to open, Esc to close)".chars() {
+        if rx + cw > panel_x + panel_w - pad_x {
+            break;
+        }
+        raster.glyph_at(painter, metrics, rx, header_y, c as u32, theme.text_subtle);
+        rx += cw;
+    }
+    raster.fill_pixel_rect(
+        panel_x,
+        panel_y + header_h - 1.0,
+        panel_w,
+        1.0,
+        theme.hairline,
+    );
+
+    for (i, entry) in pal.entries.iter().take(rows).enumerate() {
+        let is_sel = i == pal.selected;
+        let row_y = panel_y + header_h + i as f64 * row_h;
+        if is_sel {
+            raster.fill_pixel_rect_alpha(panel_x, row_y, panel_w, row_h, theme.accent, 0.15);
+        }
+        let glyph_y = row_y + 2.0;
+        // Hash in accent color.
+        let mut rx = panel_x + pad_x;
+        for c in entry.hash.chars() {
+            if rx + cw > panel_x + pad_x + 8.0 * cw {
+                break;
+            }
+            raster.glyph_at(painter, metrics, rx, glyph_y, c as u32, theme.accent_bright);
+            rx += cw;
+        }
+        rx += cw * 0.5;
+        // Subject.
+        let color = if is_sel {
+            theme.foreground
+        } else {
+            theme.text_muted
+        };
+        for c in entry.subject.chars() {
+            if rx + cw > panel_x + panel_w - pad_x {
+                break;
+            }
+            raster.glyph_at(painter, metrics, rx, glyph_y, c as u32, color);
+            rx += cw;
+        }
+    }
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 fn main() -> Result<()> {
@@ -12783,6 +14216,11 @@ fn main() -> Result<()> {
         explorer_hover_meta: None,
         explorer_filter: None,
         snippets: load_snippets(),
+        scm_panel: None,
+        branch_switcher: None,
+        git_log_palette: None,
+        ctx_push_rect: None,
+        ctx_pull_rect: None,
     };
 
     // -- AppKitApp: builds the window, view, timer ----------------------------
