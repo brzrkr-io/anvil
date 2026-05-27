@@ -350,6 +350,70 @@ impl Raster {
         self.fill_pixel_rect_internal(rect, rgb);
     }
 
+    /// Fill a rounded rectangle with antialiased corners.
+    ///
+    /// `radius` is the corner radius in device pixels. Falls back to a flat
+    /// alpha fill when `radius <= 0`. Used by `draw_card_chrome` (Phase 4).
+    #[allow(clippy::too_many_arguments)]
+    pub fn fill_rounded_rect(
+        &mut self,
+        px: f64,
+        py: f64,
+        pw: f64,
+        ph: f64,
+        radius: f64,
+        rgb: [u8; 3],
+        alpha: f64,
+    ) {
+        if radius <= 0.0 {
+            self.fill_pixel_rect_alpha(px, py, pw, ph, rgb, alpha);
+            return;
+        }
+        let r = radius.min(pw * 0.5).min(ph * 0.5);
+        let x0 = (px.max(0.0) as usize).min(self.width);
+        let y0 = (py.max(0.0) as usize).min(self.height);
+        let x1 = ((px + pw) as usize).min(self.width);
+        let y1 = ((py + ph) as usize).min(self.height);
+        let [red, green, blue] = rgb;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let fx = x as f64 + 0.5;
+                let fy = y as f64 + 0.5;
+                // Nearest corner center (clamped to corner quadrant).
+                let corner_x = if fx < px + r {
+                    px + r
+                } else if fx > px + pw - r {
+                    px + pw - r
+                } else {
+                    fx
+                };
+                let corner_y = if fy < py + r {
+                    py + r
+                } else if fy > py + ph - r {
+                    py + ph - r
+                } else {
+                    fy
+                };
+                let dist = ((fx - corner_x).powi(2) + (fy - corner_y).powi(2)).sqrt();
+                // Antialiased coverage: 1 fully inside, blends at boundary.
+                let coverage = (r - dist + 0.5).clamp(0.0, 1.0);
+                let a = (alpha * coverage) as f32;
+                if a <= 0.0 {
+                    continue;
+                }
+                let inv = 1.0 - a;
+                let i = (y * self.width + x) * 4;
+                let ob = self.pixels[i];
+                let og = self.pixels[i + 1];
+                let or_ = self.pixels[i + 2];
+                self.pixels[i] = (blue as f32 * a + ob as f32 * inv).round() as u8;
+                self.pixels[i + 1] = (green as f32 * a + og as f32 * inv).round() as u8;
+                self.pixels[i + 2] = (red as f32 * a + or_ as f32 * inv).round() as u8;
+                self.pixels[i + 3] = 0xff;
+            }
+        }
+    }
+
     /// Fill an arbitrary rectangle.  `px`, `py` are the top-left corner in
     /// top-down device-pixel coordinates.
     pub fn fill_pixel_rect(&mut self, px: f64, py: f64, pw: f64, ph: f64, rgb: [u8; 3]) {

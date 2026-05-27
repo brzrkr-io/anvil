@@ -196,11 +196,13 @@ impl OverlayStack {
                         scale,
                     );
                 }
-                Overlay::TextInput(_ti) => {
-                    // TODO: TextInputOverlay render (Phase 3)
+                Overlay::TextInput(ti) => {
+                    ti.render(
+                        raster, painter, metrics, theme, dw, dh, chrome_top, alpha, scale,
+                    );
                 }
-                Overlay::Tooltip(_tt) => {
-                    // TODO: TooltipOverlay render (Phase 3)
+                Overlay::Tooltip(tt) => {
+                    tt.render(raster, painter, metrics, theme, dw, dh, alpha, scale);
                 }
                 Overlay::Custom(c) => {
                     let cw = metrics.cell_w;
@@ -234,6 +236,16 @@ impl OverlayStack {
     /// Route a key event to the top overlay. Returns the routing result.
     pub fn dispatch_key(&mut self, key: OverlayKey) -> OverlayKeyResult {
         OverlayInputRouter::dispatch_key(self, key)
+    }
+
+    /// The `OverlayId` of the topmost entry, if any.
+    pub fn top_id(&self) -> Option<OverlayId> {
+        self.entries.last().map(|e| match &e.overlay {
+            Overlay::Picker(p) => p.id,
+            Overlay::TextInput(ti) => ti.id,
+            Overlay::Tooltip(tt) => tt.id,
+            Overlay::Custom(c) => c.id(),
+        })
     }
 
     /// Mutable ref to the top overlay entry, if any.

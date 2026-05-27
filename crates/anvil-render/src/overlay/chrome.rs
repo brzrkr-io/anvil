@@ -85,9 +85,8 @@ pub fn draw_card_chrome(raster: &mut Raster, theme: &Theme, geom: CardGeom, show
         );
     }
 
-    // 3. Panel fill.
-    // TODO(radius): replace with fill_rounded_rect when Phase 4 lands.
-    raster.fill_pixel_rect_alpha(geom.x, geom.y, geom.w, geom.h, theme.panel, a);
+    // 3. Panel fill — rounded corners via fill_rounded_rect (Phase 4).
+    raster.fill_rounded_rect(geom.x, geom.y, geom.w, geom.h, geom.radius, theme.panel, a);
 
     // 4. 1px top inner highlight.
     raster.fill_pixel_rect_alpha(geom.x, geom.y, geom.w, 1.0, theme.surface, 0.3 * a);

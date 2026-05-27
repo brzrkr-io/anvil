@@ -1,9 +1,12 @@
 //! Tooltip overlay: anchored, non-modal, click-through.
 //!
-//! Skeleton for Phase 3. Positions a small card near an anchor point.
+//! Phase 3: full render. Positions a small card near an anchor point.
 
 use crate::overlay::OverlayId;
+use crate::overlay::chrome::{CardGeom, draw_card_chrome};
 use crate::overlay::input::{OverlayClickResult, OverlayKey, OverlayKeyResult};
+use crate::raster::{FontMetrics, GlyphPainter, Raster};
+use anvil_theme::Theme;
 
 /// Anchor point for a tooltip.
 #[derive(Clone, Debug)]
@@ -50,6 +53,63 @@ impl TooltipOverlay {
 
     pub fn handle_click(&mut self, _x: f64, _y: f64) -> OverlayClickResult {
         OverlayClickResult::PassThrough
+    }
+
+    /// Render the tooltip card onto `raster`.
+    ///
+    /// Non-modal: no scrim. Card is positioned via `anchor_position`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render(
+        &self,
+        raster: &mut Raster,
+        painter: &mut dyn GlyphPainter,
+        metrics: FontMetrics,
+        theme: &Theme,
+        dw: f64,
+        dh: f64,
+        anim_alpha: f64,
+        anim_scale: f64,
+    ) {
+        let cw = metrics.cell_w;
+        let ch = metrics.cell_h;
+        let pad = 6.0; // fixed px padding independent of scale for tight tooltip
+        let n_lines = self.body.lines.len().max(1);
+        let max_line_len = self
+            .body
+            .lines
+            .iter()
+            .map(|l| l.chars().count())
+            .max()
+            .unwrap_or(4);
+        let card_w = (max_line_len as f64 * cw + pad * 2.0).max(4.0 * cw);
+        let card_h = n_lines as f64 * ch + pad * 2.0;
+
+        let (card_x, card_y) = self.anchor_position(card_w, card_h, dw, dh);
+
+        let geom = CardGeom {
+            x: card_x,
+            y: card_y,
+            w: card_w,
+            h: card_h,
+            radius: 0.0,
+            padding: pad,
+            anim_scale,
+            anim_alpha,
+        };
+        // Non-modal: no scrim.
+        draw_card_chrome(raster, theme, geom, false);
+
+        for (li, line) in self.body.lines.iter().enumerate() {
+            let gy = card_y + pad + li as f64 * ch;
+            let mut gx = card_x + pad;
+            for c in line.chars() {
+                if gx + cw > card_x + card_w - pad {
+                    break;
+                }
+                raster.glyph_at(painter, metrics, gx, gy, c as u32, theme.text_subtle);
+                gx += cw;
+            }
+        }
     }
 }
 
