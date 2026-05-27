@@ -76,8 +76,10 @@ pub fn draw_status_bar(
     // 1px hairline at the top of the strip.
     raster.fill_pixel_rect(0.0, strip_top, total_w, 1.0, theme.hairline);
 
-    // Glyphs vertically centred in the strip.
-    let glyph_y = strip_top + ((chrome_bottom_px - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+    // Cell top and baseline for vertically centred content in the strip.
+    // glyph_at expects the cell-top (icon_top); ui_line expects the baseline (glyph_y).
+    let icon_top = strip_top + ((chrome_bottom_px - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+    let glyph_y = icon_top + (cell_h - metrics.descent);
     let pad_x = 14.0 * window_scale; // D: .bottom-bar { padding: 0 14px }
 
     // ── Left: mode chip ───────────────────────────────────────────────────
@@ -92,7 +94,7 @@ pub fn draw_status_bar(
         // EDITING mode: subtle ember dot before the label as a brand signal.
         if matches!(mode, StatusMode::Editing) {
             let dot_size = 3.0;
-            let dot_y = glyph_y + (cell_h - dot_size) * 0.5;
+            let dot_y = icon_top + (cell_h - dot_size) * 0.5;
             raster.fill_pixel_rect_alpha(x, dot_y, dot_size, dot_size, theme.accent_ember, 0.7);
             x += dot_size + 4.0;
         }
@@ -129,7 +131,7 @@ pub fn draw_status_bar(
             _ => (None, theme.text_muted),
         };
         if let Some(cp) = sym_cp {
-            raster.glyph_at(painter, metrics, x, glyph_y, cp as u32, sym_color);
+            raster.glyph_at(painter, metrics, x, icon_top, cp as u32, sym_color);
             x += cell_w;
             if local_ctx.run_duration_ms > 0 {
                 let dur = format!(" last {}", format_duration_ms(local_ctx.run_duration_ms));
@@ -175,7 +177,7 @@ pub fn draw_status_bar(
         theme.text_subtle
     };
     if rx + cell_w <= total_w {
-        raster.glyph_at(painter, metrics, rx, glyph_y, '\u{25cf}' as u32, dot_color);
+        raster.glyph_at(painter, metrics, rx, icon_top, '\u{25cf}' as u32, dot_color);
         rx += cell_w;
     }
     // Agent tail text.
