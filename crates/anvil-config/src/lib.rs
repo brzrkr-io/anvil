@@ -36,11 +36,51 @@ pub enum CursorStyle {
     Underline,
 }
 
+/// UI (chrome) font configuration — used by the proportional text path.
+///
+/// Nested under `[font.ui]` in `config.toml`.  All fields are optional;
+/// missing fields fall back to the defaults below.
+///
+/// ```toml
+/// [font.ui]
+/// family = "SF Pro Text"
+/// size = 13.0
+/// weight_regular = "regular"
+/// weight_strong  = "semibold"
+/// ```
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct UiFontCfg {
+    /// Font family name as recognised by CoreText (e.g. `"SF Pro Text"`).
+    pub family: String,
+    /// Default size in logical pt. Per-surface sizes are defined in
+    /// `anvil_render::ui_text_sizes`.
+    pub size: f64,
+    /// Weight token for regular-weight surfaces.  Currently unused beyond
+    /// being stored; weight selection is binary (regular vs. strong).
+    pub weight_regular: String,
+    /// Weight token for stronger-weight surfaces (medium, semibold).
+    pub weight_strong: String,
+}
+
+impl Default for UiFontCfg {
+    fn default() -> Self {
+        UiFontCfg {
+            family: "SF Pro Text".into(),
+            size: 13.0,
+            weight_regular: "regular".into(),
+            weight_strong: "semibold".into(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct FontCfg {
     pub family: String,
     pub size: f64,
+    /// Proportional UI font settings.  Nested as `[font.ui]` in TOML.
+    pub ui: UiFontCfg,
 }
 
 impl Default for FontCfg {
@@ -51,6 +91,7 @@ impl Default for FontCfg {
             // closer to other terminals' 14pt and gives the grid real presence
             // on Retina without crowding columns. Override in TOML if needed.
             size: 15.0,
+            ui: UiFontCfg::default(),
         }
     }
 }

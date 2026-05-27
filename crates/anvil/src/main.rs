@@ -27,6 +27,7 @@ use anyhow::Result;
 use anvil_agent::Snapshot as AgentSnapshot;
 use anvil_config::{Chord, Config, Watcher, parse_chord};
 use anvil_platform::AtlasPainter;
+use anvil_platform::UiPainter;
 use anvil_platform::appkit::{
     AppHandler, AppKitApp, ContextAction, CursorKind, KeyEvent, KeyInput, Modifiers, MouseLocation,
     RightClickZone,
@@ -7245,6 +7246,9 @@ pub struct AppShell {
     bold_italic_painter: anvil_platform::font::CoreTextPainter<'static>,
     /// Chrome glyph painter (11 pt × scale — tab bar, status bar, etc.).
     chrome_painter: anvil_platform::font::CoreTextPainter<'static>,
+    /// Proportional UI text painter — used for chrome surfaces (explorer, tabs,
+    /// status bar, breadcrumbs).  Rebuilt on `[font.ui]` config change.
+    ui_painter: UiPainter,
     /// Reusable PTY read buffer — allocated once, reused across every tick.
     pty_read_buf: Box<[u8; 64 * 1024]>,
     /// Instant of the previous tick; used to compute per-frame dt for animations.
@@ -7542,6 +7546,7 @@ impl AppShell {
             let font_ref: &'static Font = &*(app.chrome_font.as_ref() as *const Font);
             anvil_platform::font::CoreTextPainter::new(font_ref)
         };
+        let ui_painter = UiPainter::new(app.config.font.ui.clone(), app.window_scale);
         Self {
             app,
             webview,
@@ -7551,6 +7556,7 @@ impl AppShell {
             italic_painter,
             bold_italic_painter,
             chrome_painter,
+            ui_painter,
             pty_read_buf: Box::new([0u8; 64 * 1024]),
             last_tick_time: Instant::now(),
         }
@@ -7578,14 +7584,27 @@ impl AppHandler for AppShell {
             self.app.dirty = true;
         }
 
-        let app = &mut self.app;
-
-        // Config watcher poll.
-        if let Some(ref mut w) = app.watcher {
-            if let Some(new_cfg) = w.poll() {
-                app.apply_config(new_cfg);
+        // Config watcher poll.  Track whether [font.ui] changed so we can
+        // rebuild ui_painter (which lives on AppShell, not App).
+        let ui_font_changed = {
+            let app = &mut self.app;
+            let mut changed = false;
+            if let Some(ref mut w) = app.watcher {
+                if let Some(new_cfg) = w.poll() {
+                    let new_ui = new_cfg.font.ui.clone();
+                    let old_ui = &app.config.font.ui;
+                    changed = new_ui.family != old_ui.family
+                        || (new_ui.size - old_ui.size).abs() > f64::EPSILON;
+                    app.apply_config(new_cfg);
+                }
             }
+            changed
+        };
+        if ui_font_changed {
+            self.ui_painter.reset(self.app.config.font.ui.clone());
         }
+
+        let app = &mut self.app;
 
         // System dark-mode check (when theme = "system"). Every cell carries a
         // theme-resolved color, so on a flip we *must* repaint the whole
