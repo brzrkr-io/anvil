@@ -8,7 +8,9 @@ pub mod metal;
 pub mod pty;
 pub mod shell_integration;
 pub mod system;
+pub mod ui_text;
 pub mod webview;
 
 pub use appkit::{ContextAction, CursorKind, RightClickZone};
 pub use glyph_atlas::{AtlasError, AtlasPainter};
+pub use ui_text::UiPainter;
