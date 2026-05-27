@@ -59,7 +59,9 @@ pub fn draw_context_bar(
     raster.fill_pixel_rect(bx, by, bar_w, bar_h, theme.charcoal);
     raster.fill_pixel_rect(bx, by + bar_h - 1.0, bar_w, 1.0, theme.hairline);
 
-    let glyph_y = by + ((bar_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+    // Baseline for ui_line calls in this bar.
+    let baseline_y =
+        by + ((bar_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0) + (cell_h - metrics.descent);
     let mut x = bx + 12.0 + 80.0;
 
     x = draw_chip(
@@ -86,7 +88,7 @@ pub fn draw_context_bar(
         &path,
         theme.text_muted,
         x,
-        glyph_y,
+        baseline_y,
         bx + bar_w - 220.0,
     );
 
@@ -259,7 +261,9 @@ fn draw_chip(
     } else {
         theme.text_subtle
     };
-    let text_y = by + ((bar_h - metrics.cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+    let text_y = by
+        + ((bar_h - metrics.cell_h) * 0.5 + metrics.descent * 0.5).max(0.0)
+        + (metrics.cell_h - metrics.descent);
     // Clip to chip interior: don't draw outside [x+7, x+w-7].
     let max_x = x + w - 7.0;
     if x + 7.0 < max_x {
