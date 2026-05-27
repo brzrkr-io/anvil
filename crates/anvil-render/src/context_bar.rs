@@ -79,7 +79,11 @@ pub fn draw_context_bar(
             .to_string()
     };
     let path = match editor.as_ref().map(|e| e.name) {
-        Some(name) => format!("{cwd_base} · {name}"),
+        // Hide the path tail when the focused buffer is the placeholder
+        // [scratch] — visually the chip reads "anvil" alone, matching the
+        // Option A topbar's quiet identity.
+        Some(name) if name == "[scratch]" => cwd_base,
+        Some(name) => format!("{cwd_base}  ›  {name}"),
         None => cwd_base,
     };
     draw_run_ellipsized(

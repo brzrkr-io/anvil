@@ -1223,25 +1223,27 @@ fn outline_kind_glyph(kind: OutlineKind) -> &'static str {
 ///
 /// Callers that don't have a `Theme` can use [`file_icon`] for plain ASCII.
 pub fn file_icon_colored(name: &str, theme: &Theme) -> (char, [u8; 3]) {
-    // Exact filename overrides.
+    // BMP-range glyphs only — Nerd Font private-use codepoints render as
+    // .notdef boxes when the primary font is IBM Plex Mono (no Nerd icons).
+    // Use semantically-meaningful Unicode that's in Plex Mono.
     match name {
-        "Cargo.toml" => return ('\u{E7A8}', theme.attention), // rust glyph, attention tint
+        "Cargo.toml" | "Cargo.lock" => return ('\u{25C8}', theme.attention), // ◈ rust hint
         "README.md" | "README.MD" | "readme.md" => {
-            return ('\u{F48A}', theme.accent_bright); // markdown, accent_bright
+            return ('\u{25C6}', theme.accent_bright); // ◆ filled
         }
         _ => {}
     }
     let ext = name.rfind('.').map(|i| &name[i + 1..]).unwrap_or("");
     match ext {
-        "rs" => ('\u{E7A8}', theme.attention), // rust icon
-        "md" | "markdown" => ('\u{F48A}', theme.text_muted), // markdown
-        "toml" | "yaml" | "yml" => ('\u{E6B2}', theme.text_muted), // cog
-        "json" => ('\u{E60B}', theme.text_muted),
-        "html" | "htm" => ('\u{E736}', theme.text_muted),
-        "css" => ('\u{E749}', theme.text_muted),
-        "txt" => ('\u{F15C}', theme.text_muted),
-        "lock" => ('\u{F023}', theme.text_muted),
-        _ => ('\u{25C7}', theme.text_muted), // ◇ default
+        "rs" => ('\u{25C8}', theme.attention), // ◈ rust files
+        "md" | "markdown" => ('\u{25C6}', theme.text_muted), // ◆ markdown
+        "toml" | "yaml" | "yml" => ('\u{25C7}', theme.text_muted), // ◇ config
+        "json" => ('\u{25C7}', theme.text_muted), // ◇
+        "html" | "htm" => ('\u{2329}', theme.text_muted), // ⟨ markup-ish
+        "css" => ('\u{2698}', theme.text_muted), // ⚘ style hint
+        "txt" => ('\u{2261}', theme.text_muted), // ≡ lines
+        "lock" => ('\u{229E}', theme.text_muted), // ⊞ closed
+        _ => ('\u{25CB}', theme.text_muted),   // ○ default
     }
 }
 

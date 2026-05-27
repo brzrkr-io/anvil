@@ -615,9 +615,11 @@ pub fn draw_editor_into(
     }
 
     // ── Tildes below buffer end (N2) ─────────────────────────────────────────
-    // When the viewport extends past the last buffer line, paint `~` in
-    // `text_subtle` α=0.4 at col 0 of each empty visual row (vim convention).
-    {
+    // Vim-style `~` markers for empty rows past the buffer's last line.
+    // Suppressed for scratch buffers (empty + no tracked path) so the
+    // welcome card has clean negative space — Option A aesthetic.
+    let is_scratch = line_count <= 1 && buffer.byte_len() == 0;
+    if !is_scratch {
         let tilde_color = {
             let s = theme.text_subtle;
             let bg = theme.surface;
@@ -627,9 +629,6 @@ pub fn draw_editor_into(
                 (s[2] as f32 * 0.4 + bg[2] as f32 * 0.6) as u8,
             ]
         };
-        // `vrow` and `line_idx` are from the loop above (both set to their
-        // post-loop values via the `while` increment, so `vrow` is the first
-        // empty visual row).
         let mut tilde_vrow = vrow;
         while tilde_vrow < visible_rows {
             let ty = rect.y + tilde_vrow as f64 * ch;
