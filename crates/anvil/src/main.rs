@@ -1535,6 +1535,11 @@ pub struct App {
     // -- project search (NE12) ---
     project_search: anvil_workspace::project_search::ProjectSearch,
 
+    // -- overlay stack (overlay-v2) ---
+    /// Unified overlay stack (Phase 1/2 of overlay redesign).
+    /// Phase 2: ProjectSearch pushes a Picker here. Other overlays migrate in Phase 3.
+    overlays: anvil_render::overlay::OverlayStack,
+
     // -- window geometry (view-point size, updated on resize) ---
     view_width_pt: f64,
     view_height_pt: f64,
@@ -2186,8 +2191,69 @@ impl App {
         if !q.is_empty() {
             self.project_search.scan(&q, &root);
         }
+
+        // overlay-v2: push a Picker onto the overlay stack so the new render
+        // path takes over. The old draw_project_search_overlay call is still
+        // wired but gated off when the stack is non-empty (see render loop).
+        let rows = self
+            .project_search
+            .hits
+            .iter()
+            .map(|h| {
+                let path_name = h
+                    .path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("?")
+                    .to_string();
+                anvil_render::overlay::widgets::picker::PickerRow {
+                    primary: format!("{}:{}", path_name, h.line),
+                    secondary: Some(h.preview.clone()),
+                    badge: None,
+                }
+            })
+            .collect();
+        let picker = anvil_render::overlay::widgets::picker::PickerOverlay {
+            id: anvil_render::overlay::OverlayId::ProjectSearch,
+            title: Some("Project Search".into()),
+            query: self.project_search.query.clone(),
+            rows,
+            selected: self.project_search.selected,
+            max_visible: 20,
+        };
+        // Replace any existing ProjectSearch overlay (e.g. Cmd+Shift+F while open).
+        self.overlays.pop();
+        self.overlays
+            .push(anvil_render::overlay::Overlay::Picker(picker));
+
         self.dirty = true;
         self.force_full_redraw = true;
+    }
+
+    /// Rebuild the Picker overlay rows from the current project_search hits.
+    /// Called after the query changes so the picker displays fresh results.
+    fn rebuild_project_search_picker(&mut self) {
+        let rows: Vec<anvil_render::overlay::widgets::picker::PickerRow> = self
+            .project_search
+            .hits
+            .iter()
+            .map(|h| {
+                let path_name = h
+                    .path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("?")
+                    .to_string();
+                anvil_render::overlay::widgets::picker::PickerRow {
+                    primary: format!("{}:{}", path_name, h.line),
+                    secondary: Some(h.preview.clone()),
+                    badge: None,
+                }
+            })
+            .collect();
+        let query = self.project_search.query.clone();
+        let selected = self.project_search.selected;
+        self.overlays.update_picker_top(rows, query, selected);
     }
 
     /// Open (or re-open) the workspace symbol search overlay (Cmd+T / O1).
@@ -5108,8 +5174,28 @@ impl App {
             );
         }
 
+        // ── Overlay stack (overlay-v2) ────────────────────────────────────────
+        // Renders all entries in the overlay stack (currently: ProjectSearch Picker).
+        // The old draw_project_search_overlay below is kept but skipped when the
+        // stack is non-empty. Delete the old fn once all callers are migrated (Phase 3).
+        if !self.overlays.is_empty() {
+            let chrome_top = self.chrome_top_px();
+            let chrome_bot = self.chrome_bottom_px();
+            self.overlays.render(
+                &mut self.raster,
+                chrome_painter,
+                chrome_metrics,
+                &self.theme,
+                dw as f64,
+                dh as f64,
+                chrome_top,
+                chrome_bot,
+            );
+        }
+
         // ── Project-wide search overlay (item 10) ────────────────────────────
-        if self.project_search.visible {
+        // OLD PATH: only active when the overlay stack is empty (overlay-v2 not pushed).
+        if self.project_search.visible && self.overlays.is_empty() {
             let cw = self.font.metrics.cell_w;
             let chrome_top = self.chrome_top_px();
             let chrome_bot = self.chrome_bottom_px();
@@ -8562,8 +8648,107 @@ impl AppHandler for AppShell {
             return;
         }
 
+        // ── Overlay stack key dispatch (overlay-v2) ──────────────────────────
+        // Route keys through the new overlay system when the stack is non-empty.
+        // PassThrough falls through to the existing per-overlay handlers below.
+        if !self.app.overlays.is_empty() {
+            use anvil_render::overlay::input::{OverlayKey, OverlayKeyResult};
+            let overlay_key = match event.key {
+                KeyInput::Char(c) => OverlayKey::Char(c),
+                KeyInput::Enter => OverlayKey::Enter,
+                KeyInput::Tab => OverlayKey::Tab,
+                KeyInput::Backspace => OverlayKey::Backspace,
+                KeyInput::Escape => OverlayKey::Escape,
+                KeyInput::Left => OverlayKey::Left,
+                KeyInput::Right => OverlayKey::Right,
+                KeyInput::Up => OverlayKey::Up,
+                KeyInput::Down => OverlayKey::Down,
+                KeyInput::Home => OverlayKey::Home,
+                KeyInput::End => OverlayKey::End,
+                _ => OverlayKey::Other,
+            };
+            let result = self.app.overlays.dispatch_key(overlay_key);
+            match result {
+                OverlayKeyResult::PassThrough => {
+                    // Fall through to normal handlers.
+                }
+                OverlayKeyResult::Close => {
+                    self.app.overlays.close_top();
+                    // Also close the backing ProjectSearch state if it was open.
+                    self.app.project_search.close();
+                    self.app.dirty = true;
+                    self.app.force_full_redraw = true;
+                    return;
+                }
+                OverlayKeyResult::Submit(submission) => {
+                    use anvil_render::overlay::Submission;
+                    self.app.overlays.close_top();
+                    if let Submission::PickerRow {
+                        id: anvil_render::overlay::OverlayId::ProjectSearch,
+                        index,
+                    } = submission
+                    {
+                        // Drive the backing ProjectSearch state machine so
+                        // open_path_in_native_editor can use the hit.
+                        let hit_info = self
+                            .app
+                            .project_search
+                            .hits
+                            .get(index)
+                            .map(|h| (h.path.clone(), h.line));
+                        self.app.project_search.close();
+                        if let Some((path, line)) = hit_info {
+                            self.app.open_path_in_native_editor(&path);
+                            self.app.apply_editor_action(EditorAction::GoToLine(
+                                line.saturating_sub(1),
+                            ));
+                        }
+                    }
+                    self.app.dirty = true;
+                    self.app.force_full_redraw = true;
+                    return;
+                }
+                OverlayKeyResult::Consumed => {
+                    // Keep the backing ProjectSearch state in sync with the overlay.
+                    // Char/Backspace re-scan and rebuild picker rows.
+                    // Up/Down sync the selection index.
+                    match event.key {
+                        KeyInput::Char(ch) => {
+                            let q = format!("{}{}", self.app.project_search.query, ch);
+                            let root = std::path::PathBuf::from(&self.app.local_ctx.cwd);
+                            self.app.project_search.scan(&q, &root);
+                            // Rebuild picker rows to reflect updated results.
+                            self.app.rebuild_project_search_picker();
+                        }
+                        KeyInput::Backspace => {
+                            let mut q = self.app.project_search.query.clone();
+                            let mut bytes = q.as_bytes().to_vec();
+                            while !bytes.is_empty() && (bytes[bytes.len() - 1] & 0xC0) == 0x80 {
+                                bytes.pop();
+                            }
+                            bytes.pop();
+                            q = String::from_utf8_lossy(&bytes).into_owned();
+                            let root = std::path::PathBuf::from(&self.app.local_ctx.cwd);
+                            self.app.project_search.scan(&q, &root);
+                            self.app.rebuild_project_search_picker();
+                        }
+                        KeyInput::Up => {
+                            self.app.project_search.select_prev();
+                        }
+                        KeyInput::Down => {
+                            self.app.project_search.select_next();
+                        }
+                        _ => {}
+                    }
+                    self.app.dirty = true;
+                    return;
+                }
+            }
+        }
+
         // ── Project search overlay key handling (item 10) ────────────────────
-        if self.app.project_search.visible {
+        // OLD PATH: active only when overlays stack is empty (pre-v2 fallback).
+        if self.app.project_search.visible && self.app.overlays.is_empty() {
             match event.key {
                 KeyInput::Escape => {
                     self.app.project_search.close();
@@ -14393,6 +14578,7 @@ fn main() -> Result<()> {
         running_pulse_phase: 0.0,
         palette: Palette::default(),
         project_search: anvil_workspace::project_search::ProjectSearch::new(),
+        overlays: anvil_render::overlay::OverlayStack::new(),
         view_width_pt: win_w,
         view_height_pt: win_h,
         lsp_manager: anvil_editor::LspManager::new(),
