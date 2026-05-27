@@ -14,6 +14,7 @@ members = [
     "crates/anvil",
     "crates/anvil-prompt",
     "crates/anvil-editor",
+    "crates/anvil-plugin",
 ]
 default-members = ["crates/anvil"]
 
@@ -90,6 +91,7 @@ anvil-control      = { path = "crates/anvil-control" }
 anvil-prompt-core  = { path = "crates/anvil-prompt-core" }
 anvil-platform     = { path = "crates/anvil-platform" }
 anvil-editor       = { path = "crates/anvil-editor" }
+anvil-plugin       = { path = "crates/anvil-plugin" }
 
 [profile.release]
 opt-level = 3

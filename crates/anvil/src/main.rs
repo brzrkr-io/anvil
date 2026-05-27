@@ -1746,6 +1746,10 @@ pub struct App {
     /// `current_rss - mem_baseline` as a quick leak indicator during dev.
     /// TODO(anvil-AA13-mem): replace with a real RSS query when available.
     mem_baseline: u64,
+
+    // ── Plugin host (Track C) ─────────────────────────────────────────────────
+    /// Plugin subsystem: loads Lua plugins, manages worker threads.
+    plugin_host: anvil_plugin::PluginHost,
 }
 
 // ── R2: tooltip helpers ───────────────────────────────────────────────────────
@@ -7772,6 +7776,18 @@ impl AppHandler for AppShell {
                 app.force_full_redraw = true;
                 app.dirty = true;
             }
+        }
+
+        // Track C: drain plugin host requests + convert notify calls to toasts.
+        app.plugin_host.tick();
+        for (level, msg) in app.plugin_host.drain_toasts() {
+            use anvil_plugin::bridge::NotifyLevel;
+            let kind = match level {
+                NotifyLevel::Info => ToastKind::Info,
+                NotifyLevel::Warn => ToastKind::Info,
+                NotifyLevel::Error => ToastKind::Error,
+            };
+            app.push_toast(&msg, kind);
         }
 
         // Item 27: drain file-watcher events.
@@ -13832,12 +13848,24 @@ fn main() -> Result<()> {
         ctx_push_rect: None,
         ctx_pull_rect: None,
         mem_baseline: 0, // populated below
+        plugin_host: anvil_plugin::PluginHost::new(),
     };
 
     // AA13: capture RSS baseline at init.
     // TODO(anvil-AA13-mem): use a real RSS query (e.g. proc_info on macOS).
     // For now we use 0 so the delta always reads as "(not implemented)".
     app.mem_baseline = 0;
+
+    // ── Plugin boot (Track C) ─────────────────────────────────────────────────
+    {
+        if let Some(home) = std::env::var_os("HOME") {
+            let plugins_dir = std::path::PathBuf::from(home).join(".config/anvil/plugins");
+            let n = app.plugin_host.discover_and_load(&plugins_dir);
+            if n > 0 {
+                eprintln!("anvil: loaded {n} plugin(s) from {}", plugins_dir.display());
+            }
+        }
+    }
 
     // -- AppKitApp: builds the window, view, timer ----------------------------
     // Two-phase init: AppKitApp needs a handler Rc now; AppShell needs the
