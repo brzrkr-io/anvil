@@ -61,6 +61,9 @@ pub enum CursorStyle {
 pub struct CursorConfig {
     pub style: CursorStyle,
     pub blink: bool,
+    /// Optional RGB color override for the cursor (AA7).
+    /// When `Some`, replaces the theme's `accent` as the cursor color.
+    pub color: Option<[u8; 3]>,
 }
 
 impl Default for CursorConfig {
@@ -68,6 +71,7 @@ impl Default for CursorConfig {
         CursorConfig {
             style: CursorStyle::Block,
             blink: true,
+            color: None,
         }
     }
 }
@@ -194,7 +198,8 @@ pub fn draw_cursor(
     };
     let ax = params.ax as f64;
     let ay = params.ay as f64;
-    let cursor_rgb = mix(theme.background, theme.accent, opacity);
+    let base_color = params.cfg.color.unwrap_or(theme.accent);
+    let cursor_rgb = mix(theme.background, base_color, opacity);
 
     let style = match terminal.app_cursor_shape {
         Some(CursorShape::Block) => CursorStyle::Block,
@@ -1674,6 +1679,7 @@ mod tests {
             cfg: CursorConfig {
                 style: CursorStyle::Block,
                 blink: false,
+                color: None,
             },
         };
         draw_cursor(&mut r, &mut painter, &t, m, &theme, params);
@@ -1695,6 +1701,7 @@ mod tests {
             cfg: CursorConfig {
                 style: CursorStyle::Bar,
                 blink: false,
+                color: None,
             },
         };
         draw_cursor(&mut r, &mut painter, &t, m, &theme, params);
@@ -1716,6 +1723,7 @@ mod tests {
             cfg: CursorConfig {
                 style: CursorStyle::Underline,
                 blink: false,
+                color: None,
             },
         };
         draw_cursor(&mut r, &mut painter, &t, m, &theme, params);
@@ -1743,6 +1751,7 @@ mod tests {
             cfg: CursorConfig {
                 style: CursorStyle::Block,
                 blink: false,
+                color: None,
             },
         };
         draw_viewport(
@@ -1788,6 +1797,7 @@ mod tests {
             cfg: CursorConfig {
                 style: CursorStyle::Bar,
                 blink: false,
+                color: None,
             },
         };
         draw_viewport(
@@ -1833,6 +1843,7 @@ mod tests {
             cfg: CursorConfig {
                 style: CursorStyle::Underline,
                 blink: false,
+                color: None,
             },
         };
         draw_viewport(
@@ -1922,6 +1933,7 @@ mod tests {
             cfg: CursorConfig {
                 style: CursorStyle::Block,
                 blink: true,
+                color: None,
             },
         };
         draw_viewport(
@@ -2492,5 +2504,76 @@ mod tests {
             !bold_p.calls.is_empty(),
             "bold painter must receive bold cell"
         );
+    }
+
+    // ── AA9: render path stability — 100 frame loop ───────────────────────────
+
+    /// AA9: render 100 frames via the CPU draw_viewport path with no panics.
+    ///
+    /// The GPU/Metal path (ANVIL_RENDER=gpu) requires hardware and is not
+    /// testable in headless CI; see `AtlasPainter::new_with_default_device`
+    /// which already returns `None` when no Metal device is available.  This
+    /// test exercises the full draw_viewport loop as the stable surrogate.
+    #[test]
+    fn render_100_frames_no_panic() {
+        const COLS: usize = 80;
+        const ROWS: usize = 24;
+        let theme = anvil_theme::EMBER_DARK;
+        let m = FontMetrics {
+            cell_w: 8.0,
+            cell_h: 16.0,
+            descent: 3.0,
+        };
+        let mut t = Terminal::new(COLS, ROWS, 1000);
+        // Write some content so the draw loop does real work.
+        let content: Vec<u8> = b"Hello, Anvil!\r\n"
+            .iter()
+            .cycle()
+            .take(512)
+            .copied()
+            .collect();
+        t.feed(&content);
+
+        let mut raster = Raster::new(COLS * 8, ROWS * 16);
+        let mut regular_p = StubPainter::default();
+        let mut bold_p = StubPainter::default();
+        let mut italic_p = StubPainter::default();
+        let mut bold_italic_p = StubPainter::default();
+
+        for frame in 0..100_u32 {
+            let blink = (frame as f32) / 100.0;
+            raster.clear(theme.background);
+            draw_viewport(
+                &mut raster,
+                &mut GridPainters {
+                    regular: &mut regular_p,
+                    bold: &mut bold_p,
+                    italic: &mut italic_p,
+                    bold_italic: &mut bold_italic_p,
+                },
+                &mut t,
+                m,
+                &theme,
+                blink,
+                Selection::default(),
+                None,
+                Some(CursorParams {
+                    ax: 0.0,
+                    ay: 0.0,
+                    blink_phase: blink,
+                    cfg: CursorConfig {
+                        style: CursorStyle::Block,
+                        blink: true,
+                        color: None,
+                    },
+                }),
+                0.0,
+                (COLS * 8) as f64,
+                FoldedBlocks::empty(),
+                None,
+                0.0,
+            );
+        }
+        // Reaching here without panic is the assertion.
     }
 }

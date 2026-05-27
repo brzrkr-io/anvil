@@ -115,6 +115,7 @@ fn bench_draw_viewport(c: &mut Criterion) {
                     cfg: CursorConfig {
                         style: CursorStyle::Block,
                         blink: false,
+                        color: None,
                     },
                 }),
                 0.0, // rule_x_start
@@ -162,6 +163,7 @@ fn bench_draw_viewport(c: &mut Criterion) {
                     cfg: CursorConfig {
                         style: CursorStyle::Block,
                         blink: false,
+                        color: None,
                     },
                 }),
                 0.0,
