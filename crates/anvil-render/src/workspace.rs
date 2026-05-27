@@ -321,7 +321,9 @@ fn draw_empty_pane(
     if block_h >= rect.h {
         return;
     }
-    let start_y = rect.y + (rect.h - block_h) * 0.5;
+    // P8: shift block 30pt below the geometric center for a more spacious feel.
+    // This adds ~60pt of top padding vs the pure-center position.
+    let start_y = rect.y + (rect.h - block_h) * 0.5 + 30.0;
 
     // Inline helper: draw a text string centered horizontally in `rect` at `row`.
     // Returns nothing; borrows raster + painter directly.
@@ -406,6 +408,21 @@ fn draw_terminal_drawer_chrome(
     if header_h > 0.0 {
         raster.fill_pixel_rect(rect.x, rect.y, rect.w, header_h, theme.charcoal);
         raster.fill_pixel_rect_alpha(rect.x, rect.y, rect.w, 1.0, theme.hairline, 0.92);
+        // P9: always-visible dot indicator centered on the top divider line so the
+        // drag handle is discoverable without requiring hover.  A short `⋯` run
+        // in text_subtle at α=0.35 sits in the middle of the hairline row.
+        {
+            let center_x = rect.x + rect.w * 0.5;
+            let dots = "\u{22EF}"; // ⋯ MIDLINE HORIZONTAL ELLIPSIS (3 dots)
+            let dot_w = metrics.cell_w * dots.chars().count() as f64;
+            let dot_x = center_x - dot_w * 0.5;
+            let dot_y = rect.y - metrics.cell_h * 0.5 + 0.5;
+            let mut gx = dot_x;
+            for ch in dots.chars() {
+                raster.glyph_at(painter, metrics, gx, dot_y, ch as u32, theme.text_subtle);
+                gx += metrics.cell_w;
+            }
+        }
         raster.fill_pixel_rect_alpha(
             rect.x,
             rect.y + header_h - 1.0,
