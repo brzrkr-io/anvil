@@ -130,16 +130,14 @@ pub fn draw_workspace(
             if is_bottom_drawer(&e.rect, &inner, entries.len()) && e.rect.h < collapse_threshold {
                 draw_drawer_collapsed_strip(raster, painters.regular, metrics, theme, e.rect);
             } else {
-                let cursor_params: Option<CursorParams> = if e.id == focused_id {
-                    Some(CursorParams {
-                        ax: pane.cursor_ax,
-                        ay: pane.cursor_ay,
-                        blink_phase,
-                        cfg: cursor_cfg,
-                    })
-                } else {
-                    None
-                };
+                // Focused pane: full blink. Unfocused pane: dim static cursor
+                // (blink_phase=0.5 → cursor_opacity=0.35, the floor value).
+                let cursor_params: Option<CursorParams> = Some(CursorParams {
+                    ax: pane.cursor_ax,
+                    ay: pane.cursor_ay,
+                    blink_phase: if e.id == focused_id { blink_phase } else { 0.5 },
+                    cfg: cursor_cfg,
+                });
 
                 // rule_x bounds: horizontal span of this pane in device pixels.
                 let rule_x_start = e.rect.x;
