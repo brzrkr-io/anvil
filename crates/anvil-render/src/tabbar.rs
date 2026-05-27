@@ -4,7 +4,8 @@
 use anvil_theme::Theme;
 use anvil_workspace::tab::TabManager;
 
-use crate::raster::{FontMetrics, GlyphPainter, PixelRect, Raster};
+use crate::raster::{FontMetrics, GlyphPainter, PixelRect, Raster, UiTextPainter, UiWeight};
+use crate::ui_text_sizes::TAB_LABEL_PT;
 
 // Traffic lights (red/yellow/green) span ~78 *points* horizontally on macOS,
 // starting ~10pt from the window's left edge. We reserve a generous 80pt
@@ -68,6 +69,7 @@ impl TabBarHits {
 pub fn draw_tab_bar(
     raster: &mut Raster,
     painter: &mut dyn GlyphPainter,
+    ui_painter: &mut dyn UiTextPainter,
     metrics: FontMetrics,
     theme: &Theme,
     tabs: &TabManager,
@@ -266,8 +268,7 @@ pub fn draw_tab_bar(
             }
         }
 
-        // Label: pixel-positioned, sitting inside the tab with a 2-cell
-        // left pad and a 3-cell gap+× on the right.
+        // Label: pixel-positioned, proportional text.
         // Fade toward the chrome background as the tab animates in/out.
         let fg_base = if is_active {
             theme.foreground
@@ -276,17 +277,23 @@ pub fn draw_tab_bar(
         };
         let fg = blend_color(fg_base, theme.graphite, anim);
         let label = tab_label(tabs, t);
-        let label_x0 = x + 2.0 * cell_w;
+        let label_x0 = (x + 2.0 * cell_w).max(actual_tabs_start_x);
         let label_x_end = (x + tw - 3.0 * cell_w).min(actual_tabs_end_x);
-        for (i, cp) in label.chars().enumerate() {
-            let lx = label_x0 + i as f64 * cell_w;
-            if lx < actual_tabs_start_x || lx + cell_w > label_x_end {
-                if lx + cell_w > label_x_end {
-                    break;
-                }
-                continue;
-            }
-            raster.glyph_at(painter, metrics, lx, glyph_y, cp as u32, fg);
+        let weight = if is_active {
+            UiWeight::Medium
+        } else {
+            UiWeight::Regular
+        };
+        if label_x0 < label_x_end {
+            raster.ui_line(
+                ui_painter,
+                &label,
+                label_x0,
+                glyph_y,
+                TAB_LABEL_PT,
+                weight,
+                fg,
+            );
         }
 
         // Close × on active tab.
@@ -454,9 +461,9 @@ fn tab_label(tabs: &TabManager, t: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::raster::{PixelRect, pixel_at};
+    use crate::raster::{PixelRect, UiWeight, pixel_at};
 
-    // Stub painter.
+    // Stub glyph painter.
     #[derive(Default)]
     struct StubPainter {
         pub calls: Vec<(u32, [u8; 3])>,
@@ -475,6 +482,31 @@ mod tests {
             _bh: usize,
         ) {
             self.calls.push((glyph_id, fg));
+        }
+    }
+
+    // Stub UI text painter.
+    #[derive(Default)]
+    struct StubUiPainter;
+
+    impl UiTextPainter for StubUiPainter {
+        fn measure(&mut self, text: &str, _size_pt: f64, _weight: UiWeight) -> f64 {
+            text.chars().count() as f64 * 8.0
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn draw_line(
+            &mut self,
+            _text: &str,
+            _x_px: f64,
+            _baseline_y_px: f64,
+            _size_pt: f64,
+            _weight: UiWeight,
+            _fg: [u8; 3],
+            _pixels: &mut [u8],
+            _bitmap_w: usize,
+            _bitmap_h: usize,
+        ) {
         }
     }
 
@@ -510,6 +542,7 @@ mod tests {
         draw_tab_bar(
             &mut r,
             &mut painter,
+            &mut StubUiPainter,
             m,
             &th,
             &mgr,
@@ -550,6 +583,7 @@ mod tests {
         draw_tab_bar(
             &mut r,
             &mut painter,
+            &mut StubUiPainter,
             m,
             &th,
             &mgr,
@@ -590,6 +624,7 @@ mod tests {
         draw_tab_bar(
             &mut r,
             &mut painter,
+            &mut StubUiPainter,
             m,
             &th,
             &mgr,
@@ -636,6 +671,7 @@ mod tests {
         draw_tab_bar(
             &mut r,
             &mut painter,
+            &mut StubUiPainter,
             m,
             &th,
             &mgr,
@@ -681,6 +717,7 @@ mod tests {
         draw_tab_bar(
             &mut r,
             &mut painter,
+            &mut StubUiPainter,
             m,
             &th,
             &mgr,
@@ -727,6 +764,7 @@ mod tests {
         draw_tab_bar(
             &mut r,
             &mut painter,
+            &mut StubUiPainter,
             m,
             &th,
             &mgr,
