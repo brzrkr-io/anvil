@@ -82,7 +82,7 @@ pub fn draw_context_bar(
         // Hide the path tail when the focused buffer is the placeholder
         // [scratch] — visually the chip reads "anvil" alone, matching the
         // Option A topbar's quiet identity.
-        Some(name) if name == "[scratch]" => cwd_base,
+        Some("[scratch]") => cwd_base,
         Some(name) => format!("{cwd_base}  ›  {name}"),
         None => cwd_base,
     };

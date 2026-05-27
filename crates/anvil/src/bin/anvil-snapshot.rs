@@ -139,7 +139,7 @@ fn write_png(path: &PathBuf, pixels: &[u8], width: usize, height: usize) -> std:
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder
         .write_header()
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
 
     // Convert BGRA → RGBA.
     let mut rgba = vec![0u8; pixels.len()];
@@ -152,7 +152,7 @@ fn write_png(path: &PathBuf, pixels: &[u8], width: usize, height: usize) -> std:
 
     writer
         .write_image_data(&rgba)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+        .map_err(|e| std::io::Error::other(e.to_string()))
 }
 
 // ── Render scene ──────────────────────────────────────────────────────────────

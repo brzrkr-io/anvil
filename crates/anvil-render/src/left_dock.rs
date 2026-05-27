@@ -1677,8 +1677,9 @@ mod tests {
         );
 
         // File icon for `.rs` is U+E7A8 (Nerd Font rust icon, item 3) and paints in
-        // text_muted (attention color from theme) for inactive files.
-        let rust_icon_cp = '\u{E7A8}' as u32;
+        // Rust files use ◈ (U+25C8) — BMP-range glyph that IBM Plex Mono renders.
+        // Nerd Font private-use codepoints don't render with the proportional UI font.
+        let rust_icon_cp = '\u{25C8}' as u32;
         let file_icon: Vec<_> = p
             .glyphs
             .iter()
@@ -1686,7 +1687,7 @@ mod tests {
             .collect();
         assert!(
             !file_icon.is_empty(),
-            "expected Nerd Font rust icon (U+E7A8) for inactive .rs file"
+            "expected ◈ (U+25C8) for inactive .rs file"
         );
 
         // Dir chevron ▸ (U+25B8) icon paints in foreground for inactive dir.
@@ -1742,7 +1743,7 @@ mod tests {
         // Selected row signaled by icon color: U+E7A8 (Nerd Font rust, item 3) paints
         // in accent_primary for the active file, theme.attention for inactive.
         // Labels stay foreground for both (selection visible via row bg + left rail).
-        let rust_cp = '\u{E7A8}' as u32;
+        let rust_cp = '\u{25C8}' as u32;
         let selected_icon: Vec<_> = p
             .glyphs
             .iter()
