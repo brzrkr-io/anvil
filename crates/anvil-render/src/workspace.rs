@@ -288,9 +288,9 @@ fn draw_empty_pane(
         ("Anvil", theme.accent_bright),
         ("", theme.text_subtle),
         ("\u{2318}P  Open file", theme.text_subtle),
-        ("\u{2318}E  New editor", theme.text_subtle),
         ("\u{2318}T  Open terminal", theme.text_subtle),
         ("\u{2318}B  Toggle sidebar", theme.text_subtle),
+        ("\u{2318}\u{21e7}E  Toggle terminal mode", theme.text_subtle),
     ];
 
     let row_h = metrics.cell_h + 4.0;
