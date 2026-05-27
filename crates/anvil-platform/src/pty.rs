@@ -152,6 +152,11 @@ impl Pty {
         Ok(n as usize)
     }
 
+    /// Return the child process PID. Used by the panic hook to clean up PTYs.
+    pub fn child_pid(&self) -> libc::pid_t {
+        self.child.as_raw()
+    }
+
     /// Resize the PTY (TIOCSWINSZ) so the child sees SIGWINCH.
     pub fn resize(&self, cols: u16, rows: u16) {
         let ws = libc::winsize {

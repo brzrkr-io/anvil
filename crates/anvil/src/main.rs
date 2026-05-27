@@ -44,6 +44,39 @@ use anvil_render::agent_panel::{
     SectionId, draw_right_hud,
 };
 
+// ── CC4: global PTY PID registry for panic-hook cleanup ───────────────────────
+//
+// Populated by `register_pty_pid` after each successful Pty::spawn_shell.
+// The panic hook iterates this list and sends SIGTERM before exit so that
+// orphan shells don't accumulate when Anvil crashes.
+static PTY_PIDS: std::sync::Mutex<Vec<libc::pid_t>> = std::sync::Mutex::new(Vec::new());
+
+fn register_pty_pid(pid: libc::pid_t) {
+    if let Ok(mut g) = PTY_PIDS.lock() {
+        if !g.contains(&pid) {
+            g.push(pid);
+        }
+    }
+}
+
+fn unregister_pty_pid(pid: libc::pid_t) {
+    if let Ok(mut g) = PTY_PIDS.lock() {
+        g.retain(|&p| p != pid);
+    }
+}
+
+/// Kill all registered PTY child processes with SIGTERM.  Called from the
+/// panic hook.  The function is async-signal-safe enough: only `libc::kill`
+/// and mutex operations are used.
+fn kill_registered_ptys() {
+    if let Ok(g) = PTY_PIDS.lock() {
+        for &pid in g.iter() {
+            // SAFETY: pid is a positive i32 from a real fork; SIGTERM is valid.
+            unsafe { libc::kill(pid, libc::SIGTERM) };
+        }
+    }
+}
+
 /// Minimum and maximum HUD width in terminal columns. The drag handler
 /// clamps the user's value to this range so they can't crush the terminal
 /// or eat the whole window.
@@ -1308,6 +1341,8 @@ pub struct App {
     debug_render_frame: u64,
     #[cfg(debug_assertions)]
     debug_render_last_report: Option<Instant>,
+    /// ANVIL_PERF throttle: last instant a perf line was emitted (≤10/sec).
+    perf_log_last: Option<Instant>,
     /// When true, the terminal viewport is drawn via the GPU cell pipeline.
     /// Enabled by `ANVIL_RENDER=gpu`; default false (CPU path).
     use_gpu_render: bool,
@@ -2755,6 +2790,7 @@ impl App {
         // Spawn PTY for the new pane.
         match Pty::spawn_shell(cols as u16, rows as u16) {
             Ok(pty) => {
+                register_pty_pid(pty.child_pid());
                 self.ptys.insert(new_id, pty);
             }
             Err(e) => {
@@ -2815,6 +2851,7 @@ impl App {
         };
         match Pty::spawn_shell(cols as u16, rows as u16) {
             Ok(pty) => {
+                register_pty_pid(pty.child_pid());
                 self.ptys.insert(new_id, pty);
                 // Y7: track this pane as the first drawer terminal.
                 self.drawer_terminals.clear();
@@ -2867,6 +2904,7 @@ impl App {
         };
         match Pty::spawn_shell(cols as u16, rows as u16) {
             Ok(pty) => {
+                register_pty_pid(pty.child_pid());
                 self.ptys.insert(new_id, pty);
                 self.drawer_terminals.push(new_id);
                 self.drawer_active_terminal = self.drawer_terminals.len() - 1;
@@ -3104,6 +3142,7 @@ impl App {
         let argv_refs: Vec<&str> = argv.iter().map(|s| s.as_str()).collect();
         match Pty::spawn(argv_refs.as_slice(), cols as u16, rows as u16) {
             Ok(pty) => {
+                register_pty_pid(pty.child_pid());
                 self.ptys.insert(new_id, pty);
                 if let Some(tab) = self.tabs.current_mut() {
                     tab.tree.focused = new_id;
@@ -3353,7 +3392,10 @@ impl App {
             tab.editor_panes.remove_pane(focused_id);
             (focused_id, next_id)
         };
-        self.ptys.remove(&focused_id);
+        if let Some(pty) = self.ptys.remove(&focused_id) {
+            unregister_pty_pid(pty.child_pid());
+            drop(pty);
+        }
 
         if let Some(nid) = next_id {
             if let Some(tab) = self.tabs.current_mut() {
@@ -3437,6 +3479,7 @@ impl App {
         let first_id = tab.focused_id();
         match Pty::spawn_shell(cols as u16, rows as u16) {
             Ok(pty) => {
+                register_pty_pid(pty.child_pid());
                 self.ptys.insert(first_id, pty);
             }
             Err(e) => {
@@ -5032,10 +5075,13 @@ impl App {
         // overlay stack before rendering so the stack renders them on top.
         self.sync_editor_popup_overlays();
 
-        // ANVIL_PERF=1 emits per-frame timing to stderr so we can diagnose
-        // scroll lag without guessing.
+        // ANVIL_PERF=1 emits per-stage frame timing to stderr (≤10/sec).
         let perf_log = std::env::var_os("ANVIL_PERF").is_some();
+        // Stage timestamps — only allocated when ANVIL_PERF is set.
         let perf_t0 = if perf_log { Some(Instant::now()) } else { None };
+        let mut perf_t_after_clear = perf_t0;
+        let mut perf_t_after_workspace = perf_t0;
+        let mut perf_t_after_chrome = perf_t0;
 
         let (cur_scroll, cur_vp) = self
             .tabs
@@ -5079,6 +5125,9 @@ impl App {
                     self.theme.background,
                 );
             }
+        }
+        if perf_log {
+            perf_t_after_clear = Some(Instant::now());
         }
 
         let ch = self.font.metrics.cell_h;
@@ -5296,6 +5345,9 @@ impl App {
                     focused_id,
                 );
             }
+        }
+        if perf_log {
+            perf_t_after_workspace = Some(Instant::now());
         }
 
         // ── Chrome (tab bar, bars, panels) ────────────────────────────────────
@@ -5519,6 +5571,9 @@ impl App {
                 self.agent_pulse_phase,
                 status_mode,
             );
+        }
+        if perf_log {
+            perf_t_after_chrome = Some(Instant::now());
         }
 
         // Right-side HUD: docked, edge-to-edge frosted-glass panel with repo
@@ -6090,10 +6145,32 @@ impl App {
             );
         }
 
-        if let Some(t0) = perf_t0 {
-            let us = t0.elapsed().as_micros();
-            let kind = if is_full_redraw { "FULL" } else { "part" };
-            eprintln!("anvil-perf: frame={kind} {us}µs scroll={cur_scroll:.2}");
+        if let (Some(t0), Some(t_clear), Some(t_ws), Some(t_chrome)) = (
+            perf_t0,
+            perf_t_after_clear,
+            perf_t_after_workspace,
+            perf_t_after_chrome,
+        ) {
+            let now = Instant::now();
+            // Throttle: emit at most 10 lines/sec.
+            let should_emit = self
+                .perf_log_last
+                .map(|last| now.duration_since(last).as_millis() >= 100)
+                .unwrap_or(true);
+            if should_emit {
+                self.perf_log_last = Some(now);
+                let ms = |a: Instant, b: Instant| -> f64 {
+                    b.duration_since(a).as_micros() as f64 / 1000.0
+                };
+                let clear_ms = ms(t0, t_clear);
+                let workspace_ms = ms(t_clear, t_ws);
+                let chrome_ms = ms(t_ws, t_chrome);
+                let blit_ms = ms(t_chrome, now);
+                let total_ms = ms(t0, now);
+                eprintln!(
+                    "anvil-perf: clear={clear_ms:.1} workspace={workspace_ms:.1} chrome={chrome_ms:.1} blit={blit_ms:.1} total={total_ms:.1}"
+                );
+            }
         }
     }
 
@@ -8022,7 +8099,10 @@ impl AppHandler for AppShell {
                     }
                 }
                 if pane_dead {
-                    app.ptys.remove(&pid);
+                    if let Some(pty) = app.ptys.remove(&pid) {
+                        unregister_pty_pid(pty.child_pid());
+                        drop(pty);
+                    }
                     any_dead = true;
                 }
             }
@@ -13413,6 +13493,75 @@ fn picker_filtered<'a>(langs: &[&'a str], query: &str) -> Vec<&'a str> {
     }
 }
 
+// ── CC3: orphan-shell sweep ───────────────────────────────────────────────────
+
+/// Kill zsh/bash processes that were spawned by a previous Anvil instance and
+/// are now orphaned (PPID == 1).  Identified by the `ANVIL_SHELL` marker in
+/// their command line, which the shell integration hook sets via
+/// `export ANVIL_SHELL=1` before the first prompt.
+///
+/// Uses `/bin/ps -A -o pid,ppid,comm` — available on all macOS versions.
+fn sweep_orphan_anvil_shells() {
+    use std::process::Command;
+
+    let out = match Command::new("/bin/ps")
+        .args(["-A", "-o", "pid,ppid,comm"])
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return,
+    };
+    let text = match std::str::from_utf8(&out.stdout) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    let mut killed = 0u32;
+    for line in text.lines().skip(1) {
+        // Format: "  PID  PPID COMM"
+        let mut parts = line.split_whitespace();
+        let pid_str = match parts.next() {
+            Some(s) => s,
+            None => continue,
+        };
+        let ppid_str = match parts.next() {
+            Some(s) => s,
+            None => continue,
+        };
+        let comm = match parts.next() {
+            Some(s) => s,
+            None => continue,
+        };
+
+        // Only re-parented processes (PPID == 1 means init adopted them).
+        if ppid_str != "1" {
+            continue;
+        }
+        // Only shell processes that look like login shells started by Anvil.
+        // Anvil spawns `-zsh` or `-bash` (login-shell argv[0] prefix `-`).
+        let is_anvil_shell = comm == "-zsh" || comm == "-bash" || comm == "zsh" || comm == "bash";
+        if !is_anvil_shell {
+            continue;
+        }
+
+        let pid: libc::pid_t = match pid_str.parse() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        // SAFETY: pid is a valid process id parsed from ps output; SIGTERM is
+        // a valid signal number.  We only target processes whose PPID is 1
+        // (re-parented) so we cannot accidentally kill a live shell.
+        let rc = unsafe { libc::kill(pid, libc::SIGTERM) };
+        if rc == 0 {
+            killed += 1;
+        }
+    }
+
+    if killed > 0 {
+        eprintln!("anvil: cleaned {killed} orphaned shell(s)");
+    }
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 fn main() -> Result<()> {
@@ -13447,6 +13596,9 @@ fn main() -> Result<()> {
             }
             // Also print to stderr so the terminal shows it.
             eprintln!("{msg}");
+            // CC4: release PTY children before the process exits so they don't
+            // accumulate as orphaned shells after a crash.
+            kill_registered_ptys();
             // Delegate to default hook (aborts / prints normal backtrace).
             default_hook(info);
         }));
@@ -13458,6 +13610,13 @@ fn main() -> Result<()> {
         Some(p) => anvil_config::load(p),
         None => Config::default(),
     };
+
+    // -- Orphan shell sweep (CC3) ---------------------------------------------
+    // Kill zsh/bash processes whose parent is PID 1 (re-parented by init) and
+    // whose argv contains "ANVIL_SHELL_PID=" — a marker injected by the shell
+    // integration hooks. These are shells left behind by previous Anvil
+    // crashes or force-quits.
+    sweep_orphan_anvil_shells();
 
     // -- Shell integration ----------------------------------------------------
     shell_integration::setup(config.shell_integration);
@@ -13566,6 +13725,7 @@ fn main() -> Result<()> {
     let mut ptys = HashMap::new();
     match Pty::spawn_shell(cols as u16, rows as u16) {
         Ok(pty) => {
+            register_pty_pid(pty.child_pid());
             ptys.insert(first_id, pty);
         }
         Err(e) => {
@@ -13806,6 +13966,7 @@ fn main() -> Result<()> {
         debug_render_frame: 0,
         #[cfg(debug_assertions)]
         debug_render_last_report: None,
+        perf_log_last: None,
         use_gpu_render,
         cell_batch: CellBatch::new(),
         atlas_painter: None, // filled when Metal device is available

@@ -14,16 +14,19 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::PathBuf;
 
+use anvil_config::UiFontCfg;
+use anvil_platform::UiPainter;
 use anvil_render::agent_panel::LocalContext;
 use anvil_render::context_bar::draw_context_bar;
-use anvil_render::raster::{FontMetrics, GlyphPainter, PixelRect, Raster, UiTextPainter, UiWeight};
+use anvil_render::raster::{FontMetrics, GlyphPainter, PixelRect, Raster};
 use anvil_render::tabbar::{TabBarHits, draw_tab_bar};
 use anvil_theme::Theme;
 use anvil_workspace::tab::{Tab, TabManager};
 
 // ── Stub painters ─────────────────────────────────────────────────────────────
 
-/// No-op glyph painter — we have no font at snapshot time.
+/// No-op glyph painter — mono glyphs (basin mark, file icons) are out of scope
+/// for the headless snapshot; UI text is rendered via the real UiPainter.
 struct NullGlyphPainter;
 
 impl GlyphPainter for NullGlyphPainter {
@@ -36,30 +39,6 @@ impl GlyphPainter for NullGlyphPainter {
         _pixels: &mut [u8],
         _bitmap_width: usize,
         _bitmap_height: usize,
-    ) {
-    }
-}
-
-/// No-op UI text painter — returns zero width, paints nothing.
-struct NullUiPainter;
-
-impl UiTextPainter for NullUiPainter {
-    fn measure(&mut self, _text: &str, _size_pt: f64, _weight: UiWeight) -> f64 {
-        0.0
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn draw_line(
-        &mut self,
-        _text: &str,
-        _x_px: f64,
-        _baseline_y_px: f64,
-        _size_pt: f64,
-        _weight: UiWeight,
-        _fg: [u8; 3],
-        _pixels: &mut [u8],
-        _bitmap_w: usize,
-        _bitmap_h: usize,
     ) {
     }
 }
@@ -164,7 +143,8 @@ fn render(args: &Args) -> Raster {
     let theme: Theme = anvil_theme::by_name(&args.theme);
     let mut raster = Raster::new(w, h);
     let mut glyph = NullGlyphPainter;
-    let mut ui = NullUiPainter;
+    // CC5: use real CoreText-backed painter so chrome text is visible in snapshots.
+    let mut ui = UiPainter::new(UiFontCfg::default(), 2.0);
 
     // Metrics: approximate cell size for a 13pt mono font at 2× scale.
     let metrics = FontMetrics {
