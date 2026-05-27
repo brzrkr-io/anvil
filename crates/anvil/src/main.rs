@@ -3020,6 +3020,108 @@ impl App {
         self.dirty = true;
     }
 
+    /// Open `path` (or the currently-selected Explorer file) in nvim inside a
+    /// new terminal pane split alongside the existing editor pane.
+    ///
+    /// - If `path` is `Some`, use it directly.
+    /// - If `path` is `None`, use the Explorer-selected file when available;
+    ///   otherwise prompt via `TextInputOverlay`.
+    /// - If nvim is not on PATH, show an error toast.
+    fn open_in_nvim(&mut self, path: Option<PathBuf>) {
+        // Resolve the target path.
+        let target: Option<PathBuf> = path.or_else(|| {
+            // Try selected Explorer row.
+            if let Some(idx) = self.selected_explorer_row {
+                self.left_dock_hits
+                    .visible_rows
+                    .get(idx)
+                    .and_then(|(p, is_dir)| if *is_dir { None } else { Some(p.clone()) })
+            } else {
+                // Try the focused buffer's tracked path.
+                self.tabs.current().and_then(|tab| {
+                    let pid = tab.focused_id();
+                    let ep = tab.editor_panes.get_pane(pid)?;
+                    let buf = tab.editor_panes.get_buffer(ep.buffer_id)?;
+                    buf.tracked_path().map(|p| p.to_path_buf())
+                })
+            }
+        });
+
+        let Some(path) = target else {
+            // No file resolved — prompt for a path.
+            let ti = anvil_render::overlay::TextInputOverlay::new(
+                anvil_render::overlay::OverlayId::OpenInNvim,
+                "nvim: ",
+            );
+            self.overlays
+                .push(anvil_render::overlay::Overlay::TextInput(ti));
+            self.dirty = true;
+            return;
+        };
+
+        self.spawn_nvim_pane(path);
+    }
+
+    /// Spawn a new vertical-split terminal pane running `nvim <path>`.
+    fn spawn_nvim_pane(&mut self, path: PathBuf) {
+        // Check nvim is on PATH.
+        if which::which("nvim").is_err() {
+            self.toast_error("nvim not in PATH; install from neovim.io");
+            return;
+        }
+
+        let tab = match self.tabs.current() {
+            Some(t) => t,
+            None => return,
+        };
+        if tab.tree.leaf_count() >= MAX_PANES_PER_TAB {
+            self.toast_error("anvil: max pane count reached");
+            return;
+        }
+
+        let ir = self.pane_area_rect();
+        let ch = self.font.metrics.cell_h;
+        let cw = self.font.metrics.cell_w;
+        let cols = ((ir.w * 0.5 / cw) as usize).max(1);
+        let rows = ((ir.h / ch) as usize).max(1);
+        let scrollback = self.config.scrollback;
+
+        let new_id = match self
+            .tabs
+            .current_mut()
+            .map(|t| t.split(SplitDir::Horizontal, cols, rows, scrollback))
+        {
+            Some(Ok(id)) => id,
+            Some(Err(e)) => {
+                eprintln!("anvil: nvim pane split failed: {e}");
+                return;
+            }
+            None => return,
+        };
+
+        let path_str = path.to_string_lossy().into_owned();
+        let argv: Vec<String> = vec!["/usr/bin/env".to_owned(), "nvim".to_owned(), path_str];
+        let argv_refs: Vec<&str> = argv.iter().map(|s| s.as_str()).collect();
+        match Pty::spawn(argv_refs.as_slice(), cols as u16, rows as u16) {
+            Ok(pty) => {
+                self.ptys.insert(new_id, pty);
+                if let Some(tab) = self.tabs.current_mut() {
+                    tab.tree.focused = new_id;
+                }
+                self.resize_all_tabs();
+                self.snap_anim();
+                self.dirty = true;
+            }
+            Err(e) => {
+                eprintln!("anvil: nvim pty failed: {e}");
+                if let Some(tab) = self.tabs.current_mut() {
+                    tab.tree.close_leaf(new_id);
+                    tab.registry.remove(new_id);
+                }
+            }
+        }
+    }
+
     /// Open `path` in a native editor pane. If a terminal pane is focused,
     /// create a native editor split first so terminal state is not destroyed.
     /// Item 5: sync `active_explorer_file` to the current focused editor buffer's
@@ -6297,6 +6399,9 @@ impl App {
                 // NE15: nvim path removed; native editor is the only path.
                 self.new_native_editor_pane();
             }
+            Action::OpenInNvim => {
+                self.open_in_nvim(None);
+            }
         }
         self.dismiss_palette(webview);
     }
@@ -6674,6 +6779,12 @@ impl App {
                 self.dirty = true;
                 return true;
             }
+        }
+
+        // Cmd+Shift+N → open selected Explorer file (or prompt) in nvim.
+        if ascii_lower(ch) == 'n' && mods.shift && !mods.control && !mods.option {
+            self.open_in_nvim(None);
+            return true;
         }
 
         macro_rules! test {
@@ -8882,6 +8993,16 @@ impl AppHandler for AppShell {
                         }
                         Submission::TextValue {
                             id: OverlayId::SaveAs,
+                            ..
+                        } => {}
+                        Submission::TextValue {
+                            id: OverlayId::OpenInNvim,
+                            value,
+                        } if !value.is_empty() => {
+                            self.app.spawn_nvim_pane(PathBuf::from(&value));
+                        }
+                        Submission::TextValue {
+                            id: OverlayId::OpenInNvim,
                             ..
                         } => {}
                         Submission::TextValue {

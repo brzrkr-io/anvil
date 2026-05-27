@@ -52,6 +52,7 @@ pub enum OverlayId {
     Hover,
     BlameTip,
     FileTip,
+    OpenInNvim,
 }
 
 /// Size of a rendered card (device pixels).

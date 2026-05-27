@@ -25,6 +25,8 @@ pub enum Action {
     AgentStart,
     // Editor pane.
     NewEditorPane,
+    // Open selected file in nvim (Cmd+Shift+N).
+    OpenInNvim,
 }
 
 pub struct Entry {
@@ -113,6 +115,12 @@ pub const CATALOG: &[Entry] = &[
         title: "New Editor Pane",
         subtitle: Some("Open the native editor in a new pane (⌘E)"),
         action: Action::NewEditorPane,
+    },
+    Entry {
+        id: "editor.nvim",
+        title: "Open with nvim",
+        subtitle: Some("Open selected file in nvim in a new terminal pane (⌘⇧N)"),
+        action: Action::OpenInNvim,
     },
 ];
 
@@ -236,6 +244,11 @@ mod tests {
     #[test]
     fn editor_new_id_maps_to_action() {
         assert_eq!(action_for_id("editor.new"), Some(Action::NewEditorPane));
+    }
+
+    #[test]
+    fn editor_nvim_id_maps_to_action() {
+        assert_eq!(action_for_id("editor.nvim"), Some(Action::OpenInNvim));
     }
 
     // ── Item 2: file:open: prefix is NOT resolved by action_for_id (handled
