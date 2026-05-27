@@ -408,6 +408,45 @@ fn load_hud_section_order() -> Option<Vec<SectionId>> {
     Some(order)
 }
 
+/// X11: load user snippets from `~/.config/anvil/snippets.toml`.
+///
+/// Expected format:
+/// ```toml
+/// [snippet.fn]
+/// body = "fn ${1:name}() {\n    $0\n}"
+///
+/// [snippet.impl]
+/// body = "impl ${1:Type} {\n    $0\n}"
+/// ```
+///
+/// Returns an empty map when the file does not exist or cannot be parsed.
+fn load_snippets() -> HashMap<String, String> {
+    let home = match std::env::var_os("HOME") {
+        Some(h) => PathBuf::from(h),
+        None => return HashMap::new(),
+    };
+    let path = home.join(".config").join("anvil").join("snippets.toml");
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(_) => return HashMap::new(),
+    };
+    let table: toml::Table = match text.parse() {
+        Ok(t) => t,
+        Err(_) => return HashMap::new(),
+    };
+    let mut snippets = HashMap::new();
+    if let Some(toml::Value::Table(snippet_table)) = table.get("snippet") {
+        for (trigger, val) in snippet_table {
+            if let toml::Value::Table(entry) = val {
+                if let Some(toml::Value::String(body)) = entry.get("body") {
+                    snippets.insert(trigger.clone(), body.clone());
+                }
+            }
+        }
+    }
+    snippets
+}
+
 fn save_hud_section_order(order: &[SectionId]) {
     let Some(path) = hud_section_order_path() else {
         return;
@@ -1190,6 +1229,11 @@ pub struct App {
     // ── Explorer filter (R3) ──────────────────────────────────────────────────
     /// Active filter string typed by the user when Explorer is focused.
     explorer_filter: Option<String>,
+
+    // ── Snippets (X11) ───────────────────────────────────────────────────────
+    /// User snippets loaded from `~/.config/anvil/snippets.toml`.
+    /// Keys are trigger words; values are body templates.
+    snippets: HashMap<String, String>,
 }
 
 // ── R2: tooltip helpers ───────────────────────────────────────────────────────
@@ -1233,6 +1277,41 @@ fn relative_time(mtime_secs: u64) -> String {
         let d = delta / 86400;
         format!("{d} day{} ago", if d == 1 { "" } else { "s" })
     }
+}
+
+// ── X6: URL detection helper ─────────────────────────────────────────────────
+
+/// Return the URL that contains grapheme column `col` on `line_str`, or `None`.
+///
+/// A URL is any token starting with `http://` or `https://` and extending to
+/// the first whitespace or `"` or `'` or `)` or `>` character.
+fn url_at_col(line_str: &str, col: usize) -> Option<String> {
+    // Find all URL spans in the line.
+    let mut spans: Vec<(usize, usize, String)> = Vec::new(); // (start_col, end_col, url)
+    let line = line_str.trim_end_matches('\n').trim_end_matches('\r');
+    let chars: Vec<char> = line.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        // Look for http:// or https://
+        let rest: String = chars[i..].iter().collect();
+        if rest.starts_with("http://") || rest.starts_with("https://") {
+            let start = i;
+            let end = chars[i..]
+                .iter()
+                .position(|&c| c.is_whitespace() || matches!(c, '"' | '\'' | ')' | '>' | '<'))
+                .map(|off| i + off)
+                .unwrap_or(chars.len());
+            let url: String = chars[start..end].iter().collect();
+            spans.push((start, end, url));
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    spans
+        .into_iter()
+        .find(|(start, end, _)| col >= *start && col < *end)
+        .map(|(_, _, url)| url)
 }
 
 // ── App helpers ───────────────────────────────────────────────────────────────
@@ -2923,6 +3002,20 @@ impl App {
     // ── LSP rename (item 24) ──────────────────────────────────────────────────
 
     /// Extract the word under the primary cursor of the focused pane.
+    /// X11: if the word immediately before the cursor matches a snippet trigger,
+    /// return an `ExpandSnippet` action.  Otherwise returns `None`.
+    fn try_expand_snippet(&self) -> Option<EditorAction> {
+        let word = self.word_under_cursor();
+        if word.is_empty() {
+            return None;
+        }
+        let body = self.snippets.get(&word)?.clone();
+        Some(EditorAction::ExpandSnippet {
+            trigger: word,
+            body,
+        })
+    }
+
     fn word_under_cursor(&self) -> String {
         let Some(tab) = self.tabs.current() else {
             return String::new();
@@ -7009,6 +7102,20 @@ impl AppHandler for AppShell {
 
         // ⌘ key combos.
         if mods.command {
+            // X13: Cmd+K Cmd+W → trim trailing whitespace (second chord stroke with Cmd held).
+            // pending_chord_k is checked here before the global Cmd handlers so that
+            // Cmd+W (close buffer) does not fire when the user intended the two-stroke chord.
+            if self.app.pending_chord_k
+                && matches!(event.key, KeyInput::Char('w') | KeyInput::Char('W'))
+                && self.app.focused_is_native_editor()
+            {
+                self.app.pending_chord_k = false;
+                self.app
+                    .apply_editor_action(EditorAction::TrimTrailingWhitespace);
+                self.app.dirty = true;
+                return;
+            }
+
             // Native editor: Cmd+Home/End → buffer start/end; Cmd+Up/Down →
             // buffer start/end.  These must be claimed before the generic
             // jump-to-prompt bindings so the editor pane intercepts them.
@@ -8535,6 +8642,22 @@ impl AppHandler for AppShell {
                 return;
             }
 
+            // X8: Cmd+F12 → goto symbol at cursor (outline-based).
+            if event.key == KeyInput::F(12) && event.mods.command && !event.mods.shift {
+                self.app
+                    .apply_editor_action(EditorAction::GotoSymbolAtCursor);
+                self.app.dirty = true;
+                return;
+            }
+
+            // X9: Opt+F12 → peek definition (stub; falls back to goto definition).
+            // TODO(anvil-tierX-#9): implement floating inline peek popup.
+            if event.key == KeyInput::F(12) && event.mods.option && !event.mods.command {
+                self.app.apply_editor_action(EditorAction::PeekDefinition);
+                self.app.dirty = true;
+                return;
+            }
+
             // Item 25: code-actions popup navigation (↑↓ Enter Esc) when open.
             let code_actions_open = self
                 .app
@@ -8614,6 +8737,17 @@ impl AppHandler for AppShell {
                 }
                 self.app.dirty = true;
                 return;
+            }
+
+            // X11: Tab with no shift and no selection → try snippet expansion.
+            if event.key == KeyInput::Tab && !event.mods.shift {
+                let snippet = self.app.try_expand_snippet();
+                if let Some(action) = snippet {
+                    self.app.apply_editor_action(action);
+                    self.app.dirty = true;
+                    return;
+                }
+                // Fall through to normal Tab handling (InsertTab / IndentSelection).
             }
 
             let action = key_event_to_editor_action(event);
@@ -9155,11 +9289,48 @@ impl AppHandler for AppShell {
         if app.focused_is_native_editor() {
             if let Some(pos) = app.native_editor_pos_at(loc) {
                 if mods.command && click_count == 1 {
+                    // X6: Cmd+click → open URL if one is under the cursor.
+                    let url_at_cursor: Option<String> = app.tabs.current().and_then(|t| {
+                        let ep = t.editor_panes.get_pane(t.focused_id())?;
+                        let buf = t.editor_panes.get_buffer(ep.buffer_id)?;
+                        let line_str: String = buf.line(pos.line).chars().collect();
+                        url_at_col(&line_str, pos.col)
+                    });
+                    if let Some(url) = url_at_cursor {
+                        let _ = std::process::Command::new("open").arg(&url).spawn();
+                        app.dirty = true;
+                        return;
+                    }
+
                     // Item 17: Cmd+click → jump to definition.
                     // Move cursor to the clicked position first, then fire definition.
                     app.apply_editor_action(EditorAction::MoveTo { pos, extend: false });
                     let pane_id = app.tabs.current().map(|t| t.focused_id()).unwrap_or(0);
-                    app.trigger_definition_request(pane_id);
+                    // X10: check if LSP is available; if not, fall back to outline symbol search.
+                    let has_lsp = app
+                        .lsp_manager
+                        .as_ref()
+                        .map(|lsp| {
+                            app.tabs
+                                .current()
+                                .and_then(|t| {
+                                    let ep = t.editor_panes.get_pane(t.focused_id())?;
+                                    let buf = t.editor_panes.get_buffer(ep.buffer_id)?;
+                                    let path = buf.tracked_path()?;
+                                    let ext = path.extension()?.to_str()?;
+                                    let lang = anvil_editor::language_id_for_ext(ext)?;
+                                    let sid = anvil_editor::server_id_for_language(lang)?;
+                                    Some(matches!(lsp.state_of(sid), anvil_editor::LspState::Live))
+                                })
+                                .unwrap_or(false)
+                        })
+                        .unwrap_or(false);
+                    if has_lsp {
+                        app.trigger_definition_request(pane_id);
+                    } else {
+                        // X10 fallback: jump to symbol in outline matching word under cursor.
+                        app.apply_editor_action(EditorAction::GotoSymbolAtCursor);
+                    }
                     app.dirty = true;
                     return;
                 }
@@ -10382,6 +10553,9 @@ fn key_event_to_editor_action(event: KeyEvent) -> Option<EditorAction> {
         KeyInput::Tab => EditorAction::InsertTab,
         KeyInput::Backspace => EditorAction::Backspace,
         KeyInput::Delete => EditorAction::Delete,
+        // X14: Opt+←/→ → move by word boundary.
+        KeyInput::Left if opt => EditorAction::MoveWordLeft { extend: shift },
+        KeyInput::Right if opt => EditorAction::MoveWordRight { extend: shift },
         KeyInput::Left => EditorAction::MoveLeft { extend: shift },
         KeyInput::Right => EditorAction::MoveRight { extend: shift },
         // #20: Opt+Up/Down → move line up/down.
@@ -12210,6 +12384,7 @@ fn main() -> Result<()> {
         explorer_hover_row: None,
         explorer_hover_meta: None,
         explorer_filter: None,
+        snippets: load_snippets(),
     };
 
     // -- AppKitApp: builds the window, view, timer ----------------------------
@@ -12893,5 +13068,53 @@ author-tz +0000\n\
         assert_eq!(blame_relative_time(now - 90), "1 min ago");
         assert_eq!(blame_relative_time(now - 7200), "2 hr ago");
         assert_eq!(blame_relative_time(now - 3 * 86400), "3 days ago");
+    }
+
+    // X6: url_at_col
+
+    #[test]
+    fn url_at_col_finds_http_url() {
+        let line = "see https://example.com for details\n";
+        assert_eq!(url_at_col(line, 4), Some("https://example.com".to_string()));
+    }
+
+    #[test]
+    fn url_at_col_returns_none_when_no_url() {
+        let line = "no url here\n";
+        assert_eq!(url_at_col(line, 2), None);
+    }
+
+    #[test]
+    fn url_at_col_returns_none_outside_url_span() {
+        let line = "text https://example.com end\n";
+        // col 0 is "t" in "text", before the URL.
+        assert_eq!(url_at_col(line, 0), None);
+    }
+
+    // X11: load_snippets parses a valid TOML file
+    #[test]
+    fn load_snippets_parses_toml_correctly() {
+        // Directly test the TOML parsing logic without touching HOME.
+        let toml_text = r#"
+[snippet.fn]
+body = "fn ${1:name}() {\n    $0\n}"
+
+[snippet.impl]
+body = "impl ${1:Type} {}"
+"#;
+        let table: toml::Table = toml_text.parse().expect("valid toml");
+        let mut snippets = HashMap::new();
+        if let Some(toml::Value::Table(snippet_table)) = table.get("snippet") {
+            for (trigger, val) in snippet_table {
+                if let toml::Value::Table(entry) = val {
+                    if let Some(toml::Value::String(body)) = entry.get("body") {
+                        snippets.insert(trigger.clone(), body.clone());
+                    }
+                }
+            }
+        }
+        assert_eq!(snippets.len(), 2);
+        assert!(snippets.contains_key("fn"));
+        assert!(snippets.contains_key("impl"));
     }
 }

@@ -327,6 +327,36 @@ pub enum EditorAction {
     /// W12 (Cmd+Shift+J): join the current line with the next line by replacing
     /// the newline between them with a single space.  No-op on the last line.
     JoinLines,
+
+    // ── Tier-X additions ─────────────────────────────────────────────────────
+    /// X14 (Opt+←): move one word boundary to the left.  Word chars: alnum + `_`.
+    MoveWordLeft {
+        extend: bool,
+    },
+
+    /// X14 (Opt+→): move one word boundary to the right.
+    MoveWordRight {
+        extend: bool,
+    },
+
+    /// X13 (Cmd+K Cmd+W): trim trailing whitespace in selection or entire buffer.
+    TrimTrailingWhitespace,
+
+    /// X8 (Cmd+F12): jump to the declaration of the symbol under the cursor
+    /// using the buffer's syntax-derived outline.  No-op when no match.
+    GotoSymbolAtCursor,
+
+    /// X9 (Opt+F12): peek definition in a floating popup.
+    /// TODO(anvil-tierX-#9): full inline peek popup not yet implemented.
+    PeekDefinition,
+
+    /// X11 (Tab): expand a snippet trigger under the cursor.
+    /// `trigger` is the matched key from `~/.config/anvil/snippets.toml`;
+    /// `body` is its expansion text.  Placeholders `$0`, `$1` are resolved.
+    ExpandSnippet {
+        trigger: String,
+        body: String,
+    },
 }
 
 /// Maximum number of open buffers tracked per pane. When the limit is
@@ -2547,6 +2577,172 @@ impl EditorPaneRegistry {
                 );
                 true
             }
+
+            // ── Tier-X actions ────────────────────────────────────────────────
+
+            // X14: move one word boundary to the left (Opt+←).
+            EditorAction::MoveWordLeft { extend } => {
+                let buf = self.buffers.get(&buffer_id).unwrap();
+                let new_pos = prev_word_boundary(buf, pane.cursors[0].pos);
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                set_cursor(pane, new_pos, extend);
+                false
+            }
+
+            // X14: move one word boundary to the right (Opt+→).
+            EditorAction::MoveWordRight { extend } => {
+                let buf = self.buffers.get(&buffer_id).unwrap();
+                let new_pos = next_word_boundary(buf, pane.cursors[0].pos);
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                set_cursor(pane, new_pos, extend);
+                false
+            }
+
+            // X13: trim trailing whitespace in selection or entire buffer.
+            EditorAction::TrimTrailingWhitespace => {
+                let buf = self.buffers.get(&buffer_id).unwrap();
+                let line_count = buf.line_count();
+                let (trim_start, trim_end) = {
+                    let pane = self.panes.get(&pane_id).unwrap();
+                    let (s, e) = selection_range(pane);
+                    if s == e {
+                        // No selection: trim whole buffer.
+                        (0, line_count.saturating_sub(1))
+                    } else {
+                        (s.line, e.line)
+                    }
+                };
+                let mut mutated = false;
+                // Walk lines in reverse so earlier edits don't shift later positions.
+                for ln in (trim_start..=trim_end.min(line_count.saturating_sub(1))).rev() {
+                    let buf = self.buffers.get(&buffer_id).unwrap();
+                    let line_str: String = buf.line(ln).chars().collect();
+                    let content = line_str.trim_end_matches('\n').trim_end_matches('\r');
+                    let trimmed = content.trim_end_matches([' ', '\t']);
+                    if trimmed.len() < content.len() {
+                        let col_start = trimmed.graphemes(true).count();
+                        let col_end = content.graphemes(true).count();
+                        let buf = self.buffers.get_mut(&buffer_id).unwrap();
+                        buf.delete_range(Range {
+                            start: Position {
+                                line: ln,
+                                col: col_start,
+                            },
+                            end: Position {
+                                line: ln,
+                                col: col_end,
+                            },
+                        });
+                        mutated = true;
+                    }
+                }
+                // Snap cursor column to the (possibly shortened) line.
+                if mutated {
+                    let buf = self.buffers.get(&buffer_id).unwrap();
+                    let cursor_line = self.panes.get(&pane_id).unwrap().cursors[0].pos.line;
+                    let max_col = line_grapheme_len(buf, cursor_line);
+                    let pane = self.panes.get_mut(&pane_id).unwrap();
+                    pane.cursors[0].pos.col = pane.cursors[0].pos.col.min(max_col);
+                    pane.cursors[0].anchor = pane.cursors[0].pos;
+                }
+                mutated
+            }
+
+            // X8: jump to the first outline symbol matching the word under cursor.
+            EditorAction::GotoSymbolAtCursor => {
+                // Get word under cursor.
+                let word = {
+                    let buf = self.buffers.get(&buffer_id).unwrap();
+                    let pos = pane.cursors[0].pos;
+                    let line_str: String = buf.line(pos.line).chars().collect();
+                    let chars: Vec<char> = line_str.chars().collect();
+                    let col = pos.col.min(chars.len());
+                    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+                    let start = (0..col)
+                        .rev()
+                        .take_while(|&i| is_word(chars[i]))
+                        .last()
+                        .unwrap_or(col);
+                    let end = (col..chars.len())
+                        .take_while(|&i| is_word(chars[i]))
+                        .last()
+                        .map(|i| i + 1)
+                        .unwrap_or(col);
+                    chars[start..end].iter().collect::<String>()
+                };
+                if word.is_empty() {
+                    return false;
+                }
+                // Derive outline from syntax layer.
+                let buf = self.buffers.get(&buffer_id).unwrap();
+                let text = buf.to_text();
+                let symbols = anvil_editor::derive_outline_rows(buf.syntax(), &text);
+                let target = symbols.iter().find(|s| s.name == word).map(|s| s.line);
+                if let Some(target_line) = target {
+                    let new_pos = Position {
+                        line: target_line,
+                        col: 0,
+                    };
+                    let pane = self.panes.get_mut(&pane_id).unwrap();
+                    set_cursor(pane, new_pos, false);
+                    pane.scroll_target = target_line.saturating_sub(4) as f32;
+                    false
+                } else {
+                    false
+                }
+            }
+
+            // X9: peek definition (stub — full inline popup deferred).
+            // TODO(anvil-tierX-#9): implement floating inline peek popup.
+            EditorAction::PeekDefinition => {
+                // No-op: the peek popup requires a separate floating overlay pass.
+                // The caller (main.rs) should open a tooltip instead when LSP returns.
+                false
+            }
+
+            // X11: expand snippet body at cursor.
+            EditorAction::ExpandSnippet { trigger, body } => {
+                let pos = pane.cursors[0].pos;
+                // Delete the trigger word that was already typed.
+                let trigger_len = trigger.graphemes(true).count();
+                let del_start = Position {
+                    line: pos.line,
+                    col: pos.col.saturating_sub(trigger_len),
+                };
+                {
+                    let buf = self.buffers.get_mut(&buffer_id).unwrap();
+                    if del_start != pos {
+                        buf.delete_range(Range {
+                            start: del_start,
+                            end: pos,
+                        });
+                    }
+                    // Insert expanded body (strip placeholder markers for now).
+                    let expanded = body.replace("$0", "").replace("$1", "");
+                    buf.insert_str(del_start, &expanded);
+                }
+                // Move cursor to the end of the inserted text.
+                let buf = self.buffers.get(&buffer_id).unwrap();
+                let expanded_body = body.replace("$0", "").replace("$1", "");
+                let lines: Vec<&str> = expanded_body.lines().collect();
+                let new_pos = if lines.len() <= 1 {
+                    Position {
+                        line: del_start.line,
+                        col: del_start.col + expanded_body.graphemes(true).count(),
+                    }
+                } else {
+                    let last_line_idx = del_start.line + lines.len() - 1;
+                    let last_col = lines.last().map(|l| l.graphemes(true).count()).unwrap_or(0);
+                    let max_col = line_grapheme_len(buf, last_line_idx);
+                    Position {
+                        line: last_line_idx,
+                        col: last_col.min(max_col),
+                    }
+                };
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                set_cursor(pane, new_pos, false);
+                true
+            }
         }
     }
 }
@@ -2724,6 +2920,82 @@ fn selection_range(pane: &EditorPane) -> (Position, Position) {
 
 /// Return the matching closing bracket for `ch` (#17), or `None` if `ch` is
 /// not an auto-pairable opener.
+/// X14: move left to the previous word boundary.
+/// A word boundary is the position just before the first char of a run of
+/// word-chars (alphanumeric + `_`).  If already inside a word, moves to the
+/// start of that word; otherwise skips non-word chars first.
+fn prev_word_boundary(buf: &Buffer, pos: Position) -> Position {
+    // Gather the line text up to col.
+    if pos.col == 0 {
+        // Jump to end of previous line if possible.
+        if pos.line == 0 {
+            return pos;
+        }
+        let prev_line = pos.line - 1;
+        let col = line_grapheme_len(buf, prev_line);
+        return prev_word_boundary(
+            buf,
+            Position {
+                line: prev_line,
+                col,
+            },
+        );
+    }
+    let line_str: String = buf.line(pos.line).chars().collect();
+    let content = line_str.trim_end_matches('\n').trim_end_matches('\r');
+    let graphemes: Vec<&str> = content.graphemes(true).collect();
+    let col = pos.col.min(graphemes.len());
+    let is_word = |g: &str| g.chars().all(|c| c.is_alphanumeric() || c == '_');
+    // Skip non-word chars immediately to the left.
+    let mut i = col;
+    while i > 0 && !is_word(graphemes[i - 1]) {
+        i -= 1;
+    }
+    // Skip word chars to find the start of the word.
+    while i > 0 && is_word(graphemes[i - 1]) {
+        i -= 1;
+    }
+    Position {
+        line: pos.line,
+        col: i,
+    }
+}
+
+/// X14: move right to the next word boundary.
+/// Moves past any word chars from the current position, then past any
+/// non-word chars, landing at the start of the next word (or end of line).
+fn next_word_boundary(buf: &Buffer, pos: Position) -> Position {
+    let line_len = line_grapheme_len(buf, pos.line);
+    if pos.col >= line_len {
+        // Jump to start of next line if possible.
+        let last_line = buf.line_count().saturating_sub(1);
+        if pos.line >= last_line {
+            return pos;
+        }
+        return Position {
+            line: pos.line + 1,
+            col: 0,
+        };
+    }
+    let line_str: String = buf.line(pos.line).chars().collect();
+    let content = line_str.trim_end_matches('\n').trim_end_matches('\r');
+    let graphemes: Vec<&str> = content.graphemes(true).collect();
+    let is_word = |g: &str| g.chars().all(|c| c.is_alphanumeric() || c == '_');
+    let mut i = pos.col;
+    // Skip current word chars.
+    while i < graphemes.len() && is_word(graphemes[i]) {
+        i += 1;
+    }
+    // Skip non-word chars (punctuation / whitespace between words).
+    while i < graphemes.len() && !is_word(graphemes[i]) {
+        i += 1;
+    }
+    Position {
+        line: pos.line,
+        col: i,
+    }
+}
+
 fn bracket_pair_close(ch: char) -> Option<char> {
     match ch {
         '(' => Some(')'),
@@ -4460,5 +4732,148 @@ mod tests {
         // rope impl — the important thing is we don't panic and the buffer is sane.
         let _ = mutated;
         assert!(!buf_text(&reg, pid).is_empty());
+    }
+
+    // ── Tier-X tests ─────────────────────────────────────────────────────────
+
+    // X14: MoveWordLeft / MoveWordRight
+
+    #[test]
+    fn move_word_right_lands_at_next_word_start() {
+        // "hello world" — cursor at col 0, MoveWordRight → col 6 ("world").
+        let (mut reg, pid) = make_reg_with_text("hello world\n");
+        let mut clip = None;
+        reg.apply(
+            pid,
+            EditorAction::MoveWordRight { extend: false },
+            &mut clip,
+        );
+        let pane = reg.get_pane(pid).unwrap();
+        assert_eq!(
+            pane.cursors[0].pos.col, 6,
+            "should skip 'hello ' and land at 'w'"
+        );
+    }
+
+    #[test]
+    fn move_word_left_from_middle_of_word_lands_at_word_start() {
+        // "hello world" — cursor at col 9 (inside "world"), MoveWordLeft → col 6 ("w").
+        let (mut reg, pid) = make_reg_with_text("hello world\n");
+        {
+            let pane = reg.get_pane_mut(pid).unwrap();
+            pane.cursors[0].pos = Position { line: 0, col: 9 };
+            pane.cursors[0].anchor = Position { line: 0, col: 9 };
+        }
+        let mut clip = None;
+        reg.apply(pid, EditorAction::MoveWordLeft { extend: false }, &mut clip);
+        let pane = reg.get_pane(pid).unwrap();
+        assert_eq!(
+            pane.cursors[0].pos.col, 6,
+            "should land at start of 'world'"
+        );
+    }
+
+    #[test]
+    fn move_word_right_with_extend_creates_selection() {
+        let (mut reg, pid) = make_reg_with_text("hello world\n");
+        let mut clip = None;
+        reg.apply(pid, EditorAction::MoveWordRight { extend: true }, &mut clip);
+        let pane = reg.get_pane(pid).unwrap();
+        assert_eq!(pane.cursors[0].anchor.col, 0);
+        assert_eq!(pane.cursors[0].pos.col, 6);
+    }
+
+    // X13: TrimTrailingWhitespace
+
+    #[test]
+    fn trim_trailing_whitespace_removes_trailing_spaces() {
+        let (mut reg, pid) = make_reg_with_text("hello   \nworld\n");
+        let mut clip = None;
+        let mutated = reg.apply(pid, EditorAction::TrimTrailingWhitespace, &mut clip);
+        assert!(mutated);
+        let text = buf_text(&reg, pid);
+        assert_eq!(
+            text, "hello\nworld\n",
+            "trailing spaces on line 0 should be removed"
+        );
+    }
+
+    #[test]
+    fn trim_trailing_whitespace_noop_when_no_trailing_spaces() {
+        let (mut reg, pid) = make_reg_with_text("clean\nlines\n");
+        let mut clip = None;
+        let mutated = reg.apply(pid, EditorAction::TrimTrailingWhitespace, &mut clip);
+        assert!(!mutated, "no trailing whitespace: must be a no-op");
+    }
+
+    // X11: ExpandSnippet
+
+    #[test]
+    fn expand_snippet_replaces_trigger_with_body() {
+        // Buffer: "fn" at col 0..2; cursor at col 2.
+        let (mut reg, pid) = make_reg_with_text("fn\n");
+        {
+            let pane = reg.get_pane_mut(pid).unwrap();
+            pane.cursors[0].pos = Position { line: 0, col: 2 };
+            pane.cursors[0].anchor = Position { line: 0, col: 2 };
+        }
+        let mut clip = None;
+        let mutated = reg.apply(
+            pid,
+            EditorAction::ExpandSnippet {
+                trigger: "fn".to_string(),
+                body: "fn name() {}".to_string(),
+            },
+            &mut clip,
+        );
+        assert!(mutated);
+        let text = buf_text(&reg, pid);
+        // The trigger "fn" should be replaced by the body.
+        assert!(
+            text.contains("fn name() {}"),
+            "body should be inserted; got {text:?}"
+        );
+        // "fn" trigger is removed; only body remains.
+        assert!(
+            !text.starts_with("fn\n"),
+            "original trigger line should be replaced"
+        );
+    }
+
+    // X8: GotoSymbolAtCursor (no-op without syntax; just verify no panic)
+
+    #[test]
+    fn goto_symbol_at_cursor_noop_when_no_match() {
+        let (mut reg, pid) = make_reg_with_text("fn main() {}\n");
+        {
+            let pane = reg.get_pane_mut(pid).unwrap();
+            pane.cursors[0].pos = Position { line: 0, col: 3 };
+            pane.cursors[0].anchor = Position { line: 0, col: 3 };
+        }
+        let mut clip = None;
+        // Without a parsed syntax tree the outline is empty; action must not panic.
+        let mutated = reg.apply(pid, EditorAction::GotoSymbolAtCursor, &mut clip);
+        assert!(!mutated, "no outline match → no mutation");
+    }
+
+    // X12: Surround-selection (already in InsertChar bracket-pair logic)
+
+    #[test]
+    fn insert_open_bracket_wraps_selection() {
+        // "hello" with full selection → insert '(' wraps as "(hello)".
+        let (mut reg, pid) = make_reg_with_text("hello\n");
+        {
+            let pane = reg.get_pane_mut(pid).unwrap();
+            pane.cursors[0].anchor = Position { line: 0, col: 0 };
+            pane.cursors[0].pos = Position { line: 0, col: 5 };
+        }
+        let mut clip = None;
+        let mutated = reg.apply(pid, EditorAction::InsertChar('('), &mut clip);
+        assert!(mutated);
+        let text = buf_text(&reg, pid);
+        assert!(
+            text.starts_with("(hello)"),
+            "selection should be wrapped; got {text:?}"
+        );
     }
 }

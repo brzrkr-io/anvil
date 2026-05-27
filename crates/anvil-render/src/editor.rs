@@ -159,21 +159,9 @@ pub fn draw_editor_into(
     // exceed typical sizes.
     let full_text = buffer.to_text();
 
-    // H1: soft-wrap stub indicator.
-    // TODO(anvil-tierH-H1-wrap): actual multi-visual-row wrapping not yet wired.
-    // When enabled, render a subtle one-line notice at the top of the pane.
-    if editor_pane.soft_wrap {
-        let notice = "wrap";
-        let nx = rect.x + gutter_w + 0.5 * cw;
-        let ny = rect.y + 0.5 * ch;
-        for (i, c) in notice.chars().enumerate() {
-            let gx = nx + i as f64 * cw;
-            if gx + cw > rect.x + rect.w {
-                break;
-            }
-            raster.glyph_at(painter, metrics, gx, ny, c as u32, theme.text_subtle);
-        }
-    }
+    // H1: compute the leading whitespace of the logical line for continuation indent.
+    // TODO(anvil-tierX-#1-word-break): break at word boundary instead of exact cell width.
+    // The `soft_wrap` flag is read per-line in the row loop below.
 
     if buffer.byte_len() == 0 {
         let hint_x = rect.x + gutter_w + 2.0 * cw;
@@ -331,32 +319,61 @@ pub fn draw_editor_into(
                 .highlights_for_range(line_byte_start, line_byte_end, &full_text);
 
         let graphemes: Vec<&str> = line_content.graphemes(true).collect();
-        let mut painted = 0usize;
+
+        // H1: compute leading-whitespace indent for continuation rows.
+        // Continuation rows are indented to the source line's leading whitespace + 2.
+        let leading_ws: usize = graphemes
+            .iter()
+            .take_while(|g| **g == " " || **g == "\t")
+            .count();
+        let continuation_indent = if editor_pane.soft_wrap {
+            (leading_ws + 2).min(content_cols / 2)
+        } else {
+            0
+        };
+
         // P3: a line overflows when more columns exist after the visible window.
         let overflow = graphemes.len() > content_cols + col_offset;
         // Paint limit is the first invisible column in the viewport window.
-        let paint_limit = (content_cols + col_offset).min(if overflow {
+        let paint_limit = (content_cols + col_offset).min(if overflow && !editor_pane.soft_wrap {
             // Leave room for `▸` at the right edge of the viewport.
             col_offset + content_cols.saturating_sub(1)
         } else {
             graphemes.len()
         });
 
-        // P3: track max line length for horizontal scrollbar.
-        if graphemes.len() > max_line_len {
+        // P3: track max line length for horizontal scrollbar (skip in wrap mode).
+        if !editor_pane.soft_wrap && graphemes.len() > max_line_len {
             max_line_len = graphemes.len();
         }
 
         // Track the byte offset within the line as we walk graphemes.
         let mut grapheme_byte = line_byte_start;
+        // H1: in soft-wrap mode track position within the visual row for line breaks.
+        let mut vcol_in_row: usize = 0;
+        // Current visual row_y — may advance mid-line in wrap mode.
+        let mut cur_row_y = row_y;
+
         for (col, g) in graphemes.iter().enumerate() {
-            // P3: skip columns before the scroll offset.
-            if col < col_offset {
+            // P3: skip columns before the scroll offset (no-op in wrap mode).
+            if !editor_pane.soft_wrap && col < col_offset {
                 grapheme_byte += g.len();
                 continue;
             }
-            if col >= paint_limit {
+            if !editor_pane.soft_wrap && col >= paint_limit {
                 break;
+            }
+            // H1: soft-wrap — start a new visual row when we hit the right edge.
+            if editor_pane.soft_wrap && vcol_in_row >= content_cols {
+                vrow += 1;
+                if vrow >= visible_rows {
+                    break;
+                }
+                cur_row_y = rect.y + vrow as f64 * ch;
+                vcol_in_row = continuation_indent;
+                // Paint the gutter background for the continuation row (no line number).
+                raster.fill_pixel_rect(rect.x, cur_row_y, gutter_w, ch, theme.graphite);
+                raster.fill_pixel_rect(rect.x + gutter_w - 1.0, cur_row_y, 1.0, ch, theme.hairline);
             }
             // Resolve syntax color for the byte position of this grapheme.
             let b = grapheme_byte;
@@ -380,14 +397,21 @@ pub fn draw_editor_into(
 
             // Use the first scalar of the grapheme cluster as the glyph key.
             let cp = g.chars().next().unwrap_or(' ') as u32;
-            // P3: subtract col_offset so visible columns start at gutter_w.
-            let gx = rect.x + gutter_w + (col - col_offset) as f64 * cw;
+            let screen_col = if editor_pane.soft_wrap {
+                vcol_in_row
+            } else {
+                col.saturating_sub(col_offset)
+            };
+            let gx = rect.x + gutter_w + screen_col as f64 * cw;
             // F2 guard: skip glyphs outside the pane rect (left or right edge).
             if gx < rect.x || gx + cw > rect.x + rect.w {
                 grapheme_byte += g.len();
+                if editor_pane.soft_wrap {
+                    vcol_in_row += 1;
+                }
                 continue;
             }
-            raster.glyph_at(painter, metrics, gx, row_y, cp, fg);
+            raster.glyph_at(painter, metrics, gx, cur_row_y, cp, fg);
             // H2: whitespace overlay — paint `·` over spaces, `→` over tabs.
             if editor_pane.show_whitespace {
                 let ws_cp: Option<u32> = match *g {
@@ -405,80 +429,91 @@ pub fn draw_editor_into(
                         (s[1] as f32 * 0.4 + bg[1] as f32 * 0.6) as u8,
                         (s[2] as f32 * 0.4 + bg[2] as f32 * 0.6) as u8,
                     ];
-                    raster.glyph_at(painter, metrics, gx, row_y, wcp, blended);
+                    raster.glyph_at(painter, metrics, gx, cur_row_y, wcp, blended);
                 }
             }
             grapheme_byte += g.len();
-            painted = col + 1;
+            if editor_pane.soft_wrap {
+                vcol_in_row += 1;
+            }
         }
 
-        // ── Long-line overflow marker ─────────────────────────────────────────
-        if overflow {
+        // ── Long-line overflow marker (no-wrap mode only) ─────────────────────
+        if overflow && !editor_pane.soft_wrap {
             // Marker sits at the last visible column in the viewport.
             let marker_vcol = content_cols.saturating_sub(1);
             let gx = rect.x + gutter_w + marker_vcol as f64 * cw;
             raster.glyph_at(painter, metrics, gx, row_y, '▸' as u32, theme.text_muted);
         }
-        let _ = painted; // suppress dead-code lint
 
         // ── End-of-line diagnostic label (R1) ────────────────────────────────
         // Render the worst-severity diagnostic message right-aligned after the
         // line text, in the severity color blended at α=0.7 over the surface.
         // Truncate with `…` when the message would overlap the line content.
-        if let Some(sev) = row_diag {
-            // Collect the message for the worst-severity diagnostic on this line.
-            let msg: Option<String> = diagnostics
-                .iter()
-                .filter(|d| d.line == line_idx && d.severity == sev)
-                .map(|d| d.message.clone())
-                .next();
-            if let Some(raw_msg) = msg {
-                // Blend severity color at α=0.7 over surface.
-                let sc = severity_color(sev, theme);
-                let bg = theme.surface;
-                let label_color = [
-                    (sc[0] as f32 * 0.7 + bg[0] as f32 * 0.3) as u8,
-                    (sc[1] as f32 * 0.7 + bg[1] as f32 * 0.3) as u8,
-                    (sc[2] as f32 * 0.7 + bg[2] as f32 * 0.3) as u8,
-                ];
-                // Right edge of content area.
-                let right_edge = rect.x + rect.w;
-                // How many columns are available for the label, starting from the
-                // column after the line text (or after the overflow marker).
-                let text_end_col = if overflow {
-                    content_cols + col_offset
-                } else {
-                    graphemes.len().max(col_offset) - col_offset.min(graphemes.len())
-                };
-                let text_end_x = rect.x + gutter_w + text_end_col as f64 * cw;
-                // Gap: at least 2 cells between line end and label.
-                let label_start_x = text_end_x + 2.0 * cw;
-                let available_w = right_edge - label_start_x;
-                if available_w > cw {
-                    // How many chars fit?
-                    let max_chars = (available_w / cw).floor() as usize;
-                    let (display_msg, truncated) = if raw_msg.chars().count() <= max_chars {
-                        (raw_msg.as_str().to_owned(), false)
-                    } else if max_chars > 1 {
-                        let s: String = raw_msg.chars().take(max_chars - 1).collect();
-                        (format!("{s}…"), true)
+        // In soft-wrap mode the label is suppressed (the final visual row may vary).
+        if !editor_pane.soft_wrap {
+            if let Some(sev) = row_diag {
+                // Collect the message for the worst-severity diagnostic on this line.
+                let msg: Option<String> = diagnostics
+                    .iter()
+                    .filter(|d| d.line == line_idx && d.severity == sev)
+                    .map(|d| d.message.clone())
+                    .next();
+                if let Some(raw_msg) = msg {
+                    // Blend severity color at α=0.7 over surface.
+                    let sc = severity_color(sev, theme);
+                    let bg = theme.surface;
+                    let label_color = [
+                        (sc[0] as f32 * 0.7 + bg[0] as f32 * 0.3) as u8,
+                        (sc[1] as f32 * 0.7 + bg[1] as f32 * 0.3) as u8,
+                        (sc[2] as f32 * 0.7 + bg[2] as f32 * 0.3) as u8,
+                    ];
+                    // Right edge of content area.
+                    let right_edge = rect.x + rect.w;
+                    // How many columns are available for the label, starting from the
+                    // column after the line text (or after the overflow marker).
+                    let text_end_col = if overflow {
+                        content_cols + col_offset
                     } else {
-                        (String::new(), true)
+                        graphemes.len().max(col_offset) - col_offset.min(graphemes.len())
                     };
-                    let _ = truncated;
-                    if !display_msg.is_empty() {
-                        // Right-align: paint from label_start_x.
-                        for (i, ch_g) in display_msg.chars().enumerate() {
-                            let gx = label_start_x + i as f64 * cw;
-                            if gx + cw > right_edge {
-                                break;
+                    let text_end_x = rect.x + gutter_w + text_end_col as f64 * cw;
+                    // Gap: at least 2 cells between line end and label.
+                    let label_start_x = text_end_x + 2.0 * cw;
+                    let available_w = right_edge - label_start_x;
+                    if available_w > cw {
+                        // How many chars fit?
+                        let max_chars = (available_w / cw).floor() as usize;
+                        let (display_msg, truncated) = if raw_msg.chars().count() <= max_chars {
+                            (raw_msg.as_str().to_owned(), false)
+                        } else if max_chars > 1 {
+                            let s: String = raw_msg.chars().take(max_chars - 1).collect();
+                            (format!("{s}…"), true)
+                        } else {
+                            (String::new(), true)
+                        };
+                        let _ = truncated;
+                        if !display_msg.is_empty() {
+                            // Right-align: paint from label_start_x.
+                            for (i, ch_g) in display_msg.chars().enumerate() {
+                                let gx = label_start_x + i as f64 * cw;
+                                if gx + cw > right_edge {
+                                    break;
+                                }
+                                raster.glyph_at(
+                                    painter,
+                                    metrics,
+                                    gx,
+                                    row_y,
+                                    ch_g as u32,
+                                    label_color,
+                                );
                             }
-                            raster.glyph_at(painter, metrics, gx, row_y, ch_g as u32, label_color);
                         }
                     }
                 }
             }
-        }
+        } // end if !editor_pane.soft_wrap (diagnostic label)
 
         // ── Fold chevron in gutter (item 13) ──────────────────────────────────
         // Paint ▾ (open) or ▸ (folded) in the last gutter column for lines that
