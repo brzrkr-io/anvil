@@ -14,6 +14,7 @@ pub mod context_bar;
 pub mod draw;
 pub mod editor;
 pub mod left_dock;
+pub mod overlay;
 pub mod raster;
 pub mod searchbar;
 pub mod statusbar;
