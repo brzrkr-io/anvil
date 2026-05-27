@@ -740,6 +740,23 @@ struct LanguagePickerState {
     selected: usize,
 }
 
+// ── ThemePickerState (W3) ─────────────────────────────────────────────────────
+
+/// State for the Cmd+K Cmd+T theme-picker overlay.
+struct ThemePickerState {
+    /// Currently selected row index (0-based into `PICKER_THEMES`).
+    selected: usize,
+}
+
+/// All built-in theme names offered by the theme picker.
+const PICKER_THEMES: &[&str] = &[
+    "ember-dark",
+    "ember-light",
+    "mineral-dark",
+    "mineral-light",
+    "system",
+];
+
 // ── App ───────────────────────────────────────────────────────────────────────
 
 /// The whole application state.  Implements [`AppHandler`] via [`AppShell`].
@@ -1153,6 +1170,10 @@ pub struct App {
     // ── Language picker overlay (Q22) ─────────────────────────────────────────
     /// When `Some`, the Cmd+K Cmd+L language-picker overlay is open.
     language_picker: Option<LanguagePickerState>,
+
+    // ── Theme-picker overlay (W3) ─────────────────────────────────────────────
+    /// When `Some`, the Cmd+K Cmd+T theme-picker overlay is open.
+    theme_picker: Option<ThemePickerState>,
 
     // ── Open-folder overlay (Q19) ─────────────────────────────────────────────
     /// When `Some`, the Cmd+K Cmd+O open-folder path-input overlay is open.
@@ -4389,6 +4410,23 @@ impl App {
             );
         }
 
+        // ── Theme picker overlay (W3) ─────────────────────────────────────────
+        if let Some(ref picker) = self.theme_picker {
+            let cw = self.font.metrics.cell_w;
+            let chrome_top = self.chrome_top_px();
+            draw_theme_picker_overlay(
+                &mut self.raster,
+                chrome_painter,
+                chrome_metrics,
+                &self.theme,
+                picker.selected,
+                dw as f64,
+                chrome_top,
+                cw,
+                ch,
+            );
+        }
+
         // ── Language picker overlay (Q22) ─────────────────────────────────────
         if let Some(ref picker) = self.language_picker {
             let cw = self.font.metrics.cell_w;
@@ -5264,6 +5302,33 @@ impl App {
             // #19: Cmd+Shift+D → duplicate line.
             if lch == 'd' && mods.shift && !mods.control && !mods.option {
                 self.apply_editor_action(EditorAction::DuplicateLine);
+                self.dirty = true;
+                return true;
+            }
+            // W4: Cmd+Shift+K → delete current line.
+            // Takes priority over focus_up (cmd+shift+k) when editor is focused.
+            if lch == 'k' && mods.shift && !mods.control && !mods.option {
+                self.apply_editor_action(EditorAction::DeleteLine);
+                self.dirty = true;
+                return true;
+            }
+            // W7: Cmd+Shift+L → select all occurrences of current word/selection.
+            // Note: Cmd+L (no shift) is SelectLine (K6); this is the shift variant.
+            if lch == 'l' && mods.shift && !mods.control && !mods.option {
+                self.apply_editor_action(EditorAction::SelectAllOccurrences);
+                self.dirty = true;
+                return true;
+            }
+            // W8: Cmd+U → drop the most recently added secondary cursor.
+            if lch == 'u' && !mods.shift && !mods.control && !mods.option {
+                self.apply_editor_action(EditorAction::DropLastCursor);
+                self.dirty = true;
+                return true;
+            }
+            // W12: Cmd+Shift+J → join current line with next line.
+            // Non-shift Cmd+J is toggle_ide_drawer (outside the editor block).
+            if lch == 'j' && mods.shift && !mods.control && !mods.option {
+                self.apply_editor_action(EditorAction::JoinLines);
                 self.dirty = true;
                 return true;
             }
@@ -7200,6 +7265,44 @@ impl AppHandler for AppShell {
             return;
         }
 
+        // ── Theme picker overlay (W3: Cmd+K Cmd+T) ──────────────────────────
+        if self.app.theme_picker.is_some() {
+            let n = PICKER_THEMES.len();
+            match event.key {
+                KeyInput::Escape => {
+                    self.app.theme_picker = None;
+                    self.app.dirty = true;
+                }
+                KeyInput::Enter => {
+                    if let Some(ref picker) = self.app.theme_picker {
+                        if let Some(&name) = PICKER_THEMES.get(picker.selected) {
+                            self.app.set_theme_mode(name);
+                        }
+                    }
+                    self.app.theme_picker = None;
+                    self.app.dirty = true;
+                }
+                KeyInput::Up => {
+                    if let Some(ref mut picker) = self.app.theme_picker {
+                        if picker.selected > 0 {
+                            picker.selected -= 1;
+                        }
+                    }
+                    self.app.dirty = true;
+                }
+                KeyInput::Down => {
+                    if let Some(ref mut picker) = self.app.theme_picker {
+                        if picker.selected + 1 < n {
+                            picker.selected += 1;
+                        }
+                    }
+                    self.app.dirty = true;
+                }
+                _ => {}
+            }
+            return;
+        }
+
         // ── Language picker overlay (Q22: Cmd+K Cmd+L) ──────────────────────
         if self.app.language_picker.is_some() {
             let langs = PICKER_LANGS;
@@ -7595,6 +7698,23 @@ impl AppHandler for AppShell {
                 self.app.dirty = true;
                 return;
             }
+            // W2: Cmd+K S → toggle cheatsheet (global).
+            if matches!(event.key, KeyInput::Char('s') | KeyInput::Char('S')) {
+                self.app.cheatsheet_visible = !self.app.cheatsheet_visible;
+                self.app.dirty = true;
+                self.app.force_full_redraw = true;
+                return;
+            }
+            // W3: Cmd+K T → theme picker (global).
+            if matches!(event.key, KeyInput::Char('t') | KeyInput::Char('T')) && !event.mods.shift {
+                let current = PICKER_THEMES
+                    .iter()
+                    .position(|&name| name == self.app.config.theme)
+                    .unwrap_or(0);
+                self.app.theme_picker = Some(ThemePickerState { selected: current });
+                self.app.dirty = true;
+                return;
+            }
             if self.app.focused_is_native_editor() {
                 match event.key {
                     KeyInput::Char('w') | KeyInput::Char('W') => {
@@ -7611,6 +7731,41 @@ impl AppHandler for AppShell {
                     KeyInput::Char('k') | KeyInput::Char('K') => {
                         // Cmd+K K → HoverRequest (original NE10 binding via double-tap).
                         self.app.trigger_hover_request();
+                        self.app.dirty = true;
+                    }
+                    // W9: Cmd+K 0 → fold all.
+                    KeyInput::Char('0') => {
+                        self.app.apply_editor_action(EditorAction::FoldAll);
+                        self.app.dirty = true;
+                        self.app.force_full_redraw = true;
+                    }
+                    // W9: Cmd+K J → unfold all.
+                    KeyInput::Char('j') | KeyInput::Char('J') => {
+                        self.app.apply_editor_action(EditorAction::UnfoldAll);
+                        self.app.dirty = true;
+                        self.app.force_full_redraw = true;
+                    }
+                    // W10: Cmd+K U → convert to UPPER CASE.
+                    KeyInput::Char('u') | KeyInput::Char('U') => {
+                        self.app.apply_editor_action(EditorAction::ConvertCaseUpper);
+                        self.app.dirty = true;
+                    }
+                    // W10: Cmd+K Y → convert to lower case.
+                    KeyInput::Char('y') | KeyInput::Char('Y') => {
+                        self.app.apply_editor_action(EditorAction::ConvertCaseLower);
+                        self.app.dirty = true;
+                    }
+                    // W10: Cmd+K Shift+T → convert to Title Case.
+                    // Note: shift is on event.mods; the char arrives as 'T' on shift.
+                    // We check mods.shift to disambiguate from bare Cmd+K T (theme picker).
+                    KeyInput::Char('T') if event.mods.shift => {
+                        self.app.apply_editor_action(EditorAction::ConvertCaseTitle);
+                        self.app.dirty = true;
+                    }
+                    // W11: Cmd+K R → sort selected lines.
+                    KeyInput::Char('r') | KeyInput::Char('R') => {
+                        self.app
+                            .apply_editor_action(EditorAction::SortSelectedLines);
                         self.app.dirty = true;
                     }
                     _ => {
@@ -10724,6 +10879,65 @@ fn draw_open_folder_overlay(
     raster.fill_pixel_rect(x, panel_y + 2.0, cw, panel_h - 4.0, theme.accent_bright);
 }
 
+// ── Theme picker overlay draw (W3) ───────────────────────────────────────────
+
+/// Draw the theme-picker overlay (Cmd+K Cmd+T).
+#[allow(clippy::too_many_arguments)]
+fn draw_theme_picker_overlay(
+    raster: &mut anvil_render::raster::Raster,
+    painter: &mut dyn anvil_render::raster::GlyphPainter,
+    metrics: anvil_render::raster::FontMetrics,
+    theme: &anvil_theme::Theme,
+    selected: usize,
+    dw: f64,
+    chrome_top: f64,
+    cw: f64,
+    ch: f64,
+) {
+    let rows = PICKER_THEMES.len();
+    let panel_w = 28.0 * cw;
+    let header_h = ch + 4.0;
+    let panel_h = header_h + (rows as f64) * (ch + 2.0);
+    let panel_x = ((dw - panel_w) * 0.5).max(0.0);
+    let panel_y = chrome_top + 2.0 * ch;
+
+    raster.fill_pixel_rect(panel_x, panel_y, panel_w, panel_h, theme.surface);
+    raster.fill_pixel_rect(panel_x, panel_y, panel_w, 1.0, theme.accent);
+    raster.fill_pixel_rect(panel_x, panel_y + panel_h - 1.0, panel_w, 1.0, theme.accent);
+    raster.fill_pixel_rect(panel_x, panel_y, 1.0, panel_h, theme.accent);
+    raster.fill_pixel_rect(panel_x + panel_w - 1.0, panel_y, 1.0, panel_h, theme.accent);
+
+    let pad_x = 1.5 * cw;
+    let header_label = "theme: ";
+    let mut hx = panel_x + pad_x;
+    let header_y = panel_y + 2.0;
+    for c in header_label.chars() {
+        raster.glyph_at(painter, metrics, hx, header_y, c as u32, theme.text_muted);
+        hx += cw;
+    }
+    raster.fill_pixel_rect(panel_x, panel_y + header_h, panel_w, 1.0, theme.hairline);
+
+    for (i, &name) in PICKER_THEMES.iter().enumerate() {
+        let row_y = panel_y + header_h + 1.0 + i as f64 * (ch + 2.0);
+        if i == selected.min(rows.saturating_sub(1)) {
+            raster.fill_pixel_rect_alpha(panel_x, row_y, panel_w, ch + 2.0, theme.accent, 0.15);
+        }
+        let mut rx = panel_x + pad_x;
+        let color = if i == selected.min(rows.saturating_sub(1)) {
+            theme.foreground
+        } else {
+            theme.text_muted
+        };
+        for c in name.chars() {
+            if rx + cw > panel_x + panel_w - pad_x {
+                break;
+            }
+            raster.glyph_at(painter, metrics, rx, row_y + 1.0, c as u32, color);
+            rx += cw;
+        }
+    }
+}
+
 // ── Language picker overlay draw (Q22) ───────────────────────────────────────
 
 /// Draw the language-picker overlay (Cmd+K Cmd+L).
@@ -11991,6 +12205,7 @@ fn main() -> Result<()> {
         show_gitignored_files: false,
         closed_tabs: std::collections::VecDeque::new(),
         language_picker: None,
+        theme_picker: None,
         open_folder_input: None,
         explorer_hover_row: None,
         explorer_hover_meta: None,

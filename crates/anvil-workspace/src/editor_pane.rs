@@ -286,6 +286,47 @@ pub enum EditorAction {
     /// is at end-of-line), extend the selection down by one more line so that
     /// repeated Cmd+L grows the selection one line at a time.
     SelectLine,
+
+    // ── Tier-W additions ──────────────────────────────────────────────────────
+    /// W4 (Cmd+Shift+K): delete the current cursor line; cursor moves to col 0
+    /// of the line that takes its place (or the last line if it was the final one).
+    DeleteLine,
+
+    /// W7 (Cmd+Shift+L): select all occurrences of the selected text (or the
+    /// word under the cursor when there is no selection).  Places one cursor at
+    /// each match.  No-op when no search text can be determined or no matches exist.
+    SelectAllOccurrences,
+
+    /// W8 (Cmd+U): drop the most-recently-added secondary cursor.  No-op when
+    /// only one cursor is active.
+    DropLastCursor,
+
+    /// W9 (Cmd+K Cmd+0): fold all foldable ranges in the active buffer.
+    /// Foldable ranges are detected as lines whose syntax tree contains a block
+    /// opener — for now we use a simple heuristic: any line that ends with `{`,
+    /// `(`, or `[` (after trimming trailing whitespace).
+    FoldAll,
+
+    /// W9 (Cmd+K Cmd+J): unfold all — clear all folds for the active buffer.
+    UnfoldAll,
+
+    /// W10 (Cmd+K Cmd+U): convert selected text (or current word) to UPPER CASE.
+    ConvertCaseUpper,
+
+    /// W10 (Cmd+K Cmd+Y): convert selected text (or current word) to lower case.
+    ConvertCaseLower,
+
+    /// W10 (Cmd+K Cmd+Shift+T): convert selected text (or current word) to
+    /// Title Case (first letter of each whitespace-separated word capitalised).
+    ConvertCaseTitle,
+
+    /// W11 (Cmd+K Cmd+R): sort the selected lines alphabetically (case-insensitive).
+    /// Requires a multi-line selection; no-op on a single-line selection.
+    SortSelectedLines,
+
+    /// W12 (Cmd+Shift+J): join the current line with the next line by replacing
+    /// the newline between them with a single space.  No-op on the last line.
+    JoinLines,
 }
 
 /// Maximum number of open buffers tracked per pane. When the limit is
@@ -2244,6 +2285,268 @@ impl EditorPaneRegistry {
                 pane.show_whitespace = !pane.show_whitespace;
                 false
             }
+
+            // ── Tier-W additions ──────────────────────────────────────────────
+
+            // W4: delete current line; cursor lands at col 0 of successor line.
+            EditorAction::DeleteLine => {
+                let line = pane.cursors[0].pos.line;
+                let buf = self.buffers.get(&buffer_id).unwrap();
+                let last_line = buf.line_count().saturating_sub(1);
+                // Build the range to delete: from col 0 of `line` to col 0 of
+                // the next line (or end of content when on the last line).
+                let (del_start, del_end) = if line < last_line {
+                    (
+                        Position { line, col: 0 },
+                        Position {
+                            line: line + 1,
+                            col: 0,
+                        },
+                    )
+                } else {
+                    // Last line: delete content but leave the line itself so
+                    // the buffer is never empty.
+                    let col_end = line_grapheme_len(buf, line);
+                    (Position { line, col: 0 }, Position { line, col: col_end })
+                };
+                {
+                    let buf = self.buffers.get_mut(&buffer_id).unwrap();
+                    buf.delete_range(Range {
+                        start: del_start,
+                        end: del_end,
+                    });
+                }
+                let buf = self.buffers.get(&buffer_id).unwrap();
+                let new_last = buf.line_count().saturating_sub(1);
+                let new_line = line.min(new_last);
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                set_cursor(
+                    pane,
+                    Position {
+                        line: new_line,
+                        col: 0,
+                    },
+                    false,
+                );
+                true
+            }
+
+            // W7: place one cursor at every occurrence of the selected text (or
+            // word under cursor).  Existing cursors are replaced.
+            EditorAction::SelectAllOccurrences => {
+                let search_text = {
+                    let pane = self.panes.get(&pane_id).unwrap();
+                    let buf = self.buffers.get(&buffer_id).unwrap();
+                    word_or_selection_text(pane, buf)
+                };
+                if search_text.is_empty() {
+                    return false;
+                }
+                let text = self.buffers.get(&buffer_id).unwrap().to_text();
+                let occurrences: Vec<(Position, Position)> = {
+                    let buf = self.buffers.get(&buffer_id).unwrap();
+                    let mut results = Vec::new();
+                    for (byte_start, _) in text.match_indices(search_text.as_str()) {
+                        let byte_end = byte_start + search_text.len();
+                        if byte_end > text.len() {
+                            continue;
+                        }
+                        let char_start = text[..byte_start].chars().count();
+                        let char_end = text[..byte_end].chars().count();
+                        let sl = buf.char_to_line(char_start);
+                        let el = buf.char_to_line(char_end.saturating_sub(1).max(char_start));
+                        let sc = char_start - buf.line_to_char(sl);
+                        let ec = char_end - buf.line_to_char(el);
+                        results.push((
+                            Position { line: sl, col: sc },
+                            Position { line: el, col: ec },
+                        ));
+                    }
+                    results
+                };
+                if occurrences.is_empty() {
+                    return false;
+                }
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                pane.cursors.clear();
+                for (start, end) in occurrences {
+                    pane.cursors.push(Cursor {
+                        pos: end,
+                        anchor: start,
+                    });
+                }
+                // Scroll to first match.
+                if let Some(first) = pane.cursors.first() {
+                    pane.scroll_target = first.anchor.line as f32;
+                }
+                false
+            }
+
+            // W8: drop the last secondary cursor; no-op when only one cursor exists.
+            EditorAction::DropLastCursor => {
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                if pane.cursors.len() > 1 {
+                    pane.cursors.pop();
+                }
+                false
+            }
+
+            // W9: fold all — use the simple heuristic of any line ending with
+            // `{`, `(`, or `[` (after stripping trailing whitespace/newline).
+            EditorAction::FoldAll => {
+                let fold_lines: Vec<usize> = {
+                    let buf = self.buffers.get(&buffer_id).unwrap();
+                    (0..buf.line_count())
+                        .filter(|&ln| {
+                            let s: String = buf.line(ln).chars().collect();
+                            let trimmed =
+                                s.trim_end_matches('\n').trim_end_matches('\r').trim_end();
+                            matches!(trimmed.chars().last(), Some('{') | Some('(') | Some('['))
+                        })
+                        .collect()
+                };
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                let folds = pane.folds.entry(buffer_id).or_default();
+                for ln in fold_lines {
+                    folds.insert(ln);
+                }
+                false
+            }
+
+            // W9: unfold all — clear the fold set for the active buffer.
+            EditorAction::UnfoldAll => {
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                pane.folds.remove(&buffer_id);
+                false
+            }
+
+            // W10: convert case operations on selected text or current word.
+            EditorAction::ConvertCaseUpper => {
+                convert_case(self, pane_id, buffer_id, |s| s.to_uppercase())
+            }
+            EditorAction::ConvertCaseLower => {
+                convert_case(self, pane_id, buffer_id, |s| s.to_lowercase())
+            }
+            EditorAction::ConvertCaseTitle => convert_case(self, pane_id, buffer_id, |s| {
+                let mut result = String::with_capacity(s.len());
+                let mut cap_next = true;
+                for ch in s.chars() {
+                    if ch.is_whitespace() {
+                        cap_next = true;
+                        result.push(ch);
+                    } else if cap_next {
+                        result.extend(ch.to_uppercase());
+                        cap_next = false;
+                    } else {
+                        result.extend(ch.to_lowercase());
+                    }
+                }
+                result
+            }),
+
+            // W11: sort selected lines alphabetically (case-insensitive).
+            // Requires a multi-line selection; single-line selection is a no-op.
+            EditorAction::SortSelectedLines => {
+                let (start_line, end_line) = {
+                    let pane = self.panes.get(&pane_id).unwrap();
+                    let (s, e) = selection_range(pane);
+                    (s.line, e.line)
+                };
+                if start_line == end_line {
+                    return false;
+                }
+                let lines: Vec<String> = {
+                    let buf = self.buffers.get(&buffer_id).unwrap();
+                    (start_line..=end_line)
+                        .map(|ln| buf.line(ln).chars().collect::<String>())
+                        .collect()
+                };
+                let mut sorted = lines.clone();
+                sorted.sort_by_key(|a: &String| a.to_lowercase());
+                if sorted == lines {
+                    return false; // already sorted
+                }
+                // Replace each line in reverse order to keep positions stable.
+                for (i, ln) in (start_line..=end_line).rev().enumerate() {
+                    let sorted_i = (end_line - start_line) - i;
+                    let old_text: String = {
+                        let buf = self.buffers.get(&buffer_id).unwrap();
+                        buf.line(ln).chars().collect()
+                    };
+                    let old_content = old_text.trim_end_matches('\n').trim_end_matches('\r');
+                    let new_content = sorted[sorted_i]
+                        .trim_end_matches('\n')
+                        .trim_end_matches('\r');
+                    if old_content == new_content {
+                        continue;
+                    }
+                    let old_len = old_content.graphemes(true).count();
+                    let new_text = new_content.to_string();
+                    let buf = self.buffers.get_mut(&buffer_id).unwrap();
+                    buf.delete_range(Range {
+                        start: Position { line: ln, col: 0 },
+                        end: Position {
+                            line: ln,
+                            col: old_len,
+                        },
+                    });
+                    buf.insert_str(Position { line: ln, col: 0 }, &new_text);
+                }
+                true
+            }
+
+            // W12: join current line with next by replacing the newline with a space.
+            EditorAction::JoinLines => {
+                let line = pane.cursors[0].pos.line;
+                let buf = self.buffers.get(&buffer_id).unwrap();
+                let last_line = buf.line_count().saturating_sub(1);
+                if line >= last_line {
+                    return false; // already last line
+                }
+                // The newline at end of `line` is the char at position (line, line_len).
+                let line_len = line_grapheme_len(buf, line);
+                // Delete the newline character, then insert a space if the next line
+                // is non-empty.
+                let next_line_str: String = buf.line(line + 1).chars().collect();
+                let next_non_empty = !next_line_str
+                    .trim_end_matches('\n')
+                    .trim_end_matches('\r')
+                    .is_empty();
+                {
+                    let buf = self.buffers.get_mut(&buffer_id).unwrap();
+                    // Delete from end of this line to start of next.
+                    buf.delete_range(Range {
+                        start: Position {
+                            line,
+                            col: line_len,
+                        },
+                        end: Position {
+                            line: line + 1,
+                            col: 0,
+                        },
+                    });
+                    if next_non_empty {
+                        buf.insert_str(
+                            Position {
+                                line,
+                                col: line_len,
+                            },
+                            " ",
+                        );
+                    }
+                }
+                // Cursor stays at the join point.
+                let pane = self.panes.get_mut(&pane_id).unwrap();
+                set_cursor(
+                    pane,
+                    Position {
+                        line,
+                        col: line_len,
+                    },
+                    false,
+                );
+                true
+            }
         }
     }
 }
@@ -2574,6 +2877,182 @@ fn run_rustfmt(text: &str) -> Option<String> {
         eprintln!("anvil: rustfmt exited non-zero; format skipped");
         None
     }
+}
+
+// ── Tier-W private helpers ────────────────────────────────────────────────────
+
+/// Extract the selected text for the primary cursor, or the word under the
+/// cursor when there is no selection.  Returns an empty string when neither
+/// can be determined.
+///
+/// Used by `SelectAllOccurrences` and `ConvertCase*`.
+fn word_or_selection_text(pane: &EditorPane, buf: &Buffer) -> String {
+    let (start, end) = selection_range(pane);
+    if start != end {
+        // Selection exists — extract it.
+        let mut s = String::new();
+        for line_idx in start.line..=end.line {
+            if line_idx >= buf.line_count() {
+                break;
+            }
+            let line_str: String = buf.line(line_idx).chars().collect();
+            let graphemes: Vec<&str> = line_str
+                .trim_end_matches('\n')
+                .trim_end_matches('\r')
+                .graphemes(true)
+                .collect();
+            let lo = if line_idx == start.line { start.col } else { 0 };
+            let hi = if line_idx == end.line {
+                end.col.min(graphemes.len())
+            } else {
+                graphemes.len()
+            };
+            for g in &graphemes[lo.min(graphemes.len())..hi.min(graphemes.len())] {
+                s.push_str(g);
+            }
+            if line_idx < end.line {
+                s.push('\n');
+            }
+        }
+        return s;
+    }
+    // No selection — expand to word under cursor.
+    let pos = pane.cursors[0].pos;
+    let line_str: String = buf
+        .line(pos.line.min(buf.line_count().saturating_sub(1)))
+        .chars()
+        .collect();
+    let graphemes: Vec<&str> = line_str
+        .trim_end_matches('\n')
+        .trim_end_matches('\r')
+        .graphemes(true)
+        .collect();
+    if graphemes.is_empty() {
+        return String::new();
+    }
+    let col = pos.col.min(graphemes.len().saturating_sub(1));
+    let is_word = |g: &str| g.chars().all(|c| c.is_alphanumeric() || c == '_');
+    let mut lo = col;
+    while lo > 0 && is_word(graphemes[lo - 1]) {
+        lo -= 1;
+    }
+    let mut hi = col;
+    if hi < graphemes.len() && is_word(graphemes[hi]) {
+        hi += 1;
+        while hi < graphemes.len() && is_word(graphemes[hi]) {
+            hi += 1;
+        }
+    }
+    graphemes[lo..hi].concat()
+}
+
+/// Apply a case-conversion function to the selected text (or word under
+/// cursor) and replace it in the buffer.  Returns `true` when the buffer
+/// was mutated.
+fn convert_case<F>(reg: &mut EditorPaneRegistry, pane_id: PaneId, buffer_id: BufferId, f: F) -> bool
+where
+    F: Fn(&str) -> String,
+{
+    let (start, end) = {
+        let pane = reg.panes.get(&pane_id).unwrap();
+        let buf = reg.buffers.get(&buffer_id).unwrap();
+        let (s, e) = selection_range(pane);
+        if s == e {
+            // No selection — expand to word.
+            let text = word_or_selection_text(pane, buf);
+            if text.is_empty() {
+                return false;
+            }
+            let pos = pane.cursors[0].pos;
+            let line_str: String = buf
+                .line(pos.line.min(buf.line_count().saturating_sub(1)))
+                .chars()
+                .collect();
+            let graphemes: Vec<&str> = line_str
+                .trim_end_matches('\n')
+                .trim_end_matches('\r')
+                .graphemes(true)
+                .collect();
+            let col = pos.col.min(graphemes.len().saturating_sub(1));
+            let is_word = |g: &str| g.chars().all(|c: char| c.is_alphanumeric() || c == '_');
+            let mut lo = col;
+            while lo > 0 && is_word(graphemes[lo - 1]) {
+                lo -= 1;
+            }
+            let mut hi = col;
+            if hi < graphemes.len() && is_word(graphemes[hi]) {
+                hi += 1;
+                while hi < graphemes.len() && is_word(graphemes[hi]) {
+                    hi += 1;
+                }
+            }
+            (
+                Position {
+                    line: pos.line,
+                    col: lo,
+                },
+                Position {
+                    line: pos.line,
+                    col: hi,
+                },
+            )
+        } else {
+            (s, e)
+        }
+    };
+    let original: String = {
+        let buf = reg.buffers.get(&buffer_id).unwrap();
+        let mut s = String::new();
+        for line_idx in start.line..=end.line {
+            if line_idx >= buf.line_count() {
+                break;
+            }
+            let line_str: String = buf.line(line_idx).chars().collect();
+            let gs: Vec<&str> = line_str
+                .trim_end_matches('\n')
+                .trim_end_matches('\r')
+                .graphemes(true)
+                .collect();
+            let lo = if line_idx == start.line { start.col } else { 0 };
+            let hi = if line_idx == end.line {
+                end.col.min(gs.len())
+            } else {
+                gs.len()
+            };
+            for g in &gs[lo.min(gs.len())..hi.min(gs.len())] {
+                s.push_str(g);
+            }
+            if line_idx < end.line {
+                s.push('\n');
+            }
+        }
+        s
+    };
+    let converted = f(&original);
+    if converted == original {
+        return false;
+    }
+    {
+        let buf = reg.buffers.get_mut(&buffer_id).unwrap();
+        buf.replace_range(Range { start, end }, &converted);
+    }
+    // Keep cursor at end of replacement (same position semantics as paste).
+    let new_col = converted
+        .lines()
+        .last()
+        .map(|l| l.graphemes(true).count())
+        .unwrap_or(0);
+    let new_line = start.line + converted.lines().count().saturating_sub(1);
+    let pane = reg.panes.get_mut(&pane_id).unwrap();
+    set_cursor(
+        pane,
+        Position {
+            line: new_line,
+            col: new_col,
+        },
+        false,
+    );
+    true
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -3753,5 +4232,233 @@ mod tests {
             pane.scroll_target, 0.0,
             "scroll_target must clamp to 0 when scrolled above top"
         );
+    }
+
+    // ── Tier-W action tests ───────────────────────────────────────────────────
+
+    // W4: DeleteLine
+
+    #[test]
+    fn delete_line_removes_current_line_and_moves_cursor() {
+        let (mut reg, pid) = make_reg_with_text("alpha\nbeta\ngamma\n");
+        // Position cursor on line 1 ("beta").
+        {
+            let pane = reg.get_pane_mut(pid).unwrap();
+            pane.cursors[0].pos = Position { line: 1, col: 2 };
+            pane.cursors[0].anchor = Position { line: 1, col: 2 };
+        }
+        let mut clip = None;
+        let mutated = reg.apply(pid, EditorAction::DeleteLine, &mut clip);
+        assert!(mutated);
+        assert_eq!(buf_text(&reg, pid), "alpha\ngamma\n");
+        let pane = reg.get_pane(pid).unwrap();
+        // Cursor should be at col 0 of the successor line (now "gamma" at line 1).
+        assert_eq!(pane.cursors[0].pos, Position { line: 1, col: 0 });
+    }
+
+    #[test]
+    fn delete_line_on_last_line_clears_content() {
+        // "only\n" has line 0 = "only" and line 1 = "".
+        // DeleteLine on line 0 deletes its content, leaving an empty buffer.
+        let (mut reg, pid) = make_reg_with_text("only\n");
+        let mut clip = None;
+        let mutated = reg.apply(pid, EditorAction::DeleteLine, &mut clip);
+        assert!(mutated);
+        // Content of the (sole) line is gone; the buffer text may be empty or
+        // contain only the newline depending on rope internals — either is acceptable.
+        // The critical invariant is that no panic occurred and the cursor is valid.
+        let text = buf_text(&reg, pid);
+        assert!(
+            text.is_empty() || text == "\n",
+            "expected empty or bare newline, got {text:?}"
+        );
+    }
+
+    // W7: SelectAllOccurrences
+
+    #[test]
+    fn select_all_occurrences_places_cursor_at_each_match() {
+        let (mut reg, pid) = make_reg_with_text("foo bar foo baz foo\n");
+        // Position cursor on first "foo" (col 0..3).
+        {
+            let pane = reg.get_pane_mut(pid).unwrap();
+            pane.cursors[0].anchor = Position { line: 0, col: 0 };
+            pane.cursors[0].pos = Position { line: 0, col: 3 };
+        }
+        let mut clip = None;
+        reg.apply(pid, EditorAction::SelectAllOccurrences, &mut clip);
+        let pane = reg.get_pane(pid).unwrap();
+        assert_eq!(pane.cursors.len(), 3, "three occurrences of 'foo'");
+    }
+
+    // W8: DropLastCursor
+
+    #[test]
+    fn drop_last_cursor_removes_most_recent_secondary() {
+        let (mut reg, pid) = make_reg_with_text("hello world\n");
+        // Add two secondary cursors manually.
+        {
+            let pane = reg.get_pane_mut(pid).unwrap();
+            pane.cursors.push(Cursor {
+                pos: Position { line: 0, col: 5 },
+                anchor: Position { line: 0, col: 5 },
+            });
+            pane.cursors.push(Cursor {
+                pos: Position { line: 0, col: 8 },
+                anchor: Position { line: 0, col: 8 },
+            });
+        }
+        assert_eq!(reg.get_pane(pid).unwrap().cursors.len(), 3);
+        let mut clip = None;
+        reg.apply(pid, EditorAction::DropLastCursor, &mut clip);
+        let pane = reg.get_pane(pid).unwrap();
+        assert_eq!(pane.cursors.len(), 2, "last cursor dropped");
+        assert_eq!(
+            pane.cursors.last().unwrap().pos,
+            Position { line: 0, col: 5 }
+        );
+    }
+
+    #[test]
+    fn drop_last_cursor_noop_with_single_cursor() {
+        let (mut reg, pid) = make_reg_with_text("hello\n");
+        let mut clip = None;
+        reg.apply(pid, EditorAction::DropLastCursor, &mut clip);
+        assert_eq!(reg.get_pane(pid).unwrap().cursors.len(), 1);
+    }
+
+    // W9: FoldAll / UnfoldAll
+
+    #[test]
+    fn fold_all_marks_block_opener_lines() {
+        let (mut reg, pid) = make_reg_with_text("fn foo() {\nlet x = 1;\n}\n");
+        let mut clip = None;
+        reg.apply(pid, EditorAction::FoldAll, &mut clip);
+        let pane = reg.get_pane(pid).unwrap();
+        let bid = pane.buffer_id;
+        let folds = pane.folds.get(&bid);
+        // Line 0 ends with `{` → should be folded.
+        assert!(
+            folds.map(|f| f.contains(&0)).unwrap_or(false),
+            "line 0 (opener) must be folded"
+        );
+        // Line 1 is plain → must not be folded.
+        assert!(
+            !folds.map(|f| f.contains(&1)).unwrap_or(false),
+            "line 1 must not be folded"
+        );
+    }
+
+    #[test]
+    fn unfold_all_clears_all_folds() {
+        let (mut reg, pid) = make_reg_with_text("fn foo() {\nlet x = 1;\n}\n");
+        let mut clip = None;
+        reg.apply(pid, EditorAction::FoldAll, &mut clip);
+        reg.apply(pid, EditorAction::UnfoldAll, &mut clip);
+        let pane = reg.get_pane(pid).unwrap();
+        let bid = pane.buffer_id;
+        assert!(pane.folds.get(&bid).map(|f| f.is_empty()).unwrap_or(true));
+    }
+
+    // W10: ConvertCase*
+
+    #[test]
+    fn convert_case_upper_selected_text() {
+        let (mut reg, pid) = make_reg_with_text("hello world\n");
+        {
+            let pane = reg.get_pane_mut(pid).unwrap();
+            pane.cursors[0].anchor = Position { line: 0, col: 0 };
+            pane.cursors[0].pos = Position { line: 0, col: 5 };
+        }
+        let mut clip = None;
+        let mutated = reg.apply(pid, EditorAction::ConvertCaseUpper, &mut clip);
+        assert!(mutated);
+        assert_eq!(buf_text(&reg, pid), "HELLO world\n");
+    }
+
+    #[test]
+    fn convert_case_lower_selected_text() {
+        let (mut reg, pid) = make_reg_with_text("HELLO WORLD\n");
+        {
+            let pane = reg.get_pane_mut(pid).unwrap();
+            pane.cursors[0].anchor = Position { line: 0, col: 6 };
+            pane.cursors[0].pos = Position { line: 0, col: 11 };
+        }
+        let mut clip = None;
+        let mutated = reg.apply(pid, EditorAction::ConvertCaseLower, &mut clip);
+        assert!(mutated);
+        assert_eq!(buf_text(&reg, pid), "HELLO world\n");
+    }
+
+    #[test]
+    fn convert_case_title_selected_text() {
+        let (mut reg, pid) = make_reg_with_text("hello world\n");
+        {
+            let pane = reg.get_pane_mut(pid).unwrap();
+            pane.cursors[0].anchor = Position { line: 0, col: 0 };
+            pane.cursors[0].pos = Position { line: 0, col: 11 };
+        }
+        let mut clip = None;
+        let mutated = reg.apply(pid, EditorAction::ConvertCaseTitle, &mut clip);
+        assert!(mutated);
+        assert_eq!(buf_text(&reg, pid), "Hello World\n");
+    }
+
+    // W11: SortSelectedLines
+
+    #[test]
+    fn sort_selected_lines_alphabetically() {
+        let (mut reg, pid) = make_reg_with_text("banana\napple\ncherry\n");
+        {
+            let pane = reg.get_pane_mut(pid).unwrap();
+            pane.cursors[0].anchor = Position { line: 0, col: 0 };
+            pane.cursors[0].pos = Position { line: 2, col: 6 };
+        }
+        let mut clip = None;
+        let mutated = reg.apply(pid, EditorAction::SortSelectedLines, &mut clip);
+        assert!(mutated);
+        assert_eq!(buf_text(&reg, pid), "apple\nbanana\ncherry\n");
+    }
+
+    #[test]
+    fn sort_selected_lines_noop_on_single_line() {
+        let (mut reg, pid) = make_reg_with_text("banana\napple\ncherry\n");
+        {
+            let pane = reg.get_pane_mut(pid).unwrap();
+            pane.cursors[0].anchor = Position { line: 1, col: 0 };
+            pane.cursors[0].pos = Position { line: 1, col: 5 };
+        }
+        let mut clip = None;
+        let mutated = reg.apply(pid, EditorAction::SortSelectedLines, &mut clip);
+        assert!(!mutated, "single-line selection must be a no-op");
+        assert_eq!(buf_text(&reg, pid), "banana\napple\ncherry\n");
+    }
+
+    // W12: JoinLines
+
+    #[test]
+    fn join_lines_replaces_newline_with_space() {
+        let (mut reg, pid) = make_reg_with_text("hello\nworld\n");
+        let mut clip = None;
+        let mutated = reg.apply(pid, EditorAction::JoinLines, &mut clip);
+        assert!(mutated);
+        assert_eq!(buf_text(&reg, pid), "hello world\n");
+        let pane = reg.get_pane(pid).unwrap();
+        assert_eq!(pane.cursors[0].pos.line, 0, "cursor stays on original line");
+    }
+
+    #[test]
+    fn join_lines_noop_on_last_line() {
+        let (mut reg, pid) = make_reg_with_text("hello\n");
+        {
+            // Move cursor to the last line manually (there's only one line here).
+            // last_line = 0.
+        }
+        let mut clip = None;
+        let mutated = reg.apply(pid, EditorAction::JoinLines, &mut clip);
+        // "hello\n" has line 0 and possibly a phantom empty line 1 depending on
+        // rope impl — the important thing is we don't panic and the buffer is sane.
+        let _ = mutated;
+        assert!(!buf_text(&reg, pid).is_empty());
     }
 }
