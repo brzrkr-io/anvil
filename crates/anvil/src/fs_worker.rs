@@ -30,6 +30,8 @@ pub struct FilterFlags {
 pub struct DirEntry {
     pub name: String,
     pub is_dir: bool,
+    /// True when the entry is a symbolic link (Y3).
+    pub is_symlink: bool,
 }
 
 /// A top-level directory listing sent from the worker to the main thread.
@@ -264,8 +266,8 @@ fn build_gitignore(root: &Path) -> Option<ignore::gitignore::Gitignore> {
 ///
 /// `SKIP_DIRS` (`.git`, `target`, `node_modules`) are always excluded.
 fn read_entries(root: &PathBuf, flags: FilterFlags) -> Result<Vec<DirEntry>, std::io::Error> {
-    let mut dirs: Vec<String> = Vec::new();
-    let mut files: Vec<String> = Vec::new();
+    let mut dirs: Vec<(String, bool)> = Vec::new(); // (name, is_symlink)
+    let mut files: Vec<(String, bool)> = Vec::new(); // (name, is_symlink)
 
     // Build gitignore matcher once for the whole listing.
     let gitignore = if !flags.show_gitignored {
@@ -288,8 +290,14 @@ fn read_entries(root: &PathBuf, flags: FilterFlags) -> Result<Vec<DirEntry>, std
             continue;
         }
 
+        // Check symlink status before following (Y3).
+        let lmeta = entry.metadata().ok(); // lstat — does NOT follow symlinks
+        let is_symlink = lmeta
+            .as_ref()
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false);
         // Resolve symlinks one hop for is_dir classification.
-        let meta = entry.metadata().or_else(|_| entry.path().metadata());
+        let meta = lmeta.or_else(|| entry.path().metadata().ok());
         let is_dir = meta.map(|m| m.is_dir()).unwrap_or(false);
 
         // Skip blacklisted directory names.
@@ -307,27 +315,29 @@ fn read_entries(root: &PathBuf, flags: FilterFlags) -> Result<Vec<DirEntry>, std
         }
 
         if is_dir {
-            dirs.push(name_str.into_owned());
+            dirs.push((name_str.into_owned(), is_symlink));
         } else {
-            files.push(name_str.into_owned());
+            files.push((name_str.into_owned(), is_symlink));
         }
     }
 
     // Sort each group case-insensitively.
-    dirs.sort_by_key(|a: &String| a.to_lowercase());
-    files.sort_by_key(|a: &String| a.to_lowercase());
+    dirs.sort_by_key(|(n, _): &(String, bool)| n.to_lowercase());
+    files.sort_by_key(|(n, _): &(String, bool)| n.to_lowercase());
 
     // Merge: dirs first, then files.
     let total = dirs.len() + files.len();
     let mut result: Vec<DirEntry> = Vec::with_capacity(total.min(ENTRY_CAP + 1));
 
-    let dir_entries = dirs.into_iter().map(|n| DirEntry {
+    let dir_entries = dirs.into_iter().map(|(n, sym)| DirEntry {
         name: n,
         is_dir: true,
+        is_symlink: sym,
     });
-    let file_entries = files.into_iter().map(|n| DirEntry {
+    let file_entries = files.into_iter().map(|(n, sym)| DirEntry {
         name: n,
         is_dir: false,
+        is_symlink: sym,
     });
 
     for entry in dir_entries.chain(file_entries) {
@@ -338,6 +348,7 @@ fn read_entries(root: &PathBuf, flags: FilterFlags) -> Result<Vec<DirEntry>, std
             result.push(DirEntry {
                 name: format!("\u{2026}{overflow} more"),
                 is_dir: false,
+                is_symlink: false,
             });
             break;
         }
@@ -521,6 +532,44 @@ mod tests {
         assert!(
             names.contains(&"app.log"),
             "app.log should be visible with show_gitignored, got {names:?}"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ── Y3: symlink detection ─────────────────────────────────────────────────
+
+    /// Y3: symbolic links get is_symlink = true; regular files get false.
+    #[test]
+    fn symlink_entries_have_is_symlink_true() {
+        let root = make_test_dir("symlink_y3");
+
+        // Create a regular file and a symlink to it.
+        let target = root.join("target.txt");
+        fs::write(&target, "content").unwrap();
+        let link = root.join("link.txt");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let snap = read_dir_snapshot_fast(&root, default_flags());
+
+        let link_entry = snap.entries.iter().find(|e| e.name == "link.txt");
+        assert!(
+            link_entry.is_some(),
+            "link.txt must appear in snapshot (Y3)"
+        );
+        assert!(
+            link_entry.unwrap().is_symlink,
+            "link.txt must have is_symlink = true (Y3)"
+        );
+
+        let target_entry = snap.entries.iter().find(|e| e.name == "target.txt");
+        assert!(
+            target_entry.is_some(),
+            "target.txt must appear in snapshot (Y3)"
+        );
+        assert!(
+            !target_entry.unwrap().is_symlink,
+            "target.txt must have is_symlink = false (Y3)"
         );
 
         let _ = fs::remove_dir_all(&root);
