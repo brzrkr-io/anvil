@@ -368,8 +368,20 @@ fn draw_empty_pane(
     // Row 2: subtitle
     draw_centered!(2usize, subtitle, theme.text_muted);
     // Row 3: (gap)
-    // Rows 4..: two-column action hints
+    // Rows 4..: two-column action hints.
+    // Key clusters (the chord before the first double-space) get a surface_alt
+    // pill backdrop painted before the glyphs so they read as badge-style hints.
     let col_w = rect.w * 0.5;
+
+    // Paint a key-cluster pill: surface_alt rect with 1px vertical inset.
+    let paint_key_pill = |raster: &mut crate::raster::Raster, gx: f64, ly: f64, key_cols: usize| {
+        let pill_w = key_cols as f64 * cw + 2.0; // 1px pad each side
+        let pill_h = ch + 2.0; // 1px pad top+bottom
+        let pill_x = gx - 1.0;
+        let pill_y = ly - 1.0;
+        raster.fill_pixel_rect(pill_x, pill_y, pill_w, pill_h, theme.surface_alt);
+    };
+
     for (i, (left, right)) in actions.iter().enumerate() {
         let row = 4 + i;
         let ly =
@@ -378,6 +390,14 @@ fn draw_empty_pane(
         // Left column: right-aligned within the left half, one cell of center gap.
         let left_text_w = left.chars().count() as f64 * cw;
         let left_x = (rect.x + col_w - left_text_w - cw).max(rect.x);
+        // Key cluster ends at the first "  " (two spaces).
+        let left_key_cols = left
+            .find("  ")
+            .map(|b| left[..b].chars().count())
+            .unwrap_or(0);
+        if left_key_cols > 0 {
+            paint_key_pill(raster, left_x, ly, left_key_cols);
+        }
         let mut gx = left_x;
         for c in left.chars() {
             if gx + cw > rect.x + col_w {
@@ -390,6 +410,13 @@ fn draw_empty_pane(
         // Right column: starts at center + one cell gap.
         let right_x = rect.x + col_w + cw;
         let max_rx = rect.x + rect.w - cw;
+        let right_key_cols = right
+            .find("  ")
+            .map(|b| right[..b].chars().count())
+            .unwrap_or(0);
+        if right_key_cols > 0 {
+            paint_key_pill(raster, right_x, ly, right_key_cols);
+        }
         let mut gx = right_x;
         for c in right.chars() {
             if gx + cw > max_rx {

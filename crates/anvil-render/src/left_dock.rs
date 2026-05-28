@@ -455,12 +455,13 @@ fn draw_left_dock_icons_only(
                 theme.accent_primary,
             );
         } else if hovered {
+            // Hover: surface_alt fill (one step above sidebar background).
             raster.fill_pixel_rect(
                 row_x,
                 row_top + 2.0,
                 row_w,
                 (row_h - 4.0).max(0.0),
-                theme.panel,
+                theme.surface_alt,
             );
         }
 
@@ -792,13 +793,13 @@ fn draw_explorer_section(
                         theme.accent_primary,
                     );
                 } else if hovered_row == Some(slot_i) {
-                    // Hover: solid panel fill, no left marker.
+                    // Hover: surface_alt fill (one step above sidebar background).
                     raster.fill_pixel_rect(
                         row_x,
                         row_top + 2.0,
                         row_w,
                         (row_h - 4.0).max(0.0),
-                        theme.panel,
+                        theme.surface_alt,
                     );
                 }
 
@@ -1765,7 +1766,7 @@ mod tests {
         );
     }
 
-    /// Hover paints solid `panel` only when the row is not selected.
+    /// Hover paints solid `surface_alt` only when the row is not selected.
     /// Selected row suppresses hover rendering.
     #[test]
     fn hover_paints_panel_only_when_not_selected() {
@@ -1789,7 +1790,7 @@ mod tests {
             git_marks: Default::default(),
         };
 
-        // Row 0 is hovered, not selected — should get panel fill.
+        // Row 0 is hovered, not selected — should get surface_alt fill.
         {
             let mut r = Raster::new(800, 800);
             r.clear(th.charcoal);
@@ -1820,8 +1821,8 @@ mod tests {
             // Sample the fill interior: x=50, y=38 (inside fill strip).
             let px = pixel_at(&r, 50, 38);
             assert_eq!(
-                px, th.panel,
-                "hovered non-selected row must be filled with panel, got {px:?}"
+                px, th.surface_alt,
+                "hovered non-selected row must be filled with surface_alt, got {px:?}"
             );
         }
 
