@@ -562,14 +562,15 @@ fn draw_explorer_section(
         chevron as u32,
         theme.text_subtle,
     );
+    // Item 1: "EXPLORER" header at Semibold weight, text_muted color.
     raster.ui_line(
         ui_painter,
         header_label,
         rect.x + pad_x + cell_w * 1.5,
         header_baseline,
         EXPLORER_HEADER_PT,
-        UiWeight::Regular,
-        theme.accent_bright,
+        UiWeight::Semibold,
+        theme.text_muted,
     );
     if !header_meta.is_empty() {
         let meta_w = raster.ui_measure(
@@ -1098,13 +1099,10 @@ fn draw_outline_section(
         },
         kind: LeftDockHitKind::OutlineHeader,
     });
-    // Item 10: header color is text_subtle when empty, accent_bright when symbols present.
-    let has_symbols = outline.is_some_and(|rows| !rows.is_empty());
-    let header_color = if has_symbols {
-        theme.accent_bright
-    } else {
-        theme.text_subtle
-    };
+    // Item 1: "OUTLINE" header always at text_muted (same as EXPLORER), Semibold.
+    // Item 10 accent_bright was removed; text_muted keeps both headers visually
+    // consistent and readable without competing with content.
+    let header_color = theme.text_muted;
     let outline_header_icon_top =
         rect.y + ((header_h - cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
     let outline_header_baseline = outline_header_icon_top + (cell_h - metrics.descent);
@@ -1124,7 +1122,7 @@ fn draw_outline_section(
         rect.x + pad_x + cell_w * 1.5,
         outline_header_baseline,
         EXPLORER_HEADER_PT,
-        UiWeight::Regular,
+        UiWeight::Semibold,
         header_color,
     );
     raster.fill_pixel_rect(rect.x, rect.y + header_h - 1.0, rect.w, 1.0, theme.hairline);
@@ -1667,20 +1665,19 @@ mod tests {
             dock_rect(),
         );
 
-        // File label "main.rs" now rendered via UiTextPainter in foreground.
+        // P4: file label "main.rs" rendered via UiTextPainter in text_muted
+        // (quieter leaf-node style; selected files use accent_primary).
         let file_label: Vec<_> = up
             .draws
             .iter()
-            .filter(|(text, fg)| text.contains("main.rs") && *fg == th.foreground)
+            .filter(|(text, fg)| text.contains("main.rs") && *fg == th.text_muted)
             .collect();
         assert!(
             !file_label.is_empty(),
-            "expected 'main.rs' in foreground via ui_painter for file entry label"
+            "expected 'main.rs' in text_muted via ui_painter for file entry label"
         );
 
-        // File icon for `.rs` is U+E7A8 (Nerd Font rust icon, item 3) and paints in
         // Rust files use ◈ (U+25C8) — BMP-range glyph that IBM Plex Mono renders.
-        // Nerd Font private-use codepoints don't render with the proportional UI font.
         let rust_icon_cp = '\u{25C8}' as u32;
         let file_icon: Vec<_> = p
             .glyphs
@@ -1692,16 +1689,15 @@ mod tests {
             "expected ◈ (U+25C8) for inactive .rs file"
         );
 
-        // Dir chevron ▸ (U+25B8) icon paints in foreground for inactive dir.
-        // Dir chevron ▸ uses text_muted so files (foreground) stand out more.
+        // P4: dir chevron ▸ (U+25B8) uses accent_primary — dirs are heavier anchors.
         let dir_chevron: Vec<_> = p
             .glyphs
             .iter()
-            .filter(|(cp, fg)| *cp == '\u{25B8}' as u32 && *fg == th.text_muted)
+            .filter(|(cp, fg)| *cp == '\u{25B8}' as u32 && *fg == th.accent_primary)
             .collect();
         assert!(
             !dir_chevron.is_empty(),
-            "expected dir chevron ▸ in text_muted (visual hierarchy: files > dirs)"
+            "expected dir chevron ▸ in accent_primary (P4: dirs are heavier anchors)"
         );
     }
 
@@ -1888,15 +1884,15 @@ mod tests {
             dock_rect(),
         );
 
-        // "OUTLINE" header now rendered via UiTextPainter in text_subtle.
-        let outline_subtle: Vec<_> = up
+        // Item 1: "OUTLINE" header now rendered via UiTextPainter in text_muted.
+        let outline_muted: Vec<_> = up
             .draws
             .iter()
-            .filter(|(text, fg)| *text == "OUTLINE" && *fg == th.text_subtle)
+            .filter(|(text, fg)| *text == "OUTLINE" && *fg == th.text_muted)
             .collect();
         assert!(
-            !outline_subtle.is_empty(),
-            "expected OUTLINE header in text_subtle via ui_painter in empty state"
+            !outline_muted.is_empty(),
+            "expected OUTLINE header in text_muted via ui_painter in empty state"
         );
 
         // Item 10: body copy removed — no draw call containing "source" should exist.
@@ -1970,15 +1966,15 @@ mod tests {
             dock_rect(),
         );
 
-        // "OUTLINE" header now rendered via UiTextPainter in text_subtle.
-        let outline_subtle: Vec<_> = up
+        // Item 1: "OUTLINE" header now rendered via UiTextPainter in text_muted.
+        let outline_muted: Vec<_> = up
             .draws
             .iter()
-            .filter(|(text, fg)| *text == "OUTLINE" && *fg == th.text_subtle)
+            .filter(|(text, fg)| *text == "OUTLINE" && *fg == th.text_muted)
             .collect();
         assert!(
-            !outline_subtle.is_empty(),
-            "expected OUTLINE header in text_subtle via ui_painter when Some(&[])"
+            !outline_muted.is_empty(),
+            "expected OUTLINE header in text_muted via ui_painter when Some(&[])"
         );
 
         // No body copy — no draw call containing "symbols" should exist.
@@ -2051,10 +2047,10 @@ mod tests {
         );
     }
 
-    /// Item 10: OUTLINE header uses text_subtle (not accent_bright) when outline is None.
+    /// Item 1: OUTLINE header uses text_muted at all times.
     /// Uses 'U' which appears only in "OUTLINE" (not in "EXPLORER" or waiting text).
     #[test]
-    fn outline_empty_header_uses_text_subtle() {
+    fn outline_empty_header_uses_text_muted() {
         let m = metrics();
         let th = theme();
         let mut r = Raster::new(800, 800);
@@ -2073,15 +2069,15 @@ mod tests {
             dock_rect(),
         );
 
-        // "OUTLINE" header now rendered via UiTextPainter in text_subtle.
-        let outline_subtle: Vec<_> = up
+        // Item 1: "OUTLINE" header rendered via UiTextPainter in text_muted.
+        let outline_muted: Vec<_> = up
             .draws
             .iter()
-            .filter(|(text, fg)| *text == "OUTLINE" && *fg == th.text_subtle)
+            .filter(|(text, fg)| *text == "OUTLINE" && *fg == th.text_muted)
             .collect();
         assert!(
-            !outline_subtle.is_empty(),
-            "OUTLINE header must be in text_subtle via ui_painter when outline is None"
+            !outline_muted.is_empty(),
+            "OUTLINE header must be in text_muted via ui_painter"
         );
 
         // "OUTLINE" must NOT appear in accent_bright.
@@ -2092,7 +2088,7 @@ mod tests {
             .collect();
         assert!(
             outline_bright.is_empty(),
-            "OUTLINE header must NOT use accent_bright when outline is None"
+            "OUTLINE header must NOT use accent_bright"
         );
     }
 
