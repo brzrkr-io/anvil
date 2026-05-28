@@ -346,6 +346,22 @@ fn draw_empty_pane(
         }};
     }
 
+    // Item 6: 1px graphite ring around the welcome card for visual definition.
+    {
+        let card_pad_x = 24.0;
+        let card_pad_y = 12.0;
+        let card_x = rect.x + card_pad_x;
+        let card_y = start_y - card_pad_y;
+        let card_w = rect.w - 2.0 * card_pad_x;
+        let card_h = block_h + 2.0 * card_pad_y;
+        // Top + bottom edges.
+        raster.fill_pixel_rect(card_x, card_y, card_w, 1.0, theme.graphite);
+        raster.fill_pixel_rect(card_x, card_y + card_h - 1.0, card_w, 1.0, theme.graphite);
+        // Left + right edges.
+        raster.fill_pixel_rect(card_x, card_y, 1.0, card_h, theme.graphite);
+        raster.fill_pixel_rect(card_x + card_w - 1.0, card_y, 1.0, card_h, theme.graphite);
+    }
+
     // Row 0: title
     draw_centered!(0usize, title, theme.accent_bright);
     // Row 1: (gap)

@@ -108,8 +108,20 @@ pub fn draw_status_bar(
             color,
         );
         // P5: 8pt inter-segment gap (was 2 cell-widths).
-        x +=
-            raster.ui_measure(ui_painter, label, STATUS_PT, UiWeight::Regular) + 8.0 * window_scale;
+        let label_w = raster.ui_measure(ui_painter, label, STATUS_PT, UiWeight::Regular);
+        x += label_w;
+        // Item 4: 1px graphite hairline centered in the 8pt gap before the next segment.
+        if !local_ctx.cwd.is_empty() {
+            let div_x = (x + 4.0 * window_scale).floor();
+            raster.fill_pixel_rect(
+                div_x,
+                strip_top + 4.0,
+                1.0,
+                chrome_bottom_px - 8.0,
+                theme.graphite,
+            );
+        }
+        x += 8.0 * window_scale;
     }
 
     // ── Left: cwd  ✓/✗ last 0.1s ─────────────────────────────────────────
@@ -124,8 +136,8 @@ pub fn draw_status_bar(
             UiWeight::Regular,
             theme.text_muted,
         );
-        // P5: 8pt inter-segment gap (was 2 cell-widths).
-        x += raster.ui_measure(ui_painter, &cwd, STATUS_PT, UiWeight::Regular) + 8.0 * window_scale;
+        let cwd_w = raster.ui_measure(ui_painter, &cwd, STATUS_PT, UiWeight::Regular);
+        x += cwd_w;
 
         // ✓/✗ symbols stay on mono path (single special chars).
         let (sym_cp, sym_color) = match local_ctx.run {
