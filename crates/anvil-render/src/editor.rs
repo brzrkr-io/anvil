@@ -192,6 +192,8 @@ pub fn draw_editor_into(
             if cursor_vrow < visible_rows {
                 let tint_y = rect.y + cursor_vrow as f64 * ch;
                 raster.fill_pixel_rect_alpha(rect.x, tint_y, rect.w, ch, theme.surface, 0.55);
+                // Active row gutter pill: 2px accent_primary strip at left gutter edge.
+                raster.fill_pixel_rect(rect.x, tint_y, 2.0, ch, theme.accent_primary);
             }
         }
     }
@@ -244,6 +246,60 @@ pub fn draw_editor_into(
                 gx += cw;
             }
         }
+    }
+
+    // ── Markdown fence backdrop pre-pass ─────────────────────────────────────
+    // For markdown buffers, scan all lines once to find fenced code block
+    // interior rows (between the opening ``` and closing ``` delimiters).
+    // Paint surface_alt backdrop rects before the glyph loop so text renders
+    // over the tint. The set is computed per frame; buffers are typically small.
+    let fence_interior_lines: std::collections::HashSet<usize> = {
+        if buffer.language_id() == Some("markdown") {
+            let mut set = std::collections::HashSet::new();
+            let mut in_fence = false;
+            let mut fence_start = 0usize;
+            for li in 0..line_count {
+                let line_s: String = buffer.line(li).chars().collect();
+                let trimmed = line_s.trim_start();
+                if trimmed.starts_with("```") {
+                    if in_fence {
+                        // Closing delimiter — interior was fence_start..li (exclusive).
+                        in_fence = false;
+                    } else {
+                        in_fence = true;
+                        fence_start = li + 1;
+                    }
+                } else if in_fence {
+                    let _ = fence_start;
+                    set.insert(li);
+                }
+            }
+            set
+        } else {
+            std::collections::HashSet::new()
+        }
+    };
+    // Paint fence backdrop rects for visible fence-interior rows.
+    for &li in &fence_interior_lines {
+        if li < scroll_line {
+            continue;
+        }
+        let bvrow = li - scroll_line;
+        if bvrow >= visible_rows {
+            continue;
+        }
+        if hidden_lines.contains(&li) {
+            continue;
+        }
+        let fy = rect.y + bvrow as f64 * ch;
+        // Full-row backdrop at surface_alt, no alpha blend (solid step up from surface).
+        raster.fill_pixel_rect(
+            rect.x + gutter_w,
+            fy,
+            rect.w - gutter_w,
+            ch,
+            theme.surface_alt,
+        );
     }
 
     // ── Row loop ──────────────────────────────────────────────────────────────

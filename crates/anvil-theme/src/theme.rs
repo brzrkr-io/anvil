@@ -102,6 +102,9 @@ pub struct Theme {
     pub agent: [u8; 3],
     /// Branch glyph, trace, info. Reads teal.
     pub info: [u8; 3],
+    /// Slightly lighter than `surface` — used for nested panels, code fence
+    /// backdrops, and other recessed fills that need one step above `surface`.
+    pub surface_alt: [u8; 3],
     /// Syntax-highlight role colors (NE8).
     pub syntax: SyntaxTheme,
 }
@@ -158,6 +161,7 @@ pub const EMBER_DARK: Theme = Theme {
     charcoal: [0x20, 0x1d, 0x1b],
     panel: [0x2f, 0x2c, 0x29],
     panel_raised: [0x25, 0x22, 0x20],
+    surface_alt: [0x2b, 0x28, 0x25], // midpoint between surface and panel
     hairline: [0x31, 0x2e, 0x2b],
     text_muted: [0x9e, 0x96, 0x90],
     text_subtle: [0x6a, 0x63, 0x60],
@@ -213,6 +217,7 @@ pub const EMBER_LIGHT: Theme = Theme {
     charcoal: [0xfd, 0xfa, 0xf7],
     panel: [0xed, 0xe5, 0xdc],
     panel_raised: [0xf0, 0xe9, 0xe2],
+    surface_alt: [0xf7, 0xf3, 0xef], // slightly off-white between background and surface
     hairline: [0xca, 0xbe, 0xa8],
     text_muted: [0x52, 0x45, 0x3c],
     text_subtle: [0x8a, 0x7e, 0x72],
@@ -274,6 +279,7 @@ pub const MINERAL_DARK: Theme = Theme {
     charcoal: [0x16, 0x1a, 0x1c],
     panel: [0x1d, 0x21, 0x29],
     panel_raised: [0x22, 0x26, 0x2f],
+    surface_alt: [0x2a, 0x2f, 0x39], // one step above surface (#22262f)
     hairline: [0x23, 0x26, 0x2b],
     text_muted: [0xa1, 0xa4, 0xa9],
     text_subtle: [0x6c, 0x6f, 0x74],
@@ -330,6 +336,7 @@ pub const SOLARIZED_DARK: Theme = Theme {
     charcoal: [0x07, 0x36, 0x42],
     panel: [0x07, 0x36, 0x42],
     panel_raised: [0x0a, 0x3d, 0x4a],
+    surface_alt: [0x0a, 0x3d, 0x4a], // same as panel_raised; lifted surface for code fence
     hairline: [0x10, 0x4a, 0x58],
     text_muted: [0x65, 0x7b, 0x83],
     text_subtle: [0x58, 0x6e, 0x75],
@@ -385,6 +392,7 @@ pub const SOLARIZED_LIGHT: Theme = Theme {
     charcoal: [0xe4, 0xde, 0xca],
     panel: [0xee, 0xe8, 0xd5],
     panel_raised: [0xf5, 0xf0, 0xe4],
+    surface_alt: [0xf5, 0xf0, 0xe4], // same as panel_raised; lifted surface for code fence
     hairline: [0xc8, 0xc0, 0xaa],
     text_muted: [0x83, 0x94, 0x96],
     text_subtle: [0x93, 0xa1, 0xa1],
@@ -447,6 +455,7 @@ pub const MINERAL_LIGHT: Theme = Theme {
     charcoal: [0xd6, 0xdb, 0xe0],
     panel: [0xff, 0xff, 0xff],
     panel_raised: [0xff, 0xff, 0xff],
+    surface_alt: [0xf2, 0xf4, 0xf5], // slightly darker than surface (#ffffff) on bone canvas
     hairline: [0xb8, 0xbe, 0xc3],
     text_muted: [0xa1, 0xa4, 0xa9],
     text_subtle: [0x6c, 0x6f, 0x74],
