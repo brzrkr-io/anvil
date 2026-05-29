@@ -44,11 +44,14 @@ pub const Renderer = struct {
     /// the grid at device-pixel origin (`ox`, `oy`). Returns the count written.
     /// `out` must hold at least rows*cols entries.
     pub fn buildInstances(self: *Renderer, term: *Terminal, ox: f32, oy: f32, out: []CellInstance) usize {
+        const width = @import("../vt/width.zig").charWidth;
         var n: usize = 0;
         var r: u16 = 0;
         while (r < term.grid.rows) : (r += 1) {
             const cells = term.viewRow(r);
             const y = oy + @as(f32, @floatFromInt(r)) * self.cell_h;
+            // Right half UV owed to the spacer cell of a preceding wide glyph.
+            var wide_right: ?[2]f32 = null;
             var c: u16 = 0;
             while (c < term.grid.cols) : (c += 1) {
                 const cell = if (c < cells.len) cells[c] else @import("../vt/cell.zig").Cell.blank;
@@ -73,12 +76,25 @@ pub const Renderer = struct {
                 if (cell.attrs.underline) flags |= inst.flag_underline;
                 if (cell.attrs.strike) flags |= inst.flag_strike;
                 if (cell.attrs.dim) flags |= inst.flag_dim;
+                // A double-width glyph is drawn as two cells sampling the left
+                // and right halves of a 2-cell-wide atlas raster.
+                var uv: [2]f32 = undefined;
+                if (wide_right) |ruv| {
+                    uv = ruv;
+                    wide_right = null;
+                } else if (width(cell.cp) == 2) {
+                    const left = self.atlas.wideSlot(cell.cp);
+                    uv = Atlas.slotUV(left);
+                    wide_right = Atlas.slotUV(left + 1);
+                } else {
+                    uv = self.atlas.uvOrigin(cell.cp);
+                }
                 out[n] = .{
                     .x = ox + @as(f32, @floatFromInt(c)) * self.cell_w,
                     .y = y,
                     .fg = fg.f32x4(),
                     .bg = bg.f32x4(),
-                    .uv = self.atlas.uvOrigin(cell.cp),
+                    .uv = uv,
                     .flags = flags,
                 };
                 n += 1;

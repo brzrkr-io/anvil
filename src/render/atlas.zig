@@ -7,8 +7,9 @@ pub const rows_n: u16 = 32;
 pub const capacity: u16 = cols * rows_n; // 1024 slots
 
 /// One glyph the shim must rasterize this frame: `cp` into grid `slot`.
-/// Layout matches the C `PendingGlyph` read in shim.m (two u32s).
-pub const PendingGlyph = extern struct { cp: u32, slot: u32 };
+/// `wide` = 1 means a double-width glyph spanning `slot` and `slot`+1.
+/// Layout matches the C `PendingGlyph` read in shim.m (three u32s).
+pub const PendingGlyph = extern struct { cp: u32, slot: u32, wide: u32 = 0 };
 
 /// Dynamic glyph atlas. Maps each codepoint to a slot in the grid texture,
 /// rasterizing on first use (lazy). Slot 0 is the blank cell, shared by space
@@ -37,7 +38,8 @@ pub const Atlas = struct {
         };
     }
 
-    fn slotUV(slot: u16) [2]f32 {
+    /// Top-left UV of `slot`'s cell in the grid texture.
+    pub fn slotUV(slot: u16) [2]f32 {
         return .{
             @as(f32, @floatFromInt(slot % cols)) / @as(f32, @floatFromInt(cols)),
             @as(f32, @floatFromInt(slot / cols)) / @as(f32, @floatFromInt(rows_n)),
@@ -60,9 +62,32 @@ pub const Atlas = struct {
         self.next += 1;
         self.keys[i] = cp;
         self.vals[i] = slot;
-        self.pending[self.pending_n] = .{ .cp = cp, .slot = slot };
+        self.pending[self.pending_n] = .{ .cp = cp, .slot = slot, .wide = 0 };
         self.pending_n += 1;
         return slot;
+    }
+
+    /// Left slot for a double-width `cp`, reserving two horizontally adjacent
+    /// slots in the same texture row and queueing a wide raster. The right half
+    /// lives at the returned slot + 1. Returns 0 (blank) when the cache is full.
+    pub fn wideSlot(self: *Atlas, cp: u21) u16 {
+        if (cp <= ' ') return 0;
+        const mask: u32 = capacity - 1;
+        var i: u32 = (@as(u32, cp) *% 2654435761) & mask;
+        while (self.keys[i] != 0) {
+            if (self.keys[i] == cp) return self.vals[i];
+            i = (i + 1) & mask;
+        }
+        // Keep both halves in one row: skip a trailing last-column slot.
+        if (self.next % cols == cols - 1) self.next += 1;
+        if (self.next + 1 >= capacity) return 0; // no room for the pair
+        const left = self.next;
+        self.next += 2;
+        self.keys[i] = cp;
+        self.vals[i] = left;
+        self.pending[self.pending_n] = .{ .cp = cp, .slot = left, .wide = 1 };
+        self.pending_n += 1;
+        return left;
     }
 
     /// UV of the top-left of `cp`'s cell, assigning + queueing on first use.
@@ -128,6 +153,17 @@ test "cache full falls back to blank" {
     while (a.next < capacity) : (cp += 1) _ = a.slotFor(cp);
     try std.testing.expectEqual(capacity, a.next);
     try std.testing.expectEqual(@as(u16, 0), a.slotFor(0x10FFFF)); // overflow → blank
+}
+
+test "wideSlot reserves two adjacent slots in one row, cached, wide-flagged" {
+    var a = Atlas{};
+    const left = a.wideSlot(0x4E00); // CJK 一
+    try std.testing.expect(left != 0);
+    try std.testing.expectEqual(left % cols, (left + 1) % cols - 1); // same row, adjacent
+    try std.testing.expectEqual(left, a.wideSlot(0x4E00)); // cached
+    try std.testing.expectEqual(@as(u16, 1), a.pending_n); // queued once
+    try std.testing.expectEqual(@as(u32, 1), a.pending[0].wide);
+    try std.testing.expectEqual(left, @as(u16, @intCast(a.pending[0].slot)));
 }
 
 test "cellUV is one grid cell" {

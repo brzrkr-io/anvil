@@ -21,7 +21,7 @@ typedef struct {
     const float *overlay; // flat x,y,w,h,r,g,b per palette rect
     uint32_t overlay_count;
     uint32_t palette_text_count; // glyph instances after `count`, drawn last
-    const void *pending; // PendingGlyph[]: {uint32 cp, uint32 slot}
+    const void *pending; // PendingGlyph[]: {uint32 cp, uint32 slot, uint32 wide}
     uint32_t pending_count;
 } FrameData;
 
@@ -182,14 +182,15 @@ static void buildAtlas(void) {
 
 // Rasterize one codepoint into its cache slot. Uses a CTLine so the system
 // font cascade fills glyphs Menlo lacks (box-drawing, symbols, etc).
-static void rasterizeGlyph(uint32_t cp, uint32_t slot) {
+static void rasterizeGlyph(uint32_t cp, uint32_t slot, uint32_t wide) {
     if (!gAtlas || !gFont) return;
     int col = (int)(slot % gCols);
     int row = (int)(slot / gCols);
+    int w = wide ? gGW * 2 : gGW; // wide glyphs span two adjacent cells
 
-    uint8_t *buf = calloc((size_t)gGW * gGH, 1);
+    uint8_t *buf = calloc((size_t)w * gGH, 1);
     CGColorSpaceRef gray = CGColorSpaceCreateDeviceGray();
-    CGContextRef ctx = CGBitmapContextCreate(buf, gGW, gGH, 8, gGW, gray, kCGImageAlphaNone);
+    CGContextRef ctx = CGBitmapContextCreate(buf, w, gGH, 8, w, gray, kCGImageAlphaNone);
     CGContextSetGrayFillColor(ctx, 1.0, 1.0);
 
     CFStringRef s = CFStringCreateWithBytes(NULL, (const UInt8 *)&cp, 4,
@@ -211,10 +212,10 @@ static void rasterizeGlyph(uint32_t cp, uint32_t slot) {
         CFRelease(s);
     }
 
-    [gAtlas replaceRegion:MTLRegionMake2D(col * gGW, row * gGH, gGW, gGH)
+    [gAtlas replaceRegion:MTLRegionMake2D(col * gGW, row * gGH, w, gGH)
               mipmapLevel:0
                 withBytes:buf
-              bytesPerRow:gGW];
+              bytesPerRow:w];
 
     CGContextRelease(ctx);
     CGColorSpaceRelease(gray);
@@ -225,7 +226,7 @@ static void rasterizeGlyph(uint32_t cp, uint32_t slot) {
 static void drainPending(const FrameData *fd) {
     const uint32_t *pg = (const uint32_t *)fd->pending;
     for (uint32_t i = 0; i < fd->pending_count; i++) {
-        rasterizeGlyph(pg[i * 2], pg[i * 2 + 1]);
+        rasterizeGlyph(pg[i * 3], pg[i * 3 + 1], pg[i * 3 + 2]);
     }
 }
 
