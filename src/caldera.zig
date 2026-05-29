@@ -28,6 +28,51 @@ pub const Row = struct {
 };
 
 const max_rows = 16;
+const max_events_per_run = 8;
+const event_summary_max = 64;
+const run_field_max = 48;
+
+pub const EventSummary = struct {
+    text: [event_summary_max]u8 = undefined,
+    len: usize = 0,
+
+    pub fn slice(self: *const EventSummary) []const u8 {
+        return self.text[0..self.len];
+    }
+
+    fn set(self: *EventSummary, s: []const u8) void {
+        const n = @min(s.len, event_summary_max);
+        @memcpy(self.text[0..n], s[0..n]);
+        self.len = n;
+    }
+};
+
+pub const RunDetail = struct {
+    agent: [run_field_max]u8 = undefined,
+    agent_len: usize = 0,
+    step: [run_field_max]u8 = undefined,
+    step_len: usize = 0,
+    status: [run_field_max]u8 = undefined,
+    status_len: usize = 0,
+    events: [max_events_per_run]EventSummary = undefined,
+    event_count: usize = 0,
+
+    pub fn agentSlice(self: *const RunDetail) []const u8 {
+        return self.agent[0..self.agent_len];
+    }
+    pub fn stepSlice(self: *const RunDetail) []const u8 {
+        return self.step[0..self.step_len];
+    }
+    pub fn statusSlice(self: *const RunDetail) []const u8 {
+        return self.status[0..self.status_len];
+    }
+
+    fn setField(buf: []u8, len_out: *usize, s: []const u8) void {
+        const n = @min(s.len, buf.len);
+        @memcpy(buf[0..n], s[0..n]);
+        len_out.* = n;
+    }
+};
 
 pub const Snapshot = struct {
     conn: Connection = .offline,
@@ -36,6 +81,7 @@ pub const Snapshot = struct {
     runs: usize = 0, // count of run rows (they lead `rows`)
     rows: [max_rows]Row = undefined,
     row_count: usize = 0,
+    details: [max_rows]RunDetail = undefined,
 
     pub fn projectName(self: *const Snapshot) []const u8 {
         return self.project[0..self.project_len];
@@ -49,15 +95,15 @@ pub const Snapshot = struct {
     }
 };
 
-var g_mutex: std.Thread.Mutex = .{};
+var g_mutex: std.c.pthread_mutex_t = std.c.PTHREAD_MUTEX_INITIALIZER;
 var g_snap: Snapshot = .{};
 var g_alloc: std.mem.Allocator = undefined;
 var g_running = false;
 
 /// Copy the latest snapshot. Safe to call from the render thread.
 pub fn get(out: *Snapshot) void {
-    g_mutex.lock();
-    defer g_mutex.unlock();
+    _ = std.c.pthread_mutex_lock(&g_mutex);
+    defer _ = std.c.pthread_mutex_unlock(&g_mutex);
     out.* = g_snap;
 }
 
@@ -74,10 +120,11 @@ pub fn start(alloc: std.mem.Allocator) void {
 fn pollLoop() void {
     while (g_running) {
         const snap = buildSnapshot();
-        g_mutex.lock();
+        _ = std.c.pthread_mutex_lock(&g_mutex);
         g_snap = snap;
-        g_mutex.unlock();
-        std.Thread.sleep(2 * std.time.ns_per_s);
+        _ = std.c.pthread_mutex_unlock(&g_mutex);
+        const ts = std.c.timespec{ .sec = 2, .nsec = 0 };
+        _ = std.c.nanosleep(&ts, null);
     }
 }
 
@@ -162,10 +209,21 @@ fn buildSnapshot() Snapshot {
         if (parse(RunsResp, a, body)) |p| {
             defer p.deinit();
             for (p.value.agent_runs) |run| {
+                const idx = s.row_count;
                 const row = s.pushRow() orelse break;
                 const passed = std.mem.eql(u8, run.backend_status, "passed");
                 const task = if (run.events.len > 0) run.events[0].summary else "";
                 row.set(if (passed) .run_passed else .run_open, "{s}  {s}  {s}", .{ run.agent, run.current_step, task });
+                var d = &s.details[idx];
+                d.* = .{};
+                RunDetail.setField(&d.agent, &d.agent_len, run.agent);
+                RunDetail.setField(&d.step, &d.step_len, run.current_step);
+                RunDetail.setField(&d.status, &d.status_len, run.backend_status);
+                const n_ev = @min(run.events.len, max_events_per_run);
+                for (run.events[0..n_ev], 0..) |ev, ei| {
+                    d.events[ei].set(ev.summary);
+                }
+                d.event_count = n_ev;
             }
             s.runs = s.row_count;
         }
@@ -194,6 +252,30 @@ test "parse agent-runs body into rows" {
     try std.testing.expectEqual(@as(usize, 1), p.value.agent_runs.len);
     try std.testing.expectEqualStrings("terry", p.value.agent_runs[0].agent);
     try std.testing.expectEqualStrings("ship it", p.value.agent_runs[0].events[0].summary);
+}
+
+test "buildSnapshot retains all capped event summaries in order" {
+    const body =
+        \\{"agent_runs":[{"agent":"ops","current_step":"running","backend_status":"open",
+        \\ "events":[{"summary":"first"},{"summary":"second"},{"summary":"third"}]}]}
+    ;
+    const p = parse(RunsResp, std.testing.allocator, body).?;
+    defer p.deinit();
+    const run = p.value.agent_runs[0];
+    var d = RunDetail{};
+    RunDetail.setField(&d.agent, &d.agent_len, run.agent);
+    RunDetail.setField(&d.step, &d.step_len, run.current_step);
+    RunDetail.setField(&d.status, &d.status_len, run.backend_status);
+    const n_ev = @min(run.events.len, max_events_per_run);
+    for (run.events[0..n_ev], 0..) |ev, ei| d.events[ei].set(ev.summary);
+    d.event_count = n_ev;
+
+    try std.testing.expectEqualStrings("ops", d.agentSlice());
+    try std.testing.expectEqualStrings("running", d.stepSlice());
+    try std.testing.expectEqual(@as(usize, 3), d.event_count);
+    try std.testing.expectEqualStrings("first", d.events[0].slice());
+    try std.testing.expectEqualStrings("second", d.events[1].slice());
+    try std.testing.expectEqualStrings("third", d.events[2].slice());
 }
 
 test "parse activity attention, tolerating unknown fields" {

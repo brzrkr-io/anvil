@@ -61,6 +61,12 @@ const copy_mode_bindings = [_]Binding{
     .{ .chord = "Esc / q", .action = "Exit Copy Mode" },
 };
 
+const agents = [_]Binding{
+    .{ .chord = "\u{2318}G", .action = "Open Run Drawer" },
+    .{ .chord = "\u{2191}/\u{2193}", .action = "Select Run" },
+    .{ .chord = "Esc", .action = "Close Drawer" },
+};
+
 pub const sections = [_]Section{
     .{ .title = "General", .items = &general },
     .{ .title = "Search", .items = &search_bindings },
@@ -68,9 +74,10 @@ pub const sections = [_]Section{
     .{ .title = "Tabs", .items = &tabs },
     .{ .title = "Terminal", .items = &terminal },
     .{ .title = "Copy Mode", .items = &copy_mode_bindings },
+    .{ .title = "Agents", .items = &agents },
 };
 
-pub const total_bindings: usize = general.len + search_bindings.len + panes.len + tabs.len + terminal.len + copy_mode_bindings.len;
+pub const total_bindings: usize = general.len + search_bindings.len + panes.len + tabs.len + terminal.len + copy_mode_bindings.len + agents.len;
 
 test "sections non-empty" {
     try std.testing.expect(sections.len > 0);
@@ -86,5 +93,5 @@ test "all bindings have non-empty chord and action" {
 }
 
 test "total binding count" {
-    try std.testing.expectEqual(@as(usize, 37), total_bindings);
+    try std.testing.expectEqual(@as(usize, 40), total_bindings);
 }

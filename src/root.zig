@@ -29,4 +29,5 @@ test {
     _ = @import("session_persist.zig");
     _ = @import("context_chip.zig");
     _ = @import("copy_mode.zig");
+    _ = @import("caldera.zig");
 }

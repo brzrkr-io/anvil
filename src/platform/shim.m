@@ -84,6 +84,9 @@ extern int anvil_cfg_error_open(void);
 extern void anvil_cfg_error_dismiss(void);
 extern void anvil_respawn(void);
 extern const char *anvil_copy(size_t *out_len);
+extern void anvil_caldera_drawer_toggle(void);
+extern int anvil_caldera_drawer_open(void);
+extern void anvil_caldera_drawer_key(int key);
 extern void anvil_set_theme_mode(int mode);
 extern void anvil_set_os_dark(int is_dark);
 extern int anvil_theme_is_dark(void);
@@ -598,6 +601,17 @@ static void layoutTrafficLights(NSWindow *win) {
     {
         BOOL shift = (f & NSEventModifierFlagShift) != 0;
         if (cmd && shift && ich == ' ') { anvil_copy_mode_toggle(); return; }
+    }
+    // Cmd+G toggles the Caldera run-detail drawer from any state.
+    if (cmd && ilc == 'g') { anvil_caldera_drawer_toggle(); return; }
+
+    // While the run-detail drawer is open it captures nav keys; PTY sees nothing.
+    if (anvil_caldera_drawer_open()) {
+        unichar ch = s.length ? [s characterAtIndex:0] : 0;
+        if (ch == 0x1b) { anvil_caldera_drawer_key(0); return; }
+        if (ch == NSUpArrowFunctionKey)   { anvil_caldera_drawer_key(1); return; }
+        if (ch == NSDownArrowFunctionKey) { anvil_caldera_drawer_key(2); return; }
+        return; // swallow everything else
     }
 
     // While the cheatsheet is open it captures all keys; the PTY sees nothing.

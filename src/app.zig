@@ -14,6 +14,7 @@ const keys = @import("keys.zig");
 const persist = @import("session_persist.zig");
 const chip_mod = @import("context_chip.zig");
 const copy_mode_mod = @import("copy_mode.zig");
+const caldera = @import("caldera.zig");
 
 const shader_src = @embedFile("platform/shaders.metal");
 const font_data = @embedFile("font_ttf");
@@ -45,6 +46,10 @@ var help_open: bool = false;
 var copy_mode = copy_mode_mod.CopyMode{};
 var overlay: [128 * 7]f32 = undefined; // colored rects (x,y,w,h,r,g,b)
 var ctx_chip: chip_mod.Chip = .{};
+
+var caldera_snap: caldera.Snapshot = .{};
+var caldera_sel: usize = 0;
+var caldera_drawer: bool = false;
 
 var cfg: config.Config = .{};
 var cfg_loaded = false;
@@ -629,6 +634,40 @@ export fn anvil_cfg_error_dismiss() callconv(.c) void {
     cfg_error_len = 0;
 }
 
+export fn anvil_caldera_drawer_toggle() callconv(.c) void {
+    if (!ready) return;
+    caldera.get(&caldera_snap);
+    if (caldera_drawer) {
+        caldera_drawer = false;
+    } else {
+        if (caldera_snap.runs == 0) return;
+        if (caldera_sel >= caldera_snap.runs) caldera_sel = 0;
+        cpal.hide();
+        srch.hide();
+        help_open = false;
+        caldera_drawer = true;
+    }
+}
+
+export fn anvil_caldera_drawer_open() callconv(.c) c_int {
+    return if (caldera_drawer) 1 else 0;
+}
+
+/// key: 0 esc/close, 1 up, 2 down.
+export fn anvil_caldera_drawer_key(key: c_int) callconv(.c) void {
+    switch (key) {
+        0 => caldera_drawer = false,
+        1 => {
+            if (caldera_sel > 0) caldera_sel -= 1;
+        },
+        2 => {
+            if (caldera_snap.runs > 0 and caldera_sel < caldera_snap.runs - 1)
+                caldera_sel += 1;
+        },
+        else => {},
+    }
+}
+
 /// Scroll the focused terminal so `m` is visible and select its span, reusing
 /// the normal selection highlight. Centers the match line when possible.
 fn jumpToMatch(m: search.Match) void {
@@ -799,7 +838,16 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
     out.count = @intCast(n);
     out.divider_count = if (zoomed) 0 else @intCast(tree.dividers(ws, divider_px, &divider_rects));
 
-    if (help_open) {
+    if (caldera_drawer) {
+        caldera.get(&caldera_snap);
+        if (caldera_snap.runs == 0 or caldera_sel >= caldera_snap.runs) {
+            caldera_drawer = false;
+        } else {
+            const r = emitCalderaDrawer(th, n);
+            out.palette_text_count = @intCast(r.text);
+            out.overlay_count = @intCast(r.rects);
+        }
+    } else if (help_open) {
         const r = emitHelp(th, n);
         out.palette_text_count = @intCast(r.text);
         out.overlay_count = @intCast(r.rects);
@@ -1180,6 +1228,94 @@ fn emitSearch(th: *const theme.Theme, start: usize) struct { text: usize, rects:
         putGlyph(n, rx + @as(f32, @floatFromInt(i)) * cw, by, th.separator, th.bar, c);
         n += 1;
     }
+    return .{ .text = n - start, .rects = ri };
+}
+
+/// Lay out the Caldera run-detail drawer: a centered panel showing the selected
+/// run's header fields and all event summaries in order.
+fn emitCalderaDrawer(th: *const theme.Theme, start: usize) struct { text: usize, rects: usize } {
+    const cw = renderer.cell_w;
+    const ch = renderer.cell_h;
+    const pad = renderer.pad_x;
+
+    const inner_cols: usize = 64;
+    const pw = @as(f32, @floatFromInt(inner_cols)) * cw + pad * 2;
+
+    const d = &caldera_snap.details[caldera_sel];
+    // header: agent, step, status; then blank; then events
+    const event_rows = d.event_count;
+    const total_rows: usize = 4 + event_rows; // title + 3 header lines + events
+    const max_rows_f = @floor(win_h * 0.85 / ch);
+    const max_rows_n: usize = @intFromFloat(max_rows_f);
+    const visible_rows = @min(total_rows, max_rows_n);
+    const ph = @as(f32, @floatFromInt(visible_rows)) * ch;
+
+    const px = @floor((win_w - pw) / 2);
+    const py = @floor(win_h * 0.12);
+
+    var ri: usize = 0;
+    putRect(ri, px - 1, py - 1, pw + 2, ph + 2, th.separator);
+    ri += 1;
+    putRect(ri, px, py, pw, ph, th.bar);
+    ri += 1;
+
+    var n = start;
+    const tx = px + pad;
+    var row: usize = 0;
+
+    // Title: run index + agent name
+    {
+        var tbuf: [80]u8 = undefined;
+        const title = std.fmt.bufPrint(&tbuf, "Run {d}: {s}", .{ caldera_sel + 1, d.agentSlice() }) catch "Run Detail";
+        const ry = py + @as(f32, @floatFromInt(row)) * ch;
+        for (title, 0..) |c, i| {
+            if (n >= instances.len) break;
+            putGlyph(n, tx + @as(f32, @floatFromInt(i)) * cw, ry, th.sel_fg, th.bar, c);
+            n += 1;
+        }
+        row += 1;
+    }
+
+    if (row < visible_rows) {
+        var lbuf: [80]u8 = undefined;
+        const label = std.fmt.bufPrint(&lbuf, "step: {s}", .{d.stepSlice()}) catch "";
+        const ry = py + @as(f32, @floatFromInt(row)) * ch;
+        for (label, 0..) |c, i| {
+            if (n >= instances.len) break;
+            putGlyph(n, tx + @as(f32, @floatFromInt(i)) * cw, ry, th.ansi[6], th.bar, c);
+            n += 1;
+        }
+        row += 1;
+    }
+
+    if (row < visible_rows) {
+        var lbuf: [80]u8 = undefined;
+        const passed = std.mem.eql(u8, d.statusSlice(), "passed");
+        const status_color = if (passed) th.ansi[2] else th.ansi[3];
+        const label = std.fmt.bufPrint(&lbuf, "status: {s}", .{d.statusSlice()}) catch "";
+        const ry = py + @as(f32, @floatFromInt(row)) * ch;
+        for (label, 0..) |c, i| {
+            if (n >= instances.len) break;
+            putGlyph(n, tx + @as(f32, @floatFromInt(i)) * cw, ry, status_color, th.bar, c);
+            n += 1;
+        }
+        row += 1;
+    }
+
+    for (0..event_rows) |ei| {
+        if (row >= visible_rows) break;
+        const ev = &d.events[ei];
+        var lbuf: [80]u8 = undefined;
+        const label = std.fmt.bufPrint(&lbuf, "{d}. {s}", .{ ei + 1, ev.slice() }) catch "";
+        const ry = py + @as(f32, @floatFromInt(row)) * ch;
+        for (label, 0..) |c, i| {
+            if (n >= instances.len) break;
+            putGlyph(n, tx + @as(f32, @floatFromInt(i)) * cw, ry, th.fg, th.bar, c);
+            n += 1;
+        }
+        row += 1;
+    }
+
     return .{ .text = n - start, .rects = ri };
 }
 
