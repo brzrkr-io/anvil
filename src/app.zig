@@ -232,6 +232,15 @@ export fn anvil_scroll(delta: c_int) callconv(.c) void {
     s.term.scrollView(@intCast(delta));
 }
 
+/// Jump the focused pane's view to the previous (dir < 0) or next (dir > 0)
+/// shell prompt mark (OSC 133). No-op without marks in that direction.
+export fn anvil_jump_prompt(dir: c_int) callconv(.c) void {
+    if (!ready) return;
+    const s = focused();
+    s.term.clearSelection();
+    s.term.jumpPrompt(@intCast(dir));
+}
+
 fn contains(r: pane.Rect, x: f32, y: f32) bool {
     return x >= r.x and x < r.x + r.w and y >= r.y and y < r.y + r.h;
 }

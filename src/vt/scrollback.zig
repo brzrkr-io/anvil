@@ -7,6 +7,10 @@ pub const Scrollback = struct {
     buf: [][]Cell,
     start: usize = 0,
     count: usize = 0,
+    /// Total lines ever pushed, including evicted ones. Gives each line a stable
+    /// absolute id (`pushed - count + index`) that survives eviction — used for
+    /// prompt marks (OSC 133).
+    pushed: usize = 0,
 
     pub fn init(alloc: std.mem.Allocator, cap: usize) !Scrollback {
         return .{ .alloc = alloc, .buf = try alloc.alloc([]Cell, cap) };
@@ -20,6 +24,7 @@ pub const Scrollback = struct {
 
     pub fn push(self: *Scrollback, src: []const Cell) void {
         const line = self.alloc.dupe(Cell, src) catch return;
+        self.pushed += 1;
         if (self.count < self.buf.len) {
             self.buf[(self.start + self.count) % self.buf.len] = line;
             self.count += 1;
@@ -34,6 +39,7 @@ pub const Scrollback = struct {
     pub fn pop(self: *Scrollback) ?[]Cell {
         if (self.count == 0) return null;
         self.count -= 1;
+        self.pushed -= 1;
         return self.at(self.count);
     }
 

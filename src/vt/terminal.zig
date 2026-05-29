@@ -55,6 +55,10 @@ pub const Terminal = struct {
     clip_buf: [2048]u8 = undefined, // pending OSC 52 clipboard write
     clip_len: usize = 0,
     clip_pending: bool = false,
+    // Prompt marks (OSC 133 A): absolute line ids, oldest→newest ring buffer.
+    marks: [256]usize = undefined,
+    marks_start: usize = 0,
+    marks_n: usize = 0,
 
     /// Window title set via OSC 0/2 (empty until the shell sets one).
     pub fn title(self: *const Terminal) []const u8 {
@@ -97,6 +101,57 @@ pub const Terminal = struct {
         if (!self.clip_pending) return null;
         self.clip_pending = false;
         return self.clip_buf[0..self.clip_len];
+    }
+
+    /// OSC 133 shell-integration mark. Only the prompt-start mark ('A') is
+    /// recorded; the rest (B/C/D) are accepted and ignored. The mark stores the
+    /// absolute id of the cursor's current line so jumps survive scrollback
+    /// eviction.
+    pub fn shellMark(self: *Terminal, kind: u8) void {
+        if (kind != 'A') return;
+        const abs = self.scrollback.pushed + self.cy;
+        // Coalesce: a prompt redraw can re-emit 'A' on the same line.
+        if (self.marks_n > 0) {
+            const last = self.marks[(self.marks_start + self.marks_n - 1) % self.marks.len];
+            if (last == abs) return;
+        }
+        if (self.marks_n < self.marks.len) {
+            self.marks[(self.marks_start + self.marks_n) % self.marks.len] = abs;
+            self.marks_n += 1;
+        } else {
+            self.marks[self.marks_start] = abs;
+            self.marks_start = (self.marks_start + 1) % self.marks.len;
+        }
+    }
+
+    fn markAt(self: *const Terminal, i: usize) usize {
+        return self.marks[(self.marks_start + i) % self.marks.len];
+    }
+
+    /// Scroll the view to the prompt mark above (dir < 0) or below (dir > 0) the
+    /// current top visible line. No-op if there's no mark in that direction.
+    pub fn jumpPrompt(self: *Terminal, dir: i32) void {
+        const evicted = self.scrollback.pushed - self.scrollback.len();
+        const top_abs = self.scrollback.pushed - self.view_offset; // first visible line
+        var target: ?usize = null;
+        var i: usize = 0;
+        while (i < self.marks_n) : (i += 1) {
+            const m = self.markAt(i);
+            if (m < evicted) continue; // mark scrolled out of history
+            if (dir < 0) {
+                if (m < top_abs) target = m; // last one below top wins
+            } else {
+                if (m > top_abs) {
+                    target = m;
+                    break; // first one above top wins
+                }
+            }
+        }
+        const t = target orelse return;
+        // Place the target line at the top row. A target in the live grid
+        // (abs >= pushed) means scroll fully to the bottom.
+        const off = if (t >= self.scrollback.pushed) 0 else self.scrollback.pushed - t;
+        self.view_offset = @min(off, self.scrollback.len());
     }
 
     /// DECSCUSR: 0/1 blink block, 2 steady block, 3 blink underline,
@@ -882,4 +937,31 @@ test "sgr sets and resets pen" {
     t.sgr(&.{0});
     try std.testing.expect(!t.pen.attrs.bold);
     try std.testing.expectEqual(Color.default, t.pen.fg);
+}
+
+test "OSC 133 prompt marks: record A, coalesce, ignore others" {
+    var t = try Terminal.init(std.testing.allocator, 3, 10);
+    defer t.deinit();
+    t.shellMark('A'); // line abs 0
+    t.shellMark('A'); // same line → coalesced
+    t.shellMark('C'); // not a prompt-start → ignored
+    try std.testing.expectEqual(@as(usize, 1), t.marks_n);
+    try std.testing.expectEqual(@as(usize, 0), t.markAt(0));
+}
+
+test "jumpPrompt scrolls to the prompt above, then back to bottom" {
+    var t = try Terminal.init(std.testing.allocator, 3, 10);
+    defer t.deinit();
+    t.shellMark('A'); // prompt at abs 0
+    var i: usize = 0;
+    while (i < 5) : (i += 1) t.lineFeed(); // scroll 3 lines into history
+    t.shellMark('A'); // a later prompt on the live grid
+    try std.testing.expectEqual(@as(usize, 2), t.marks_n);
+    try std.testing.expectEqual(@as(usize, 0), t.view_offset); // viewing the bottom
+
+    t.jumpPrompt(-1); // jump up to the first prompt
+    try std.testing.expectEqual(t.scrollback.len(), t.view_offset);
+
+    t.jumpPrompt(1); // jump down to the later prompt (live grid → bottom)
+    try std.testing.expectEqual(@as(usize, 0), t.view_offset);
 }

@@ -58,6 +58,7 @@ extern void anvil_focus_dir(int dir);
 extern void anvil_new_tab(void);
 extern void anvil_cycle_tab(int delta);
 extern void anvil_close_tab(void);
+extern void anvil_jump_prompt(int dir);
 extern void anvil_palette_toggle(void);
 extern int anvil_palette_open(void);
 extern void anvil_palette_char(unsigned char c);
@@ -571,6 +572,8 @@ static void layoutTrafficLights(NSWindow *win) {
                 case NSDownArrowFunctionKey:  anvil_focus_dir(3); return;
             }
         }
+        if (ch == NSUpArrowFunctionKey)   { anvil_jump_prompt(-1); return; }
+        if (ch == NSDownArrowFunctionKey) { anvil_jump_prompt(1); return; }
         if (ch == ']' || ch == '}') { anvil_cycle_tab(1); return; }
         if (ch == '[' || ch == '{') { anvil_cycle_tab(-1); return; }
         unichar lc = (ch >= 'A' && ch <= 'Z') ? ch + 32 : ch;

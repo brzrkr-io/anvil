@@ -130,6 +130,8 @@ pub const Parser = struct {
         switch (ps) {
             0, 2 => term.setTitle(pt),
             7 => term.setCwd(pt),
+            133 => if (pt.len > 0) term.shellMark(pt[0]), // shell-integration marks
+
             52 => { // set clipboard: Pc ; <base64>. Query ("?") is ignored.
                 const sc = std.mem.indexOfScalar(u8, pt, ';') orelse return;
                 const data = pt[sc + 1 ..];
@@ -336,6 +338,18 @@ test "OSC 52 sets clipboard from base64, ignores query" {
     try std.testing.expect(t.takeClipboard() == null); // drained
     p.feed(&t, "\x1b]52;c;?\x07"); // query: must not set anything
     try std.testing.expect(t.takeClipboard() == null);
+}
+
+test "OSC 133 A records a prompt mark; B/C/D do not" {
+    var t = try Terminal.init(std.testing.allocator, 3, 10);
+    defer t.deinit();
+    var p = Parser{};
+    p.feed(&t, "\x1b]133;A\x07");
+    try std.testing.expectEqual(@as(usize, 1), t.marks_n);
+    p.feed(&t, "\x1b]133;B\x07"); // command start
+    p.feed(&t, "\x1b]133;C\x07"); // output start
+    p.feed(&t, "\x1b]133;D;0\x07"); // command end with exit code
+    try std.testing.expectEqual(@as(usize, 1), t.marks_n);
 }
 
 test "DECSCUSR sets cursor shape and blink" {
