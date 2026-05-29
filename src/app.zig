@@ -32,7 +32,7 @@ var win_h: f32 = 0;
 var ready = false;
 var cpal = cmd.Palette{};
 var srch = search.Search{};
-var overlay: [8 * 7]f32 = undefined; // up to 8 colored rects (x,y,w,h,r,g,b)
+var overlay: [64 * 7]f32 = undefined; // colored rects (x,y,w,h,r,g,b)
 
 var cfg: config.Config = .{};
 var cfg_loaded = false;
@@ -593,6 +593,8 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
         const r = emitSearch(th, n);
         out.palette_text_count = @intCast(r.text);
         out.overlay_count = @intCast(r.rects);
+    } else {
+        out.overlay_count = @intCast(emitRunRails(th));
     }
 
     out.pending_count = renderer.atlas.pending_n;
@@ -608,6 +610,35 @@ fn putRect(ri: usize, x: f32, y: f32, w: f32, h: f32, c: theme.Rgb) void {
     o[4] = f[0];
     o[5] = f[1];
     o[6] = f[2];
+}
+
+/// Inline run-block rails: a 3px vertical bar in each pane's left gutter,
+/// one per visible OSC-133 command block, colored by exit state. Writes into
+/// `overlay` and returns the rect count. Only called when no modal is open.
+fn emitRunRails(th: *const theme.Theme) usize {
+    const RunBlock = @import("vt/terminal.zig").RunBlock;
+    const max_rail = overlay.len / 7;
+    var blocks: [64]RunBlock = undefined;
+    var ri: usize = 0;
+    const np = layoutPanes(&pane_buf);
+    for (pane_buf[0..np]) |p| {
+        const s = mgr.byId(p.id) orelse continue;
+        const oy = p.rect.y + renderer.pad_x;
+        const nb = s.term.visibleRunBlocks(&blocks);
+        for (blocks[0..nb]) |b| {
+            if (ri >= max_rail) break;
+            const c = switch (b.state) {
+                .running => th.ansi[5],
+                .ok => th.ansi[2],
+                .fail => th.ansi[1],
+            };
+            const y = oy + @as(f32, @floatFromInt(b.row)) * renderer.cell_h;
+            const h = @as(f32, @floatFromInt(b.rows)) * renderer.cell_h;
+            putRect(ri, p.rect.x + 2, y, 3, h, c);
+            ri += 1;
+        }
+    }
+    return ri;
 }
 
 const tab_label_max = 16; // cells

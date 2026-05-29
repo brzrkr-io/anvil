@@ -17,6 +17,17 @@ pub const MouseMode = enum { off, normal, button, any };
 /// Cursor shape requested via DECSCUSR (CSI Ps SP q).
 pub const CursorStyle = enum { block, underline, bar };
 
+/// State of a shell command run (OSC 133). `running` until a command-end mark
+/// reports an exit code; then `ok` (0) or `fail` (non-zero).
+pub const MarkState = enum { running, ok, fail };
+
+/// A shell prompt mark: the absolute line id of the prompt + the run's state.
+pub const Mark = struct { abs: usize, state: MarkState = .running };
+
+/// A visible command run for the ambient left rail: its top visible row, how
+/// many rows the run spans on screen, and its state.
+pub const RunBlock = struct { row: u16, rows: u16, state: MarkState };
+
 /// Linear (text-flow) selection in visible-grid coordinates.
 pub const Selection = struct {
     anchor: Pos,
@@ -55,8 +66,8 @@ pub const Terminal = struct {
     clip_buf: [2048]u8 = undefined, // pending OSC 52 clipboard write
     clip_len: usize = 0,
     clip_pending: bool = false,
-    // Prompt marks (OSC 133 A): absolute line ids, oldest→newest ring buffer.
-    marks: [256]usize = undefined,
+    // Prompt marks (OSC 133): one per command, oldest→newest ring buffer.
+    marks: [256]Mark = undefined,
     marks_start: usize = 0,
     marks_n: usize = 0,
 
@@ -111,21 +122,55 @@ pub const Terminal = struct {
         if (kind != 'A') return;
         const abs = self.scrollback.pushed + self.cy;
         // Coalesce: a prompt redraw can re-emit 'A' on the same line.
-        if (self.marks_n > 0) {
-            const last = self.marks[(self.marks_start + self.marks_n - 1) % self.marks.len];
-            if (last == abs) return;
-        }
+        if (self.marks_n > 0 and self.markAt(self.marks_n - 1).abs == abs) return;
+        const m = Mark{ .abs = abs, .state = .running };
         if (self.marks_n < self.marks.len) {
-            self.marks[(self.marks_start + self.marks_n) % self.marks.len] = abs;
+            self.marks[(self.marks_start + self.marks_n) % self.marks.len] = m;
             self.marks_n += 1;
         } else {
-            self.marks[self.marks_start] = abs;
+            self.marks[self.marks_start] = m;
             self.marks_start = (self.marks_start + 1) % self.marks.len;
         }
     }
 
-    fn markAt(self: *const Terminal, i: usize) usize {
+    /// OSC 133 command-end. Stamp the most recent run with its exit status.
+    pub fn commandEnd(self: *Terminal, exit_code: u16) void {
+        if (self.marks_n == 0) return;
+        const i = (self.marks_start + self.marks_n - 1) % self.marks.len;
+        self.marks[i].state = if (exit_code == 0) .ok else .fail;
+    }
+
+    pub fn markAt(self: *const Terminal, i: usize) Mark {
         return self.marks[(self.marks_start + i) % self.marks.len];
+    }
+
+    /// Visible command runs for the ambient left rail. Each run spans from its
+    /// prompt line down to the next prompt (or the bottom of content), clipped
+    /// to the visible viewport. Fills `out` and returns the count.
+    pub fn visibleRunBlocks(self: *const Terminal, out: []RunBlock) usize {
+        const sb = self.scrollback.len();
+        const evicted = self.scrollback.pushed - sb;
+        const top_logical: i64 = @as(i64, @intCast(sb)) - @as(i64, @intCast(self.view_offset));
+        const rows: i64 = @intCast(self.grid.rows);
+        const bottom_logical: i64 = @as(i64, @intCast(sb)) + rows; // end of live content
+        var n: usize = 0;
+        var i: usize = 0;
+        while (i < self.marks_n and n < out.len) : (i += 1) {
+            const m = self.markAt(i);
+            if (m.abs < evicted) continue; // scrolled out of history
+            const start_logical: i64 = @intCast(m.abs - evicted);
+            var end_logical = bottom_logical;
+            if (i + 1 < self.marks_n) {
+                const nm = self.markAt(i + 1);
+                if (nm.abs >= evicted) end_logical = @intCast(nm.abs - evicted);
+            }
+            const r0 = std.math.clamp(start_logical - top_logical, 0, rows);
+            const r1 = std.math.clamp(end_logical - top_logical, 0, rows);
+            if (r1 <= r0) continue; // not in the viewport
+            out[n] = .{ .row = @intCast(r0), .rows = @intCast(r1 - r0), .state = m.state };
+            n += 1;
+        }
+        return n;
     }
 
     /// Scroll the view to the prompt mark above (dir < 0) or below (dir > 0) the
@@ -136,7 +181,7 @@ pub const Terminal = struct {
         var target: ?usize = null;
         var i: usize = 0;
         while (i < self.marks_n) : (i += 1) {
-            const m = self.markAt(i);
+            const m = self.markAt(i).abs;
             if (m < evicted) continue; // mark scrolled out of history
             if (dir < 0) {
                 if (m < top_abs) target = m; // last one below top wins
@@ -946,7 +991,7 @@ test "OSC 133 prompt marks: record A, coalesce, ignore others" {
     t.shellMark('A'); // same line → coalesced
     t.shellMark('C'); // not a prompt-start → ignored
     try std.testing.expectEqual(@as(usize, 1), t.marks_n);
-    try std.testing.expectEqual(@as(usize, 0), t.markAt(0));
+    try std.testing.expectEqual(@as(usize, 0), t.markAt(0).abs);
 }
 
 test "jumpPrompt scrolls to the prompt above, then back to bottom" {
@@ -964,4 +1009,36 @@ test "jumpPrompt scrolls to the prompt above, then back to bottom" {
 
     t.jumpPrompt(1); // jump down to the later prompt (live grid → bottom)
     try std.testing.expectEqual(@as(usize, 0), t.view_offset);
+}
+
+test "commandEnd sets the last mark's run state from the exit code" {
+    var t = try Terminal.init(std.testing.allocator, 3, 10);
+    defer t.deinit();
+    t.shellMark('A');
+    try std.testing.expectEqual(MarkState.running, t.markAt(0).state);
+    t.commandEnd(0);
+    try std.testing.expectEqual(MarkState.ok, t.markAt(0).state);
+    t.shellMark('A'); // would need a new line to be distinct
+    t.lineFeed();
+    t.shellMark('A');
+    t.commandEnd(1);
+    try std.testing.expectEqual(MarkState.fail, t.markAt(t.marks_n - 1).state);
+}
+
+test "visibleRunBlocks spans each mark to the next, colored by state" {
+    var t = try Terminal.init(std.testing.allocator, 4, 10);
+    defer t.deinit();
+    t.shellMark('A'); // block 0 at row 0
+    t.commandEnd(0); // ok
+    t.lineFeed();
+    t.lineFeed();
+    t.shellMark('A'); // block 1 at row 2, still running
+    var out: [8]RunBlock = undefined;
+    const n = t.visibleRunBlocks(&out);
+    try std.testing.expectEqual(@as(usize, 2), n);
+    try std.testing.expectEqual(@as(u16, 0), out[0].row);
+    try std.testing.expectEqual(@as(u16, 2), out[0].rows); // spans to next mark
+    try std.testing.expectEqual(MarkState.ok, out[0].state);
+    try std.testing.expectEqual(@as(u16, 2), out[1].row);
+    try std.testing.expectEqual(MarkState.running, out[1].state);
 }

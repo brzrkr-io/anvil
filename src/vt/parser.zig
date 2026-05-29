@@ -130,7 +130,17 @@ pub const Parser = struct {
         switch (ps) {
             0, 2 => term.setTitle(pt),
             7 => term.setCwd(pt),
-            133 => if (pt.len > 0) term.shellMark(pt[0]), // shell-integration marks
+            133 => if (pt.len > 0) { // shell-integration marks
+                if (pt[0] == 'D') {
+                    // D or D;<code> → command end; bare D means success.
+                    var code: u16 = 0;
+                    if (std.mem.indexOfScalar(u8, pt, ';')) |sc|
+                        code = std.fmt.parseInt(u16, pt[sc + 1 ..], 10) catch 0;
+                    term.commandEnd(code);
+                } else {
+                    term.shellMark(pt[0]);
+                }
+            },
 
             52 => { // set clipboard: Pc ; <base64>. Query ("?") is ignored.
                 const sc = std.mem.indexOfScalar(u8, pt, ';') orelse return;
@@ -350,6 +360,26 @@ test "OSC 133 A records a prompt mark; B/C/D do not" {
     p.feed(&t, "\x1b]133;C\x07"); // output start
     p.feed(&t, "\x1b]133;D;0\x07"); // command end with exit code
     try std.testing.expectEqual(@as(usize, 1), t.marks_n);
+}
+
+test "OSC 133 D updates the run state from the exit code" {
+    const MarkState = @import("terminal.zig").MarkState;
+    var t = try Terminal.init(std.testing.allocator, 3, 10);
+    defer t.deinit();
+    var p = Parser{};
+    p.feed(&t, "\x1b]133;A\x07");
+    p.feed(&t, "\x1b]133;D;0\x07"); // success
+    try std.testing.expectEqual(MarkState.ok, t.markAt(0).state);
+
+    t.lineFeed();
+    p.feed(&t, "\x1b]133;A\x07");
+    p.feed(&t, "\x1b]133;D;1\x07"); // failure
+    try std.testing.expectEqual(MarkState.fail, t.markAt(t.marks_n - 1).state);
+
+    t.lineFeed();
+    p.feed(&t, "\x1b]133;A\x07");
+    p.feed(&t, "\x1b]133;D\x07"); // bare D → success
+    try std.testing.expectEqual(MarkState.ok, t.markAt(t.marks_n - 1).state);
 }
 
 test "DECSCUSR sets cursor shape and blink" {
