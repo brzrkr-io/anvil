@@ -132,12 +132,35 @@ export fn anvil_scroll(delta: c_int) callconv(.c) void {
     s.term.scrollView(@intCast(delta));
 }
 
+fn contains(r: pane.Rect, x: f32, y: f32) bool {
+    return x >= r.x and x < r.x + r.w and y >= r.y and y < r.y + r.h;
+}
+
 /// kind: 0 = press (start), 1 = drag, 2 = release (extend). x/y in device px.
+/// Press hit-tests the pane under the cursor and focuses it; drag/release
+/// stay in the focused pane.
 export fn anvil_mouse(kind: c_int, x: f32, y: f32) callconv(.c) void {
     if (!ready) return;
-    const cf = (x - renderer.pad_x) / renderer.cell_w;
-    const rf = (y - renderer.pad_y) / renderer.cell_h;
-    const s = focused();
+    const tree = &(mgr.tree orelse return);
+    const np = tree.layout(workspaceRect(), divider_px, &pane_buf);
+    if (kind == 0) {
+        for (pane_buf[0..np]) |p| {
+            if (contains(p.rect, x, y)) {
+                mgr.focused = p.id;
+                break;
+            }
+        }
+    }
+    var fr: ?pane.Rect = null;
+    for (pane_buf[0..np]) |p| {
+        if (p.id == mgr.focused) fr = p.rect;
+    }
+    const r = fr orelse return;
+    const s = mgr.byId(mgr.focused) orelse return;
+    const ox = r.x + renderer.pad_x;
+    const oy = r.y + renderer.pad_x;
+    const cf = (x - ox) / renderer.cell_w;
+    const rf = (y - oy) / renderer.cell_h;
     const col: u16 = @intFromFloat(std.math.clamp(cf, 0, @as(f32, @floatFromInt(s.term.grid.cols - 1))));
     const row: u16 = @intFromFloat(std.math.clamp(rf, 0, @as(f32, @floatFromInt(s.term.grid.rows - 1))));
     switch (kind) {

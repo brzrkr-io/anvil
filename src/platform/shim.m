@@ -46,6 +46,9 @@ extern int anvil_poll(void);
 extern void anvil_input(const char *bytes, size_t len);
 extern void anvil_scroll(int delta);
 extern void anvil_mouse(int kind, float x, float y);
+extern void anvil_split(int axis);
+extern void anvil_close_pane(void);
+extern void anvil_focus_dir(int dir);
 extern const char *anvil_copy(size_t *out_len);
 extern void anvil_set_theme_mode(int mode);
 extern void anvil_set_os_dark(int is_dark);
@@ -418,10 +421,24 @@ static void layoutTrafficLights(NSWindow *win) {
 }
 - (void)keyDown:(NSEvent *)e {
     NSString *s = e.characters;
-    if (e.modifierFlags & NSEventModifierFlagCommand) {
-        unichar cmd = s.length ? [s characterAtIndex:0] : 0;
-        if (cmd == 'c') [self copySelection];
-        else if (cmd == 'v') [self pasteClipboard];
+    NSEventModifierFlags f = e.modifierFlags;
+    if (f & NSEventModifierFlagCommand) {
+        NSString *im = e.charactersIgnoringModifiers;
+        unichar ch = im.length ? [im characterAtIndex:0] : 0;
+        BOOL shift = (f & NSEventModifierFlagShift) != 0;
+        if (f & NSEventModifierFlagOption) {
+            switch (ch) {
+                case NSLeftArrowFunctionKey:  anvil_focus_dir(0); return;
+                case NSRightArrowFunctionKey: anvil_focus_dir(1); return;
+                case NSUpArrowFunctionKey:    anvil_focus_dir(2); return;
+                case NSDownArrowFunctionKey:  anvil_focus_dir(3); return;
+            }
+        }
+        unichar lc = (ch >= 'A' && ch <= 'Z') ? ch + 32 : ch;
+        if (lc == 'c') [self copySelection];
+        else if (lc == 'v') [self pasteClipboard];
+        else if (lc == 'd') anvil_split(shift ? 1 : 0);
+        else if (lc == 'w') anvil_close_pane();
         return;
     }
     if (s.length == 1) {
