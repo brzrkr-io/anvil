@@ -29,6 +29,8 @@ pub fn build(b: *std.Build) void {
     exe.root_module.linkFramework("Metal", .{});
     exe.root_module.linkFramework("CoreText", .{});
     exe.root_module.linkFramework("CoreGraphics", .{});
+    exe.root_module.linkFramework("ImageIO", .{});
+    exe.root_module.linkFramework("UniformTypeIdentifiers", .{});
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);

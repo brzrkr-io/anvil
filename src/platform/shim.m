@@ -3,6 +3,9 @@
 #import <Metal/Metal.h>
 #import <CoreText/CoreText.h>
 #import <CoreGraphics/CoreGraphics.h>
+#import <ImageIO/ImageIO.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import <unistd.h>
 
 typedef struct {
     const void *instances;
@@ -177,6 +180,93 @@ static void render(void) {
     [enc endEncoding];
     [cb presentDrawable:drawable];
     [cb commit];
+}
+
+// Headless one-shot: render a single frame to a PNG. No window, no run loop.
+// For visual verification without Screen Recording permission.
+void anvil_dump(const char *path, uint32_t w, uint32_t h) {
+    @autoreleasepool {
+        gDevice = MTLCreateSystemDefaultDevice();
+        gQueue = [gDevice newCommandQueue];
+        gLayer = [CAMetalLayer layer];
+        gLayer.device = gDevice;
+        gLayer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+
+        buildPipeline();
+        buildAtlas();
+        anvil_resize((float)w, (float)h);
+
+        for (int i = 0; i < 40; i++) {
+            if (!anvil_poll()) break;
+            usleep(20000);
+        }
+
+        FrameData fd = {0};
+        anvil_frame(&fd);
+
+        MTLTextureDescriptor *td =
+            [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                               width:w height:h mipmapped:NO];
+        td.usage = MTLTextureUsageRenderTarget;
+        td.storageMode = MTLStorageModeManaged;
+        id<MTLTexture> tex = [gDevice newTextureWithDescriptor:td];
+
+        MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+        rp.colorAttachments[0].texture = tex;
+        rp.colorAttachments[0].loadAction = MTLLoadActionClear;
+        rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+        rp.colorAttachments[0].clearColor = MTLClearColorMake(0.05, 0.06, 0.08, 1.0);
+
+        id<MTLCommandBuffer> cb = [gQueue commandBuffer];
+        id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
+        if (gPipeline && fd.count > 0) {
+            uint32_t count = fd.count > MAX_INSTANCES ? MAX_INSTANCES : fd.count;
+            memcpy(gInstanceBuf.contents, fd.instances, count * INSTANCE_STRIDE);
+            Uniforms u = {
+                .cell = {fd.cell_w, fd.cell_h},
+                .pad = {fd.pad_x, fd.pad_y},
+                .viewport = {(float)w, (float)h},
+                .cell_uv = {fd.cell_uv[0], fd.cell_uv[1]},
+            };
+            [enc setRenderPipelineState:gPipeline];
+            [enc setVertexBuffer:gInstanceBuf offset:0 atIndex:0];
+            [enc setVertexBytes:&u length:sizeof(u) atIndex:1];
+            [enc setFragmentTexture:gAtlas atIndex:0];
+            [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip
+                    vertexStart:0 vertexCount:4 instanceCount:count];
+        }
+        [enc endEncoding];
+
+        id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+        [blit synchronizeResource:tex];
+        [blit endEncoding];
+        [cb commit];
+        [cb waitUntilCompleted];
+
+        size_t bpr = (size_t)w * 4;
+        uint8_t *px = malloc(bpr * h);
+        [tex getBytes:px bytesPerRow:bpr fromRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0];
+
+        CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+        CGBitmapInfo bi = kCGBitmapByteOrder32Little | kCGImageAlphaNoneSkipFirst;
+        CGContextRef ctx = CGBitmapContextCreate(px, w, h, 8, bpr, cs, bi);
+        CGImageRef img = CGBitmapContextCreateImage(ctx);
+
+        CFStringRef cfpath = CFStringCreateWithCString(NULL, path, kCFStringEncodingUTF8);
+        CFURLRef url = CFURLCreateWithFileSystemPath(NULL, cfpath, kCFURLPOSIXPathStyle, false);
+        CGImageDestinationRef dest =
+            CGImageDestinationCreateWithURL(url, (__bridge CFStringRef)UTTypePNG.identifier, 1, NULL);
+        CGImageDestinationAddImage(dest, img, NULL);
+        CGImageDestinationFinalize(dest);
+
+        CFRelease(dest);
+        CFRelease(url);
+        CFRelease(cfpath);
+        CGImageRelease(img);
+        CGContextRelease(ctx);
+        CGColorSpaceRelease(cs);
+        free(px);
+    }
 }
 
 @interface AnvilView : NSView
