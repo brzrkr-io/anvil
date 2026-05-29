@@ -1,5 +1,6 @@
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/CAMetalLayer.h>
+#import <QuartzCore/CATransaction.h>
 #import <Metal/Metal.h>
 #import <CoreText/CoreText.h>
 #import <CoreGraphics/CoreGraphics.h>
@@ -485,8 +486,17 @@ static void layoutTrafficLights(NSWindow *win) {
 - (void)setFrameSize:(NSSize)size {
     [super setFrameSize:size];
     CGFloat scale = self.window.backingScaleFactor ?: 2.0;
+    // Disable the implicit CA animation on drawableSize so the layer does not
+    // stretch the old frame while the grid reflows — that is the resize glitch.
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
     gLayer.drawableSize = CGSizeMake(size.width * scale, size.height * scale);
+    [CATransaction commit];
     if (self.window) layoutTrafficLights(self.window);
+    // Render synchronously during live resize: the timer is suspended while the
+    // run loop is in event-tracking mode, so without this the content freezes
+    // and tears until the drag ends.
+    if (self.window && gLayer.device) render();
 }
 - (BOOL)acceptsFirstResponder {
     return YES;
@@ -747,11 +757,14 @@ void anvil_run(void) {
         layoutTrafficLights(win);
 
         AnvilTick *tick = [[AnvilTick alloc] init];
-        [NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0
-                                         target:tick
-                                       selector:@selector(tick:)
-                                       userInfo:nil
-                                        repeats:YES];
+        NSTimer *timer = [NSTimer timerWithTimeInterval:1.0 / 60.0
+                                                 target:tick
+                                               selector:@selector(tick:)
+                                               userInfo:nil
+                                                repeats:YES];
+        // Common modes so the 60Hz loop keeps firing during live resize and
+        // window drags (event-tracking mode), not just in the default mode.
+        [[NSRunLoop currentRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
 
         [NSApp run];
     }
