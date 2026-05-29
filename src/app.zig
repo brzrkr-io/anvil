@@ -198,6 +198,7 @@ fn updateThemeEnv() void {
 }
 
 export fn anvil_set_theme_mode(m: c_int) callconv(.c) void {
+    if (m < 0 or m > 2) return;
     theme_mode = @enumFromInt(m);
 }
 
@@ -432,12 +433,14 @@ export fn anvil_close_pane() callconv(.c) void {
 /// dir: 0 left, 1 right, 2 up, 3 down.
 export fn anvil_focus_dir(dir: c_int) callconv(.c) void {
     if (!ready) return;
+    if (dir < 0 or dir > 3) return;
     mgr.focusNeighbor(workspaceRect(), @enumFromInt(dir), &pane_buf);
 }
 
 /// Grow the focused pane toward `dir` (0 left, 1 right, 2 up, 3 down).
 export fn anvil_resize_pane(dir: c_int) callconv(.c) void {
     if (!ready or zoomed) return;
+    if (dir < 0 or dir > 3) return;
     mgr.resizeFocused(@enumFromInt(dir), 0.05);
     relayout();
 }
@@ -819,6 +822,7 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
             const label = tabLabel(ti, &buf);
             var it = std.unicode.Utf8View.initUnchecked(label).iterator();
             while (it.nextCodepoint()) |cp| {
+                if (n >= instances.len) break;
                 instances[n] = .{
                     .x = x,
                     .y = label_y,
@@ -1121,6 +1125,7 @@ fn tabLabel(ti: usize, buf: []u8) []const u8 {
 }
 
 fn putGlyph(idx: usize, x: f32, y: f32, fg: theme.Rgb, bg: theme.Rgb, ch: u8) void {
+    if (idx >= instances.len) return;
     instances[idx] = .{
         .x = x,
         .y = y,
@@ -1387,6 +1392,7 @@ fn emitHelp(th: *const theme.Theme, start: usize) struct { text: usize, rects: u
             var it = std.unicode.Utf8View.initUnchecked(b.chord).iterator();
             while (it.nextCodepoint()) |cp| {
                 if (col >= chord_cols) break;
+                if (n >= instances.len) break;
                 instances[n] = .{
                     .x = tx + @as(f32, @floatFromInt(col)) * cw,
                     .y = by2,
