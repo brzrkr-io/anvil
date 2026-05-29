@@ -43,10 +43,13 @@ export fn anvil_set_metrics(cell_w: f32, cell_h: f32) callconv(.c) void {
 
 export fn anvil_resize(px_w: f32, px_h: f32) callconv(.c) void {
     const g = renderer.gridSize(px_w, px_h);
-    if (ready and g.cols == term.grid.cols and g.rows == term.grid.rows) return;
-    if (ready) term.deinit();
-    term = Terminal.init(std.heap.page_allocator, g.rows, g.cols) catch return;
-    ready = true;
+    if (ready) {
+        if (g.cols == term.grid.cols and g.rows == term.grid.rows) return;
+        term.resize(g.rows, g.cols) catch return;
+    } else {
+        term = Terminal.init(std.heap.page_allocator, g.rows, g.cols) catch return;
+        ready = true;
+    }
 
     if (!spawned) {
         pty = Pty.spawn(g.rows, g.cols) catch return;

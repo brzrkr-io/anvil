@@ -49,6 +49,57 @@ pub const Terminal = struct {
         self.view_offset = @intCast(off);
     }
 
+    /// Resize preserving content, bottom-anchored. On shrink the overflowing
+    /// top rows spill into scrollback; on grow, history fills the new top rows.
+    /// Does not rewrap wrapped lines.
+    pub fn resize(self: *Terminal, new_rows: u16, new_cols: u16) !void {
+        if (new_rows == self.grid.rows and new_cols == self.grid.cols) return;
+
+        if (self.stash) |*primary| {
+            const a = try copyResized(&self.grid, new_rows, new_cols);
+            self.grid.deinit();
+            self.grid = a;
+            const p = try copyResized(primary, new_rows, new_cols);
+            primary.deinit();
+            self.stash = p;
+            self.cx = @min(self.cx, new_cols - 1);
+            self.cy = @min(self.cy, new_rows - 1);
+            return;
+        }
+
+        const old_rows = self.grid.rows;
+        if (new_rows < old_rows) {
+            var i: u16 = 0;
+            while (i < old_rows - new_rows) : (i += 1) self.scrollback.push(self.grid.row(i));
+        }
+
+        var ng = try Grid.init(self.grid.alloc, new_rows, new_cols);
+        const copy_cols = @min(self.grid.cols, new_cols);
+        const keep = @min(old_rows, new_rows);
+        var i: u16 = 0;
+        while (i < keep) : (i += 1) {
+            const src = self.grid.row(old_rows - keep + i);
+            @memcpy(ng.row(new_rows - keep + i)[0..copy_cols], src[0..copy_cols]);
+        }
+
+        var top: u16 = new_rows - keep; // blank rows above the kept region
+        while (top > 0) {
+            const line = self.scrollback.pop() orelse break;
+            top -= 1;
+            const n = @min(@as(u16, @intCast(line.len)), new_cols);
+            @memcpy(ng.row(top)[0..n], line[0..n]);
+            self.grid.alloc.free(line);
+        }
+
+        self.grid.deinit();
+        self.grid = ng;
+
+        const dcy = @as(i32, new_rows) - @as(i32, old_rows);
+        self.cy = @intCast(std.math.clamp(@as(i32, self.cy) + dcy, 0, new_rows - 1));
+        self.cx = @min(self.cx, new_cols - 1);
+        if (self.view_offset > self.scrollback.len()) self.view_offset = self.scrollback.len();
+    }
+
     pub fn print(self: *Terminal, cp: u21) void {
         if (self.cx >= self.grid.cols) {
             self.cx = 0;
@@ -175,6 +226,18 @@ pub const Terminal = struct {
             self.cx = @min(self.alt_cx, self.grid.cols - 1);
             self.cy = @min(self.alt_cy, self.grid.rows - 1);
         }
+    }
+
+    fn copyResized(old: *Grid, new_rows: u16, new_cols: u16) !Grid {
+        var ng = try Grid.init(old.alloc, new_rows, new_cols);
+        const copy_cols = @min(old.cols, new_cols);
+        const keep = @min(old.rows, new_rows);
+        var i: u16 = 0;
+        while (i < keep) : (i += 1) {
+            const src = old.row(old.rows - keep + i);
+            @memcpy(ng.row(new_rows - keep + i)[0..copy_cols], src[0..copy_cols]);
+        }
+        return ng;
     }
 
     pub fn eraseInLine(self: *Terminal, mode: u16) void {
@@ -381,6 +444,45 @@ test "scrolled-off rows land in scrollback and viewRow reads them back" {
     try std.testing.expectEqual(@as(usize, 1), t.view_offset);
     t.scrollView(-10);
     try std.testing.expectEqual(@as(usize, 0), t.view_offset);
+}
+
+test "resize shrink spills top rows into scrollback, bottom-anchored" {
+    var t = try Terminal.init(std.testing.allocator, 3, 2);
+    defer t.deinit();
+    t.print('a');
+    t.carriageReturn();
+    t.lineFeed();
+    t.print('b');
+    t.carriageReturn();
+    t.lineFeed();
+    t.print('c'); // rows: a / b / c, cursor on row 2
+
+    try t.resize(2, 2); // drop top row 'a' into scrollback, keep b/c
+    try std.testing.expectEqual(@as(u16, 2), t.grid.rows);
+    try std.testing.expectEqual(@as(usize, 1), t.scrollback.len());
+    try std.testing.expectEqual(@as(u21, 'a'), t.scrollback.at(0)[0].cp);
+    try std.testing.expectEqual(@as(u21, 'b'), t.viewRow(0)[0].cp);
+    try std.testing.expectEqual(@as(u21, 'c'), t.viewRow(1)[0].cp);
+    try std.testing.expectEqual(@as(u16, 1), t.cy); // followed bottom
+}
+
+test "resize grow pulls history back into the new top rows" {
+    var t = try Terminal.init(std.testing.allocator, 2, 2);
+    defer t.deinit();
+    t.print('a');
+    t.carriageReturn();
+    t.lineFeed();
+    t.print('b');
+    t.carriageReturn();
+    t.lineFeed(); // 'a' spills to scrollback, grid shows b / blank
+    t.print('c');
+
+    try std.testing.expectEqual(@as(usize, 1), t.scrollback.len());
+    try t.resize(3, 2); // grow: pull 'a' back to the top
+    try std.testing.expectEqual(@as(usize, 0), t.scrollback.len());
+    try std.testing.expectEqual(@as(u21, 'a'), t.viewRow(0)[0].cp);
+    try std.testing.expectEqual(@as(u21, 'b'), t.viewRow(1)[0].cp);
+    try std.testing.expectEqual(@as(u21, 'c'), t.viewRow(2)[0].cp);
 }
 
 test "sgr sets and resets pen" {

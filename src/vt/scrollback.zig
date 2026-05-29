@@ -30,6 +30,13 @@ pub const Scrollback = struct {
         }
     }
 
+    /// Remove and return the newest line. Caller owns and must free it.
+    pub fn pop(self: *Scrollback) ?[]Cell {
+        if (self.count == 0) return null;
+        self.count -= 1;
+        return self.at(self.count);
+    }
+
     pub fn len(self: *const Scrollback) usize {
         return self.count;
     }
