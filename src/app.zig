@@ -73,7 +73,13 @@ export fn anvil_poll() callconv(.c) c_int {
 
 export fn anvil_input(ptr: [*]const u8, len: usize) callconv(.c) void {
     if (!spawned) return;
+    if (ready and term.view_offset != 0) term.view_offset = 0; // typing jumps to live
     pty.write(ptr[0..len]);
+}
+
+export fn anvil_scroll(delta: c_int) callconv(.c) void {
+    if (!ready) return;
+    term.scrollView(@intCast(delta));
 }
 
 export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
@@ -82,8 +88,10 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
         return;
     }
     var n = renderer.buildInstances(&term, instances[0..]);
-    instances[n] = renderer.cursorInstance(&term);
-    n += 1;
+    if (term.view_offset == 0) {
+        instances[n] = renderer.cursorInstance(&term);
+        n += 1;
+    }
     out.* = .{
         .instances = &instances,
         .count = @intCast(n),

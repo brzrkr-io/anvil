@@ -3,6 +3,9 @@ const cell = @import("cell.zig");
 const Cell = cell.Cell;
 const Color = cell.Color;
 const Grid = @import("grid.zig").Grid;
+const Scrollback = @import("scrollback.zig").Scrollback;
+
+const scrollback_cap = 5000;
 
 pub const Terminal = struct {
     grid: Grid,
@@ -13,15 +16,37 @@ pub const Terminal = struct {
     stash: ?Grid = null, // primary grid, parked while the alt screen is active
     alt_cx: u16 = 0,
     alt_cy: u16 = 0,
+    scrollback: Scrollback,
+    view_offset: usize = 0, // lines scrolled up into history; 0 = live bottom
     pen: Cell = .{},
 
     pub fn init(alloc: std.mem.Allocator, rows: u16, cols: u16) !Terminal {
-        return .{ .grid = try Grid.init(alloc, rows, cols) };
+        return .{
+            .grid = try Grid.init(alloc, rows, cols),
+            .scrollback = try Scrollback.init(alloc, scrollback_cap),
+        };
     }
 
     pub fn deinit(self: *Terminal) void {
         self.grid.deinit();
         if (self.stash) |*g| g.deinit();
+        self.scrollback.deinit();
+    }
+
+    /// Cells for visible row `r`, drawn from scrollback when scrolled up.
+    pub fn viewRow(self: *Terminal, r: u16) []Cell {
+        const sb = self.scrollback.len();
+        const logical = (sb - self.view_offset) + r;
+        if (logical < sb) return self.scrollback.at(logical);
+        return self.grid.row(@intCast(logical - sb));
+    }
+
+    /// Scroll the viewport: positive = back into history, negative = toward live.
+    pub fn scrollView(self: *Terminal, delta: i32) void {
+        const sb: i64 = @intCast(self.scrollback.len());
+        var off: i64 = @as(i64, @intCast(self.view_offset)) + delta;
+        off = std.math.clamp(off, 0, sb);
+        self.view_offset = @intCast(off);
     }
 
     pub fn print(self: *Terminal, cp: u21) void {
@@ -36,6 +61,11 @@ pub const Terminal = struct {
 
     pub fn lineFeed(self: *Terminal) void {
         if (self.cy + 1 >= self.grid.rows) {
+            if (self.stash == null) {
+                self.scrollback.push(self.grid.row(0));
+                if (self.view_offset > 0 and self.view_offset < self.scrollback.len())
+                    self.view_offset += 1; // stay anchored to history while scrolled
+            }
             self.grid.scrollUp(1);
         } else {
             self.cy += 1;
@@ -134,6 +164,7 @@ pub const Terminal = struct {
         self.grid = g;
         self.cx = 0;
         self.cy = 0;
+        self.view_offset = 0;
     }
 
     fn exitAlt(self: *Terminal) void {
@@ -321,6 +352,35 @@ test "redundant alt enter is a no-op" {
     t.setMode(47, true); // already in alt; must not lose the parked primary
     t.setMode(1049, false);
     try std.testing.expectEqual(@as(u21, 'a'), t.grid.at(0, 0).cp);
+}
+
+test "scrolled-off rows land in scrollback and viewRow reads them back" {
+    var t = try Terminal.init(std.testing.allocator, 2, 2);
+    defer t.deinit();
+    t.print('a');
+    t.carriageReturn();
+    t.lineFeed();
+    t.print('b');
+    t.carriageReturn();
+    t.lineFeed(); // 'a' row scrolls off into scrollback
+    t.print('c');
+    try std.testing.expectEqual(@as(usize, 1), t.scrollback.len());
+
+    // live view: rows are 'b','c'
+    try std.testing.expectEqual(@as(u21, 'b'), t.viewRow(0)[0].cp);
+    try std.testing.expectEqual(@as(u21, 'c'), t.viewRow(1)[0].cp);
+
+    // scroll back one: top row now the scrollback 'a'
+    t.scrollView(1);
+    try std.testing.expectEqual(@as(usize, 1), t.view_offset);
+    try std.testing.expectEqual(@as(u21, 'a'), t.viewRow(0)[0].cp);
+    try std.testing.expectEqual(@as(u21, 'b'), t.viewRow(1)[0].cp);
+
+    // scrollView clamps at history depth and at live bottom
+    t.scrollView(10);
+    try std.testing.expectEqual(@as(usize, 1), t.view_offset);
+    t.scrollView(-10);
+    try std.testing.expectEqual(@as(usize, 0), t.view_offset);
 }
 
 test "sgr sets and resets pen" {

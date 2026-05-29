@@ -40,6 +40,7 @@ extern void anvil_atlas_params(AtlasParams *out);
 extern void anvil_set_metrics(float cell_w, float cell_h);
 extern int anvil_poll(void);
 extern void anvil_input(const char *bytes, size_t len);
+extern void anvil_scroll(int delta);
 
 #define INSTANCE_STRIDE (12 * sizeof(float))
 #define MAX_INSTANCES 60000
@@ -363,6 +364,13 @@ static void layoutTrafficLights(NSWindow *win) {
     }
     const char *u = s.UTF8String;
     if (u) anvil_input(u, strlen(u));
+}
+- (void)scrollWheel:(NSEvent *)e {
+    CGFloat dy = e.scrollingDeltaY;
+    if (dy == 0) return;
+    int lines = (int)(dy / 8.0);
+    if (lines == 0) lines = dy > 0 ? 1 : -1;
+    anvil_scroll(lines);
 }
 @end
 

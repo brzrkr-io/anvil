@@ -32,9 +32,10 @@ pub const Renderer = struct {
         var n: usize = 0;
         var r: u16 = 0;
         while (r < term.grid.rows) : (r += 1) {
+            const cells = term.viewRow(r);
             var c: u16 = 0;
             while (c < term.grid.cols) : (c += 1) {
-                const cell = term.grid.at(r, c);
+                const cell = cells[c];
                 var fg = palette.resolve(cell.fg, true);
                 var bg = palette.resolve(cell.bg, false);
                 if (cell.attrs.reverse) {
