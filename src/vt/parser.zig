@@ -1,7 +1,7 @@
 const std = @import("std");
 const Terminal = @import("terminal.zig").Terminal;
 
-const State = enum { ground, escape, csi };
+const State = enum { ground, escape, csi, osc, osc_esc };
 
 pub const Parser = struct {
     state: State = .ground,
@@ -10,6 +10,10 @@ pub const Parser = struct {
     cur: u16 = 0,
     has_param: bool = false,
     private: bool = false,
+
+    // OSC accumulator (terminated by BEL or ST = ESC \)
+    osc_buf: [2048]u8 = undefined,
+    osc_len: usize = 0,
 
     // UTF-8 accumulator
     cp: u21 = 0,
@@ -24,6 +28,8 @@ pub const Parser = struct {
             .ground => self.ground(term, b),
             .escape => self.escape(term, b),
             .csi => self.csi(term, b),
+            .osc => self.osc(term, b),
+            .osc_esc => self.oscEsc(term, b),
         }
     }
 
@@ -80,10 +86,49 @@ pub const Parser = struct {
                 term.restoreCursor();
                 self.state = .ground;
             },
+            ']' => {
+                self.osc_len = 0;
+                self.state = .osc;
+            },
             else => {
                 self.state = .ground;
                 self.byte(term, b);
             },
+        }
+    }
+
+    fn osc(self: *Parser, term: *Terminal, b: u8) void {
+        switch (b) {
+            0x07 => { // BEL terminates
+                self.oscDispatch(term);
+                self.state = .ground;
+            },
+            0x1b => self.state = .osc_esc, // maybe ST (ESC \)
+            else => {
+                if (self.osc_len < self.osc_buf.len) {
+                    self.osc_buf[self.osc_len] = b;
+                    self.osc_len += 1;
+                }
+            },
+        }
+    }
+
+    fn oscEsc(self: *Parser, term: *Terminal, b: u8) void {
+        self.oscDispatch(term);
+        self.state = .ground;
+        // ESC \ is the full ST; a lone ESC means a new sequence starts here.
+        if (b != '\\') self.byte(term, b);
+    }
+
+    fn oscDispatch(self: *Parser, term: *Terminal) void {
+        const buf = self.osc_buf[0..self.osc_len];
+        const semi = std.mem.indexOfScalar(u8, buf, ';') orelse return;
+        const ps = std.fmt.parseInt(u16, buf[0..semi], 10) catch return;
+        const pt = buf[semi + 1 ..];
+        switch (ps) {
+            0, 2 => term.setTitle(pt),
+            7 => term.setCwd(pt),
+            else => {},
         }
     }
 
@@ -208,6 +253,32 @@ test "private prefix does not leak into next sequence" {
     // a private set, then a plain CSI K must not be treated as private
     p.feed(&t, "\x1b[?25lab\x1b[1G\x1b[K");
     try std.testing.expectEqual(@as(u21, ' '), t.grid.at(0, 0).cp);
+}
+
+test "OSC 2 sets window title (BEL terminated)" {
+    var t = try Terminal.init(std.testing.allocator, 1, 10);
+    defer t.deinit();
+    var p = Parser{};
+    p.feed(&t, "\x1b]2;hello\x07X");
+    try std.testing.expectEqualStrings("hello", t.title());
+    try std.testing.expectEqual(@as(u21, 'X'), t.grid.at(0, 0).cp); // parsing resumed
+}
+
+test "OSC 0 title terminated by ST (ESC backslash)" {
+    var t = try Terminal.init(std.testing.allocator, 1, 10);
+    defer t.deinit();
+    var p = Parser{};
+    p.feed(&t, "\x1b]0;abc\x1b\\Y");
+    try std.testing.expectEqualStrings("abc", t.title());
+    try std.testing.expectEqual(@as(u21, 'Y'), t.grid.at(0, 0).cp);
+}
+
+test "OSC 7 stores path from file URI" {
+    var t = try Terminal.init(std.testing.allocator, 1, 10);
+    defer t.deinit();
+    var p = Parser{};
+    p.feed(&t, "\x1b]7;file://host/Users/me/proj\x07");
+    try std.testing.expectEqualStrings("/Users/me/proj", t.cwd());
 }
 
 test "UTF-8 multibyte decode" {

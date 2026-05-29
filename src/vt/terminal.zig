@@ -35,6 +35,38 @@ pub const Terminal = struct {
     view_offset: usize = 0, // lines scrolled up into history; 0 = live bottom
     selection: ?Selection = null,
     pen: Cell = .{},
+    title_buf: [256]u8 = undefined,
+    title_len: usize = 0,
+    cwd_buf: [1024]u8 = undefined,
+    cwd_len: usize = 0,
+
+    /// Window title set via OSC 0/2 (empty until the shell sets one).
+    pub fn title(self: *const Terminal) []const u8 {
+        return self.title_buf[0..self.title_len];
+    }
+
+    /// Working directory set via OSC 7 (empty until the shell reports one).
+    pub fn cwd(self: *const Terminal) []const u8 {
+        return self.cwd_buf[0..self.cwd_len];
+    }
+
+    pub fn setTitle(self: *Terminal, s: []const u8) void {
+        const n = @min(s.len, self.title_buf.len);
+        @memcpy(self.title_buf[0..n], s[0..n]);
+        self.title_len = n;
+    }
+
+    /// OSC 7 reports cwd as a `file://host/path` URI; store just the path.
+    pub fn setCwd(self: *Terminal, uri: []const u8) void {
+        var path = uri;
+        if (std.mem.startsWith(u8, path, "file://")) {
+            path = path[7..];
+            if (std.mem.indexOfScalar(u8, path, '/')) |slash| path = path[slash..];
+        }
+        const n = @min(path.len, self.cwd_buf.len);
+        @memcpy(self.cwd_buf[0..n], path[0..n]);
+        self.cwd_len = n;
+    }
 
     pub fn init(alloc: std.mem.Allocator, rows: u16, cols: u16) !Terminal {
         return .{
