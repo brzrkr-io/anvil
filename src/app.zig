@@ -14,6 +14,7 @@ const max_panes = 64;
 const divider_px: f32 = 2;
 const font_pt: f32 = 13.0;
 const bar_h: f32 = 40; // compact title bar, device pixels (20pt @2x)
+const tab_inset_x: f32 = 152; // clear the macOS traffic-light buttons (device px)
 
 var mgr = SessionManager{ .alloc = std.heap.page_allocator };
 var renderer = Renderer{ .cell_w = 16, .cell_h = 32, .pad_x = 8, .pad_y = bar_h + 6, .pad_bottom = 8 };
@@ -318,7 +319,7 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
             const fg4 = if (active) palette.selectionFg().f32x4() else palette.defaultFg().f32x4();
             const bg4 = if (active) palette.selectionBg().f32x4() else th.bar.f32x4();
             instances[n] = .{
-                .x = renderer.pad_x + @as(f32, @floatFromInt(ti)) * renderer.cell_w * 2,
+                .x = tab_inset_x + @as(f32, @floatFromInt(ti)) * renderer.cell_w * 2,
                 .y = label_y,
                 .fg = fg4,
                 .bg = bg4,
