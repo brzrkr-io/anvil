@@ -12,6 +12,7 @@ typedef struct {
     uint32_t count;
     float cell_w, cell_h, pad_x, pad_y;
     float cell_uv[2];
+    float bar_h;
 } FrameData;
 
 typedef struct {
@@ -20,6 +21,12 @@ typedef struct {
     float viewport[2];
     float cell_uv[2];
 } Uniforms;
+
+typedef struct {
+    float rect[4];
+    float color[4];
+    float viewport[2];
+} SolidUniforms;
 
 typedef struct {
     uint32_t first, count, cols, rows;
@@ -37,10 +44,12 @@ extern void anvil_input(const char *bytes, size_t len);
 #define INSTANCE_STRIDE (12 * sizeof(float))
 #define MAX_INSTANCES 60000
 #define ATLAS_SCALE 2.0
+#define BAR_H_PT 20.0 // compact title-bar height, logical points
 
 static id<MTLDevice> gDevice;
 static id<MTLCommandQueue> gQueue;
 static id<MTLRenderPipelineState> gPipeline;
+static id<MTLRenderPipelineState> gSolidPipeline;
 static id<MTLBuffer> gInstanceBuf;
 static id<MTLTexture> gAtlas;
 static CAMetalLayer *gLayer;
@@ -65,6 +74,13 @@ static void buildPipeline(void) {
 
     gPipeline = [gDevice newRenderPipelineStateWithDescriptor:pd error:&err];
     if (!gPipeline) NSLog(@"pipeline failed: %@", err);
+
+    MTLRenderPipelineDescriptor *sd = [[MTLRenderPipelineDescriptor alloc] init];
+    sd.vertexFunction = [lib newFunctionWithName:@"v_solid"];
+    sd.fragmentFunction = [lib newFunctionWithName:@"f_solid"];
+    sd.colorAttachments[0].pixelFormat = gLayer.pixelFormat;
+    gSolidPipeline = [gDevice newRenderPipelineStateWithDescriptor:sd error:&err];
+    if (!gSolidPipeline) NSLog(@"solid pipeline failed: %@", err);
 
     gInstanceBuf = [gDevice newBufferWithLength:MAX_INSTANCES * INSTANCE_STRIDE
                                         options:MTLResourceStorageModeShared];
@@ -126,6 +142,20 @@ static void buildAtlas(void) {
     CFRelease(font);
 }
 
+static void drawSolid(id<MTLRenderCommandEncoder> enc, CGSize ds,
+                      float x, float y, float w, float h,
+                      float r, float g, float b, float a) {
+    SolidUniforms su = {
+        .rect = {x, y, w, h},
+        .color = {r, g, b, a},
+        .viewport = {(float)ds.width, (float)ds.height},
+    };
+    [enc setRenderPipelineState:gSolidPipeline];
+    [enc setVertexBytes:&su length:sizeof(su) atIndex:0];
+    [enc setFragmentBytes:&su length:sizeof(su) atIndex:0];
+    [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+}
+
 static void render(void) {
     CGSize ds = gLayer.drawableSize;
     if (ds.width <= 0 || ds.height <= 0) return;
@@ -175,6 +205,11 @@ static void render(void) {
                 vertexStart:0
                 vertexCount:4
               instanceCount:count];
+    }
+
+    if (gSolidPipeline && fd.bar_h > 0) {
+        drawSolid(enc, ds, 0, 0, (float)ds.width, fd.bar_h, 0.09f, 0.10f, 0.13f, 1.0f);
+        drawSolid(enc, ds, 0, fd.bar_h - 1, (float)ds.width, 1, 0.20f, 0.22f, 0.27f, 1.0f);
     }
 
     [enc endEncoding];
@@ -235,6 +270,10 @@ void anvil_dump(const char *path, uint32_t w, uint32_t h) {
             [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip
                     vertexStart:0 vertexCount:4 instanceCount:count];
         }
+        if (gSolidPipeline && fd.bar_h > 0) {
+            drawSolid(enc, CGSizeMake(w, h), 0, 0, (float)w, fd.bar_h, 0.09f, 0.10f, 0.13f, 1.0f);
+            drawSolid(enc, CGSizeMake(w, h), 0, fd.bar_h - 1, (float)w, 1, 0.20f, 0.22f, 0.27f, 1.0f);
+        }
         [enc endEncoding];
 
         id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
@@ -269,6 +308,27 @@ void anvil_dump(const char *path, uint32_t w, uint32_t h) {
     }
 }
 
+// Vertically center the traffic-light buttons inside our compact bar.
+static void layoutTrafficLights(NSWindow *win) {
+    NSButton *btns[3] = {
+        [win standardWindowButton:NSWindowCloseButton],
+        [win standardWindowButton:NSWindowMiniaturizeButton],
+        [win standardWindowButton:NSWindowZoomButton],
+    };
+    if (!btns[0]) return;
+    NSView *tbar = btns[0].superview;
+    CGFloat tbarH = tbar.frame.size.height;
+    CGFloat bh = btns[0].frame.size.height;
+    CGFloat y = tbarH - BAR_H_PT / 2.0 - bh / 2.0;
+    CGFloat x = 13.0, spacing = 20.0;
+    for (int i = 0; i < 3; i++) {
+        NSRect f = btns[i].frame;
+        f.origin.x = x + i * spacing;
+        f.origin.y = y;
+        btns[i].frame = f;
+    }
+}
+
 @interface AnvilView : NSView
 @end
 
@@ -280,6 +340,7 @@ void anvil_dump(const char *path, uint32_t w, uint32_t h) {
     [super setFrameSize:size];
     CGFloat scale = self.window.backingScaleFactor ?: 2.0;
     gLayer.drawableSize = CGSizeMake(size.width * scale, size.height * scale);
+    if (self.window) layoutTrafficLights(self.window);
 }
 - (BOOL)acceptsFirstResponder {
     return YES;
@@ -335,12 +396,13 @@ void anvil_run(void) {
         NSWindow *win = [[NSWindow alloc]
             initWithContentRect:frame
             styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
-                       NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable)
+                       NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable |
+                       NSWindowStyleMaskFullSizeContentView)
             backing:NSBackingStoreBuffered
             defer:NO];
         [win setTitle:@"Anvil"];
         win.titleVisibility = NSWindowTitleHidden;
-        win.titlebarSeparatorStyle = NSTitlebarSeparatorStyleLine;
+        win.titlebarAppearsTransparent = YES;
         win.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
 
         AnvilView *view = [[AnvilView alloc] initWithFrame:frame];
@@ -352,6 +414,7 @@ void anvil_run(void) {
         [win makeKeyAndOrderFront:nil];
         [win makeFirstResponder:view];
         [NSApp activateIgnoringOtherApps:YES];
+        layoutTrafficLights(win);
 
         AnvilTick *tick = [[AnvilTick alloc] init];
         [NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0

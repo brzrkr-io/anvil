@@ -16,4 +16,5 @@ pub const FrameData = extern struct {
     pad_x: f32,
     pad_y: f32,
     cell_uv: [2]f32,
+    bar_h: f32, // title-bar height in device pixels
 };

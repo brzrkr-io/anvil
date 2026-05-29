@@ -10,13 +10,14 @@ pub const Renderer = struct {
     cell_w: f32,
     cell_h: f32,
     pad_x: f32,
-    pad_y: f32,
+    pad_y: f32, // top padding (clears the title bar)
+    pad_bottom: f32 = 0,
     atlas: Atlas = .{},
 
     /// Rows/cols that fit a viewport of `px_w` x `px_h` device pixels.
     pub fn gridSize(self: Renderer, px_w: f32, px_h: f32) GridSize {
         const usable_w = px_w - 2 * self.pad_x;
-        const usable_h = px_h - 2 * self.pad_y;
+        const usable_h = px_h - self.pad_y - self.pad_bottom;
         const cols = if (usable_w > self.cell_w) usable_w / self.cell_w else 1;
         const rows = if (usable_h > self.cell_h) usable_h / self.cell_h else 1;
         return .{

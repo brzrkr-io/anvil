@@ -49,3 +49,23 @@ fragment float4 f_main(VOut in [[stage_in]],
     float3 rgb = mix(in.bg.rgb, in.fg.rgb, coverage);
     return float4(rgb, 1.0);
 }
+
+// Solid-color pixel-space quad, used for chrome (title bar, separator).
+struct SolidUniforms {
+    float4 rect; // x, y, w, h in device pixels
+    float4 color;
+    float2 viewport;
+};
+
+vertex float4 v_solid(uint vid [[vertex_id]],
+                      constant SolidUniforms &u [[buffer(0)]]) {
+    float2 corner = float2(vid & 1, (vid >> 1) & 1);
+    float2 px = u.rect.xy + corner * u.rect.zw;
+    float2 ndc = (px / u.viewport) * 2.0 - 1.0;
+    ndc.y = -ndc.y;
+    return float4(ndc, 0.0, 1.0);
+}
+
+fragment float4 f_solid(constant SolidUniforms &u [[buffer(0)]]) {
+    return u.color;
+}

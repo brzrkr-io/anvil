@@ -8,11 +8,12 @@ const inst = @import("render/instance.zig");
 const shader_src = @embedFile("platform/shaders.metal");
 const max_instances = 60000;
 const font_pt: f32 = 13.0;
+const bar_h: f32 = 40; // compact title bar, device pixels (20pt @2x)
 
 var term: Terminal = undefined;
 var parser: Parser = .{};
 var pty: Pty = undefined;
-var renderer = Renderer{ .cell_w = 16, .cell_h = 32, .pad_x = 8, .pad_y = 8 };
+var renderer = Renderer{ .cell_w = 16, .cell_h = 32, .pad_x = 8, .pad_y = bar_h + 6, .pad_bottom = 8 };
 var instances: [max_instances]inst.CellInstance = undefined;
 var ready = false;
 var spawned = false;
@@ -91,5 +92,6 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
         .pad_x = renderer.pad_x,
         .pad_y = renderer.pad_y,
         .cell_uv = renderer.atlas.cellUV(),
+        .bar_h = bar_h,
     };
 }
