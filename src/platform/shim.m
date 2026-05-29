@@ -18,6 +18,9 @@ typedef struct {
     float sep_color[3];
     const float *dividers; // flat x,y,w,h per pane divider
     uint32_t divider_count;
+    const float *overlay; // flat x,y,w,h,r,g,b per palette rect
+    uint32_t overlay_count;
+    uint32_t palette_text_count; // glyph instances after `count`, drawn last
 } FrameData;
 
 typedef struct {
@@ -52,6 +55,10 @@ extern void anvil_focus_dir(int dir);
 extern void anvil_new_tab(void);
 extern void anvil_cycle_tab(int delta);
 extern void anvil_close_tab(void);
+extern void anvil_palette_toggle(void);
+extern int anvil_palette_open(void);
+extern void anvil_palette_char(unsigned char c);
+extern void anvil_palette_key(int key);
 extern const char *anvil_copy(size_t *out_len);
 extern void anvil_set_theme_mode(int mode);
 extern void anvil_set_os_dark(int is_dark);
@@ -226,24 +233,26 @@ static void render(void) {
                   fd.sep_color[0], fd.sep_color[1], fd.sep_color[2], 1.0f);
     }
 
-    if (gPipeline && fd.count > 0) {
-        uint32_t count = fd.count > MAX_INSTANCES ? MAX_INSTANCES : fd.count;
-        memcpy(gInstanceBuf.contents, fd.instances, count * INSTANCE_STRIDE);
-
-        Uniforms u = {
-            .cell = {fd.cell_w, fd.cell_h},
-            .viewport = {(float)ds.width, (float)ds.height},
-            .cell_uv = {fd.cell_uv[0], fd.cell_uv[1]},
-        };
-
-        [enc setRenderPipelineState:gPipeline];
-        [enc setVertexBuffer:gInstanceBuf offset:0 atIndex:0];
-        [enc setVertexBytes:&u length:sizeof(u) atIndex:1];
-        [enc setFragmentTexture:gAtlas atIndex:0];
-        [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip
-                vertexStart:0
-                vertexCount:4
-              instanceCount:count];
+    Uniforms u = {
+        .cell = {fd.cell_w, fd.cell_h},
+        .viewport = {(float)ds.width, (float)ds.height},
+        .cell_uv = {fd.cell_uv[0], fd.cell_uv[1]},
+    };
+    uint32_t total = fd.count + fd.palette_text_count;
+    if (total > MAX_INSTANCES) total = MAX_INSTANCES;
+    if (gPipeline && total > 0) {
+        memcpy(gInstanceBuf.contents, fd.instances, total * INSTANCE_STRIDE);
+        uint32_t c1 = fd.count > total ? total : fd.count;
+        if (c1 > 0) {
+            [enc setRenderPipelineState:gPipeline];
+            [enc setVertexBuffer:gInstanceBuf offset:0 atIndex:0];
+            [enc setVertexBytes:&u length:sizeof(u) atIndex:1];
+            [enc setFragmentTexture:gAtlas atIndex:0];
+            [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip
+                    vertexStart:0
+                    vertexCount:4
+                  instanceCount:c1];
+        }
     }
 
     if (gSolidPipeline) {
@@ -252,6 +261,22 @@ static void render(void) {
             drawSolid(enc, ds, d[0], d[1], d[2], d[3],
                       fd.sep_color[0], fd.sep_color[1], fd.sep_color[2], 1.0f);
         }
+        // Command-palette panel/highlight rects, over the terminal.
+        for (uint32_t i = 0; i < fd.overlay_count; i++) {
+            const float *o = fd.overlay + i * 7;
+            drawSolid(enc, ds, o[0], o[1], o[2], o[3], o[4], o[5], o[6], 1.0f);
+        }
+    }
+    // Palette text last, on top of its panel.
+    if (gPipeline && fd.palette_text_count > 0 && fd.count < total) {
+        [enc setRenderPipelineState:gPipeline];
+        [enc setVertexBuffer:gInstanceBuf offset:fd.count * INSTANCE_STRIDE atIndex:0];
+        [enc setVertexBytes:&u length:sizeof(u) atIndex:1];
+        [enc setFragmentTexture:gAtlas atIndex:0];
+        [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip
+                vertexStart:0
+                vertexCount:4
+              instanceCount:(total - fd.count)];
     }
 
     [enc endEncoding];
@@ -302,20 +327,24 @@ void anvil_dump(const char *path, uint32_t w, uint32_t h) {
             drawSolid(enc, CGSizeMake(w, h), 0, fd.bar_h - 1, (float)w, 1,
                       fd.sep_color[0], fd.sep_color[1], fd.sep_color[2], 1.0f);
         }
-        if (gPipeline && fd.count > 0) {
-            uint32_t count = fd.count > MAX_INSTANCES ? MAX_INSTANCES : fd.count;
-            memcpy(gInstanceBuf.contents, fd.instances, count * INSTANCE_STRIDE);
-            Uniforms u = {
-                .cell = {fd.cell_w, fd.cell_h},
-                .viewport = {(float)w, (float)h},
-                .cell_uv = {fd.cell_uv[0], fd.cell_uv[1]},
-            };
-            [enc setRenderPipelineState:gPipeline];
-            [enc setVertexBuffer:gInstanceBuf offset:0 atIndex:0];
-            [enc setVertexBytes:&u length:sizeof(u) atIndex:1];
-            [enc setFragmentTexture:gAtlas atIndex:0];
-            [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip
-                    vertexStart:0 vertexCount:4 instanceCount:count];
+        Uniforms u = {
+            .cell = {fd.cell_w, fd.cell_h},
+            .viewport = {(float)w, (float)h},
+            .cell_uv = {fd.cell_uv[0], fd.cell_uv[1]},
+        };
+        uint32_t total = fd.count + fd.palette_text_count;
+        if (total > MAX_INSTANCES) total = MAX_INSTANCES;
+        if (gPipeline && total > 0) {
+            memcpy(gInstanceBuf.contents, fd.instances, total * INSTANCE_STRIDE);
+            uint32_t c1 = fd.count > total ? total : fd.count;
+            if (c1 > 0) {
+                [enc setRenderPipelineState:gPipeline];
+                [enc setVertexBuffer:gInstanceBuf offset:0 atIndex:0];
+                [enc setVertexBytes:&u length:sizeof(u) atIndex:1];
+                [enc setFragmentTexture:gAtlas atIndex:0];
+                [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip
+                        vertexStart:0 vertexCount:4 instanceCount:c1];
+            }
         }
         if (gSolidPipeline) {
             for (uint32_t i = 0; i < fd.divider_count; i++) {
@@ -323,6 +352,18 @@ void anvil_dump(const char *path, uint32_t w, uint32_t h) {
                 drawSolid(enc, CGSizeMake(w, h), d[0], d[1], d[2], d[3],
                           fd.sep_color[0], fd.sep_color[1], fd.sep_color[2], 1.0f);
             }
+            for (uint32_t i = 0; i < fd.overlay_count; i++) {
+                const float *o = fd.overlay + i * 7;
+                drawSolid(enc, CGSizeMake(w, h), o[0], o[1], o[2], o[3], o[4], o[5], o[6], 1.0f);
+            }
+        }
+        if (gPipeline && fd.palette_text_count > 0 && fd.count < total) {
+            [enc setRenderPipelineState:gPipeline];
+            [enc setVertexBuffer:gInstanceBuf offset:fd.count * INSTANCE_STRIDE atIndex:0];
+            [enc setVertexBytes:&u length:sizeof(u) atIndex:1];
+            [enc setFragmentTexture:gAtlas atIndex:0];
+            [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip
+                    vertexStart:0 vertexCount:4 instanceCount:(total - fd.count)];
         }
         [enc endEncoding];
 
@@ -427,9 +468,31 @@ static void layoutTrafficLights(NSWindow *win) {
 - (void)keyDown:(NSEvent *)e {
     NSString *s = e.characters;
     NSEventModifierFlags f = e.modifierFlags;
+    NSString *im = e.charactersIgnoringModifiers;
+    unichar ich = im.length ? [im characterAtIndex:0] : 0;
+    unichar ilc = (ich >= 'A' && ich <= 'Z') ? ich + 32 : ich;
+    BOOL cmd = (f & NSEventModifierFlagCommand) != 0;
+
+    // Cmd+K toggles the command palette from any state.
+    if (cmd && ilc == 'k') { anvil_palette_toggle(); return; }
+
+    // While the palette is open it captures all keys; the PTY sees nothing.
+    if (anvil_palette_open()) {
+        if (cmd) return; // swallow other shortcuts while open
+        unichar ch = s.length ? [s characterAtIndex:0] : 0;
+        switch (ch) {
+            case 0x1b: anvil_palette_key(0); return; // esc
+            case '\r': case '\n': anvil_palette_key(1); return; // enter
+            case NSUpArrowFunctionKey:   anvil_palette_key(2); return;
+            case NSDownArrowFunctionKey: anvil_palette_key(3); return;
+            case 0x7f: case 0x08: anvil_palette_key(4); return; // backspace
+        }
+        if (ch >= 0x20 && ch < 0x7f) { anvil_palette_char((unsigned char)ch); return; }
+        return;
+    }
+
     if (f & NSEventModifierFlagCommand) {
-        NSString *im = e.charactersIgnoringModifiers;
-        unichar ch = im.length ? [im characterAtIndex:0] : 0;
+        unichar ch = ich;
         BOOL shift = (f & NSEventModifierFlagShift) != 0;
         if (f & NSEventModifierFlagOption) {
             switch (ch) {

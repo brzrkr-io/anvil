@@ -6,6 +6,7 @@ const Renderer = @import("render/renderer.zig").Renderer;
 const inst = @import("render/instance.zig");
 const palette = @import("render/palette.zig");
 const theme = @import("render/theme.zig");
+const cmd = @import("palette.zig");
 
 const shader_src = @embedFile("platform/shaders.metal");
 const max_instances = 60000;
@@ -22,6 +23,8 @@ var divider_rects: [max_panes]pane.Rect = undefined;
 var win_w: f32 = 0;
 var win_h: f32 = 0;
 var ready = false;
+var cpal = cmd.Palette{};
+var overlay: [8 * 7]f32 = undefined; // up to 8 colored rects (x,y,w,h,r,g,b)
 
 fn focused() *Session {
     return mgr.focusedSession().?;
@@ -211,6 +214,52 @@ export fn anvil_close_tab() callconv(.c) void {
     relayout();
 }
 
+export fn anvil_palette_toggle() callconv(.c) void {
+    if (!ready) return;
+    if (cpal.open) cpal.hide() else cpal.show();
+}
+
+export fn anvil_palette_open() callconv(.c) c_int {
+    return if (cpal.open) 1 else 0;
+}
+
+export fn anvil_palette_char(c: u8) callconv(.c) void {
+    cpal.typeChar(c);
+}
+
+/// key: 0 esc, 1 enter, 2 up, 3 down, 4 backspace.
+export fn anvil_palette_key(key: c_int) callconv(.c) void {
+    switch (key) {
+        0 => cpal.hide(),
+        1 => {
+            if (cpal.selected()) |id| runAction(id);
+            cpal.hide();
+        },
+        2 => cpal.moveUp(),
+        3 => cpal.moveDown(),
+        4 => cpal.backspace(),
+        else => {},
+    }
+}
+
+fn runAction(id: cmd.ActionId) void {
+    switch (id) {
+        .split_side => anvil_split(0),
+        .split_stacked => anvil_split(1),
+        .close_pane => anvil_close_pane(),
+        .new_tab => anvil_new_tab(),
+        .next_tab => anvil_cycle_tab(1),
+        .prev_tab => anvil_cycle_tab(-1),
+        .focus_left => anvil_focus_dir(0),
+        .focus_right => anvil_focus_dir(1),
+        .focus_up => anvil_focus_dir(2),
+        .focus_down => anvil_focus_dir(3),
+        .theme_system => anvil_set_theme_mode(0),
+        .theme_light => anvil_set_theme_mode(1),
+        .theme_dark => anvil_set_theme_mode(2),
+    }
+}
+
 var copy_buf: [1 << 20]u8 = undefined;
 
 export fn anvil_copy(out_len: *usize) callconv(.c) [*]const u8 {
@@ -239,6 +288,9 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
         .sep_color = th.separator.f32x3(),
         .dividers = @ptrCast(&divider_rects),
         .divider_count = 0,
+        .overlay = &overlay,
+        .overlay_count = 0,
+        .palette_text_count = 0,
     };
     if (!ready) return;
 
@@ -278,4 +330,87 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
 
     out.count = @intCast(n);
     out.divider_count = @intCast(tree.dividers(ws, divider_px, &divider_rects));
+
+    if (cpal.open) {
+        const r = emitPalette(th, n);
+        out.palette_text_count = @intCast(r.text);
+        out.overlay_count = @intCast(r.rects);
+    }
+}
+
+fn putRect(ri: usize, x: f32, y: f32, w: f32, h: f32, c: theme.Rgb) void {
+    const o = overlay[ri * 7 ..];
+    o[0] = x;
+    o[1] = y;
+    o[2] = w;
+    o[3] = h;
+    const f = c.f32x3();
+    o[4] = f[0];
+    o[5] = f[1];
+    o[6] = f[2];
+}
+
+fn putGlyph(idx: usize, x: f32, y: f32, fg: theme.Rgb, bg: theme.Rgb, ch: u8) void {
+    instances[idx] = .{
+        .x = x,
+        .y = y,
+        .fg = fg.f32x4(),
+        .bg = bg.f32x4(),
+        .uv = renderer.atlas.uvOrigin(@intCast(ch)),
+    };
+}
+
+/// Lay out the command palette overlay: colored rects into `overlay` and
+/// glyph instances into `instances[start..]`. Returns the counts written.
+fn emitPalette(th: *const theme.Theme, start: usize) struct { text: usize, rects: usize } {
+    const cw = renderer.cell_w;
+    const ch = renderer.cell_h;
+    const pad = renderer.pad_x;
+
+    var pw: f32 = 60 * cw;
+    const max_pw = win_w * 0.9;
+    if (pw > max_pw) pw = max_pw;
+    const visible: usize = @min(cpal.count, 8);
+    const ph = (1 + @as(f32, @floatFromInt(visible))) * ch;
+    const px = @floor((win_w - pw) / 2);
+    const py = @floor(win_h * 0.25);
+    const top: usize = if (cpal.sel >= 8) cpal.sel - 7 else 0;
+
+    var ri: usize = 0;
+    putRect(ri, px - 1, py - 1, pw + 2, ph + 2, th.separator); // border
+    ri += 1;
+    putRect(ri, px, py, pw, ph, th.bar); // panel
+    ri += 1;
+    putRect(ri, px, py, pw, ch, th.bg); // input line
+    ri += 1;
+    putRect(ri, px, py + ch, pw, 1, th.separator); // input/result divider
+    ri += 1;
+    if (cpal.count > 0) {
+        const hy = py + ch + @as(f32, @floatFromInt(cpal.sel - top)) * ch;
+        putRect(ri, px, hy, pw, ch, th.sel_bg); // selection highlight
+        ri += 1;
+    }
+
+    var n = start;
+    const tx = px + pad;
+    // Query text on the input line.
+    for (cpal.query[0..cpal.qlen], 0..) |c, i| {
+        putGlyph(n, tx + @as(f32, @floatFromInt(i)) * cw, py, th.fg, th.bg, c);
+        n += 1;
+    }
+    // Result rows.
+    var r: usize = 0;
+    while (r < visible) : (r += 1) {
+        const idx = cpal.results[top + r];
+        const label = cmd.registry[idx].label;
+        const selected = (top + r) == cpal.sel;
+        const fg = if (selected) th.sel_fg else th.fg;
+        const bg = if (selected) th.sel_bg else th.bar;
+        const ry = py + ch * (1 + @as(f32, @floatFromInt(r)));
+        for (label, 0..) |c, j| {
+            putGlyph(n, tx + @as(f32, @floatFromInt(j)) * cw, ry, fg, bg, c);
+            n += 1;
+        }
+    }
+    return .{ .text = n - start, .rects = ri };
 }

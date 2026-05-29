@@ -21,4 +21,5 @@ test {
     _ = @import("session.zig");
     _ = @import("session_manager.zig");
     _ = @import("workspace/pane_tree.zig");
+    _ = @import("palette.zig");
 }

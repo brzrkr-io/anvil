@@ -23,4 +23,11 @@ pub const FrameData = extern struct {
     sep_color: [3]f32,
     dividers: [*]const f32, // flat x,y,w,h per pane divider (device px)
     divider_count: u32,
+    // Command-palette overlay. `overlay` is a flat list of colored rects
+    // (x,y,w,h,r,g,b per rect) drawn over the terminal but under the palette
+    // text. `palette_text_count` glyph instances live in `instances` right
+    // after the first `count`, drawn in a second pass on top of the overlay.
+    overlay: [*]const f32,
+    overlay_count: u32,
+    palette_text_count: u32,
 };
