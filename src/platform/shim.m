@@ -652,10 +652,18 @@ static void layoutTrafficLights(NSWindow *win) {
     if (u) anvil_input(u, strlen(u));
 }
 - (void)scrollWheel:(NSEvent *)e {
+    // Accumulate fractional scroll so small trackpad swipes are not truncated to
+    // zero (jerky) and large ones do not lose their remainder between events.
+    static CGFloat acc = 0.0;
+    if (e.phase == NSEventPhaseBegan) acc = 0.0;
     CGFloat dy = e.scrollingDeltaY;
     if (dy == 0) return;
-    int lines = (int)(dy / 8.0);
-    if (lines == 0) lines = dy > 0 ? 1 : -1;
+    // Precise (trackpad) deltas are in points; coarse mouse-wheel deltas already
+    // approximate line steps.
+    acc += e.hasPreciseScrollingDeltas ? dy / 8.0 : dy;
+    int lines = (int)acc;
+    if (lines == 0) return;
+    acc -= (CGFloat)lines;
     anvil_scroll(lines);
 }
 @end
@@ -786,7 +794,9 @@ void anvil_run(void) {
         gLayer.frame = view.bounds;
         gLayer.drawableSize = CGSizeMake(frame.size.width * 2, frame.size.height * 2);
         [win setContentView:view];
-        [win center];
+        // Restore the last window position/size; center only on first launch.
+        win.frameAutosaveName = @"AnvilMainWindow";
+        if (![win setFrameUsingName:@"AnvilMainWindow"]) [win center];
         [win makeKeyAndOrderFront:nil];
         [win makeFirstResponder:view];
         [NSApp activateIgnoringOtherApps:YES];
