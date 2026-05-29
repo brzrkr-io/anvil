@@ -8,6 +8,8 @@ pub const Terminal = struct {
     grid: Grid,
     cx: u16 = 0,
     cy: u16 = 0,
+    saved_cx: u16 = 0,
+    saved_cy: u16 = 0,
     pen: Cell = .{},
 
     pub fn init(alloc: std.mem.Allocator, rows: u16, cols: u16) !Terminal {
@@ -70,6 +72,46 @@ pub const Terminal = struct {
         const c = if (col1 > 0) col1 - 1 else 0;
         self.cy = @min(r, self.grid.rows - 1);
         self.cx = @min(c, self.grid.cols - 1);
+    }
+
+    pub fn cursorCol(self: *Terminal, col1: u16) void {
+        const c = if (col1 > 0) col1 - 1 else 0;
+        self.cx = @min(c, self.grid.cols - 1);
+    }
+
+    pub fn cursorRow(self: *Terminal, row1: u16) void {
+        const r = if (row1 > 0) row1 - 1 else 0;
+        self.cy = @min(r, self.grid.rows - 1);
+    }
+
+    pub fn saveCursor(self: *Terminal) void {
+        self.saved_cx = self.cx;
+        self.saved_cy = self.cy;
+    }
+
+    pub fn restoreCursor(self: *Terminal) void {
+        self.cx = @min(self.saved_cx, self.grid.cols - 1);
+        self.cy = @min(self.saved_cy, self.grid.rows - 1);
+    }
+
+    pub fn deleteChars(self: *Terminal, n: u16) void {
+        const r = self.grid.row(self.cy);
+        const cnt = @min(n, self.grid.cols - self.cx);
+        std.mem.copyForwards(Cell, r[self.cx .. self.grid.cols - cnt], r[self.cx + cnt ..]);
+        @memset(r[self.grid.cols - cnt ..], Cell.blank);
+    }
+
+    pub fn insertChars(self: *Terminal, n: u16) void {
+        const r = self.grid.row(self.cy);
+        const cnt = @min(n, self.grid.cols - self.cx);
+        std.mem.copyBackwards(Cell, r[self.cx + cnt ..], r[self.cx .. self.grid.cols - cnt]);
+        @memset(r[self.cx .. self.cx + cnt], Cell.blank);
+    }
+
+    pub fn eraseChars(self: *Terminal, n: u16) void {
+        const r = self.grid.row(self.cy);
+        const end = @min(self.cx + n, self.grid.cols);
+        @memset(r[self.cx..end], Cell.blank);
     }
 
     pub fn eraseInLine(self: *Terminal, mode: u16) void {
@@ -171,6 +213,54 @@ test "setCursor and eraseInLine" {
     t.eraseInLine(0);
     try std.testing.expectEqual(@as(u21, 'e'), t.grid.at(0, 1).cp);
     try std.testing.expectEqual(@as(u21, ' '), t.grid.at(0, 2).cp);
+}
+
+test "deleteChars shifts row left and blanks tail" {
+    var t = try Terminal.init(std.testing.allocator, 1, 6);
+    defer t.deinit();
+    for ("abcdef") |ch| t.print(ch);
+    t.cursorCol(2); // cx = 1 (on 'b')
+    t.deleteChars(2); // remove 'b','c'
+    try std.testing.expectEqual(@as(u21, 'a'), t.grid.at(0, 0).cp);
+    try std.testing.expectEqual(@as(u21, 'd'), t.grid.at(0, 1).cp);
+    try std.testing.expectEqual(@as(u21, 'f'), t.grid.at(0, 3).cp);
+    try std.testing.expectEqual(@as(u21, ' '), t.grid.at(0, 4).cp);
+    try std.testing.expectEqual(@as(u21, ' '), t.grid.at(0, 5).cp);
+}
+
+test "insertChars shifts row right and blanks gap" {
+    var t = try Terminal.init(std.testing.allocator, 1, 5);
+    defer t.deinit();
+    for ("abc") |ch| t.print(ch);
+    t.cursorCol(1); // cx = 0
+    t.insertChars(2);
+    try std.testing.expectEqual(@as(u21, ' '), t.grid.at(0, 0).cp);
+    try std.testing.expectEqual(@as(u21, ' '), t.grid.at(0, 1).cp);
+    try std.testing.expectEqual(@as(u21, 'a'), t.grid.at(0, 2).cp);
+    try std.testing.expectEqual(@as(u21, 'c'), t.grid.at(0, 4).cp);
+}
+
+test "eraseChars blanks n cells without shifting" {
+    var t = try Terminal.init(std.testing.allocator, 1, 5);
+    defer t.deinit();
+    for ("abcde") |ch| t.print(ch);
+    t.cursorCol(2); // cx = 1
+    t.eraseChars(2);
+    try std.testing.expectEqual(@as(u21, 'a'), t.grid.at(0, 0).cp);
+    try std.testing.expectEqual(@as(u21, ' '), t.grid.at(0, 1).cp);
+    try std.testing.expectEqual(@as(u21, ' '), t.grid.at(0, 2).cp);
+    try std.testing.expectEqual(@as(u21, 'd'), t.grid.at(0, 3).cp);
+}
+
+test "save and restore cursor" {
+    var t = try Terminal.init(std.testing.allocator, 3, 5);
+    defer t.deinit();
+    t.setCursor(2, 3);
+    t.saveCursor();
+    t.setCursor(1, 1);
+    t.restoreCursor();
+    try std.testing.expectEqual(@as(u16, 1), t.cy);
+    try std.testing.expectEqual(@as(u16, 2), t.cx);
 }
 
 test "sgr sets and resets pen" {

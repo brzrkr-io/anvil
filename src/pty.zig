@@ -33,6 +33,7 @@ pub const Pty = struct {
     }
 
     fn childExec() void {
+        _ = c.setenv("TERM", "xterm-256color", 1);
         const env = c.getenv("SHELL");
         const shell: [*c]const u8 = if (env != null) env else "/bin/zsh";
         _ = c.execlp(shell, shell, @as([*c]const u8, null));

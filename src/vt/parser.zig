@@ -70,6 +70,14 @@ pub const Parser = struct {
                 self.has_param = false;
                 self.state = .csi;
             },
+            '7' => {
+                term.saveCursor();
+                self.state = .ground;
+            },
+            '8' => {
+                term.restoreCursor();
+                self.state = .ground;
+            },
             else => {
                 self.state = .ground;
                 self.byte(term, b);
@@ -116,8 +124,15 @@ pub const Parser = struct {
             'C' => term.cursorForward(self.arg(0, 1)),
             'D' => term.cursorBack(self.arg(0, 1)),
             'H', 'f' => term.setCursor(self.arg(0, 1), self.arg(1, 1)),
+            'G' => term.cursorCol(self.arg(0, 1)),
+            'd' => term.cursorRow(self.arg(0, 1)),
             'J' => term.eraseInDisplay(self.arg(0, 0)),
             'K' => term.eraseInLine(self.arg(0, 0)),
+            'P' => term.deleteChars(self.arg(0, 1)),
+            '@' => term.insertChars(self.arg(0, 1)),
+            'X' => term.eraseChars(self.arg(0, 1)),
+            's' => term.saveCursor(),
+            'u' => term.restoreCursor(),
             'm' => term.sgr(self.params[0..self.nparams]),
             else => {},
         }
@@ -149,6 +164,26 @@ test "CSI SGR sets pen" {
     p.feed(&t, "\x1b[1;31mA");
     try std.testing.expect(t.grid.at(0, 0).attrs.bold);
     try std.testing.expectEqual(@import("cell.zig").Color{ .indexed = 1 }, t.grid.at(0, 0).fg);
+}
+
+test "CHA repaint overwrites stale tail (clearaar bug)" {
+    var t = try Terminal.init(std.testing.allocator, 1, 10);
+    defer t.deinit();
+    var p = Parser{};
+    // stale "clearaar", then zsh repaints: col 1, write "clear", erase to EOL
+    p.feed(&t, "clearaar\x1b[1G\x1b[0mclear\x1b[K");
+    try std.testing.expectEqual(@as(u21, 'c'), t.grid.at(0, 0).cp);
+    try std.testing.expectEqual(@as(u21, 'r'), t.grid.at(0, 4).cp);
+    try std.testing.expectEqual(@as(u21, ' '), t.grid.at(0, 5).cp);
+    try std.testing.expectEqual(@as(u21, ' '), t.grid.at(0, 7).cp);
+}
+
+test "DECSC/DECRC save and restore cursor" {
+    var t = try Terminal.init(std.testing.allocator, 2, 5);
+    defer t.deinit();
+    var p = Parser{};
+    p.feed(&t, "ab\x1b7cd\x1b8X");
+    try std.testing.expectEqual(@as(u21, 'X'), t.grid.at(0, 2).cp);
 }
 
 test "UTF-8 multibyte decode" {
