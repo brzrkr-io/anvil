@@ -10,9 +10,15 @@
 //!   - Agent `Snapshot` + `LocalContext`
 //!   - Git worker via `std::sync::mpsc`
 
+mod app_helpers;
 mod fs_worker;
+mod git_blame;
+mod keybindings;
 mod kube;
+mod layout_state;
 mod overlays;
+mod pane_docking;
+mod services;
 mod session;
 
 use std::cell::RefCell;
@@ -21,12 +27,12 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
 use anvil_agent::Snapshot as AgentSnapshot;
-use anvil_config::{Chord, Config, Watcher, parse_chord};
+use anvil_config::{Chord, Config, NvimCfg, Watcher};
 use anvil_platform::AtlasPainter;
 use anvil_platform::UiPainter;
 use anvil_platform::appkit::{
@@ -43,6 +49,11 @@ use anvil_render::agent_panel::{
     GitState, HUD_COLS as HUD_COLS_DEFAULT, HudHit, LocalContext, RunState, SectionHeaderHit,
     SectionId, draw_right_hud,
 };
+use app_helpers::*;
+use keybindings::Keybindings;
+use layout_state::*;
+use pane_docking::*;
+use services::*;
 
 // ── CC4: global PTY PID registry for panic-hook cleanup ───────────────────────
 //
@@ -113,13 +124,14 @@ use anvil_editor::{Position as EditorPosition, WorkspaceSymbolHit};
 use anvil_render::cheatsheet::draw as draw_cheatsheet;
 use anvil_render::draw::CursorConfig;
 use anvil_render::raster::Raster;
-use unicode_segmentation::UnicodeSegmentation;
-// draw_search_bar is re-exported via draw_search_bar_with_replace; unused direct import removed.
 use anvil_render::tabbar::{TabBarHitKind, TabBarHits, draw_tab_bar};
-use anvil_render::workspace::{DIVIDER_PX, draw_workspace, draw_workspace_chrome};
+use anvil_render::workspace::{
+    DIVIDER_PX, draw_workspace, draw_workspace_chrome, draw_workspace_editors,
+};
 use anvil_render::{
-    CellBatch, EditorTabHit, ExplorerHit, FoldedBlocks, GridPainters, LeftDockHitKind,
-    LeftDockHits, LeftDockSnapshot, OutlineRow, draw_left_dock_with_scroll, draw_viewport_gpu,
+    CellBatch, EditorBodyHit, EditorTabHit, ExplorerHit, FoldedBlocks, GridPainters,
+    LeftDockHitKind, LeftDockHits, LeftDockSnapshot, OutlineRow, draw_left_dock_with_scroll,
+    draw_viewport_gpu,
 };
 use anvil_term::{DirtySet, Terminal};
 use anvil_theme::{Theme, resolve as resolve_theme};
@@ -129,13 +141,16 @@ use anvil_workspace::editor_pane::{
 use anvil_workspace::editor_search::EditorSearch;
 use anvil_workspace::interact;
 use anvil_workspace::keys::{Key, Mods, encode as encode_key, encode_mouse};
+#[cfg(test)]
+use anvil_workspace::layout::DockZone;
 use anvil_workspace::layout::{
     DividerHit, NavDir, PaneId, Rect, SplitDir, adjust_ratio, collapse_siblings, equalize_ratios,
     find_divider_at, split_at_path_mut,
 };
 use anvil_workspace::mode::{DockMetrics, Docks, LayoutMode};
 use anvil_workspace::palette::{Action, CATALOG, Palette, action_for_id};
-use anvil_workspace::tab::{Tab, TabManager};
+use anvil_workspace::tab::{IDE_DRAWER_RATIO, IDE_EDITOR_RATIO, Tab, TabManager};
+use unicode_segmentation::UnicodeSegmentation;
 
 use anvil_control::bridge::{
     Command as BridgeCmd, Inbound, Outbound, ThemeTokens, decode as bridge_decode,
@@ -157,6 +172,52 @@ fn non_empty_terminal_cwd(terminal: &Terminal) -> Option<String> {
     } else {
         Some(cwd.to_string())
     }
+}
+
+fn assign_if_changed<T: PartialEq>(slot: &mut T, next: T) -> bool {
+    if *slot == next {
+        false
+    } else {
+        *slot = next;
+        true
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LspSyncAction {
+    Open,
+    Change,
+    Skip,
+}
+
+fn lsp_sync_action(
+    last_sync: Option<Instant>,
+    last_sent_revision: Option<u64>,
+    current_revision: u64,
+    now: Instant,
+    debounce: Duration,
+) -> LspSyncAction {
+    let Some(last_sync) = last_sync else {
+        return LspSyncAction::Open;
+    };
+    if last_sent_revision == Some(current_revision) {
+        return LspSyncAction::Skip;
+    }
+    if now.saturating_duration_since(last_sync) >= debounce {
+        LspSyncAction::Change
+    } else {
+        LspSyncAction::Skip
+    }
+}
+
+fn agent_snapshot_render_equal(a: &AgentSnapshot, b: &AgentSnapshot) -> bool {
+    a.connection == b.connection
+        && a.runs == b.runs
+        && a.approvals == b.approvals
+        && a.findings == b.findings
+        && a.running_count == b.running_count
+        && a.pending_approvals_count == b.pending_approvals_count
+        && a.attention_count == b.attention_count
 }
 
 // ── Toast notification system (N3) ───────────────────────────────────────────
@@ -181,7 +242,7 @@ struct Toast {
 
 /// Active git-blame tooltip shown on 800ms hover dwell over an editor line.
 struct BlamePopup {
-    /// Text to show: `<author> · <time> · <hash>` or `Not Committed Yet`.
+    /// Text to show: `<author> · <time> · <hash>`.
     text: String,
     /// The line the popup is anchored to (0-indexed buffer line).
     anchor_line: usize,
@@ -198,924 +259,20 @@ struct BlamePopup {
 /// breathing room without burning content columns.
 const GRID_PAD: usize = 24;
 
+/// Top window chrome height in logical points.
+const CHROME_TOP_PT: f64 = 32.0;
+
+/// Bottom status/search strip height in logical points.
+const CHROME_BOTTOM_PT: f64 = 20.0;
+
+/// Compact default Explorer width in logical points.
+const LEFT_DOCK_DEFAULT_PT: f64 = 240.0;
+
 /// HUD refresh: once every N ticks (~60 fps → ~1 s).
 const HUD_REFRESH_TICKS: u32 = 60;
 
 /// Maximum panes per tab.
 const MAX_PANES_PER_TAB: usize = 8;
-
-// ── Git worker ───────────────────────────────────────────────────────────────
-
-struct GitResult {
-    state: GitState,
-    branch: String,
-    dirty: u32,
-    ahead: u32,
-    behind: u32,
-    head_short: String,
-    head_subject: String,
-    /// Locally-listening TCP ports detected at the time of the git query.
-    ports: Vec<u16>,
-    /// Detected project kind: "rust", "node", or "make". None if unrecognised.
-    project_kind: Option<String>,
-}
-
-/// Result sent from the recent-files worker to the main thread.
-struct RecentResult {
-    files: Vec<String>,
-}
-
-// ── Gutter worker (T1) ──────────────────────────────────────────────────────
-
-/// Request sent to the git-gutter worker.
-struct GutterRequest {
-    buffer_id: anvil_editor::BufferId,
-    path: std::path::PathBuf,
-    text: String,
-}
-
-/// Result returned by the git-gutter worker.
-struct GutterResult {
-    buffer_id: anvil_editor::BufferId,
-    gutter: anvil_editor::GitGutter,
-}
-
-// ── Blame worker (T2) ───────────────────────────────────────────────────────
-
-/// Request sent to the git-blame worker.
-struct BlameRequest {
-    path: std::path::PathBuf,
-    /// 1-indexed line number (git blame -L uses 1-based).
-    line: usize,
-}
-
-/// Parsed blame entry returned by the blame worker.
-struct BlameEntry {
-    author: String,
-    /// Relative human-readable time, e.g. "3 hours ago".
-    time_relative: String,
-    /// Short commit hash (first 7 chars).
-    short_hash: String,
-}
-
-/// Result returned by the git-blame worker.
-struct BlameResult {
-    path: std::path::PathBuf,
-    line: usize,
-    /// `None` means "Not Committed Yet".
-    entry: Option<BlameEntry>,
-}
-
-/// Sent from the file-watcher thread to the main thread when a tracked buffer's
-/// on-disk file changes (item 27).
-struct FileWatchEvent {
-    /// The buffer whose backing file changed.
-    buffer_id: anvil_editor::BufferId,
-}
-
-/// Detect locally-listening TCP ports via `lsof`.
-///
-/// Cached for 2 s to avoid hammering lsof on every HUD tick. Skips ports
-/// below 1024 (system) and the well-known noise ports 5353 (mDNS) and 7000
-/// (AirPlay).
-fn detect_ports() -> Vec<u16> {
-    use std::sync::Mutex;
-    use std::time::{Duration, Instant};
-    static PORT_CACHE: Mutex<Option<(Instant, Vec<u16>)>> = Mutex::new(None);
-    const PORT_CACHE_TTL: Duration = Duration::from_secs(2);
-
-    if let Ok(guard) = PORT_CACHE.lock() {
-        if let Some((ts, ref ports)) = *guard {
-            if ts.elapsed() < PORT_CACHE_TTL {
-                return ports.clone();
-            }
-        }
-    }
-
-    let ports = detect_ports_uncached();
-    if let Ok(mut guard) = PORT_CACHE.lock() {
-        *guard = Some((Instant::now(), ports.clone()));
-    }
-    ports
-}
-
-fn detect_ports_uncached() -> Vec<u16> {
-    const SKIP: &[u16] = &[5353, 7000];
-    let Ok(out) = std::process::Command::new("lsof")
-        .args(["-nP", "-iTCP", "-sTCP:LISTEN"])
-        .output()
-    else {
-        return Vec::new();
-    };
-    if !out.status.success() {
-        return Vec::new();
-    }
-    let mut ports: Vec<u16> = Vec::new();
-    for line in String::from_utf8_lossy(&out.stdout).lines().skip(1) {
-        // Each line has fields separated by whitespace. The NAME column
-        // (last field) looks like "*:3000" or "127.0.0.1:8080".
-        let Some(name) = line.split_whitespace().last() else {
-            continue;
-        };
-        let Some(port_str) = name.rsplit(':').next() else {
-            continue;
-        };
-        let Ok(port) = port_str.parse::<u16>() else {
-            continue;
-        };
-        if port < 1024 || SKIP.contains(&port) {
-            continue;
-        }
-        if !ports.contains(&port) {
-            ports.push(port);
-        }
-    }
-    ports.sort_unstable();
-    ports
-}
-
-/// Detect project kind by checking for well-known marker files in `cwd`.
-/// Returns "rust", "node", or "make" for the first match, or None.
-fn detect_project_kind(cwd: &std::path::Path) -> Option<String> {
-    if cwd.join("Cargo.toml").exists() {
-        return Some("rust".to_string());
-    }
-    if cwd.join("package.json").exists() {
-        return Some("node".to_string());
-    }
-    if cwd.join("pyproject.toml").exists() {
-        return Some("python".to_string());
-    }
-    if cwd.join("go.mod").exists() {
-        return Some("go".to_string());
-    }
-    if cwd.join("Makefile").exists() {
-        return Some("make".to_string());
-    }
-    if cwd.join(".git").is_dir() {
-        return Some("git".to_string());
-    }
-    None
-}
-
-fn has_project_marker_in_or_above(cwd: &Path) -> bool {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    for dir in cwd.ancestors() {
-        if detect_project_kind(dir).is_some() {
-            return true;
-        }
-        if home.as_deref() == Some(dir) {
-            break;
-        }
-    }
-    false
-}
-
-/// Walk `cwd` up to depth `max_depth`, collecting (mtime, path) for regular
-/// files (skipping hidden dirs and known noise dirs like `target/`,
-/// `node_modules/`, `.git/`). Returns the top-`n` most recently modified
-/// files as absolute path strings.
-fn recent_files_in_dir(cwd: &std::path::Path, n: usize) -> Vec<String> {
-    use std::time::SystemTime;
-    const SKIP_DIRS: &[&str] = &["target", "node_modules", ".git"];
-
-    let mut entries: Vec<(SystemTime, String)> = Vec::new();
-    walk_dir_for_recent(cwd, 0, 3, &mut entries, SKIP_DIRS);
-    entries.sort_by_key(|e| std::cmp::Reverse(e.0));
-    entries.into_iter().take(n).map(|(_, p)| p).collect()
-}
-
-fn walk_dir_for_recent(
-    dir: &std::path::Path,
-    depth: usize,
-    max_depth: usize,
-    out: &mut Vec<(std::time::SystemTime, String)>,
-    skip_dirs: &[&str],
-) {
-    use std::fs;
-    if depth > max_depth {
-        return;
-    }
-    let Ok(rd) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in rd.flatten() {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if name_str.starts_with('.') || skip_dirs.contains(&name_str.as_ref()) {
-            continue;
-        }
-        let Ok(ft) = entry.file_type() else {
-            continue;
-        };
-        let path = entry.path();
-        if ft.is_dir() {
-            if depth < max_depth {
-                walk_dir_for_recent(&path, depth + 1, max_depth, out, skip_dirs);
-            }
-        } else if ft.is_file() {
-            if let Ok(meta) = entry.metadata() {
-                if let Ok(mtime) = meta.modified() {
-                    if let Some(s) = path.to_str() {
-                        out.push((mtime, s.to_string()));
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Path used to persist the user's HUD section order.
-///
-/// Lives under `~/.config/anvil/` (XDG-ish) so it survives across launches
-/// without touching the main TOML config (the config crate doesn't have a
-/// writer yet). One section token per line, in display order.
-fn hud_section_order_path() -> Option<std::path::PathBuf> {
-    let home = std::env::var_os("HOME")?;
-    let mut p = std::path::PathBuf::from(home);
-    p.push(".config");
-    p.push("anvil");
-    Some(p.join("section_order.txt"))
-}
-
-fn load_hud_section_order() -> Option<Vec<SectionId>> {
-    let path = hud_section_order_path()?;
-    let text = std::fs::read_to_string(&path).ok()?;
-    let order: Vec<SectionId> = text
-        .lines()
-        .filter_map(|line| SectionId::from_token(line.trim()))
-        .collect();
-    if order.is_empty() {
-        return None;
-    }
-    Some(order)
-}
-
-/// X11: load user snippets from `~/.config/anvil/snippets.toml`.
-///
-/// Expected format:
-/// ```toml
-/// [snippet.fn]
-/// body = "fn ${1:name}() {\n    $0\n}"
-///
-/// [snippet.impl]
-/// body = "impl ${1:Type} {\n    $0\n}"
-/// ```
-///
-/// Returns an empty map when the file does not exist or cannot be parsed.
-fn load_snippets() -> HashMap<String, String> {
-    let home = match std::env::var_os("HOME") {
-        Some(h) => PathBuf::from(h),
-        None => return HashMap::new(),
-    };
-    let path = home.join(".config").join("anvil").join("snippets.toml");
-    let text = match std::fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(_) => return HashMap::new(),
-    };
-    let table: toml::Table = match text.parse() {
-        Ok(t) => t,
-        Err(_) => return HashMap::new(),
-    };
-    let mut snippets = HashMap::new();
-    if let Some(toml::Value::Table(snippet_table)) = table.get("snippet") {
-        for (trigger, val) in snippet_table {
-            if let toml::Value::Table(entry) = val {
-                if let Some(toml::Value::String(body)) = entry.get("body") {
-                    snippets.insert(trigger.clone(), body.clone());
-                }
-            }
-        }
-    }
-    snippets
-}
-
-fn save_hud_section_order(order: &[SectionId]) {
-    let Some(path) = hud_section_order_path() else {
-        return;
-    };
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let body: String = order
-        .iter()
-        .map(|s| format!("{}\n", s.token()))
-        .collect::<String>();
-    let _ = std::fs::write(&path, body);
-}
-
-/// One-shot `git log -1 --format=%h %s` against `cwd`. Returns (sha, subject)
-/// Return the local wall-clock time as `"HH:MM"` using libc `localtime_r`.
-fn local_hhmm() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as libc::time_t)
-        .unwrap_or(0);
-    let mut tm = libc::tm {
-        tm_sec: 0,
-        tm_min: 0,
-        tm_hour: 0,
-        tm_mday: 0,
-        tm_mon: 0,
-        tm_year: 0,
-        tm_wday: 0,
-        tm_yday: 0,
-        tm_isdst: 0,
-        tm_gmtoff: 0,
-        tm_zone: std::ptr::null_mut(),
-    };
-    // SAFETY: secs is a valid time_t; tm is stack-allocated and we own it.
-    unsafe { libc::localtime_r(&secs, &mut tm) };
-    format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
-}
-
-/// or empty strings on failure / non-repo. Bounded: takes <10ms in practice.
-fn git_head_oneline(cwd: &std::path::Path) -> (String, String) {
-    let output = std::process::Command::new("git")
-        .args(["log", "-1", "--format=%h %s"])
-        .current_dir(cwd)
-        .output();
-    let Ok(out) = output else {
-        return (String::new(), String::new());
-    };
-    if !out.status.success() {
-        return (String::new(), String::new());
-    }
-    let s = String::from_utf8_lossy(&out.stdout);
-    let line = s.lines().next().unwrap_or("").trim_end();
-    match line.split_once(' ') {
-        Some((sha, subject)) => (sha.to_string(), subject.to_string()),
-        None => (line.to_string(), String::new()),
-    }
-}
-
-// ── Z1/Z2/Z3/Z5/Z6/Z8/Z12: git / gh shell-outs ──────────────────────────────
-
-/// Run `git status --porcelain` and return staged/unstaged file lists.
-fn git_status_files(cwd: &std::path::Path) -> (Vec<ScmFile>, Vec<ScmFile>) {
-    let output = std::process::Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(cwd)
-        .output();
-    let Ok(out) = output else {
-        return (Vec::new(), Vec::new());
-    };
-    let text = String::from_utf8_lossy(&out.stdout);
-    let mut staged = Vec::new();
-    let mut unstaged = Vec::new();
-    for line in text.lines() {
-        if line.len() < 4 {
-            continue;
-        }
-        let x = line.chars().next().unwrap_or(' ');
-        let y = line.chars().nth(1).unwrap_or(' ');
-        let path_part = line[3..].trim_matches('"');
-        // Rename: take destination.
-        let path_str = if let Some(arrow) = path_part.find(" -> ") {
-            &path_part[arrow + 4..]
-        } else {
-            path_part
-        };
-        let abs = cwd.join(path_str);
-        // Index (X col) — staged.
-        if x != ' ' && x != '?' {
-            let mark = match x {
-                'A' => 'A',
-                'D' => 'D',
-                _ => 'M',
-            };
-            staged.push(ScmFile {
-                path: abs.clone(),
-                mark,
-                staged: true,
-            });
-        }
-        // Work-tree (Y col) — unstaged or untracked.
-        if y != ' ' || x == '?' {
-            let mark = if x == '?' && y == '?' {
-                '?'
-            } else {
-                match y {
-                    'D' => 'D',
-                    _ => 'M',
-                }
-            };
-            unstaged.push(ScmFile {
-                path: abs,
-                mark,
-                staged: false,
-            });
-        }
-    }
-    (staged, unstaged)
-}
-
-/// Run `git branch` and return (branch names, index of current branch).
-fn git_branch_list(cwd: &std::path::Path) -> (Vec<String>, Option<usize>) {
-    let output = std::process::Command::new("git")
-        .args(["branch"])
-        .current_dir(cwd)
-        .output();
-    let Ok(out) = output else {
-        return (Vec::new(), None);
-    };
-    let text = String::from_utf8_lossy(&out.stdout);
-    let mut branches = Vec::new();
-    let mut current = None;
-    for (i, line) in text.lines().enumerate() {
-        if let Some(stripped) = line.strip_prefix("* ") {
-            current = Some(i);
-            branches.push(stripped.trim().to_string());
-        } else {
-            branches.push(line.trim().to_string());
-        }
-    }
-    (branches, current)
-}
-
-/// Run `git log --oneline -50` and return entries.
-fn git_log_entries(cwd: &std::path::Path) -> Vec<GitLogEntry> {
-    let output = std::process::Command::new("git")
-        .args(["log", "--oneline", "-50"])
-        .current_dir(cwd)
-        .output();
-    let Ok(out) = output else {
-        return Vec::new();
-    };
-    let text = String::from_utf8_lossy(&out.stdout);
-    text.lines()
-        .filter_map(|line| {
-            let (hash, rest) = line.split_once(' ')?;
-            Some(GitLogEntry {
-                hash: hash.to_string(),
-                subject: rest.to_string(),
-            })
-        })
-        .collect()
-}
-
-/// Run `git stash list` and return stash entries.
-fn git_stash_list(cwd: &std::path::Path) -> Vec<StashEntry> {
-    let output = std::process::Command::new("git")
-        .args(["stash", "list"])
-        .current_dir(cwd)
-        .output();
-    let Ok(out) = output else {
-        return Vec::new();
-    };
-    let text = String::from_utf8_lossy(&out.stdout);
-    text.lines()
-        .enumerate()
-        .map(|(i, line)| StashEntry {
-            idx: i,
-            message: line.to_string(),
-        })
-        .collect()
-}
-
-/// Run `gh pr list --json number,title,headRefName` and return entries.
-/// Returns empty vec when gh is not on PATH or the command fails.
-fn gh_pr_list(cwd: &std::path::Path) -> Vec<PrEntry> {
-    let output = std::process::Command::new("gh")
-        .args(["pr", "list", "--json", "number,title,headRefName"])
-        .current_dir(cwd)
-        .output();
-    let Ok(out) = output else {
-        return Vec::new();
-    };
-    if !out.status.success() {
-        return Vec::new();
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    // Minimal JSON parse — look for {"number":N,"title":"...","headRefName":"..."} objects.
-    // Use a simple regex-free approach: split on },{.
-    parse_gh_pr_json(&text)
-}
-
-fn parse_gh_pr_json(text: &str) -> Vec<PrEntry> {
-    // Expected format: [{"number":1,"title":"foo","headRefName":"bar"},...].
-    // Extract each {...} object naively.
-    let mut entries = Vec::new();
-    let mut depth = 0i32;
-    let mut obj_start = None;
-    let chars: Vec<char> = text.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        match chars[i] {
-            '{' => {
-                depth += 1;
-                if depth == 1 {
-                    obj_start = Some(i);
-                }
-            }
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    if let Some(start) = obj_start.take() {
-                        let obj: String = chars[start..=i].iter().collect();
-                        if let Some(e) = parse_gh_pr_obj(&obj) {
-                            entries.push(e);
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    entries
-}
-
-fn parse_gh_pr_obj(obj: &str) -> Option<PrEntry> {
-    let number = extract_json_number(obj, "number")?;
-    let title = extract_json_string(obj, "title").unwrap_or_default();
-    let head = extract_json_string(obj, "headRefName").unwrap_or_default();
-    Some(PrEntry {
-        number,
-        title,
-        head,
-    })
-}
-
-fn extract_json_number(obj: &str, key: &str) -> Option<u32> {
-    let needle = format!("\"{}\":", key);
-    let start = obj.find(&needle)? + needle.len();
-    let rest = obj[start..].trim_start();
-    let end = rest
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(rest.len());
-    rest[..end].parse().ok()
-}
-
-fn extract_json_string(obj: &str, key: &str) -> Option<String> {
-    let needle = format!("\"{}\":\"", key);
-    let start = obj.find(&needle)? + needle.len();
-    let rest = &obj[start..];
-    // Read until unescaped closing quote.
-    let mut result = String::new();
-    let mut escaped = false;
-    for ch in rest.chars() {
-        if escaped {
-            result.push(ch);
-            escaped = false;
-        } else if ch == '\\' {
-            escaped = true;
-        } else if ch == '"' {
-            break;
-        } else {
-            result.push(ch);
-        }
-    }
-    Some(result)
-}
-
-/// Run `git add <path>` to stage a file. Returns Ok(()) on success.
-fn git_add(cwd: &std::path::Path, path: &std::path::Path) -> Result<(), String> {
-    let out = std::process::Command::new("git")
-        .args(["add", "--", &path.to_string_lossy()])
-        .current_dir(cwd)
-        .output()
-        .map_err(|e| e.to_string())?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).into_owned())
-    }
-}
-
-/// Run `git reset HEAD <path>` to unstage a file.
-fn git_reset_head(cwd: &std::path::Path, path: &std::path::Path) -> Result<(), String> {
-    let out = std::process::Command::new("git")
-        .args(["reset", "HEAD", "--", &path.to_string_lossy()])
-        .current_dir(cwd)
-        .output()
-        .map_err(|e| e.to_string())?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).into_owned())
-    }
-}
-
-/// Run `git commit -m <msg>`.
-fn git_commit(cwd: &std::path::Path, msg: &str) -> Result<(), String> {
-    let out = std::process::Command::new("git")
-        .args(["commit", "-m", msg])
-        .current_dir(cwd)
-        .output()
-        .map_err(|e| e.to_string())?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim_end().to_owned())
-    }
-}
-
-/// Run `git checkout <branch>`.
-fn git_checkout(cwd: &std::path::Path, branch: &str) -> Result<(), String> {
-    let out = std::process::Command::new("git")
-        .args(["checkout", branch])
-        .current_dir(cwd)
-        .output()
-        .map_err(|e| e.to_string())?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim_end().to_owned())
-    }
-}
-
-/// Run `git diff HEAD -- <path>` (unstaged) or `git diff --cached -- <path>`
-/// (staged) and return the diff text.  Returns an empty string on error.
-fn git_diff_for_file(cwd: &std::path::Path, path: &str, staged: bool) -> String {
-    let mut cmd = std::process::Command::new("git");
-    if staged {
-        cmd.args(["diff", "--cached", "--", path]);
-    } else {
-        cmd.args(["diff", "HEAD", "--", path]);
-    }
-    cmd.current_dir(cwd)
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .unwrap_or_default()
-}
-
-/// Run `git stash apply stash@{N}`.
-fn git_stash_apply(cwd: &std::path::Path, idx: usize) -> Result<(), String> {
-    let stash_ref = format!("stash@{{{idx}}}");
-    let out = std::process::Command::new("git")
-        .args(["stash", "apply", &stash_ref])
-        .current_dir(cwd)
-        .output()
-        .map_err(|e| e.to_string())?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim_end().to_owned())
-    }
-}
-
-/// Run `git push` in a background thread; result sent back via channel.
-fn spawn_git_push(cwd: std::path::PathBuf, tx: std::sync::mpsc::Sender<Result<(), String>>) {
-    std::thread::spawn(move || {
-        let out = std::process::Command::new("git")
-            .arg("push")
-            .current_dir(&cwd)
-            .output();
-        let result = match out {
-            Ok(o) if o.status.success() => Ok(()),
-            Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim_end().to_owned()),
-            Err(e) => Err(e.to_string()),
-        };
-        let _ = tx.send(result);
-    });
-}
-
-/// Run `git pull` in a background thread; result sent back via channel.
-fn spawn_git_pull(cwd: std::path::PathBuf, tx: std::sync::mpsc::Sender<Result<(), String>>) {
-    std::thread::spawn(move || {
-        let out = std::process::Command::new("git")
-            .arg("pull")
-            .current_dir(&cwd)
-            .output();
-        let result = match out {
-            Ok(o) if o.status.success() => Ok(()),
-            Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim_end().to_owned()),
-            Err(e) => Err(e.to_string()),
-        };
-        let _ = tx.send(result);
-    });
-}
-
-/// Run `git show <hash>` and return the output as a String.
-fn git_show(cwd: &std::path::Path, hash: &str) -> String {
-    let out = std::process::Command::new("git")
-        .args(["show", hash])
-        .current_dir(cwd)
-        .output();
-    match out {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
-        _ => format!("git show {hash}: failed"),
-    }
-}
-
-// ── git blame shell-out (T2) ─────────────────────────────────────────────────
-
-/// Run `git blame -L<line>,<line> --porcelain <path>` and parse the first entry.
-///
-/// `line` is 0-indexed (converted to 1-indexed for git).
-/// Returns `None` when git is unavailable, the file is untracked, or the line
-/// has not yet been committed ("0000…" hash).
-fn run_git_blame(path: &std::path::Path, line: usize) -> Option<BlameEntry> {
-    let git_line = line + 1; // git blame uses 1-based lines
-    let dir = path.parent().unwrap_or(std::path::Path::new("."));
-    let output = std::process::Command::new("git")
-        .args([
-            "blame",
-            &format!("-L{git_line},{git_line}"),
-            "--porcelain",
-            &path.to_string_lossy(),
-        ])
-        .current_dir(dir)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    parse_blame_porcelain(&text)
-}
-
-/// Parse a single entry from `git blame --porcelain` output.
-///
-/// The porcelain format starts with: `<40-char-hash> <orig-line> <final-line> <count>`
-/// Followed by key/value lines until the actual source line (prefixed with `\t`).
-///
-/// Returns `None` when the commit is "not yet committed" (all-zero hash).
-fn parse_blame_porcelain(text: &str) -> Option<BlameEntry> {
-    let mut lines = text.lines();
-    let header = lines.next()?;
-    let hash = header.split_whitespace().next()?;
-    // All-zero hash means uncommitted.
-    if hash.chars().all(|c| c == '0') {
-        return None;
-    }
-    let short_hash = &hash[..hash.len().min(7)];
-
-    let mut author = String::new();
-    let mut author_time: u64 = 0;
-    let mut author_tz = String::from("+0000");
-
-    for line in lines {
-        if line.starts_with('\t') {
-            break; // source line — done
-        }
-        if let Some(val) = line.strip_prefix("author ") {
-            author = val.to_string();
-        } else if let Some(val) = line.strip_prefix("author-time ") {
-            author_time = val.parse().unwrap_or(0);
-        } else if let Some(val) = line.strip_prefix("author-tz ") {
-            author_tz = val.to_string();
-        }
-    }
-
-    let _ = author_tz; // timezone not used in display
-    let time_relative = blame_relative_time(author_time);
-
-    Some(BlameEntry {
-        author,
-        time_relative,
-        short_hash: short_hash.to_string(),
-    })
-}
-
-/// Format a UNIX timestamp as a human-readable relative time string.
-fn blame_relative_time(unix_secs: u64) -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let secs = now.saturating_sub(unix_secs);
-    if secs < 60 {
-        "just now".to_string()
-    } else if secs < 3600 {
-        let m = secs / 60;
-        format!("{m} min ago")
-    } else if secs < 86400 {
-        let h = secs / 3600;
-        format!("{h} hr ago")
-    } else if secs < 86400 * 30 {
-        let d = secs / 86400;
-        format!("{d} days ago")
-    } else if secs < 86400 * 365 {
-        let mo = secs / (86400 * 30);
-        format!("{mo} mo ago")
-    } else {
-        let y = secs / (86400 * 365);
-        format!("{y} yr ago")
-    }
-}
-
-// ── Keybindings ───────────────────────────────────────────────────────────────
-
-#[derive(Clone, Copy)]
-struct Keybindings {
-    new_tab: Option<Chord>,
-    close_tab: Option<Chord>,
-    next_tab: Option<Chord>,
-    prev_tab: Option<Chord>,
-    jump: [Option<Chord>; 9],
-    search_open: Option<Chord>,
-    /// Cmd+Opt+Shift+F: open search bar scoped to the current block (moved from Cmd+Shift+F).
-    search_open_block: Option<Chord>,
-    /// Cmd+Shift+F: open the project-wide search overlay.
-    project_search_open: Option<Chord>,
-    search_next: Option<Chord>,
-    search_prev: Option<Chord>,
-    /// Cmd+Opt+R: toggle regex mode while the search bar is open.
-    search_regex_toggle: Option<Chord>,
-    hud_toggle: Option<Chord>,
-    cheatsheet: Option<Chord>,
-    split_right: Option<Chord>,
-    split_down: Option<Chord>,
-    close_pane: Option<Chord>,
-    focus_left: Option<Chord>,
-    focus_right: Option<Chord>,
-    focus_up: Option<Chord>,
-    focus_down: Option<Chord>,
-    fold_block: Option<Chord>,
-    toggle_theme: Option<Chord>,
-    layout_mode_toggle: Option<Chord>,
-    left_dock_toggle: Option<Chord>,
-    editor_new: Option<Chord>,
-    /// Cmd+T: open workspace symbol search overlay (O1).
-    workspace_symbol_search: Option<Chord>,
-    /// Cmd+R: open buffer symbol search overlay (O2).
-    buffer_symbol_search: Option<Chord>,
-}
-
-impl Keybindings {
-    fn from_config(kb: &anvil_config::Keybindings) -> Self {
-        let jump_strs = [
-            &kb.tab_1, &kb.tab_2, &kb.tab_3, &kb.tab_4, &kb.tab_5, &kb.tab_6, &kb.tab_7, &kb.tab_8,
-            &kb.tab_9,
-        ];
-        let mut jump = [None; 9];
-        for (i, s) in jump_strs.iter().enumerate() {
-            jump[i] = parse_chord(s);
-        }
-        Self {
-            new_tab: parse_chord(&kb.new_tab),
-            close_tab: parse_chord(&kb.close_tab),
-            next_tab: parse_chord(&kb.next_tab),
-            prev_tab: parse_chord(&kb.prev_tab),
-            jump,
-            search_open: parse_chord(&kb.search_open),
-            search_open_block: parse_chord("cmd+opt+shift+f"),
-            project_search_open: parse_chord(&kb.project_search),
-            search_next: parse_chord(&kb.search_next),
-            search_prev: parse_chord(&kb.search_prev),
-            search_regex_toggle: parse_chord("cmd+opt+r"),
-            hud_toggle: parse_chord(&kb.hud_toggle),
-            cheatsheet: parse_chord(&kb.cheatsheet_toggle),
-            split_right: parse_chord(&kb.split_right),
-            split_down: parse_chord(&kb.split_down),
-            close_pane: parse_chord(&kb.close_pane),
-            focus_left: parse_chord(&kb.focus_left),
-            focus_right: parse_chord(&kb.focus_right),
-            focus_up: parse_chord(&kb.focus_up),
-            focus_down: parse_chord(&kb.focus_down),
-            fold_block: parse_chord(&kb.fold_block),
-            toggle_theme: parse_chord(&kb.toggle_theme),
-            layout_mode_toggle: parse_chord(&kb.layout_mode_toggle),
-            left_dock_toggle: parse_chord(&kb.left_dock_toggle),
-            editor_new: parse_chord(&kb.editor_new),
-            workspace_symbol_search: parse_chord("cmd+t"),
-            buffer_symbol_search: parse_chord("cmd+r"),
-        }
-    }
-}
-
-// ── Explorer support types (items 4, 6, 7, 8) ────────────────────────────────
-
-/// Which surface has keyboard focus for key routing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum FocusTarget {
-    #[default]
-    Editor,
-    Explorer,
-    Terminal,
-}
-
-/// Inline rename state for an Explorer row (item 6).
-pub struct RenameState {
-    /// Absolute path of the entry being renamed.
-    pub old_path: PathBuf,
-    /// Current text in the rename input field (starts as the basename).
-    pub input: String,
-    /// Explorer row index (slot_i from `visible_rows`).
-    pub row_idx: usize,
-}
-
-/// Ghost-row creation state for new-file / new-folder (item 7).
-pub struct NewItemState {
-    /// Directory in which the new entry will be created.
-    pub parent_dir: PathBuf,
-    /// Current text typed by the user (empty on open).
-    pub input: String,
-    /// True → create directory; false → create file.
-    pub is_dir: bool,
-}
-
-/// Pending delete confirmation state (item 8).
-pub struct DeleteConfirm {
-    /// Absolute path of the item to delete.
-    pub path: PathBuf,
-    /// Human-readable name (basename) shown in the modal.
-    pub name: String,
-}
 
 // ── LSP references overlay (item 26) ─────────────────────────────────────────
 
@@ -1183,141 +340,14 @@ struct ThemePickerState {
 
 /// All built-in theme names offered by the theme picker.
 const PICKER_THEMES: &[&str] = &[
-    "ember-dark",
-    "ember-light",
     "mineral-dark",
     "mineral-light",
+    "ember-dark",
+    "ember-light",
     "solarized-dark",
     "solarized-light",
     "system",
 ];
-
-// ── Z1: Source-control panel (Cmd+Shift+G) ────────────────────────────────────
-
-/// A single file row in the source-control panel.
-#[derive(Clone, Debug)]
-struct ScmFile {
-    /// Absolute path.
-    path: PathBuf,
-    /// 'M' modified, 'A' added, '?' untracked, 'D' deleted.
-    mark: char,
-    /// True = staged (index), false = unstaged / untracked.
-    staged: bool,
-}
-
-/// A single stash entry (Z5).
-#[derive(Clone, Debug)]
-struct StashEntry {
-    /// stash@{N} index used by git_stash_apply.
-    idx: usize,
-    /// Message, e.g. "WIP on main: ...".
-    message: String,
-}
-
-/// PR list entry (Z12).
-#[derive(Clone, Debug)]
-struct PrEntry {
-    number: u32,
-    title: String,
-    /// Head branch name (for display).
-    #[allow(dead_code)]
-    head: String,
-}
-
-/// State for the source-control panel overlay (Z1/Z2/Z3/Z5/Z7/Z12).
-struct ScmPanel {
-    /// Staged files (index-modified).
-    staged: Vec<ScmFile>,
-    /// Unstaged / untracked files.
-    unstaged: Vec<ScmFile>,
-    /// Currently selected row (0-based across both sections).
-    selected: usize,
-    /// Commit message text input (Z3).
-    commit_msg: String,
-    /// Whether the commit-message input has keyboard focus (Z3).
-    commit_input_active: bool,
-    /// Stash entries (Z5). Empty when none / not in a repo.
-    stashes: Vec<StashEntry>,
-    /// Whether the stash section is expanded.
-    stashes_expanded: bool,
-    /// PR entries from `gh` (Z12). Empty when gh not available.
-    prs: Vec<PrEntry>,
-    /// Whether the PR section is expanded.
-    prs_expanded: bool,
-}
-
-impl ScmPanel {
-    fn new() -> Self {
-        Self {
-            staged: Vec::new(),
-            unstaged: Vec::new(),
-            selected: 0,
-            commit_msg: String::new(),
-            commit_input_active: false,
-            stashes: Vec::new(),
-            stashes_expanded: false,
-            prs: Vec::new(),
-            prs_expanded: false,
-        }
-    }
-
-    /// Total selectable file rows (staged + unstaged).
-    fn total_rows(&self) -> usize {
-        self.staged.len() + self.unstaged.len()
-    }
-
-    /// Returns the selected ScmFile (if any).
-    fn selected_file(&self) -> Option<&ScmFile> {
-        let n_staged = self.staged.len();
-        if self.selected < n_staged {
-            self.staged.get(self.selected)
-        } else {
-            self.unstaged.get(self.selected - n_staged)
-        }
-    }
-}
-
-// ── Z6: Branch switcher (Cmd+Shift+B) ────────────────────────────────────────
-
-/// State for the branch-switcher palette (Z6).
-struct BranchSwitcher {
-    /// All local branches, output of `git branch`.
-    branches: Vec<String>,
-    /// Index of the currently checked-out branch.
-    #[allow(dead_code)]
-    current_idx: Option<usize>,
-    /// Filter text.
-    query: String,
-    /// Currently selected row in the *filtered* list.
-    selected: usize,
-}
-
-impl BranchSwitcher {
-    fn filtered(&self) -> Vec<usize> {
-        let q = self.query.to_ascii_lowercase();
-        self.branches
-            .iter()
-            .enumerate()
-            .filter(|(_, b)| q.is_empty() || b.to_ascii_lowercase().contains(&q))
-            .map(|(i, _)| i)
-            .collect()
-    }
-}
-
-// ── Z8: Git-log palette (Cmd+K Cmd+G) ────────────────────────────────────────
-
-/// One entry from `git log --oneline -50`.
-#[derive(Clone, Debug)]
-struct GitLogEntry {
-    hash: String,
-    subject: String,
-}
-
-/// State for the git-log palette (Z8).
-struct GitLogPalette {
-    entries: Vec<GitLogEntry>,
-    selected: usize,
-}
 
 // ── App ───────────────────────────────────────────────────────────────────────
 
@@ -1391,7 +421,7 @@ pub struct App {
     /// Whether the IDE explorer dock is visible; toggled by Cmd+B.
     left_dock_visible: bool,
     /// Current explorer sidebar width in logical points (item 13: drag-resize).
-    /// Range clamped to [180, 600] on drag. Default 300.
+    /// Range clamped to [180, 600] on drag. Default `LEFT_DOCK_DEFAULT_PT`.
     left_dock_w_pt: f64,
     /// G3: smooth target for sidebar width. Drag writes here; tick eases
     /// `left_dock_w_pt` toward this value.
@@ -1401,10 +431,10 @@ pub struct App {
     /// True while the user is dragging the editor/drawer horizontal divider (item 13b).
     drawer_drag_active: bool,
     /// V1 (#3): timestamp of the most recent mouse-down on the sidebar divider.
-    /// Used to detect double-clicks (within 350ms) that reset width to 300pt.
+    /// Used to detect double-clicks (within 350ms) that reset width to the default.
     sidebar_divider_last_click: Option<Instant>,
     /// V2 (#4): timestamp of the most recent mouse-down on the drawer divider.
-    /// Used to detect double-clicks (within 350ms) that reset the ratio to 0.72/0.28.
+    /// Used to detect double-clicks (within 350ms) that reset the compact drawer ratio.
     drawer_divider_last_click: Option<Instant>,
     /// V3 (#5): animated target for the drawer editor-ratio (top split).
     /// When Some, the tick loop eases the tree's `ratios[0]` toward this value.
@@ -1421,7 +451,7 @@ pub struct App {
     /// so Cmd+J can restore it.
     drawer_hidden: bool,
     /// Saved editor-over-drawer ratio, captured before hiding the drawer
-    /// (Tier-B item 8).  Default 0.72.
+    /// (Tier-B item 8).  Default `IDE_EDITOR_RATIO`.
     drawer_saved_ratio: f64,
 
     // -- drawer multi-terminal (Y7/Y8/Y9) ---
@@ -1447,6 +477,9 @@ pub struct App {
     /// When set, the user grabbed a pane divider and is dragging it to resize.
     /// Cleared on mouse-up.
     divider_drag: Option<DividerHit>,
+    /// When set, the user grabbed a pane chrome strip and may dock it onto
+    /// another pane edge on release.
+    pane_dock_drag: Option<PaneDockDrag>,
     /// P2: which resize divider the cursor is currently hovering over.
     /// `None` when the cursor is not near a resize divider.  Drives the 1px
     /// highlight stripe and the system cursor (col-resize or row-resize).
@@ -1482,11 +515,9 @@ pub struct App {
     /// Item 15 (Tier-B): up to 50 most recently opened file paths.
     /// Deduped on insert (most-recent at index 0).
     recent_file_list: Vec<PathBuf>,
-    /// Current font point size (logical points, not device pixels). Adjusted
-    /// at runtime by Cmd+/Cmd- and re-baked into a fresh `Font` + painter.
+    /// Base font point size from config; runtime zoom applies separate scale factors.
     font_size_pt: f64,
-    /// Font family preference, kept around so `bump_font_size` can rebuild
-    /// the `Font` with the same fallback chain used at startup.
+    /// Font family preference used when rebuilding scaled fonts.
     font_family: String,
     cheatsheet_visible: bool,
     focused: bool, // window is key window
@@ -1539,12 +570,6 @@ pub struct App {
     /// Sends the current filter flags to the fs worker so the next snapshot
     /// respects both the hidden-files (Q56) and gitignore (S1) toggles.
     fs_hidden_tx: mpsc::SyncSender<fs_worker::FilterFlags>,
-    /// Worker for child-directory expansions. Receiver kept so async
-    /// re-snapshots (e.g. on watch events) can still drain results; sender
-    /// retired because explorer click reads synchronously now.
-    #[allow(dead_code)]
-    child_fs_tx: mpsc::SyncSender<fs_worker::ChildFsRequest>,
-    child_fs_rx: mpsc::Receiver<fs_worker::ChildFsResponse>,
     fs_snapshot: Option<LeftDockSnapshot>,
     /// Per-directory child snapshots, populated lazily on first expand.
     child_snapshots: HashMap<PathBuf, LeftDockSnapshot>,
@@ -1563,6 +588,9 @@ pub struct App {
     /// Per-pane editor buffer tab hit regions. Refilled by `draw_workspace`
     /// each render; consumed by `mouse_down` for tab-switch and close.
     editor_tab_hits: Vec<EditorTabHit>,
+    /// Per-pane editor body hit regions. These are the same chrome-adjusted
+    /// rects used by the renderer, so mouse selection uses painted geometry.
+    editor_body_hits: Vec<EditorBodyHit>,
     /// Set of absolute paths of directories that are expanded in the Explorer.
     /// Keyed by PathBuf so identity survives re-snapshots and depth changes.
     expanded_dirs: HashSet<PathBuf>,
@@ -1612,6 +640,9 @@ pub struct App {
     /// Per-pane timestamp of the last LSP `didChange` sync. Used for 250 ms
     /// debounce so we don't flood the server on every keystroke.
     lsp_last_sync: HashMap<PaneId, Instant>,
+    /// Per-pane buffer revision sent to LSP. Prevents idle `didChange` spam
+    /// and avoids cloning full buffer text when content has not changed.
+    lsp_last_sent_revision: HashMap<PaneId, u64>,
 
     // -- LSP UI (NE10, tier-3) ---
     /// In-flight hover request: `(pane_id, request_id)`. Polled each tick.
@@ -1818,141 +849,6 @@ pub struct App {
     open_new_window_requested: bool,
 }
 
-// ── R2: tooltip helpers ───────────────────────────────────────────────────────
-
-/// AA13: query the resident set size of this process in bytes via `proc_pidinfo`.
-///
-/// Returns `0` on any failure (proc_pidinfo unavailable, permissions, etc.) so
-/// callers can fall back to "(not implemented)" rather than panicking.
-#[cfg(target_os = "macos")]
-fn current_rss_bytes() -> u64 {
-    use std::mem;
-    let pid = unsafe { libc::getpid() };
-    let mut info: libc::proc_taskinfo = unsafe { mem::zeroed() };
-    let size = mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
-    let ret = unsafe {
-        libc::proc_pidinfo(
-            pid,
-            libc::PROC_PIDTASKINFO,
-            0,
-            &mut info as *mut _ as *mut libc::c_void,
-            size,
-        )
-    };
-    if ret == size {
-        info.pti_resident_size
-    } else {
-        0
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn current_rss_bytes() -> u64 {
-    0
-}
-
-/// Format a byte count as a human-readable string: "12.4 KB", "3.2 MB", etc.
-fn humanize_bytes(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = KB * 1024;
-    const GB: u64 = MB * 1024;
-    if bytes >= GB {
-        format!("{:.1} GB", bytes as f64 / GB as f64)
-    } else if bytes >= MB {
-        format!("{:.1} MB", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        format!("{:.1} KB", bytes as f64 / KB as f64)
-    } else {
-        format!("{bytes} B")
-    }
-}
-
-/// Format a UNIX timestamp (seconds) as a relative time string.
-/// Uses the current UNIX time from `std::time::SystemTime`.
-fn relative_time(mtime_secs: u64) -> String {
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    if mtime_secs > now_secs {
-        return "just now".to_string();
-    }
-    let delta = now_secs - mtime_secs;
-    if delta < 60 {
-        "just now".to_string()
-    } else if delta < 3600 {
-        let m = delta / 60;
-        format!("{m} minute{} ago", if m == 1 { "" } else { "s" })
-    } else if delta < 86400 {
-        let h = delta / 3600;
-        format!("{h} hour{} ago", if h == 1 { "" } else { "s" })
-    } else {
-        let d = delta / 86400;
-        format!("{d} day{} ago", if d == 1 { "" } else { "s" })
-    }
-}
-
-// ── X6: URL detection helper ─────────────────────────────────────────────────
-
-/// Return the URL that contains grapheme column `col` on `line_str`, or `None`.
-///
-/// A URL is any token starting with `http://` or `https://` and extending to
-/// the first whitespace or `"` or `'` or `)` or `>` character.
-fn url_at_col(line_str: &str, col: usize) -> Option<String> {
-    // Find all URL spans in the line.
-    let mut spans: Vec<(usize, usize, String)> = Vec::new(); // (start_col, end_col, url)
-    let line = line_str.trim_end_matches('\n').trim_end_matches('\r');
-    let chars: Vec<char> = line.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        // Look for http:// or https://
-        let rest: String = chars[i..].iter().collect();
-        if rest.starts_with("http://") || rest.starts_with("https://") {
-            let start = i;
-            let end = chars[i..]
-                .iter()
-                .position(|&c| c.is_whitespace() || matches!(c, '"' | '\'' | ')' | '>' | '<'))
-                .map(|off| i + off)
-                .unwrap_or(chars.len());
-            let url: String = chars[start..end].iter().collect();
-            spans.push((start, end, url));
-            i = end;
-        } else {
-            i += 1;
-        }
-    }
-    spans
-        .into_iter()
-        .find(|(start, end, _)| col >= *start && col < *end)
-        .map(|(_, _, url)| url)
-}
-
-// ── App helpers ───────────────────────────────────────────────────────────────
-
-#[cfg_attr(not(test), allow(dead_code))]
-fn explorer_path_for_hit(snapshot: &LeftDockSnapshot, hit: ExplorerHit) -> Option<PathBuf> {
-    match hit {
-        ExplorerHit::Header => Some(PathBuf::from(&snapshot.root)),
-        ExplorerHit::Row(idx) => snapshot
-            .entries
-            .get(idx)
-            .map(|entry| PathBuf::from(&snapshot.root).join(&entry.name)),
-    }
-}
-
-fn next_explorer_scroll_offset(current: usize, dy: f64, entry_count: usize) -> usize {
-    if entry_count == 0 || dy == 0.0 {
-        return current.min(entry_count);
-    }
-    if dy > 0.0 {
-        current
-            .saturating_add(EXPLORER_SCROLL_ROWS_PER_WHEEL)
-            .min(entry_count)
-    } else {
-        current.saturating_sub(EXPLORER_SCROLL_ROWS_PER_WHEEL)
-    }
-}
-
 impl App {
     // ── Toast helpers (N3) ────────────────────────────────────────────────────
 
@@ -2121,16 +1017,44 @@ impl App {
         Some(divider_y)
     }
 
-    /// Fixed chrome-top strip height in device pixels (Option D: 36pt × ui_scale).
-    /// The terminal viewport starts at y = chrome_top_px.
-    fn chrome_top_px(&self) -> f64 {
-        36.0 * self.window_scale * self.ui_scale
+    fn draw_pane_dock_preview(
+        raster: &mut anvil_render::raster::Raster,
+        theme: &Theme,
+        drag: Option<PaneDockDrag>,
+    ) {
+        let Some(target) = drag.and_then(|drag| if drag.active { drag.target } else { None })
+        else {
+            return;
+        };
+        let r = target.preview;
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
+        raster.fill_pixel_rect_alpha(r.x, r.y, r.w, r.h, theme.accent, 0.14);
+        raster.fill_pixel_rect_alpha(r.x, r.y, r.w, 1.0, theme.accent_bright, 0.72);
+        raster.fill_pixel_rect_alpha(r.x, r.y + r.h - 1.0, r.w, 1.0, theme.accent_bright, 0.72);
+        raster.fill_pixel_rect_alpha(r.x, r.y, 1.0, r.h, theme.accent_bright, 0.72);
+        raster.fill_pixel_rect_alpha(r.x + r.w - 1.0, r.y, 1.0, r.h, theme.accent_bright, 0.72);
     }
 
-    /// Fixed bottom status-bar strip height in device pixels (Option D: 24pt × ui_scale).
+    /// Fixed chrome-top strip height in device pixels.
+    /// The terminal viewport starts at y = chrome_top_px.
+    fn chrome_top_px(&self) -> f64 {
+        CHROME_TOP_PT * self.window_scale * self.ui_scale
+    }
+
+    /// Fixed bottom status-bar strip height in device pixels.
     /// Anchored to the window's bottom edge.
     fn chrome_bottom_px(&self) -> f64 {
-        24.0 * self.window_scale * self.ui_scale
+        CHROME_BOTTOM_PT * self.window_scale * self.ui_scale
+    }
+
+    fn drawer_header_px(&self) -> f64 {
+        let scale = self.ui_scale.max(0.5);
+        let vertical_pad = (8.0 * scale).round().max(8.0);
+        (24.0 * scale)
+            .round()
+            .max((self.font.metrics.cell_h + vertical_pad).ceil())
     }
 
     /// Snap cursor + scroll animation state to current terminal values.
@@ -2218,7 +1142,7 @@ impl App {
 
     /// Set the user's theme mode from commands/keybindings.
     ///
-    /// `ember-dark` and `ember-light` are explicit modes; `system` follows
+    /// `mineral-dark` and `mineral-light` are explicit modes; `system` follows
     /// macOS appearance via `effective_theme_name`. Keep overrides intact so a
     /// user's configured accents survive palette switches.
     fn set_theme_mode(&mut self, mode: &str) {
@@ -2709,7 +1633,6 @@ impl App {
             .collect();
         self.branch_switcher = Some(BranchSwitcher {
             branches,
-            current_idx,
             query: String::new(),
             selected: 0,
         });
@@ -2938,6 +1861,23 @@ impl App {
         self.dirty = true;
     }
 
+    fn split_focused_native_editor_pane(&mut self, dir: SplitDir) {
+        let new_id = match self.tabs.current_mut().map(|t| t.split_native_editor(dir)) {
+            Some(Ok(id)) => id,
+            Some(Err(e)) => {
+                eprintln!("anvil: editor split failed: {e}");
+                return;
+            }
+            None => return,
+        };
+        if let Some(tab) = self.tabs.current_mut() {
+            tab.tree.focused = new_id;
+        }
+        self.resize_all_tabs();
+        self.snap_anim();
+        self.dirty = true;
+    }
+
     /// Ensure the current tab has a live terminal pane for the IDE bottom
     /// drawer.  If no terminal pane exists, split the focused pane
     /// vertically and spawn a PTY for the new pane.  Called when entering
@@ -2949,6 +1889,7 @@ impl App {
             .map(|t| t.first_terminal_pane_id().is_some())
             .unwrap_or(false);
         if has_terminal {
+            self.refresh_drawer_terminal_tracking();
             return;
         }
         let tab = match self.tabs.current() {
@@ -2961,8 +1902,8 @@ impl App {
         let ir = self.pane_area_rect();
         let ch = self.font.metrics.cell_h;
         let cw = self.font.metrics.cell_w;
-        // Drawer gets 28% of vertical space; editor keeps 72%.
-        let drawer_h = ir.h * 0.28;
+        // Match the workspace's compact IDE drawer ratio.
+        let drawer_h = ir.h * IDE_DRAWER_RATIO;
         let cols = ((ir.w / cw) as usize).max(1);
         let rows = ((drawer_h / ch) as usize).max(1);
         let scrollback = self.config.scrollback;
@@ -2982,10 +1923,7 @@ impl App {
             Ok(pty) => {
                 register_pty_pid(pty.child_pid());
                 self.ptys.insert(new_id, pty);
-                // Y7: track this pane as the first drawer terminal.
-                self.drawer_terminals.clear();
-                self.drawer_terminals.push(new_id);
-                self.drawer_active_terminal = 0;
+                self.refresh_drawer_terminal_tracking();
             }
             Err(e) => {
                 eprintln!("anvil: ide drawer pty failed: {e}");
@@ -3001,8 +1939,14 @@ impl App {
     /// `drawer_terminals`. Focuses the new pane.
     fn spawn_drawer_terminal_tab(&mut self) {
         if self.drawer_terminals.is_empty() {
-            self.spawn_ide_terminal_drawer();
-            return;
+            self.refresh_drawer_terminal_tracking();
+            if self.drawer_terminals.is_empty() {
+                self.spawn_ide_terminal_drawer();
+                self.refresh_drawer_terminal_tracking();
+                if self.drawer_terminals.is_empty() {
+                    return;
+                }
+            }
         }
         let tab = match self.tabs.current() {
             Some(t) => t,
@@ -3014,7 +1958,7 @@ impl App {
         let ir = self.pane_area_rect();
         let ch = self.font.metrics.cell_h;
         let cw = self.font.metrics.cell_w;
-        let drawer_h = ir.h * 0.28;
+        let drawer_h = ir.h * IDE_DRAWER_RATIO;
         let cols = ((ir.w / cw) as usize).max(1);
         let rows = ((drawer_h / ch) as usize).max(1);
         // Focus the first drawer terminal so that split() acts on it.
@@ -3035,8 +1979,10 @@ impl App {
             Ok(pty) => {
                 register_pty_pid(pty.child_pid());
                 self.ptys.insert(new_id, pty);
-                self.drawer_terminals.push(new_id);
-                self.drawer_active_terminal = self.drawer_terminals.len() - 1;
+                self.refresh_drawer_terminal_tracking();
+                if let Some(pos) = self.drawer_terminals.iter().position(|id| *id == new_id) {
+                    self.drawer_active_terminal = pos;
+                }
                 // Focus the new pane.
                 if let Some(tab) = self.tabs.current_mut() {
                     tab.tree.focused = new_id;
@@ -3115,7 +2061,7 @@ impl App {
                         _ => None,
                     }
                 })
-                .unwrap_or(0.72);
+                .unwrap_or(IDE_EDITOR_RATIO);
             // Only hide if there is actually a vertical IDE split.
             let has_split = self.tabs.current().is_some_and(|tab| {
                 matches!(
@@ -3266,7 +2212,14 @@ impl App {
             None => return,
         };
 
-        let argv = nvim_pane_argv(&path.to_string_lossy());
+        let effective_theme =
+            effective_theme_name(self.system_dark, self.config.theme.theme_name());
+        let argv = nvim_pane_argv(
+            &path.to_string_lossy(),
+            &self.config.nvim,
+            effective_theme,
+            &self.theme,
+        );
         let argv_refs: Vec<&str> = argv.iter().map(|s| s.as_str()).collect();
         match Pty::spawn(argv_refs.as_slice(), cols as u16, rows as u16) {
             Ok(pty) => {
@@ -3400,7 +2353,7 @@ impl App {
             self.font.metrics.cell_h,
         );
         let explorer_h = areas.left_dock.h * 0.60;
-        let header_h = (32.0 * self.ui_scale).round();
+        let header_h = (24.0 * self.ui_scale).round();
         let content_h = (explorer_h - header_h).max(0.0);
         let row_h = (28.0 * self.ui_scale).round();
         if row_h <= 0.0 {
@@ -3524,6 +2477,7 @@ impl App {
             unregister_pty_pid(pty.child_pid());
             drop(pty);
         }
+        self.refresh_drawer_terminal_tracking();
 
         if let Some(nid) = next_id {
             if let Some(tab) = self.tabs.current_mut() {
@@ -3593,10 +2547,10 @@ impl App {
         let cw = self.font.metrics.cell_w as usize;
         let ch = self.font.metrics.cell_h as usize;
         let cols = ((dw.saturating_sub(2 * GRID_PAD)) / cw).max(1);
-        // Chrome strips at top/bottom are fixed pixel heights (36pt/24pt);
+        // Chrome strips at top/bottom are fixed pixel heights;
         // PTY rows fill the remaining vertical pixels divided by cell_h.
-        let chrome_top_px = (36.0 * self.window_scale) as usize;
-        let chrome_bottom_px = (24.0 * self.window_scale) as usize;
+        let chrome_top_px = (CHROME_TOP_PT * self.window_scale) as usize;
+        let chrome_bottom_px = (CHROME_BOTTOM_PT * self.window_scale) as usize;
         let avail = dh
             .saturating_sub(chrome_top_px)
             .saturating_sub(chrome_bottom_px);
@@ -3628,6 +2582,7 @@ impl App {
             if let Some(tab) = self.tabs.current_mut() {
                 tab.ensure_ide_editor_surface();
             }
+            self.refresh_drawer_terminal_tracking();
         }
         self.resize_all_tabs();
         self.snap_anim();
@@ -3659,6 +2614,7 @@ impl App {
                 terminate_app();
             }
         } else {
+            self.refresh_drawer_terminal_tracking();
             self.dirty = true;
         }
     }
@@ -3730,6 +2686,7 @@ impl App {
         }
 
         if any_closed {
+            self.refresh_drawer_terminal_tracking();
             self.snap_anim();
             self.dirty = true;
         }
@@ -3850,6 +2807,29 @@ impl App {
         }
     }
 
+    fn refresh_drawer_terminal_tracking(&mut self) {
+        if self.layout_mode != LayoutMode::Ide {
+            self.drawer_terminals.clear();
+            self.drawer_active_terminal = 0;
+            return;
+        }
+
+        let previous_active = self
+            .drawer_terminals
+            .get(self.drawer_active_terminal)
+            .copied();
+        let (ids, active) = self
+            .tabs
+            .current()
+            .map(|tab| {
+                drawer_tracking_from_tab(tab, |id| self.ptys.contains_key(&id), previous_active)
+            })
+            .unwrap_or_else(|| (Vec::new(), 0));
+
+        self.drawer_terminals = ids;
+        self.drawer_active_terminal = active;
+    }
+
     /// Fix B1: after any layout switch that collapses panes, ensure `focused_id`
     /// points to a pane that actually has a live PTY entry.  If the current
     /// focused pane is a native editor pane (no PTY), find the first terminal
@@ -3876,6 +2856,88 @@ impl App {
         }
     }
 
+    fn finish_layout_mode_change(&mut self) {
+        normalize_tabs_for_layout_mode(self.layout_mode, &mut self.tabs);
+        normalize_input_state_for_layout_mode(
+            self.layout_mode,
+            &mut self.focus_target,
+            &mut self.selected_explorer_row,
+            &mut self.explorer_filter,
+        );
+        if self.layout_mode == LayoutMode::Terminal {
+            self.refocus_to_live_terminal();
+        }
+        self.cancel_layout_transition_gestures();
+        self.close_layout_transition_inputs();
+        self.explorer_rename = None;
+        self.explorer_new_item = None;
+        self.explorer_delete_confirm = None;
+        self.refresh_drawer_terminal_tracking();
+        self.resize_all_tabs();
+        self.force_full_redraw = true;
+        self.dirty = true;
+    }
+
+    fn cancel_layout_transition_gestures(&mut self) -> bool {
+        let mut cleared = false;
+        cleared |= clear_layout_transition_slot(&mut self.sidebar_drag_active);
+        cleared |= clear_layout_transition_slot(&mut self.drawer_drag_active);
+        cleared |= clear_layout_transition_slot(&mut self.hscroll_drag_active);
+        cleared |= clear_layout_transition_slot(&mut self.hud_drag_active);
+        cleared |= clear_layout_transition_slot(&mut self.divider_drag);
+        cleared |= clear_layout_transition_slot(&mut self.pane_dock_drag);
+        cleared |= clear_layout_transition_slot(&mut self.hud_section_drag);
+        cleared |= clear_layout_transition_slot(&mut self.tab_drag);
+        cleared |= clear_layout_transition_slot(&mut self.editor_tab_drag);
+        cleared |= clear_layout_transition_slot(&mut self.editor_mouse_drag_start);
+        cleared |= clear_layout_transition_slot(&mut self.explorer_drag);
+        cleared |= clear_layout_transition_slot(&mut self.explorer_drag_cursor);
+        cleared
+    }
+
+    fn close_layout_transition_inputs(&mut self) -> bool {
+        let mut cleared = false;
+
+        cleared |= clear_layout_transition_slot(&mut self.pending_chord_k);
+        cleared |= clear_layout_transition_slot(&mut self.search_open);
+        cleared |= clear_layout_transition_slot(&mut self.replace_row_active);
+        cleared |= clear_layout_transition_slot(&mut self.goto_line_input);
+        cleared |= clear_layout_transition_slot(&mut self.save_as_input);
+        cleared |= clear_layout_transition_slot(&mut self.lsp_rename_input);
+        cleared |= clear_layout_transition_slot(&mut self.lsp_references);
+        cleared |= clear_layout_transition_slot(&mut self.workspace_symbol_search);
+        cleared |= clear_layout_transition_slot(&mut self.buffer_symbol_search);
+        cleared |= clear_layout_transition_slot(&mut self.language_picker);
+        cleared |= clear_layout_transition_slot(&mut self.theme_picker);
+        cleared |= clear_layout_transition_slot(&mut self.open_folder_input);
+        cleared |= clear_layout_transition_slot(&mut self.project_switcher_open);
+        cleared |= clear_layout_transition_slot(&mut self.branch_switcher);
+        cleared |= clear_layout_transition_slot(&mut self.git_log_palette);
+        cleared |= clear_layout_transition_slot(&mut self.scm_panel);
+        cleared |= clear_layout_transition_slot(&mut self.pending_hover);
+        cleared |= clear_layout_transition_slot(&mut self.hover_mouse_pos);
+        cleared |= clear_layout_transition_slot(&mut self.hover_mouse_time);
+        cleared |= clear_layout_transition_slot(&mut self.pending_definition);
+        cleared |= clear_layout_transition_slot(&mut self.pending_completion);
+        cleared |= clear_layout_transition_slot(&mut self.pending_rename);
+        cleared |= clear_layout_transition_slot(&mut self.pending_code_actions);
+        cleared |= clear_layout_transition_slot(&mut self.pending_references);
+
+        if self.project_search.visible {
+            self.project_search.close();
+            cleared = true;
+        }
+        while !self.overlays.is_empty() {
+            self.overlays.pop();
+            cleared = true;
+        }
+
+        if cleared {
+            self.search.set_scope(anvil_term::SearchScope::All);
+        }
+        cleared
+    }
+
     /// Compute the pixel (rel_x, rel_y) of `loc` relative to the focused
     /// native editor pane's draw rect.  Returns `None` if no native editor pane
     /// is focused or the mouse is outside the pane area.
@@ -3892,9 +2954,7 @@ impl App {
         let cw = self.font.metrics.cell_w;
         let ch = self.font.metrics.cell_h;
         let line_count = buf.line_count().max(1);
-        let digit_cols = line_count.to_string().len();
-        let git_gutter_cols = if buf.git_gutter.is_some() { 2 } else { 0 };
-        let gutter_cols = digit_cols + 2 + git_gutter_cols;
+        let gutter_cols = anvil_render::editor_gutter_cols(line_count, buf.git_gutter.is_some());
         let gutter_w = gutter_cols as f64 * cw;
         // Click must be within the gutter's last column.
         let last_col_x = (gutter_cols as f64 - 1.0) * cw;
@@ -3920,16 +2980,42 @@ impl App {
         }
     }
 
-    fn native_editor_rel_px(&self, loc: MouseLocation) -> Option<(f64, f64)> {
-        let (rx, ry) = self.view_pt_to_raster_px(loc);
+    fn focused_editor_body_rect(&self) -> Option<anvil_render::PixelRect> {
         let tab = self.tabs.current()?;
         let id = tab.focused_id();
-        // Must be a native editor pane.
-        tab.editor_panes.get_pane(id)?;
-        let ir = self.pane_area_rect();
-        let entries = tab.tree.layout(ir, DIVIDER_PX);
-        let pr = entries.iter().find(|e| e.id == id)?.rect;
-        Some((rx - pr.x, ry - pr.y))
+        let ep = tab.editor_panes.get_pane(id)?;
+        if let Some(hit) = self.editor_body_hits.iter().find(|hit| hit.pane_id == id) {
+            return Some(hit.rect);
+        }
+
+        let entry = tab
+            .tree
+            .layout(self.pane_area_rect(), DIVIDER_PX)
+            .into_iter()
+            .find(|entry| entry.id == id)?;
+        let body = anvil_render::workspace::editor_body_rect(
+            &tab.editor_panes,
+            ep.buffer_id,
+            ep,
+            self.font.metrics,
+            entry.rect,
+            self.ui_scale,
+        );
+        Some(anvil_render::PixelRect {
+            x: body.x,
+            y: body.y,
+            w: body.w,
+            h: body.h,
+        })
+    }
+
+    fn native_editor_rel_px(&self, loc: MouseLocation) -> Option<(f64, f64)> {
+        let (rx, ry) = self.view_pt_to_raster_px(loc);
+        let rect = self.focused_editor_body_rect()?;
+        if rx < rect.x || rx >= rect.x + rect.w || ry < rect.y || ry >= rect.y + rect.h {
+            return None;
+        }
+        Some((rx - rect.x, ry - rect.y))
     }
 
     /// Convert a mouse location to an editor buffer `Position` for the focused
@@ -3946,7 +3032,16 @@ impl App {
             cell_h: self.font.metrics.cell_h,
             descent: self.font.metrics.descent,
         };
-        Some(pixel_to_position(pane, buf, rel_x, rel_y, metrics, 0))
+        let gutter_cols =
+            anvil_render::editor_gutter_cols(buf.line_count(), buf.git_gutter.is_some());
+        Some(pixel_to_position(
+            pane,
+            buf,
+            rel_x,
+            rel_y,
+            metrics,
+            gutter_cols,
+        ))
     }
 
     /// Return true if the focused pane is a native editor pane (NE6).
@@ -4007,162 +3102,6 @@ impl App {
                     buf.syntax_pending = false;
                     self.dirty = true;
                     break 'outer;
-                }
-            }
-        }
-    }
-
-    fn poll_gutter_results(&mut self) {
-        while let Ok(GutterResult { buffer_id, gutter }) = self.gutter_rx.try_recv() {
-            let mut found = false;
-            for tab in self.tabs.tabs.iter_mut() {
-                if let Some(buf) = tab.editor_panes.get_buffer_mut(buffer_id) {
-                    buf.git_gutter = Some(gutter);
-                    found = true;
-                    break;
-                }
-            }
-            if found {
-                self.dirty = true;
-            }
-        }
-    }
-
-    /// Send a gutter recompute request for `buffer_id` at `path` with the
-    /// current text snapshot.  Called after a file open or save.
-    fn request_gutter_recompute(
-        &self,
-        buffer_id: anvil_editor::BufferId,
-        path: PathBuf,
-        text: String,
-    ) {
-        let _ = self.gutter_tx.try_send(GutterRequest {
-            buffer_id,
-            path,
-            text,
-        });
-    }
-
-    // ── T2: blame hover logic ─────────────────────────────────────────────────
-
-    /// Track cursor-line dwell.  Called each tick.  After 800ms on the same
-    /// line in a native editor, fires a blame request (if not already cached).
-    fn tick_blame_hover(&mut self) {
-        const BLAME_DWELL: std::time::Duration = std::time::Duration::from_millis(800);
-        const BLAME_TTL: std::time::Duration = std::time::Duration::from_secs(60);
-
-        let now = Instant::now();
-
-        // Resolve current (pane, line) for the focused native editor.
-        let current_target: Option<(PaneId, usize, PathBuf)> = (|| {
-            let tab = self.tabs.current()?;
-            let pane_id = tab.focused_id();
-            let ep = tab.editor_panes.get_pane(pane_id)?;
-            let buf = tab.editor_panes.get_buffer(ep.buffer_id)?;
-            let path = buf.tracked_path()?.to_path_buf();
-            let line = ep.primary_cursor().pos.line;
-            Some((pane_id, line, path))
-        })();
-
-        let Some((pane_id, cur_line, path)) = current_target else {
-            // Not in a native editor — clear blame state.
-            self.blame_hover = None;
-            self.blame_popup = None;
-            return;
-        };
-
-        // Update or reset the dwell tracker.
-        match self.blame_hover {
-            Some((pid, line, _)) if pid == pane_id && line == cur_line => {
-                // Same line — check if dwell threshold passed.
-                let dwell_since = self.blame_hover.unwrap().2;
-                if now.duration_since(dwell_since) >= BLAME_DWELL {
-                    // Check cache first.
-                    let cache_key = (path.clone(), cur_line);
-                    let cached = self.blame_cache.get(&cache_key).and_then(|(entry, ts)| {
-                        if now.duration_since(*ts) < BLAME_TTL {
-                            Some(entry)
-                        } else {
-                            None
-                        }
-                    });
-                    if let Some(entry) = cached {
-                        // Cache hit — show popup from cache.
-                        let text = match entry {
-                            Some(e) => {
-                                format!("{} · {} · {}", e.author, e.time_relative, e.short_hash)
-                            }
-                            None => "Not Committed Yet".to_string(),
-                        };
-                        if self.blame_popup.as_ref().map(|p| p.anchor_line) != Some(cur_line) {
-                            if let Some(pos) = self.hover_mouse_pos {
-                                self.blame_popup = Some(BlamePopup {
-                                    text,
-                                    anchor_line: cur_line,
-                                    anchor_x: pos.0,
-                                    anchor_y: pos.1,
-                                });
-                                self.dirty = true;
-                            }
-                        }
-                    } else if self.blame_popup.is_none() {
-                        // No cache hit and no popup yet — fire request (once).
-                        let _ = self.blame_tx.try_send(BlameRequest {
-                            path,
-                            line: cur_line,
-                        });
-                        // Advance blame_hover time so we don't spam requests.
-                        self.blame_hover = Some((pane_id, cur_line, now));
-                    }
-                }
-            }
-            _ => {
-                // Line changed — reset dwell, clear popup.
-                self.blame_hover = Some((pane_id, cur_line, now));
-                self.blame_popup = None;
-            }
-        }
-    }
-
-    /// Poll for a blame result, cache it, and update `blame_popup` if the cursor
-    /// is still on the same line.
-    fn poll_blame_result(&mut self) {
-        while let Ok(result) = self.blame_rx.try_recv() {
-            let now = Instant::now();
-            let cache_key = (result.path.clone(), result.line);
-            self.blame_cache.insert(cache_key, (result.entry, now));
-            // Update popup if the cursor is still on this line.
-            let current_line: Option<(usize, (f64, f64))> = (|| {
-                let tab = self.tabs.current()?;
-                let pane_id = tab.focused_id();
-                let ep = tab.editor_panes.get_pane(pane_id)?;
-                let buf = tab.editor_panes.get_buffer(ep.buffer_id)?;
-                let path = buf.tracked_path()?;
-                if path != result.path {
-                    return None;
-                }
-                let line = ep.primary_cursor().pos.line;
-                let pos = self.hover_mouse_pos?;
-                Some((line, pos))
-            })();
-            if let Some((cur_line, pos)) = current_line {
-                if cur_line == result.line {
-                    let entry_opt = self.blame_cache.get(&(result.path, result.line));
-                    if let Some((entry, _)) = entry_opt {
-                        let text = match entry {
-                            Some(e) => {
-                                format!("{} · {} · {}", e.author, e.time_relative, e.short_hash)
-                            }
-                            None => "Not Committed Yet".to_string(),
-                        };
-                        self.blame_popup = Some(BlamePopup {
-                            text,
-                            anchor_line: cur_line,
-                            anchor_x: pos.0,
-                            anchor_y: pos.1,
-                        });
-                        self.dirty = true;
-                    }
                 }
             }
         }
@@ -4731,6 +3670,52 @@ impl App {
             .unwrap_or(24)
     }
 
+    fn native_editor_scroll_next(
+        current_pos: f32,
+        current_target: f32,
+        delta_rows: f32,
+        line_count: usize,
+        visible_rows: usize,
+    ) -> Option<f32> {
+        let max_scroll = line_count.saturating_sub(visible_rows) as f32;
+        let next = (current_target - delta_rows).clamp(0.0, max_scroll.max(0.0));
+        ((next - current_target).abs() > 0.001 || (next - current_pos).abs() > 0.001)
+            .then_some(next)
+    }
+
+    fn scroll_native_editor_pane(&mut self, pane_id: PaneId, pane_h: f64, delta_rows: f32) -> bool {
+        let cell_h = self.font.metrics.cell_h;
+        if cell_h <= 0.0 {
+            return false;
+        }
+        let visible_rows = ((pane_h / cell_h).ceil() as usize).max(1);
+        let Some(tab) = self.tabs.current_mut() else {
+            return false;
+        };
+        let line_count = tab
+            .editor_panes
+            .get_pane(pane_id)
+            .and_then(|ep| tab.editor_panes.get_buffer(ep.buffer_id))
+            .map(|b| b.line_count())
+            .unwrap_or(1);
+        let Some(ep) = tab.editor_panes.get_pane_mut(pane_id) else {
+            return false;
+        };
+        let Some(next) = Self::native_editor_scroll_next(
+            ep.scroll_pos,
+            ep.scroll_target,
+            delta_rows,
+            line_count,
+            visible_rows,
+        ) else {
+            return false;
+        };
+        ep.scroll_target = next;
+        ep.scroll_pos = next;
+        ep.scroll_vel = 0.0;
+        true
+    }
+
     /// Concatenate the focused pane's current selection into a single string.
     /// Multi-row selections separate rows with `\n`. Rect mode picks the
     /// same column window on every row. Returns `None` when no selection is
@@ -4915,21 +3900,23 @@ impl App {
     }
 
     fn refresh_hud(&mut self) {
+        let mut changed = false;
+
         if let Some(cwd) = self.current_cwd() {
-            self.local_ctx.cwd = cwd.clone();
+            changed |= assign_if_changed(&mut self.local_ctx.cwd, cwd.clone());
             // Collect git results (non-blocking).
             while let Ok(result) = self.git_rx.try_recv() {
-                self.local_ctx.git = result.state;
-                self.local_ctx.branch = result.branch;
-                self.local_ctx.git_dirty = result.dirty;
-                self.local_ctx.git_ahead = result.ahead;
-                self.local_ctx.git_behind = result.behind;
-                self.local_ctx.head_short = result.head_short;
-                self.local_ctx.head_subject = result.head_subject;
+                changed |= assign_if_changed(&mut self.local_ctx.git, result.state);
+                changed |= assign_if_changed(&mut self.local_ctx.branch, result.branch);
+                changed |= assign_if_changed(&mut self.local_ctx.git_dirty, result.dirty);
+                changed |= assign_if_changed(&mut self.local_ctx.git_ahead, result.ahead);
+                changed |= assign_if_changed(&mut self.local_ctx.git_behind, result.behind);
+                changed |= assign_if_changed(&mut self.local_ctx.head_short, result.head_short);
+                changed |= assign_if_changed(&mut self.local_ctx.head_subject, result.head_subject);
                 // Task #7: ports from the git worker.
-                self.local_ctx.ports = result.ports;
+                changed |= assign_if_changed(&mut self.local_ctx.ports, result.ports);
                 // Task #9: project kind from the git worker.
-                self.local_ctx.project_kind = result.project_kind;
+                changed |= assign_if_changed(&mut self.local_ctx.project_kind, result.project_kind);
             }
             // Kick off git worker (try_send is non-blocking; drop if channel full).
             let _ = self.git_tx.try_send(PathBuf::from(&cwd));
@@ -4953,25 +3940,28 @@ impl App {
         // Drain the caldera poller into the agent snapshot. The poller writes
         // a fresh Snapshot every 2s; the read is a cheap mutex peek + clone.
         if let Some(p) = &self.caldera_poller {
-            self.agent_snap = p.snapshot();
+            let next = p.snapshot();
+            if agent_snapshot_render_equal(&self.agent_snap, &next) {
+                self.agent_snap.polled_at_unix = next.polled_at_unix;
+            } else {
+                self.agent_snap = next;
+                changed = true;
+            }
         }
 
         // Task #8: drain the recent-files worker (non-blocking).
         while let Ok(result) = self.recent_rx.try_recv() {
-            self.local_ctx.recent_files = result.files;
+            changed |= assign_if_changed(&mut self.local_ctx.recent_files, result.files);
         }
 
         // Task #20: drain the kubectl worker (non-blocking).
         while let Ok(ctx) = self.kube_rx.try_recv() {
-            self.local_ctx.kube_context = Some(ctx);
+            changed |= assign_if_changed(&mut self.local_ctx.kube_context, Some(ctx));
         }
 
         // ID3: drain filesystem worker and send cwd when it changes.
         while let Ok(snap) = self.fs_rx.try_recv() {
-            self.explorer_scroll_offset = 0;
-            self.expanded_dirs.clear();
-            self.child_snapshots.clear();
-            self.fs_snapshot = Some(LeftDockSnapshot {
+            let next = LeftDockSnapshot {
                 root: snap.root.to_string_lossy().into_owned(),
                 entries: snap
                     .entries
@@ -4983,30 +3973,16 @@ impl App {
                     })
                     .collect(),
                 git_marks: snap.git_marks,
-            });
-            self.dirty = true;
+            };
+            if self.fs_snapshot.as_ref() != Some(&next) {
+                self.explorer_scroll_offset = 0;
+                self.expanded_dirs.clear();
+                self.child_snapshots.clear();
+                self.fs_snapshot = Some(next);
+                changed = true;
+            }
         }
 
-        // Drain child-directory snapshots loaded on demand.
-        while let Ok((dir_path, snap)) = self.child_fs_rx.try_recv() {
-            self.child_snapshots.insert(
-                dir_path,
-                LeftDockSnapshot {
-                    root: snap.root.to_string_lossy().into_owned(),
-                    entries: snap
-                        .entries
-                        .into_iter()
-                        .map(|e| anvil_render::LeftDockEntry {
-                            name: e.name,
-                            is_dir: e.is_dir,
-                            is_symlink: e.is_symlink,
-                        })
-                        .collect(),
-                    git_marks: snap.git_marks,
-                },
-            );
-            self.dirty = true;
-        }
         if self.layout_mode == LayoutMode::Ide {
             if let Some(cwd) = self.current_cwd() {
                 let changed = self.fs_last_cwd.as_deref() != Some(cwd.as_str());
@@ -5024,15 +4000,17 @@ impl App {
                 if let Some(t) = &pane.terminal {
                     let lr = t.last_run();
                     if lr.running || (lr.duration_ms == 0 && lr.exit_code == 0) {
-                        self.local_ctx.run = RunState::Idle;
+                        changed |= assign_if_changed(&mut self.local_ctx.run, RunState::Idle);
                     } else {
-                        self.local_ctx.run = if lr.exit_code == 0 {
+                        let run = if lr.exit_code == 0 {
                             RunState::Ok
                         } else {
                             RunState::Failed
                         };
-                        self.local_ctx.run_exit = lr.exit_code;
-                        self.local_ctx.run_duration_ms = lr.duration_ms;
+                        changed |= assign_if_changed(&mut self.local_ctx.run, run);
+                        changed |= assign_if_changed(&mut self.local_ctx.run_exit, lr.exit_code);
+                        changed |=
+                            assign_if_changed(&mut self.local_ctx.run_duration_ms, lr.duration_ms);
                     }
 
                     // Item 16: collect up to 5 recent prompt command lines,
@@ -5080,12 +4058,14 @@ impl App {
                             prompts.push(cmd);
                         }
                     }
-                    self.local_ctx.recent_prompts = prompts;
+                    changed |= assign_if_changed(&mut self.local_ctx.recent_prompts, prompts);
                 } // end if let Some(t)
             }
         }
 
-        self.dirty = true;
+        if changed {
+            self.dirty = true;
+        }
     }
 
     /// Sync editor-pane popup overlays (completion, code-actions, hover) with the
@@ -5115,24 +4095,11 @@ impl App {
         let ch = self.font.metrics.cell_h;
         let scroll_line = ep.scroll_pos.floor() as usize;
 
-        // Gutter width (matches editor.rs calculation).
-        let buf_line_count = tab
+        let gutter_w = tab
             .editor_panes
             .get_buffer(ep.buffer_id)
-            .map(|b| b.line_count().max(1))
-            .unwrap_or(1);
-        let digit_cols = buf_line_count.to_string().len();
-        let git_gutter_cols = if tab
-            .editor_panes
-            .get_buffer(ep.buffer_id)
-            .and_then(|b| b.git_gutter.as_ref())
-            .is_some()
-        {
-            2
-        } else {
-            0
-        };
-        let gutter_w = (digit_cols + 2 + git_gutter_cols) as f64 * cw;
+            .map(|buf| editor_gutter_width_for_buffer(buf, cw))
+            .unwrap_or_else(|| anvil_render::editor_gutter_width(1, false, cw));
 
         // ── Completion ────────────────────────────────────────────────────────
         if let Some(cp) = &ep.completion_popup {
@@ -5147,8 +4114,8 @@ impl App {
                     pixel_x: px,
                     pixel_y: py,
                 };
-                self.overlays.remove_by_id(OverlayId::Completion);
-                self.overlays.push(Overlay::Custom(Box::new(snap)));
+                self.overlays
+                    .replace_or_push(Overlay::Custom(Box::new(snap)));
             }
         } else {
             self.overlays.remove_by_id(OverlayId::Completion);
@@ -5166,8 +4133,8 @@ impl App {
                     pixel_x: px,
                     pixel_y: py,
                 };
-                self.overlays.remove_by_id(OverlayId::CodeActions);
-                self.overlays.push(Overlay::Custom(Box::new(snap)));
+                self.overlays
+                    .replace_or_push(Overlay::Custom(Box::new(snap)));
             }
         } else {
             self.overlays.remove_by_id(OverlayId::CodeActions);
@@ -5185,8 +4152,8 @@ impl App {
                     pixel_x: px,
                     pixel_y: py,
                 };
-                self.overlays.remove_by_id(OverlayId::Hover);
-                self.overlays.push(Overlay::Custom(Box::new(snap)));
+                self.overlays
+                    .replace_or_push(Overlay::Custom(Box::new(snap)));
             }
         } else {
             self.overlays.remove_by_id(OverlayId::Hover);
@@ -5459,14 +4426,38 @@ impl App {
                     &diag_by_pane,
                     self.hovered_editor_tab,
                     &mut self.editor_tab_hits,
+                    &mut self.editor_body_hits,
                     self.ui_scale,
                     self.scroll_indicator_alpha,
                 );
             }
         } else {
-            // GPU path — draw only dividers to raster; fill cell_batch per pane.
+            // GPU path — draw native editor panes into the CPU chrome layer,
+            // then draw dividers; terminal cells are filled into cell_batch at
+            // present time.
             if let Some(tab) = self.tabs.current_mut() {
                 let focused_id = tab.focused_id();
+                let diag_by_pane: HashMap<PaneId, Vec<anvil_render::RenderDiagnostic>> =
+                    HashMap::new();
+                draw_workspace_editors(
+                    &mut self.raster,
+                    grid_painters.regular,
+                    &tab.tree,
+                    &tab.registry,
+                    &tab.editor_panes,
+                    inner,
+                    DIVIDER_PX,
+                    metrics,
+                    &self.theme,
+                    focused_id,
+                    self.blink_phase,
+                    &diag_by_pane,
+                    self.hovered_editor_tab,
+                    &mut self.editor_tab_hits,
+                    &mut self.editor_body_hits,
+                    self.ui_scale,
+                    self.scroll_indicator_alpha,
+                );
                 draw_workspace_chrome(
                     &mut self.raster,
                     &tab.tree,
@@ -5478,6 +4469,7 @@ impl App {
                 );
             }
         }
+        Self::draw_pane_dock_preview(&mut self.raster, &self.theme, self.pane_dock_drag);
         if perf_log {
             perf_t_after_workspace = Some(Instant::now());
         }
@@ -5488,8 +4480,16 @@ impl App {
 
         // Chrome row: always drawn (basin mark + tabs + indicators).
         {
-            let branch = self.local_ctx.branch.clone();
-            let clock = local_hhmm();
+            let branch = if self.layout_mode == LayoutMode::Ide {
+                String::new()
+            } else {
+                self.local_ctx.branch.clone()
+            };
+            let clock = if self.layout_mode == LayoutMode::Ide {
+                String::new()
+            } else {
+                local_hhmm()
+            };
             let scale = self.window_scale;
             let chrome_top = self.chrome_top_px();
             draw_tab_bar(
@@ -5555,23 +4555,8 @@ impl App {
                 editor_ctx,
                 areas.top_bar,
             );
-            // Z9: push/pull chips in context bar.
-            let pp = anvil_render::draw_push_pull_chips(
-                &mut self.raster,
-                chrome_painter,
-                ui_painter,
-                chrome_metrics,
-                &self.theme,
-                &self.local_ctx,
-                areas.top_bar,
-            );
-            if let Some((push_r, pull_r)) = pp {
-                self.ctx_push_rect = Some(push_r);
-                self.ctx_pull_rect = Some(pull_r);
-            } else {
-                self.ctx_push_rect = None;
-                self.ctx_pull_rect = None;
-            }
+            self.ctx_push_rect = None;
+            self.ctx_pull_rect = None;
             // NE9/item-19: derive outline from the active buffer's syntax tree.
             // For Rust buffers uses tree-sitter node walk; falls back to line-regex
             // for other languages. Non-Rust buffers produce an empty list (header-only).
@@ -5703,6 +4688,8 @@ impl App {
                     StatusMode::Picking
                 } else if self.lsp_rename_input.is_some() {
                     StatusMode::Renaming
+                } else if self.layout_mode == LayoutMode::Terminal {
+                    StatusMode::Terminal
                 } else {
                     StatusMode::Editing
                 }
@@ -6097,13 +5084,12 @@ impl App {
         // at the top of the drawer area (just below the IDE divider).
         if self.layout_mode == LayoutMode::Ide && self.drawer_terminals.len() > 1 {
             if let Some(div_y) = self.ide_drawer_divider_y() {
-                let strip_h = (20.0 * self.ui_scale).round();
+                let strip_h = self.drawer_header_px();
                 let strip_y = div_y + 1.0; // 1px below the divider hairline
                 let ir = self.pane_area_rect();
                 let strip_x = ir.x;
                 let strip_w = ir.w;
-                let cell_w = self.font.metrics.cell_w;
-                let cell_h = self.font.metrics.cell_h;
+                let chrome_m = self.chrome_font.metrics;
 
                 // Background.
                 self.raster.fill_pixel_rect(
@@ -6132,17 +5118,12 @@ impl App {
                     // Label: "term 1", "term 2", ...
                     let label = format!("term {}", i + 1);
                     let label_x = tab_x + 4.0 * self.ui_scale;
-                    let label_y = strip_y
-                        + ((strip_h - cell_h) * 0.5 + self.font.metrics.descent * 0.5).max(0.0);
-                    let chrome_m = self.chrome_font.metrics;
+                    let label_y = strip_y + ((strip_h - chrome_m.cell_h) * 0.5).max(0.0);
                     for (j, ch_c) in label.chars().enumerate() {
                         let gx = label_x + j as f64 * chrome_m.cell_w;
                         if gx + chrome_m.cell_w > tab_x + tab_w - 2.0 * self.ui_scale {
                             break;
                         }
-                        let _ = cell_w;
-                        let _ = cell_h;
-                        let _ = label_y;
                         self.raster.glyph_at(
                             chrome_painter,
                             chrome_m,
@@ -6183,7 +5164,7 @@ impl App {
                     })
                     .filter(|s| !s.is_empty());
                 if let Some(cwd) = cwd_str {
-                    let strip_h = (20.0 * self.ui_scale).round();
+                    let strip_h = self.drawer_header_px();
                     let strip_y = div_y + 1.0;
                     let ir = self.pane_area_rect();
                     // Background.
@@ -6191,8 +5172,7 @@ impl App {
                         .fill_pixel_rect(ir.x, strip_y, ir.w, strip_h, self.theme.charcoal);
                     // CWD text.
                     let chrome_m = self.chrome_font.metrics;
-                    let text_y = strip_y
-                        + ((strip_h - chrome_m.cell_h) * 0.5 + chrome_m.descent * 0.5).max(0.0);
+                    let text_y = strip_y + ((strip_h - chrome_m.cell_h) * 0.5).max(0.0);
                     let pad = 8.0 * self.ui_scale;
                     let label = format!("\u{1F4C1} {cwd}"); // 📁 cwd
                     for (i, ch_c) in label.chars().enumerate() {
@@ -6502,10 +5482,10 @@ impl App {
     fn handle_palette_action(&mut self, action: Action, webview: &Webview) {
         match action {
             Action::ThemeDark => {
-                self.set_theme_mode("ember-dark");
+                self.set_theme_mode("mineral-dark");
             }
             Action::ThemeLight => {
-                self.set_theme_mode("ember-light");
+                self.set_theme_mode("mineral-light");
             }
             Action::ThemeSystem => {
                 self.set_theme_mode("system");
@@ -6521,8 +5501,9 @@ impl App {
                     let id = tab.focused_id();
                     if let Some(pane) = tab.registry.get_mut(id) {
                         if let Some(terminal) = &mut pane.terminal {
-                            terminal.feed(b"\x1b[H\x1b[2J");
+                            terminal.feed(b"\x1b[3J\x1b[H\x1b[2J");
                         }
+                        sync_terminal_pane_scroll_to_model(pane);
                     }
                 }
                 self.dirty = true;
@@ -6575,6 +5556,7 @@ impl App {
             }
             Action::SwitchTab(idx) => {
                 self.tabs.switch_to(idx);
+                self.refresh_drawer_terminal_tracking();
                 self.resize_all_tabs();
                 self.dirty = true;
             }
@@ -6587,8 +5569,7 @@ impl App {
                 }
                 // B1: refocus to a pane that has a live PTY.
                 self.refocus_to_live_terminal();
-                self.resize_all_tabs();
-                self.dirty = true;
+                self.finish_layout_mode_change();
             }
             Action::LayoutIde => {
                 self.layout_mode = LayoutMode::Ide;
@@ -6597,8 +5578,7 @@ impl App {
                 if let Some(tab) = self.tabs.current_mut() {
                     tab.ensure_ide_editor_surface();
                 }
-                self.resize_all_tabs();
-                self.dirty = true;
+                self.finish_layout_mode_change();
             }
             Action::AgentApprove => {
                 // Mirrors Cmd+Return: approve topmost pending approval.
@@ -6644,6 +5624,26 @@ impl App {
             && chord.key == lo
     }
 
+    fn native_editor_split_dir_for_chord(
+        kb: Keybindings,
+        mods: Modifiers,
+        ch: char,
+    ) -> Option<SplitDir> {
+        if kb
+            .split_right
+            .is_some_and(|chord| Self::chord_matches(chord, mods, ch))
+        {
+            Some(SplitDir::Horizontal)
+        } else if kb
+            .split_down
+            .is_some_and(|chord| Self::chord_matches(chord, mods, ch))
+        {
+            Some(SplitDir::Vertical)
+        } else {
+            None
+        }
+    }
+
     /// Handle ⌘ keybindings. Returns true if consumed.
     fn handle_cmd_chord(&mut self, mods: Modifiers, ch: char, webview: &Webview) -> bool {
         let kb = self.keybindings; // Copy
@@ -6687,6 +5687,10 @@ impl App {
         // the normal dispatcher so they keep working even in editor panes.
         if self.focused_is_native_editor() {
             let lch = ascii_lower(ch);
+            if let Some(dir) = Self::native_editor_split_dir_for_chord(kb, mods, ch) {
+                self.split_focused_native_editor_pane(dir);
+                return true;
+            }
             // Cmd+S → Save (N3: toast on success/failure)
             if lch == 's' && !mods.shift && !mods.control && !mods.option {
                 // Run the save directly to capture success/error for a toast.
@@ -6990,20 +5994,7 @@ impl App {
                 } else {
                     SplitDir::Horizontal
                 };
-                let new_id = match self.tabs.current_mut().map(|t| t.split_native_editor(dir)) {
-                    Some(Ok(id)) => id,
-                    Some(Err(e)) => {
-                        eprintln!("anvil: editor split failed: {e}");
-                        return true;
-                    }
-                    None => return true,
-                };
-                if let Some(tab) = self.tabs.current_mut() {
-                    tab.tree.focused = new_id;
-                }
-                self.resize_all_tabs();
-                self.snap_anim();
-                self.dirty = true;
+                self.split_focused_native_editor_pane(dir);
                 return true;
             }
         }
@@ -7088,6 +6079,7 @@ impl App {
         test!(kb.next_tab, {
             self.close_search();
             self.tabs.next();
+            self.refresh_drawer_terminal_tracking();
             self.snap_anim();
             self.force_full_redraw = true;
             self.dirty = true;
@@ -7096,6 +6088,7 @@ impl App {
         test!(kb.prev_tab, {
             self.close_search();
             self.tabs.prev();
+            self.refresh_drawer_terminal_tracking();
             self.snap_anim();
             self.force_full_redraw = true;
             self.dirty = true;
@@ -7127,6 +6120,7 @@ impl App {
                     }
                     self.close_search();
                     self.tabs.switch_to(i);
+                    self.refresh_drawer_terminal_tracking();
                     self.snap_anim();
                     self.force_full_redraw = true;
                     self.dirty = true;
@@ -7239,25 +6233,24 @@ impl App {
                     self.left_dock_visible = true;
                 }
             }
-            self.resize_all_tabs();
-            self.dirty = true;
+            self.finish_layout_mode_change();
             return true;
         });
         test!(kb.left_dock_toggle, {
-            // V3 (#5): animate sidebar on toggle instead of snapping.
-            if self.left_dock_visible {
-                // Hide: animate to width 0, then clear left_dock_visible at snap.
-                self.left_dock_w_pt_target = 0.0;
-                // left_dock_visible stays true until the animation snaps to 0.
-                // The G3 easing block flips it off when target reaches 0.
-            } else {
-                // Show: set visible immediately so geometry is claimed, then ease in.
-                self.left_dock_visible = true;
-                self.left_dock_w_pt = 0.0;
-                self.left_dock_w_pt_target = 300.0;
-            }
+            let (visible, width, target) = toggle_left_dock_instant(self.left_dock_visible);
+            self.left_dock_visible = visible;
+            self.left_dock_w_pt = width;
+            self.left_dock_w_pt_target = target;
             self.resize_all_tabs();
+            self.force_full_redraw = true;
             self.dirty = true;
+            return true;
+        });
+        test!(kb.recent_files, {
+            if !self.recent_file_list.is_empty() && self.palette.summon() {
+                self.send_recent_files_show(webview);
+                webview.show();
+            }
             return true;
         });
         test!(kb.editor_new, {
@@ -7324,15 +6317,6 @@ impl App {
             self.layout_mode = LayoutMode::Ide;
             self.left_dock_visible = true;
             self.open_path_in_native_editor(&cfg_path);
-            return true;
-        }
-
-        // ⌘⇧E — show recent files in palette (Tier-B item 15).
-        if ascii_lower(ch) == 'e' && mods.shift && !mods.control && !mods.option {
-            if !self.recent_file_list.is_empty() && self.palette.summon() {
-                self.send_recent_files_show(webview);
-                webview.show();
-            }
             return true;
         }
 
@@ -7706,6 +6690,8 @@ impl App {
         if !state.recent_projects.is_empty() {
             self.recent_projects = state.recent_projects;
         }
+        self.left_dock_visible = self.layout_mode == LayoutMode::Ide;
+        self.finish_layout_mode_change();
         self.dirty = true;
     }
 
@@ -7859,9 +6845,8 @@ impl App {
 pub struct AppShell {
     app: App,
     webview: Webview,
-    /// The NSWindow — retained for future use (e.g. setContentSize).
-    #[allow(dead_code)]
-    window: Retained<NSWindow>,
+    /// The NSWindow retained to keep the native window alive.
+    _window: Retained<NSWindow>,
     /// Terminal grid glyph painter — Regular face (user font size).
     painter: anvil_platform::font::CoreTextPainter<'static>,
     /// Bold face painter.
@@ -7879,6 +6864,8 @@ pub struct AppShell {
     pty_read_buf: Box<[u8; 64 * 1024]>,
     /// Instant of the previous tick; used to compute per-frame dt for animations.
     last_tick_time: Instant,
+    /// Emits dirty invalidation reasons when ANVIL_DIRTY_DEBUG=1 is set.
+    dirty_debug: bool,
 }
 
 impl AppShell {
@@ -7922,8 +6909,9 @@ impl AppShell {
         // Rebuild font at font_size_pt * window_scale * font_scale.
         let pixel_size = self.app.font_size_pt * self.app.window_scale * self.app.font_scale;
         let names: Vec<&str> = vec![
-            "IBM Plex Mono",
             self.app.font_family.as_str(),
+            "BlexMono Nerd Font Mono",
+            "IBM Plex Mono",
             "SFMono-Regular",
             "Menlo",
         ];
@@ -7999,8 +6987,9 @@ impl AppShell {
         // Rebuild font at the new effective pixel size.
         let pixel_size = self.app.font_size_pt * self.app.window_scale * self.app.ui_scale;
         let names: Vec<&str> = vec![
-            "IBM Plex Mono",
             self.app.font_family.as_str(),
+            "BlexMono Nerd Font Mono",
+            "IBM Plex Mono",
             "SFMono-Regular",
             "Menlo",
         ];
@@ -8063,88 +7052,6 @@ impl AppShell {
         self.app.dirty = true;
     }
 
-    /// Rebuild the font at a new point size and recreate the dependent
-    /// painter + raster geometry. Drives Cmd+/Cmd- zoom.
-    ///
-    /// Clamps to [8.0, 48.0] pt — below 8 pt cell metrics collapse, above
-    /// 48 pt the glyph atlas balloons and one cell barely fits a word.
-    #[allow(dead_code)]
-    fn bump_font_size(&mut self, delta_pt: f64) {
-        let new_pt = (self.app.font_size_pt + delta_pt).clamp(8.0, 48.0);
-        if (new_pt - self.app.font_size_pt).abs() < 0.01 {
-            return;
-        }
-        let pixel_size = new_pt * self.app.window_scale;
-        let names: Vec<&str> = vec![
-            "IBM Plex Mono",
-            self.app.font_family.as_str(),
-            "SFMono-Regular",
-            "Menlo",
-        ];
-        let Ok(new_font) = Font::init_first_available(&names, pixel_size)
-            .or_else(|_| Font::init("Menlo", pixel_size))
-        else {
-            eprintln!("anvil: font reinit failed at {new_pt} pt; keeping current");
-            return;
-        };
-        let new_bold =
-            Font::init_face(&names, pixel_size, FontFace::Bold, true).unwrap_or_else(|_| {
-                Font::init_first_available(&names, pixel_size)
-                    .or_else(|_| Font::init("Menlo", pixel_size))
-                    .expect("fallback must be available")
-            });
-        let new_italic = Font::init_face(&names, pixel_size, FontFace::Italic, true)
-            .unwrap_or_else(|_| {
-                Font::init_first_available(&names, pixel_size)
-                    .or_else(|_| Font::init("Menlo", pixel_size))
-                    .expect("fallback must be available")
-            });
-        let new_bold_italic = Font::init_face(&names, pixel_size, FontFace::BoldItalic, true)
-            .unwrap_or_else(|_| {
-                Font::init_first_available(&names, pixel_size)
-                    .or_else(|_| Font::init("Menlo", pixel_size))
-                    .expect("fallback must be available")
-            });
-
-        // Replace heap-stable font allocations. Keep old Boxes alive until
-        // *after* the corresponding painter is overwritten (the painter drop
-        // runs against the still-live allocation).
-        let old_font = std::mem::replace(&mut self.app.font, Box::new(new_font));
-        let old_bold = std::mem::replace(&mut self.app.bold_font, Box::new(new_bold));
-        let old_italic = std::mem::replace(&mut self.app.italic_font, Box::new(new_italic));
-        let old_bold_italic =
-            std::mem::replace(&mut self.app.bold_italic_font, Box::new(new_bold_italic));
-        self.app.font_size_pt = new_pt;
-
-        // SAFETY: same lifetime-extension pattern as `AppShell::new` —
-        // each `app.*_font` is a Box and its heap allocation outlives the painter.
-        self.painter = unsafe {
-            let font_ref: &'static Font = &*(self.app.font.as_ref() as *const Font);
-            anvil_platform::font::CoreTextPainter::new(font_ref)
-        };
-        self.bold_painter = unsafe {
-            let font_ref: &'static Font = &*(self.app.bold_font.as_ref() as *const Font);
-            anvil_platform::font::CoreTextPainter::new(font_ref)
-        };
-        self.italic_painter = unsafe {
-            let font_ref: &'static Font = &*(self.app.italic_font.as_ref() as *const Font);
-            anvil_platform::font::CoreTextPainter::new(font_ref)
-        };
-        self.bold_italic_painter = unsafe {
-            let font_ref: &'static Font = &*(self.app.bold_italic_font.as_ref() as *const Font);
-            anvil_platform::font::CoreTextPainter::new(font_ref)
-        };
-        // Old painters have been dropped (overwritten above). Release old heaps.
-        drop(old_font);
-        drop(old_bold);
-        drop(old_italic);
-        drop(old_bold_italic);
-        // Reflow panes + force a full redraw so the new metrics propagate.
-        self.app.resize_all_tabs();
-        self.app.force_full_redraw = true;
-        self.app.dirty = true;
-    }
-
     fn new(app: App, webview: Webview, window: Retained<NSWindow>) -> Self {
         // SAFETY: `app.font`, `app.bold_font`, `app.italic_font`,
         // `app.bold_italic_font`, and `app.chrome_font` are `Box<Font>` — heap
@@ -8176,7 +7083,7 @@ impl AppShell {
         Self {
             app,
             webview,
-            window,
+            _window: window,
             painter,
             bold_painter,
             italic_painter,
@@ -8185,6 +7092,7 @@ impl AppShell {
             ui_painter,
             pty_read_buf: Box::new([0u8; 64 * 1024]),
             last_tick_time: Instant::now(),
+            dirty_debug: std::env::var_os("ANVIL_DIRTY_DEBUG").is_some(),
         }
     }
 
@@ -8205,9 +7113,16 @@ impl AppHandler for AppShell {
         let now = Instant::now();
         let dt_ms = now.duration_since(self.last_tick_time).as_secs_f64() * 1000.0;
         self.last_tick_time = now;
-        if self.app.overlays.animating() {
-            self.app.overlays.tick(dt_ms);
+        let dirty_debug = self.dirty_debug;
+        let mut dirty_reasons: Vec<&'static str> = Vec::new();
+        if dirty_debug && self.app.dirty {
+            dirty_reasons.push("tick-start");
+        }
+        if self.app.overlays.animating() && self.app.overlays.tick(dt_ms) {
             self.app.dirty = true;
+            if dirty_debug {
+                dirty_reasons.push("overlay-animation");
+            }
         }
 
         // Config watcher poll.  Track whether [font.ui] changed so we can
@@ -8231,11 +7146,19 @@ impl AppHandler for AppShell {
         }
 
         let app = &mut self.app;
+        macro_rules! note_dirty {
+            ($reason:literal, $was_dirty:expr) => {
+                if dirty_debug && !$was_dirty && app.dirty {
+                    dirty_reasons.push($reason);
+                }
+            };
+        }
 
         // System dark-mode check (when theme = "system"). Every cell carries a
         // theme-resolved color, so on a flip we *must* repaint the whole
         // raster — partial dirty rows would leave half the grid (and the HUD
         // strip) in the old palette.
+        let was_dirty = app.dirty;
         if app.config.theme.theme_name() == "system" {
             let now_dark = system_is_dark();
             if now_dark != app.system_dark {
@@ -8249,8 +7172,10 @@ impl AppHandler for AppShell {
                 app.dirty = true;
             }
         }
+        note_dirty!("system-theme", was_dirty);
 
         // Track C: drain plugin host requests + convert notify calls to toasts.
+        let was_dirty = app.dirty;
         app.plugin_host.tick();
         for (level, msg) in app.plugin_host.drain_toasts() {
             use anvil_plugin::bridge::NotifyLevel;
@@ -8261,8 +7186,10 @@ impl AppHandler for AppShell {
             };
             app.push_toast(&msg, kind);
         }
+        note_dirty!("plugin-toast", was_dirty);
 
         // Item 27: drain file-watcher events.
+        let was_dirty = app.dirty;
         while let Ok(ev) = app.file_watch_rx.try_recv() {
             // Find the buffer in any tab.
             let mut found = false;
@@ -8290,11 +7217,13 @@ impl AppHandler for AppShell {
                 // Buffer no longer open; event is stale — ignore.
             }
         }
+        note_dirty!("file-watch", was_dirty);
 
         // Drain every pane's PTY output. Loop the read inside each pane until
         // EAGAIN so commands that emit >64 KB between ticks don't back up
         // behind the tick rate — the previous one-read-per-tick cap made
         // chatty commands feel laggy on top of being slow.
+        let was_dirty = app.dirty;
         let mut any_dead = false;
         let feed_buf = &mut *self.pty_read_buf;
         // Per-tick cap so one extremely chatty pane can't starve the rest
@@ -8318,6 +7247,7 @@ impl AppHandler for AppShell {
                                 if let Some(terminal) = &mut pane.terminal {
                                     terminal.feed(&feed_buf[..n]);
                                 }
+                                sync_terminal_pane_scroll_to_model(pane);
                             }
                             drained += n;
                             pane_got_data = true;
@@ -8375,10 +7305,12 @@ impl AppHandler for AppShell {
                 }
             }
         }
+        note_dirty!("pty-output", was_dirty);
 
         // Tab open/close micro-animation.
         // Opening: phase → 1 at 1/6 per tick (~100ms at 60Hz).
         // Closing: phase → 0 at 1/5 per tick (~80ms at 60Hz).
+        let was_dirty = app.dirty;
         {
             let mut any_animating = false;
             for tab in &mut app.tabs.tabs {
@@ -8397,37 +7329,53 @@ impl AppHandler for AppShell {
                 app.tabs.purge_closed_tabs();
             }
         }
+        note_dirty!("tab-animation", was_dirty);
 
         // Blink.
-        let (effective_blink, app_blink_cfg) = {
+        let was_dirty = app.dirty;
+        let (focused_is_terminal, effective_blink, app_blink_cfg) = {
             let tab = app.tabs.current();
             let pane = tab.and_then(|t| t.registry.get(t.focused_id()));
             (
+                pane.is_some_and(|p| p.terminal.is_some()),
                 pane.and_then(|p| p.terminal.as_ref())
                     .and_then(|t| t.app_cursor_blink),
                 app.cursor_cfg.blink,
             )
         };
-        let blink_on = effective_blink.unwrap_or(app_blink_cfg);
-        if blink_on && app.focused {
-            // 1/30 per tick at 60Hz = ~0.5s full blink cycle — target 500ms phase.
-            app.blink_phase += 1.0 / 30.0;
+        let blink_on = should_animate_cursor_blink(
+            focused_is_terminal,
+            app.focused,
+            effective_blink,
+            app_blink_cfg,
+        );
+        if blink_on {
+            // 1/60 per tick at 60Hz = ~1s full blink cycle.
+            app.blink_phase += 1.0 / 60.0;
             if app.blink_phase >= 1.0 {
                 app.blink_phase -= 1.0;
             }
             let new_op = anvil_render::draw::cursor_opacity(app.blink_phase);
-            if new_op != app.last_blink_opacity {
+            let new_bucket = anvil_render::draw::cursor_opacity_bucket(new_op);
+            let last_bucket = if app.last_blink_opacity < 0.0 {
+                u8::MAX
+            } else {
+                anvil_render::draw::cursor_opacity_bucket(app.last_blink_opacity)
+            };
+            if new_bucket != last_bucket {
                 app.last_blink_opacity = new_op;
                 app.dirty = true;
             }
-        } else if app.blink_phase != 0.0 {
+        } else if app.blink_phase != 0.0 || app.last_blink_opacity >= 0.0 {
             app.blink_phase = 0.0;
             app.last_blink_opacity = -1.0;
             app.dirty = true;
         }
+        note_dirty!("blink", was_dirty);
 
         // G3: smooth sidebar width easing — 3-frame settle at 0.25 factor.
         // V3 (#5): also handles sidebar hide animation (target = 0 → clears visible).
+        let was_dirty = app.dirty;
         {
             let delta = app.left_dock_w_pt_target - app.left_dock_w_pt;
             if delta.abs() >= 0.5 {
@@ -8442,17 +7390,19 @@ impl AppHandler for AppShell {
                 if app.left_dock_w_pt_target == 0.0 {
                     app.left_dock_visible = false;
                     // Reset to default so next toggle-on starts at 260pt (D2).
-                    app.left_dock_w_pt = 260.0;
-                    app.left_dock_w_pt_target = 260.0;
+                    app.left_dock_w_pt = LEFT_DOCK_DEFAULT_PT;
+                    app.left_dock_w_pt_target = LEFT_DOCK_DEFAULT_PT;
                 }
                 app.resize_all_tabs();
                 app.force_full_redraw = true;
                 app.dirty = true;
             }
         }
+        note_dirty!("sidebar-ease", was_dirty);
 
         // V3 (#5): smooth drawer ratio easing — mirrors sidebar G3.
         // drawer_ratio_target is set by toggle_ide_drawer when V3 animation is active.
+        let was_dirty = app.dirty;
         if let Some(target) = app.drawer_ratio_target {
             let cur = app
                 .tabs
@@ -8501,8 +7451,10 @@ impl AppHandler for AppShell {
                 app.dirty = true;
             }
         }
+        note_dirty!("drawer-ease", was_dirty);
 
         // Item 8: scroll indicator alpha decay (600ms hold, 200ms fade-out).
+        let was_dirty = app.dirty;
         if app.scroll_indicator_alpha > 0.0 {
             const HOLD_MS: f64 = 600.0;
             const FADE_MS: f64 = 200.0;
@@ -8521,22 +7473,32 @@ impl AppHandler for AppShell {
                 app.dirty = true;
             }
         }
+        note_dirty!("scroll-indicator", was_dirty);
 
         // Agent dot pulse (item 19).
+        let was_dirty = app.dirty;
         if app.agent_snap.connection == anvil_agent::Connection::Live {
             app.agent_pulse_phase += 0.3 / 60.0;
             if app.agent_pulse_phase >= 1.0 {
                 app.agent_pulse_phase -= 1.0;
             }
             let opacity = 0.5 + 0.5 * (std::f32::consts::TAU * app.agent_pulse_phase).sin();
-            if (opacity - app.last_agent_pulse_opacity).abs() > 0.02 {
+            let new_bucket = anvil_render::draw::opacity_redraw_bucket(opacity, 0.5, 2);
+            let last_bucket = if app.last_agent_pulse_opacity < 0.0 {
+                u8::MAX
+            } else {
+                anvil_render::draw::opacity_redraw_bucket(app.last_agent_pulse_opacity, 0.5, 2)
+            };
+            if new_bucket != last_bucket {
                 app.dirty = true;
                 app.last_agent_pulse_opacity = opacity;
             }
         }
+        note_dirty!("agent-pulse", was_dirty);
 
-        // Running-block header dot pulse (CB6): advance phase and keep dirty
-        // while any pane in the current tab has a shell command running.
+        // Running-block header dot pulse (CB6): advance phase while any pane
+        // in the current tab has a shell command running.
+        let was_dirty = app.dirty;
         {
             let any_running = app.tabs.current().is_some_and(|t| {
                 all_pane_ids_in_tree(t).into_iter().any(|pid| {
@@ -8549,16 +7511,22 @@ impl AppHandler for AppShell {
                 })
             });
             if any_running {
+                let old_bucket = anvil_render::draw::running_pulse_bucket(app.running_pulse_phase);
                 app.running_pulse_phase += 1.5 / 60.0;
                 if app.running_pulse_phase >= 1.0 {
                     app.running_pulse_phase -= 1.0;
                 }
-                app.dirty = true;
+                let new_bucket = anvil_render::draw::running_pulse_bucket(app.running_pulse_phase);
+                if new_bucket != old_bucket {
+                    app.dirty = true;
+                }
             }
         }
+        note_dirty!("running-pulse", was_dirty);
 
         // Block-header pulse (item 23): keep dirty while any visible block is
         // mid-flash. 250ms window gives a small grace margin beyond 200ms.
+        let was_dirty = app.dirty;
         {
             let within = std::time::Duration::from_millis(250);
             let pulsing = app
@@ -8575,10 +7543,12 @@ impl AppHandler for AppShell {
                 app.dirty = true;
             }
         }
+        note_dirty!("block-flash", was_dirty);
 
         // Snap cursor_ax/ay to the live terminal cursor every tick so
         // both CPU and GPU draw paths render the cursor at its real cell.
         // No animation — animating produced trail artifacts.
+        let was_dirty = app.dirty;
         if let Some(tab) = app.tabs.current_mut() {
             let id = tab.focused_id();
             if let Some(pane) = tab.registry.get_mut(id) {
@@ -8627,11 +7597,13 @@ impl AppHandler for AppShell {
                 }
             }
         }
+        note_dirty!("terminal-scroll-ease", was_dirty);
 
         // M2: Native editor smooth-scroll easing.
         // Eases EditorPane.scroll_pos toward scroll_target at factor 0.25 per frame.
         // Clamps scroll_target to [0, max(0, line_count - visible_rows)] before easing.
         // Snaps when delta < 0.01 to avoid sub-pixel drift.
+        let was_dirty = app.dirty;
         {
             let cell_h = app.font.metrics.cell_h;
             let ir = app.pane_area_rect();
@@ -8668,9 +7640,11 @@ impl AppHandler for AppShell {
                 }
             }
         }
+        note_dirty!("editor-scroll-ease", was_dirty);
 
         // P3: horizontal cursor auto-scroll — keep primary cursor column in view.
         // Runs after vertical easing so `scroll_pos` is up-to-date.
+        let was_dirty = app.dirty;
         {
             let cell_w = app.font.metrics.cell_w;
             let ir = app.pane_area_rect();
@@ -8679,9 +7653,7 @@ impl AppHandler for AppShell {
                 // Compute content_cols and cursor state before any mutable borrow.
                 let maybe = tab.editor_panes.get_pane(id).and_then(|ep| {
                     let buf = tab.editor_panes.get_buffer(ep.buffer_id)?;
-                    let digit_cols = buf.line_count().max(1).to_string().len();
-                    let git_cols = if buf.git_gutter.is_some() { 2 } else { 0 };
-                    let gutter_w = (digit_cols + 2 + git_cols) as f64 * cell_w;
+                    let gutter_w = editor_gutter_width_for_buffer(buf, cell_w);
                     let entries = tab.tree.layout(ir, DIVIDER_PX);
                     let pane_w = entries
                         .iter()
@@ -8707,58 +7679,100 @@ impl AppHandler for AppShell {
                 }
             }
         }
+        note_dirty!("editor-hscroll", was_dirty);
 
         // Refresh throttle — ALWAYS runs so the bottom status bar gets
         // cwd / git / agent data even when the HUD panel is hidden.
         app.hud_tick += 1;
         if app.hud_tick >= HUD_REFRESH_TICKS {
             app.hud_tick = 0;
+            let was_dirty = app.dirty;
             app.refresh_hud();
+            note_dirty!("hud-refresh", was_dirty);
         }
 
-        // LSP didChange debounce (NE9): for each native editor pane in the
-        // current tab, if the buffer has a tracked path and a known language id,
-        // and at least 250 ms have elapsed since the last sync, send didChange.
+        // LSP didChange debounce (NE9): send didOpen once, then only clone and
+        // send didChange when the buffer revision has advanced and the debounce
+        // window has elapsed. This keeps idle editor ticks from re-sending the
+        // same document body forever.
         {
-            const LSP_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(250);
+            struct PendingLspSync {
+                action: LspSyncAction,
+                pane_id: PaneId,
+                path: PathBuf,
+                lang_id: &'static str,
+                revision: u64,
+                text: String,
+            }
+
+            const LSP_DEBOUNCE: Duration = Duration::from_millis(250);
             let now = Instant::now();
-            if let (Some(lsp), Some(tab)) = (app.lsp_manager.as_mut(), app.tabs.current()) {
-                // Collect (pane_id, path, lang_id, text) for native editor panes
-                // that have a tracked path with a known language id.
-                let pending: Vec<(PaneId, PathBuf, &'static str, String)> = {
+            let pending: Vec<PendingLspSync> = if app.lsp_manager.is_some() {
+                if let Some(tab) = app.tabs.current() {
+                    // Collect (pane_id, path, lang_id, text) for native editor panes
+                    // that have a tracked path with a known language id.
                     all_pane_ids_in_tree(tab)
                         .into_iter()
                         .filter_map(|pid| {
                             let ep = tab.editor_panes.get_pane(pid)?;
                             let buf = tab.editor_panes.get_buffer(ep.buffer_id)?;
                             let path = buf.tracked_path()?.to_path_buf();
-                            let lang = buf.language_id()?;
-                            let text = buf.to_text();
-                            Some((pid, path, lang, text))
+                            let lang_id = buf.language_id()?;
+                            let revision = buf.revisions;
+                            let action = lsp_sync_action(
+                                app.lsp_last_sync.get(&pid).copied(),
+                                app.lsp_last_sent_revision.get(&pid).copied(),
+                                revision,
+                                now,
+                                LSP_DEBOUNCE,
+                            );
+                            if action == LspSyncAction::Skip {
+                                return None;
+                            }
+                            Some(PendingLspSync {
+                                action,
+                                pane_id: pid,
+                                path,
+                                lang_id,
+                                revision,
+                                text: buf.to_text(),
+                            })
                         })
                         .collect()
-                };
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
 
-                for (pid, path, lang_id, text) in pending {
-                    let last = app.lsp_last_sync.get(&pid).copied();
+            if let Some(lsp) = app.lsp_manager.as_mut() {
+                for sync in pending {
                     let server_id =
-                        anvil_editor::server_id_for_language(lang_id).unwrap_or(lang_id);
-                    if last.is_none() {
-                        // First sync for this pane: send didOpen.
-                        lsp.did_open(server_id, path, lang_id, text);
-                        app.lsp_last_sync.insert(pid, now);
-                    } else if last.is_some_and(|t| now.duration_since(t) >= LSP_DEBOUNCE) {
-                        lsp.did_change(server_id, path, text);
-                        app.lsp_last_sync.insert(pid, now);
+                        anvil_editor::server_id_for_language(sync.lang_id).unwrap_or(sync.lang_id);
+                    match sync.action {
+                        LspSyncAction::Open => {
+                            lsp.did_open(server_id, sync.path, sync.lang_id, sync.text);
+                        }
+                        LspSyncAction::Change => {
+                            lsp.did_change(server_id, sync.path, sync.text);
+                        }
+                        LspSyncAction::Skip => continue,
                     }
+                    app.lsp_last_sync.insert(sync.pane_id, now);
+                    app.lsp_last_sent_revision
+                        .insert(sync.pane_id, sync.revision);
                 }
             }
         }
 
         // N3: expire stale toasts.
+        let was_dirty = app.dirty;
         app.tick_toasts();
+        note_dirty!("toast-expire", was_dirty);
 
         // N3: check for LSP-not-found failures and show a one-time info toast.
+        let was_dirty = app.dirty;
         {
             const SERVER_IDS: &[&str] = &[
                 "rust-analyzer",
@@ -8789,34 +7803,58 @@ impl AppHandler for AppShell {
                 app.toast_info(&format!("{sid} not in PATH"));
             }
         }
+        note_dirty!("lsp-failure-toast", was_dirty);
 
         // U1: async syntax parse — process one syntax_pending buffer per tick so
         // large files (> 256 KB) don't freeze the UI at open time.
+        let was_dirty = app.dirty;
         app.poll_syntax_pending();
+        note_dirty!("syntax-pending", was_dirty);
 
         // T1: poll gutter worker results — install GitGutter into the buffer.
+        let was_dirty = app.dirty;
         app.poll_gutter_results();
+        note_dirty!("gutter-result", was_dirty);
         // T2: poll blame worker results and drive the blame popup.
+        let was_dirty = app.dirty;
         app.poll_blame_result();
+        note_dirty!("blame-result", was_dirty);
         // T2: blame dwell — fire a blame request after 800ms cursor dwell on a line.
+        let was_dirty = app.dirty;
         app.tick_blame_hover();
+        note_dirty!("blame-hover", was_dirty);
 
         // NE10: poll for pending hover responses each tick.
+        let was_dirty = app.dirty;
         app.poll_hover_result();
+        note_dirty!("hover-result", was_dirty);
         // Item 17: poll for pending definition responses each tick.
+        let was_dirty = app.dirty;
         app.poll_definition_result();
+        note_dirty!("definition-result", was_dirty);
         // Item 16: poll for pending completion responses each tick.
+        let was_dirty = app.dirty;
         app.poll_completion_result();
+        note_dirty!("completion-result", was_dirty);
         // Item 24: poll for pending rename responses each tick.
+        let was_dirty = app.dirty;
         app.poll_rename_result();
+        note_dirty!("rename-result", was_dirty);
         // Item 25: poll for pending code-actions responses each tick.
+        let was_dirty = app.dirty;
         app.poll_code_actions_result();
+        note_dirty!("code-actions-result", was_dirty);
         // Item 26: poll for pending references responses each tick.
+        let was_dirty = app.dirty;
         app.poll_references_result();
+        note_dirty!("references-result", was_dirty);
         // O1: poll for pending workspace symbol responses and debounce re-requests.
+        let was_dirty = app.dirty;
         app.poll_workspace_symbols_result();
+        note_dirty!("workspace-symbols", was_dirty);
 
         // R2: Explorer tooltip — resolve file metadata after 500ms steady hover.
+        let was_dirty = app.dirty;
         {
             const EXPLORER_HOVER_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
             let now = Instant::now();
@@ -8843,6 +7881,7 @@ impl AppHandler for AppShell {
                 }
             }
         }
+        note_dirty!("explorer-tooltip", was_dirty);
 
         // Item 15: hover-mouse debounce — fire hover request after 400ms dwell.
         {
@@ -8889,6 +7928,13 @@ impl AppHandler for AppShell {
             spawn_second_window(app);
         }
 
+        if dirty_debug && app.dirty {
+            if dirty_reasons.is_empty() {
+                dirty_reasons.push("untraced");
+            }
+            eprintln!("anvil-dirty: {}", dirty_reasons.join(","));
+        }
+
         if app.dirty {
             let mut grid_painters = GridPainters {
                 regular: &mut self.painter,
@@ -8905,7 +7951,9 @@ impl AppHandler for AppShell {
         }
 
         if any_dead {
+            let was_dirty = app.dirty;
             app.close_dead_panes();
+            note_dirty!("close-dead-panes", was_dirty);
         }
     }
 
@@ -10715,7 +9763,6 @@ impl AppHandler for AppShell {
                             self.app.explorer_rename = Some(RenameState {
                                 old_path: path,
                                 input: name,
-                                row_idx: idx,
                             });
                             self.app.dirty = true;
                         }
@@ -10728,12 +9775,7 @@ impl AppHandler for AppShell {
                         if let Some((path, _)) =
                             self.app.left_dock_hits.visible_rows.get(idx).cloned()
                         {
-                            let name = path
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("")
-                                .to_string();
-                            self.app.explorer_delete_confirm = Some(DeleteConfirm { path, name });
+                            self.app.explorer_delete_confirm = Some(DeleteConfirm { path });
                             self.app.dirty = true;
                         }
                     }
@@ -11279,6 +10321,7 @@ impl AppHandler for AppShell {
             } else {
                 self.app.tabs.next();
             }
+            self.app.refresh_drawer_terminal_tracking();
             self.app.snap_anim();
             self.app.force_full_redraw = true;
             self.app.dirty = true;
@@ -11488,7 +10531,7 @@ impl AppHandler for AppShell {
         }
 
         // Sidebar right-edge resize handle (item 13).
-        // V1 (#3): double-click resets to default 300pt.
+        // V1 (#3): double-click resets to the default sidebar width.
         // Hit zone: ±SIDEBAR_DRAG_HIT_PX logical pt, scaled by ui_scale (A6).
         if app.left_dock_visible && app.layout_mode == LayoutMode::Ide {
             let (rx, _ry) = app.view_pt_to_raster_px(loc);
@@ -11500,8 +10543,8 @@ impl AppHandler for AppShell {
                     .sidebar_divider_last_click
                     .is_some_and(|t| now.duration_since(t).as_millis() < DBL_MS);
                 if is_dbl {
-                    // V1: reset to 300pt.
-                    app.left_dock_w_pt_target = 300.0;
+                    // V1: reset to the compact default.
+                    app.left_dock_w_pt_target = LEFT_DOCK_DEFAULT_PT;
                     app.sidebar_divider_last_click = None;
                     app.dirty = true;
                     return;
@@ -11514,7 +10557,7 @@ impl AppHandler for AppShell {
         }
 
         // IDE editor/drawer horizontal divider (item 13b).
-        // V2 (#4): double-click resets to 0.72/0.28 ratio.
+        // V2 (#4): double-click resets to the compact IDE drawer ratio.
         // Hit zone: ±4 logical pt, scaled by ui_scale (A6).
         {
             const DRAWER_DRAG_HIT_PT: f64 = 4.0;
@@ -11527,8 +10570,8 @@ impl AppHandler for AppShell {
                         .drawer_divider_last_click
                         .is_some_and(|t| now.duration_since(t).as_millis() < DBL_MS);
                     if is_dbl {
-                        // V2: animate to default 0.72/0.28 ratio.
-                        app.drawer_ratio_target = Some(0.72);
+                        // V2: animate to the default compact IDE drawer ratio.
+                        app.drawer_ratio_target = Some(IDE_EDITOR_RATIO);
                         app.drawer_divider_last_click = None;
                         app.dirty = true;
                         return;
@@ -11722,25 +10765,42 @@ impl AppHandler for AppShell {
             }
         }
 
+        // Pane chrome drag: empty pane tab/header chrome can drag the whole pane
+        // toward another pane edge and dock it on mouse-up.
+        {
+            let (rx, ry) = app.view_pt_to_raster_px(loc);
+            let ir = app.pane_area_rect();
+            let hit_id = app
+                .tabs
+                .current()
+                .and_then(|tab| pane_chrome_hit(tab, ir, DIVIDER_PX, app.ui_scale, rx, ry));
+            if let Some(hit_id) = hit_id {
+                if let Some(tab) = app.tabs.current_mut() {
+                    tab.tree.focused = hit_id;
+                }
+                app.pane_dock_drag = Some(PaneDockDrag {
+                    moving: hit_id,
+                    start_rx: rx,
+                    start_ry: ry,
+                    active: false,
+                    target: None,
+                });
+                app.snap_anim();
+                app.dirty = true;
+                return;
+            }
+        }
+
         // P3: horizontal scrollbar drag — click in the bottom 3px of the focused
         // native editor pane's body starts an hscroll drag.
         if app.focused_is_native_editor() {
             let (rx, ry) = app.view_pt_to_raster_px(loc);
-            let ir = app.pane_area_rect();
-            if let Some(tab) = app.tabs.current() {
-                let id = tab.focused_id();
-                let entries = tab.tree.layout(ir, DIVIDER_PX);
-                if let Some(e) = entries.iter().find(|e| e.id == id) {
-                    let hbar_y = e.rect.y + e.rect.h - 3.0;
-                    if ry >= hbar_y
-                        && ry <= e.rect.y + e.rect.h
-                        && rx >= e.rect.x
-                        && rx < e.rect.x + e.rect.w
-                    {
-                        app.hscroll_drag_active = true;
-                        app.dirty = true;
-                        return;
-                    }
+            if let Some(rect) = app.focused_editor_body_rect() {
+                let hbar_y = rect.y + rect.h - 3.0;
+                if ry >= hbar_y && ry <= rect.y + rect.h && rx >= rect.x && rx < rect.x + rect.w {
+                    app.hscroll_drag_active = true;
+                    app.dirty = true;
+                    return;
                 }
             }
         }
@@ -11762,6 +10822,7 @@ impl AppHandler for AppShell {
                 match kind {
                     TabBarHitKind::Tab(idx) => {
                         app.tabs.switch_to(idx);
+                        app.refresh_drawer_terminal_tracking();
                         app.snap_anim();
                         app.force_full_redraw = true;
                         app.dirty = true;
@@ -11770,6 +10831,7 @@ impl AppHandler for AppShell {
                     }
                     TabBarHitKind::CloseTab(idx) => {
                         app.tabs.switch_to(idx);
+                        app.refresh_drawer_terminal_tracking();
                         app.force_full_redraw = true;
                         app.close_active_tab();
                     }
@@ -11815,17 +10877,32 @@ impl AppHandler for AppShell {
         {
             let (rx, ry) = app.view_pt_to_raster_px(loc);
             let ir = app.pane_area_rect();
-            let hit_id = app
-                .tabs
-                .current()
-                .and_then(|tab| tab.tree.hit_test(ir, DIVIDER_PX, rx, ry));
-            if let Some(hit_id) = hit_id {
+            let hit = app.tabs.current().and_then(|tab| {
+                let hit_id = tab.tree.hit_test(ir, DIVIDER_PX, rx, ry)?;
+                let focus_target = if tab.editor_panes.get_pane(hit_id).is_some() {
+                    Some(FocusTarget::Editor)
+                } else if tab
+                    .registry
+                    .get(hit_id)
+                    .and_then(|pane| pane.terminal.as_ref())
+                    .is_some()
+                {
+                    Some(FocusTarget::Terminal)
+                } else {
+                    None
+                };
+                Some((hit_id, focus_target))
+            });
+            if let Some((hit_id, focus_target)) = hit {
                 if Some(hit_id) != app.tabs.current().map(|t| t.focused_id()) {
                     if let Some(tab) = app.tabs.current_mut() {
                         tab.tree.focused = hit_id;
                     }
                     app.snap_anim();
                     app.dirty = true;
+                }
+                if let Some(focus_target) = focus_target {
+                    app.focus_target = focus_target;
                 }
             }
         }
@@ -12112,6 +11189,21 @@ impl AppHandler for AppShell {
         // Native editor drag-select: release (NE7).
         app.editor_mouse_drag_start = None;
 
+        if let Some(drag) = app.pane_dock_drag.take() {
+            let moved = app
+                .tabs
+                .current_mut()
+                .map(|tab| finish_pane_dock_drag(tab, drag))
+                .unwrap_or(false);
+            if moved {
+                app.maximized_pane_id = None;
+                app.resize_all_tabs();
+                app.force_full_redraw = true;
+            }
+            app.dirty = true;
+            return;
+        }
+
         // I3/Y6: Explorer drag end.
         if app.explorer_drag_cursor.is_some() {
             if let Some((src_path, _)) = app.explorer_drag.take() {
@@ -12319,6 +11411,19 @@ impl AppHandler for AppShell {
             }
         }
 
+        if let Some(mut drag) = app.pane_dock_drag {
+            let (rx, ry) = app.view_pt_to_raster_px(loc);
+            let ir = app.pane_area_rect();
+            if let Some(tab) = app.tabs.current() {
+                if update_pane_dock_drag(&mut drag, tab, ir, DIVIDER_PX, rx, ry) {
+                    app.force_full_redraw = true;
+                    app.dirty = true;
+                }
+            }
+            app.pane_dock_drag = Some(drag);
+            return;
+        }
+
         // I3: Explorer drag — enter drag mode when cursor leaves an Explorer row
         // by more than 4 logical pt.  The drag_path is set on mouse_down if the
         // click landed on a non-directory Explorer row; see mouse_down above.
@@ -12466,7 +11571,10 @@ impl AppHandler for AppShell {
             let (rx, _) = app.view_pt_to_raster_px(loc);
             let new_w_pt = (rx / app.window_scale).clamp(SIDEBAR_W_MIN_PT, SIDEBAR_W_MAX_PT);
             if (new_w_pt - app.left_dock_w_pt_target).abs() > 0.5 {
+                app.left_dock_w_pt = new_w_pt;
                 app.left_dock_w_pt_target = new_w_pt;
+                app.resize_all_tabs();
+                app.force_full_redraw = true;
                 app.dirty = true;
             }
             return;
@@ -12481,8 +11589,6 @@ impl AppHandler for AppShell {
                 let raw_editor_ratio = (ry - ir.y) / ir.h;
                 // Clamp: drawer ratio in [0.05, 0.60] → editor ratio in [0.40, 0.95].
                 let editor_ratio = raw_editor_ratio.clamp(0.40, 0.95);
-                let drawer_ratio = 1.0 - editor_ratio;
-                let _ = drawer_ratio; // unused variable; value used via editor_ratio
                 if let Some(tab) = app.tabs.current_mut() {
                     let root = tab.tree.root.as_mut();
                     if let anvil_workspace::layout::PaneNode::Split(sp) = root {
@@ -12503,21 +11609,15 @@ impl AppHandler for AppShell {
         if app.hscroll_drag_active {
             let (rx, _) = app.view_pt_to_raster_px(loc);
             let cw = app.font.metrics.cell_w;
-            let ir = app.pane_area_rect();
+            let body_rect = app.focused_editor_body_rect();
             if let Some(tab) = app.tabs.current_mut() {
                 let id = tab.focused_id();
-                let entries = tab.tree.layout(ir, DIVIDER_PX);
-                if let Some(e) = entries.iter().find(|e| e.id == id) {
-                    let pane_rect = e.rect;
+                if let Some(pane_rect) = body_rect {
                     if let Some(ep) = tab.editor_panes.get_pane(id) {
                         let bid = ep.buffer_id;
                         if let Some(buf) = tab.editor_panes.get_buffer(bid) {
-                            // Compute gutter_w to match the renderer.
                             let line_count = buf.line_count().max(1);
-                            let digit_cols = line_count.to_string().len();
-                            let git_gutter_cols = if buf.git_gutter.is_some() { 2 } else { 0 };
-                            let gutter_cols = digit_cols + 2 + git_gutter_cols;
-                            let gutter_w = gutter_cols as f64 * cw;
+                            let gutter_w = editor_gutter_width_for_buffer(buf, cw);
                             let content_w = pane_rect.w - gutter_w;
                             let content_cols = ((content_w) / cw).floor() as usize;
                             // Compute max_line_len across all buffer lines.
@@ -12749,11 +11849,14 @@ impl AppHandler for AppShell {
             app.left_dock_hits.at(rx, ry),
             Some(LeftDockHitKind::Explorer(_))
         ) {
-            let entry_count = app
-                .fs_snapshot
-                .as_ref()
-                .map_or(0, |snap| snap.entries.len());
-            let next = next_explorer_scroll_offset(app.explorer_scroll_offset, dy, entry_count);
+            let row_count = app.left_dock_hits.visible_rows.len();
+            let visible_rows = app.explorer_visible_rows();
+            let next = next_explorer_scroll_offset(
+                app.explorer_scroll_offset,
+                dy,
+                row_count,
+                visible_rows,
+            );
             if next != app.explorer_scroll_offset {
                 app.explorer_scroll_offset = next;
                 // Item 8: trigger scroll indicator fade-in.
@@ -12780,14 +11883,11 @@ impl AppHandler for AppShell {
             return;
         }
 
-        // Pixel-precise sources (trackpad, Magic Mouse): treat ~1.5 cell
-        // heights of finger travel as one row — natural "one row per
-        // visual cell of motion" feel without runaway sensitivity.
-        // Line-mode sources (mouse wheel): one detent = ~1.5 rows, less
-        // aggressive than the typical 3-line jump that felt jumpy here.
+        // Pixel-precise sources (trackpad, Magic Mouse): one row-height of
+        // physical scroll moves one editor row. Line-mode sources stay coarser.
         let cell_h_pt = (app.font.metrics.cell_h / app.window_scale) as f32;
         let d = if pixel_precise {
-            (dy as f32) / (cell_h_pt * 1.5)
+            (dy as f32) / cell_h_pt.max(1.0)
         } else {
             (dy as f32) * 1.5
         };
@@ -12822,23 +11922,50 @@ impl AppHandler for AppShell {
             }
         }
 
-        // Native editor scroll (NE7 + M1): update scroll_target; easing loop applies it.
+        // Native editor scroll (NE7 + M1): scroll the editor under the mouse,
+        // even when keyboard focus is still in Explorer or the drawer terminal.
         // Negate d: editor scroll_target=0 is the top of the file, increasing
         // means scrolling DOWN.  AppKit delivers positive dy for upward finger
         // motion (natural scroll), so +d would scroll DOWN when fingers go UP —
         // the opposite of what macOS users expect.  Negating aligns with the
         // system "natural scroll" setting automatically.
-        if app.focused_is_native_editor() {
-            if let Some(tab) = app.tabs.current_mut() {
-                let id = tab.focused_id();
-                if let Some(pane) = tab.editor_panes.get_pane_mut(id) {
-                    pane.scroll_target = (pane.scroll_target - d).max(0.0);
-                }
+        let editor_hit = {
+            let ir = app.pane_area_rect();
+            app.tabs.current().and_then(|tab| {
+                tab.tree
+                    .layout(ir, DIVIDER_PX)
+                    .into_iter()
+                    .find(|entry| entry.rect.contains(rx, ry))
+                    .and_then(|entry| {
+                        tab.editor_panes
+                            .get_pane(entry.id)
+                            .map(|_| (entry.id, entry.rect))
+                    })
+            })
+        };
+        let focused_editor = if editor_hit.is_none() && app.focused_is_native_editor() {
+            let ir = app.pane_area_rect();
+            app.tabs.current().and_then(|tab| {
+                let focused = tab.focused_id();
+                tab.tree
+                    .layout(ir, DIVIDER_PX)
+                    .into_iter()
+                    .find(|entry| entry.id == focused)
+                    .map(|entry| (focused, entry.rect))
+            })
+        } else {
+            None
+        };
+        if let Some((pane_id, rect)) = editor_hit.or(focused_editor) {
+            let changed = app.scroll_native_editor_pane(pane_id, rect.h, d);
+            if changed {
+                // M5: trigger scrollbar fade-in on editor scroll. Editor panes
+                // repaint their own rect, so wheel scroll should not force a
+                // whole-window redraw.
+                app.scroll_indicator_alpha = 1.0;
+                app.scroll_indicator_last_scroll = Some(Instant::now());
+                app.dirty = true;
             }
-            // M5: trigger scrollbar fade-in on editor scroll.
-            app.scroll_indicator_alpha = 1.0;
-            app.scroll_indicator_last_scroll = Some(Instant::now());
-            app.dirty = true;
             return;
         }
 
@@ -12955,8 +12082,10 @@ impl AppHandler for AppShell {
                         if self.app.drawer_hidden {
                             self.app.toggle_ide_drawer();
                         }
+                        self.app.refresh_drawer_terminal_tracking();
                         if self.app.drawer_terminals.is_empty() {
                             self.app.spawn_ide_terminal_drawer();
+                            self.app.refresh_drawer_terminal_tracking();
                         }
                         // Write the command to the active drawer terminal.
                         let drawer_id = self
@@ -13044,29 +12173,15 @@ impl AppHandler for AppShell {
                         .and_then(|n| n.to_str())
                         .unwrap_or("")
                         .to_string();
-                    // Find the row index that matches this path.
-                    let row_idx = self
-                        .app
-                        .left_dock_hits
-                        .visible_rows
-                        .iter()
-                        .position(|(p, _)| *p == path)
-                        .unwrap_or(0);
                     self.app.explorer_rename = Some(RenameState {
                         old_path: path,
                         input: name,
-                        row_idx,
                     });
                 }
             }
             ContextAction::ExplorerDelete => {
                 if let Some(path) = self.app.right_click_path.take() {
-                    let name = path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("")
-                        .to_string();
-                    self.app.explorer_delete_confirm = Some(DeleteConfirm { path, name });
+                    self.app.explorer_delete_confirm = Some(DeleteConfirm { path });
                 }
             }
             ContextAction::ExplorerNewFile => {
@@ -13375,13 +12490,77 @@ fn ascii_lower(ch: char) -> char {
     }
 }
 
-/// Build the argv for an nvim terminal pane: `["/usr/bin/env", "nvim", <path>]`.
-fn nvim_pane_argv(path_str: &str) -> Vec<String> {
-    vec![
+/// Build the argv for an nvim terminal pane, including theme tokens that
+/// LazyVim or a normal init.lua can consume via `vim.env`.
+fn nvim_pane_argv(
+    path_str: &str,
+    cfg: &NvimCfg,
+    effective_theme: &str,
+    theme: &Theme,
+) -> Vec<String> {
+    let mut argv = vec![
         "/usr/bin/env".to_owned(),
-        "nvim".to_owned(),
-        path_str.to_owned(),
-    ]
+        "ANVIL=1".to_owned(),
+        "TERM_PROGRAM=Anvil".to_owned(),
+        "COLORTERM=truecolor".to_owned(),
+        format!("ANVIL_THEME={effective_theme}"),
+        format!("ANVIL_THEME_MODE={}", nvim_theme_mode(effective_theme)),
+        format!("ANVIL_THEME_BG={}", format_hex(theme.background)),
+        format!("ANVIL_THEME_FG={}", format_hex(theme.foreground)),
+        format!("ANVIL_THEME_ACCENT={}", format_hex(theme.accent_primary)),
+        format!("ANVIL_THEME_SELECTION={}", format_hex(theme.panel_raised)),
+    ];
+
+    let appname = clean_nvim_token(&cfg.appname);
+    if !appname.is_empty() {
+        argv.push(format!("NVIM_APPNAME={appname}"));
+    }
+
+    argv.push("nvim".to_owned());
+
+    if cfg.theme_sync {
+        argv.push("--cmd".to_owned());
+        argv.push("set termguicolors".to_owned());
+        argv.push("--cmd".to_owned());
+        argv.push(format!(
+            "set background={}",
+            nvim_theme_mode(effective_theme)
+        ));
+        argv.push("--cmd".to_owned());
+        argv.push(format!(
+            "let g:anvil_theme='{}'",
+            clean_nvim_token(effective_theme)
+        ));
+        argv.push("--cmd".to_owned());
+        argv.push(format!(
+            "let g:anvil_theme_accent='{}'",
+            format_hex(theme.accent_primary)
+        ));
+    }
+
+    let colorscheme = clean_nvim_token(&cfg.colorscheme);
+    if !colorscheme.is_empty() {
+        argv.push("--cmd".to_owned());
+        argv.push(format!("silent! colorscheme {colorscheme}"));
+    }
+
+    argv.push(path_str.to_owned());
+    argv
+}
+
+fn nvim_theme_mode(effective_theme: &str) -> &'static str {
+    if effective_theme.contains("light") {
+        "light"
+    } else {
+        "dark"
+    }
+}
+
+fn clean_nvim_token(raw: &str) -> String {
+    raw.trim()
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/'))
+        .collect()
 }
 
 fn format_hex(rgb: [u8; 3]) -> String {
@@ -13391,9 +12570,9 @@ fn format_hex(rgb: [u8; 3]) -> String {
 fn effective_theme_name(system_dark: bool, cfg_theme: &str) -> &str {
     if cfg_theme == "system" {
         if system_dark {
-            "ember-dark"
+            "mineral-dark"
         } else {
-            "ember-light"
+            "mineral-light"
         }
     } else {
         cfg_theme
@@ -13402,32 +12581,58 @@ fn effective_theme_name(system_dark: bool, cfg_theme: &str) -> &str {
 
 fn next_theme_mode(cfg_theme: &str) -> &'static str {
     match cfg_theme {
-        "ember-dark" => "ember-light",
-        "ember-light" => "system",
-        "system" => "ember-dark",
-        _ => "ember-dark",
+        "mineral-dark" => "mineral-light",
+        "mineral-light" => "system",
+        "system" => "mineral-dark",
+        _ => "mineral-dark",
     }
+}
+
+fn apple_interface_style_is_dark(style: &str) -> bool {
+    style.eq_ignore_ascii_case("dark") || style.contains("Dark")
 }
 
 fn system_is_dark() -> bool {
     use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject};
+    use objc2_foundation::NSString;
+
     objc2::rc::autoreleasepool(|_pool| {
-        // SAFETY: standard Cocoa singleton + property accessor on the main thread.
+        // NSApplication's effective appearance can be app/window-overridden.
+        // AppleInterfaceStyle is the actual macOS preference: "Dark" when
+        // dark, absent/nil when light.
         unsafe {
-            let cls = objc2::runtime::AnyClass::get(c"NSApplication");
+            if let Some(cls) = AnyClass::get(c"NSUserDefaults") {
+                let defaults: *mut AnyObject = msg_send![cls, standardUserDefaults];
+                if !defaults.is_null() {
+                    let key = NSString::from_str("AppleInterfaceStyle");
+                    let value: *mut AnyObject = msg_send![defaults, stringForKey: &*key];
+                    if value.is_null() {
+                        return false;
+                    }
+                    let cstr: *const std::ffi::c_char = msg_send![value, UTF8String];
+                    if !cstr.is_null() {
+                        let s = std::ffi::CStr::from_ptr(cstr).to_string_lossy();
+                        return apple_interface_style_is_dark(&s);
+                    }
+                }
+            }
+
+            // Fallback for unusual AppKit startup states.
+            let cls = AnyClass::get(c"NSApplication");
             let cls = match cls {
                 Some(c) => c,
                 None => return true,
             };
-            let app: *mut objc2::runtime::AnyObject = msg_send![cls, sharedApplication];
+            let app: *mut AnyObject = msg_send![cls, sharedApplication];
             if app.is_null() {
                 return true;
             }
-            let appearance: *mut objc2::runtime::AnyObject = msg_send![app, effectiveAppearance];
+            let appearance: *mut AnyObject = msg_send![app, effectiveAppearance];
             if appearance.is_null() {
                 return true;
             }
-            let name: *mut objc2::runtime::AnyObject = msg_send![appearance, name];
+            let name: *mut AnyObject = msg_send![appearance, name];
             if name.is_null() {
                 return true;
             }
@@ -13436,24 +12641,32 @@ fn system_is_dark() -> bool {
                 return true;
             }
             let s = std::ffi::CStr::from_ptr(cstr).to_string_lossy();
-            s.contains("Dark")
+            apple_interface_style_is_dark(&s)
         }
     })
 }
 
 fn terminate_app() {
-    // SAFETY: terminate: on NSApplication singleton, main thread only.
+    // SAFETY: performSelector:withObject:afterDelay: is sent to the
+    // NSApplication singleton on the main thread.
+    //
+    // Calling `terminate:` synchronously from a key/menu callback re-enters
+    // `windowWillClose:` while the AppHandler RefCell is still borrowed.
+    // Scheduling the request lets the current handler return before AppKit
+    // asks for shutdown cleanup.
     unsafe {
         use objc2::msg_send;
         let cls = objc2::runtime::AnyClass::get(c"NSApplication");
         if let Some(cls) = cls {
             let app: *mut objc2::runtime::AnyObject = msg_send![cls, sharedApplication];
             if !app.is_null() {
-                // terminate: expects id (typed AnyObject*), not a void*.
-                // objc2 0.6 enforces the type check strictly — passing a
-                // *const c_void here panics with "expected '@' found '^v'".
                 let nil: *mut objc2::runtime::AnyObject = std::ptr::null_mut();
-                let _: () = msg_send![app, terminate: nil];
+                let _: () = msg_send![
+                    app,
+                    performSelector: objc2::sel!(terminate:),
+                    withObject: nil,
+                    afterDelay: 0.0_f64
+                ];
             }
         }
     }
@@ -13880,8 +13093,9 @@ fn spawn_second_window(parent: &App) {
     let chrome_pixel_size = CHROME_PT * window_scale;
 
     let font_names: Vec<&str> = vec![
-        "IBM Plex Mono",
         font_family.as_str(),
+        "BlexMono Nerd Font Mono",
+        "IBM Plex Mono",
         "SFMono-Regular",
         "Menlo",
     ];
@@ -13922,8 +13136,8 @@ fn spawn_second_window(parent: &App) {
     let dw = ((win_w * window_scale) as usize).max(1);
     let dh = ((win_h * window_scale) as usize).max(1);
     let cols = (dw.saturating_sub(2 * GRID_PAD) / cw).max(1);
-    let chrome_top_px_init = (36.0 * window_scale) as usize;
-    let chrome_bottom_px_init = (24.0 * window_scale) as usize;
+    let chrome_top_px_init = (CHROME_TOP_PT * window_scale) as usize;
+    let chrome_bottom_px_init = (CHROME_BOTTOM_PT * window_scale) as usize;
     let rows = ((dh
         .saturating_sub(chrome_top_px_init)
         .saturating_sub(chrome_bottom_px_init))
@@ -14040,7 +13254,6 @@ fn spawn_second_window(parent: &App) {
     kube::spawn_kube_worker(kube_tx);
 
     let (fs_tx, fs_rx, fs_hidden_tx) = fs_worker::spawn_fs_worker();
-    let (child_fs_tx, child_fs_rx) = fs_worker::spawn_child_fs_worker();
 
     let (file_watch_work_tx, file_watch_work_rx) =
         mpsc::sync_channel::<(anvil_editor::BufferId, PathBuf)>(64);
@@ -14123,8 +13336,8 @@ fn spawn_second_window(parent: &App) {
         window_scale,
         layout_mode,
         left_dock_visible: layout_mode == LayoutMode::Ide,
-        left_dock_w_pt: 260.0,
-        left_dock_w_pt_target: 260.0,
+        left_dock_w_pt: LEFT_DOCK_DEFAULT_PT,
+        left_dock_w_pt_target: LEFT_DOCK_DEFAULT_PT,
         sidebar_drag_active: false,
         drawer_drag_active: false,
         sidebar_divider_last_click: None,
@@ -14132,7 +13345,7 @@ fn spawn_second_window(parent: &App) {
         drawer_ratio_target: None,
         maximized_pane_id: None,
         drawer_hidden: false,
-        drawer_saved_ratio: 0.72,
+        drawer_saved_ratio: IDE_EDITOR_RATIO,
         drawer_terminals: Vec::new(),
         drawer_active_terminal: 0,
         blink_phase: 0.0,
@@ -14144,6 +13357,7 @@ fn spawn_second_window(parent: &App) {
         hud_cols: HUD_COLS_DEFAULT,
         hud_drag_active: false,
         divider_drag: None,
+        pane_dock_drag: None,
         divider_hover: None,
         hscroll_drag_active: false,
         tab_bar_hits: TabBarHits::default(),
@@ -14185,8 +13399,6 @@ fn spawn_second_window(parent: &App) {
         fs_tx,
         fs_rx,
         fs_hidden_tx,
-        child_fs_tx,
-        child_fs_rx,
         fs_snapshot: None,
         child_snapshots: HashMap::new(),
         active_explorer_file: None,
@@ -14194,6 +13406,7 @@ fn spawn_second_window(parent: &App) {
         hovered_explorer_row: None,
         hovered_editor_tab: None,
         editor_tab_hits: Vec::new(),
+        editor_body_hits: Vec::new(),
         expanded_dirs: HashSet::new(),
         explorer_collapsed: false,
         outline_collapsed: false,
@@ -14211,6 +13424,7 @@ fn spawn_second_window(parent: &App) {
         view_height_pt: win_h,
         lsp_manager: anvil_editor::LspManager::new(),
         lsp_last_sync: HashMap::new(),
+        lsp_last_sent_revision: HashMap::new(),
         pending_hover: None,
         hover_mouse_pos: None,
         hover_mouse_time: None,
@@ -14590,8 +13804,9 @@ fn main() -> Result<()> {
     // Save font family + size as owned values so they outlive the `config` move.
     let font_family = config.font.family.clone();
     let font_names: Vec<&str> = vec![
-        "IBM Plex Mono",
         font_family.as_str(),
+        "BlexMono Nerd Font Mono",
+        "IBM Plex Mono",
         "SFMono-Regular",
         "Menlo",
     ];
@@ -14641,10 +13856,10 @@ fn main() -> Result<()> {
     // (resize_all_tabs corrects to exact pane size once the window is up,
     // but the initial PTY needs sane dimensions for the first prompt frame.)
     let cols = (dw.saturating_sub(2 * GRID_PAD) / cw).max(1);
-    // Chrome strips at top/bottom are fixed pixel heights (36pt/24pt);
+    // Chrome strips at top/bottom are fixed pixel heights;
     // PTY rows fill the remaining vertical pixels divided by cell_h.
-    let chrome_top_px_init = (36.0 * window_scale) as usize;
-    let chrome_bottom_px_init = (24.0 * window_scale) as usize;
+    let chrome_top_px_init = (CHROME_TOP_PT * window_scale) as usize;
+    let chrome_bottom_px_init = (CHROME_BOTTOM_PT * window_scale) as usize;
     let rows = ((dh
         .saturating_sub(chrome_top_px_init)
         .saturating_sub(chrome_bottom_px_init))
@@ -14786,8 +14001,6 @@ fn main() -> Result<()> {
 
     // -- Filesystem worker (ID3) -----------------------------------------------
     let (fs_tx, fs_rx, fs_hidden_tx) = fs_worker::spawn_fs_worker();
-    // Child-directory worker: loads individual dirs on expand.
-    let (child_fs_tx, child_fs_rx) = fs_worker::spawn_child_fs_worker();
 
     // -- File-watcher worker (item 27) ----------------------------------------
     // Main thread registers (buffer_id, path) pairs via `file_watch_work_tx`.
@@ -14867,10 +14080,11 @@ fn main() -> Result<()> {
             LayoutMode::Terminal
         }
     };
-    let layout_mode = match std::env::var("ANVIL_LAYOUT_MODE").as_deref() {
-        Ok("ide") => LayoutMode::Ide,
-        Ok("terminal") => LayoutMode::Terminal,
-        _ => match config.layout_mode {
+    let env_layout_mode_raw = std::env::var("ANVIL_LAYOUT_MODE").ok();
+    let env_layout_mode = parse_layout_mode_env_override(env_layout_mode_raw.as_deref());
+    let layout_mode = match env_layout_mode {
+        Some(mode) => mode,
+        None => match config.layout_mode {
             anvil_config::StartupLayout::Ide => LayoutMode::Ide,
             anvil_config::StartupLayout::Terminal => LayoutMode::Terminal,
             anvil_config::StartupLayout::Auto => auto_layout_mode(),
@@ -14914,8 +14128,8 @@ fn main() -> Result<()> {
         // Explorer so file-open state is unmistakable. Users can still hide it
         // with Cmd+B.
         left_dock_visible: layout_mode == LayoutMode::Ide,
-        left_dock_w_pt: 260.0,
-        left_dock_w_pt_target: 260.0,
+        left_dock_w_pt: LEFT_DOCK_DEFAULT_PT,
+        left_dock_w_pt_target: LEFT_DOCK_DEFAULT_PT,
         sidebar_drag_active: false,
         drawer_drag_active: false,
         sidebar_divider_last_click: None,
@@ -14923,7 +14137,7 @@ fn main() -> Result<()> {
         drawer_ratio_target: None,
         maximized_pane_id: None,
         drawer_hidden: false,
-        drawer_saved_ratio: 0.72,
+        drawer_saved_ratio: IDE_EDITOR_RATIO,
         drawer_terminals: Vec::new(),
         drawer_active_terminal: 0,
         blink_phase: 0.0,
@@ -14936,6 +14150,7 @@ fn main() -> Result<()> {
         hud_cols: HUD_COLS_DEFAULT,
         hud_drag_active: false,
         divider_drag: None,
+        pane_dock_drag: None,
         divider_hover: None,
         hscroll_drag_active: false,
         tab_bar_hits: TabBarHits::default(),
@@ -14982,8 +14197,6 @@ fn main() -> Result<()> {
         fs_tx,
         fs_rx,
         fs_hidden_tx,
-        child_fs_tx,
-        child_fs_rx,
         fs_snapshot: std::env::current_dir().ok().map(|cwd| {
             let snap = fs_worker::read_dir_snapshot_fast(
                 &cwd,
@@ -15012,6 +14225,7 @@ fn main() -> Result<()> {
         hovered_explorer_row: None,
         hovered_editor_tab: None,
         editor_tab_hits: Vec::new(),
+        editor_body_hits: Vec::new(),
         expanded_dirs: HashSet::new(),
         explorer_collapsed: false,
         outline_collapsed: false,
@@ -15029,6 +14243,7 @@ fn main() -> Result<()> {
         view_height_pt: win_h,
         lsp_manager: anvil_editor::LspManager::new(),
         lsp_last_sync: HashMap::new(),
+        lsp_last_sent_revision: HashMap::new(),
         pending_hover: None,
         hover_mouse_pos: None,
         hover_mouse_time: None,
@@ -15260,6 +14475,7 @@ fn main() -> Result<()> {
                 tab.tree.focused = editor_id;
             }
         }
+        real_app.refresh_drawer_terminal_tracking();
     }
     real_app.renderer = Some(renderer);
     real_app.window_scale = actual_scale;
@@ -15299,6 +14515,11 @@ fn main() -> Result<()> {
     // (open_path_in_native_editor triggers syntax highlighting).
     if let Some(cwd) = shell.app.current_cwd() {
         shell.app.restore_session(&cwd);
+        if let Some(mode) = env_layout_mode {
+            shell.app.layout_mode = mode;
+            shell.app.left_dock_visible = mode == LayoutMode::Ide;
+            shell.app.finish_layout_mode_change();
+        }
         // Apply first-launch defaults (auto-expand, welcome toast).
         shell.app.apply_first_launch_defaults(&cwd);
         // Auto-open a README (or similar) when no session buffers were restored.
@@ -15354,563 +14575,5 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn explorer_hit_paths_resolve_header_rows_and_ignore_missing_rows() {
-        let snap = LeftDockSnapshot {
-            root: "/tmp/project".to_string(),
-            entries: vec![
-                anvil_render::LeftDockEntry {
-                    name: "src".to_string(),
-                    is_dir: true,
-                    is_symlink: false,
-                },
-                anvil_render::LeftDockEntry {
-                    name: "main.rs".to_string(),
-                    is_dir: false,
-                    is_symlink: false,
-                },
-            ],
-            git_marks: std::collections::HashMap::new(),
-        };
-
-        assert_eq!(
-            explorer_path_for_hit(&snap, ExplorerHit::Header),
-            Some(PathBuf::from("/tmp/project"))
-        );
-        assert_eq!(
-            explorer_path_for_hit(&snap, ExplorerHit::Row(1)),
-            Some(PathBuf::from("/tmp/project/main.rs"))
-        );
-        assert_eq!(explorer_path_for_hit(&snap, ExplorerHit::Row(9)), None);
-    }
-
-    #[test]
-    fn explorer_scroll_offset_changes_in_mouse_sized_steps_and_clamps() {
-        assert_eq!(next_explorer_scroll_offset(0, 1.0, 10), 3);
-        assert_eq!(next_explorer_scroll_offset(3, -1.0, 10), 0);
-        assert_eq!(next_explorer_scroll_offset(9, 1.0, 10), 10);
-        assert_eq!(next_explorer_scroll_offset(6, 0.0, 10), 6);
-        assert_eq!(next_explorer_scroll_offset(6, 1.0, 0), 0);
-    }
-
-    #[test]
-    fn ascii_lower_lowercases_ascii_letters() {
-        assert_eq!(ascii_lower('A'), 'a');
-        assert_eq!(ascii_lower('Z'), 'z');
-        assert_eq!(ascii_lower('a'), 'a');
-        assert_eq!(ascii_lower('5'), '5');
-        assert_eq!(ascii_lower('\u{00C0}'), '\u{00C0}');
-    }
-
-    #[test]
-    fn format_hex_produces_lowercase_six_digit_hex() {
-        assert_eq!(format_hex([0x1a, 0x1c, 0x24]), "#1a1c24");
-        assert_eq!(format_hex([0xff, 0x00, 0x80]), "#ff0080");
-        assert_eq!(format_hex([0x00, 0x00, 0x00]), "#000000");
-    }
-
-    #[test]
-    fn effective_theme_name_maps_system_to_dark_or_light() {
-        assert_eq!(effective_theme_name(true, "system"), "ember-dark");
-        assert_eq!(effective_theme_name(false, "system"), "ember-light");
-        assert_eq!(effective_theme_name(true, "ember-light"), "ember-light");
-        assert_eq!(effective_theme_name(true, "mineral-light"), "mineral-light");
-    }
-
-    #[test]
-    fn next_theme_mode_cycles_dark_light_system() {
-        assert_eq!(next_theme_mode("ember-dark"), "ember-light");
-        assert_eq!(next_theme_mode("ember-light"), "system");
-        assert_eq!(next_theme_mode("system"), "ember-dark");
-        assert_eq!(next_theme_mode("mineral-dark"), "ember-dark");
-    }
-
-    #[test]
-    fn platform_key_to_zig_key_covers_all_named_variants() {
-        assert_eq!(platform_key_to_zig_key(KeyInput::Enter), Some(Key::Enter));
-        assert_eq!(platform_key_to_zig_key(KeyInput::Tab), Some(Key::Tab));
-        assert_eq!(
-            platform_key_to_zig_key(KeyInput::Backspace),
-            Some(Key::Backspace)
-        );
-        assert_eq!(platform_key_to_zig_key(KeyInput::Escape), Some(Key::Escape));
-        assert_eq!(platform_key_to_zig_key(KeyInput::Up), Some(Key::Up));
-        assert_eq!(platform_key_to_zig_key(KeyInput::Down), Some(Key::Down));
-        assert_eq!(platform_key_to_zig_key(KeyInput::Left), Some(Key::Left));
-        assert_eq!(platform_key_to_zig_key(KeyInput::Right), Some(Key::Right));
-        assert_eq!(platform_key_to_zig_key(KeyInput::F(1)), Some(Key::F1));
-        assert_eq!(platform_key_to_zig_key(KeyInput::F(12)), Some(Key::F12));
-        assert_eq!(platform_key_to_zig_key(KeyInput::F(99)), None);
-        assert_eq!(
-            platform_key_to_zig_key(KeyInput::Char('a')),
-            Some(Key::Text('a'))
-        );
-    }
-
-    #[test]
-    fn chord_matching_requires_all_modifiers_and_key() {
-        let chord = anvil_config::Chord {
-            cmd: true,
-            shift: false,
-            ctrl: false,
-            opt: false,
-            key: 't',
-        };
-        let mods_match = Modifiers {
-            command: true,
-            shift: false,
-            control: false,
-            option: false,
-        };
-        let mods_no = Modifiers {
-            command: false,
-            shift: false,
-            control: false,
-            option: false,
-        };
-        assert!(App::chord_matches(chord, mods_match, 't'));
-        assert!(!App::chord_matches(chord, mods_no, 't'));
-        assert!(!App::chord_matches(chord, mods_match, 'x'));
-        // ASCII case-insensitive via ascii_lower.
-        assert!(App::chord_matches(chord, mods_match, 'T'));
-    }
-
-    #[test]
-    fn keybindings_parsed_from_defaults() {
-        let cfg = anvil_config::Keybindings::default();
-        let kb = Keybindings::from_config(&cfg);
-        let nt = kb.new_tab.unwrap();
-        assert!(nt.cmd);
-        assert_eq!(nt.key, 't');
-    }
-
-    // ── platform_mods_to_zig_mods ────────────────────────────────────────────
-
-    #[test]
-    fn platform_mods_to_zig_mods_maps_all_fields() {
-        let m = Modifiers {
-            command: true,
-            shift: true,
-            control: false,
-            option: false,
-        };
-        let z = platform_mods_to_zig_mods(m);
-        assert!(z.command);
-        assert!(z.shift);
-        assert!(!z.control);
-        assert!(!z.option);
-    }
-
-    #[test]
-    fn platform_mods_to_zig_mods_all_false() {
-        let m = Modifiers {
-            command: false,
-            shift: false,
-            control: false,
-            option: false,
-        };
-        let z = platform_mods_to_zig_mods(m);
-        assert!(!z.command);
-        assert!(!z.shift);
-        assert!(!z.control);
-        assert!(!z.option);
-    }
-
-    #[test]
-    fn platform_mods_to_zig_mods_ctrl_opt() {
-        let m = Modifiers {
-            command: false,
-            shift: false,
-            control: true,
-            option: true,
-        };
-        let z = platform_mods_to_zig_mods(m);
-        assert!(z.control);
-        assert!(z.option);
-        assert!(!z.command);
-        assert!(!z.shift);
-    }
-
-    // ── cursor_cfg_from_config ────────────────────────────────────────────────
-
-    #[test]
-    fn cursor_cfg_from_config_block_style() {
-        use anvil_config::CursorStyle;
-        use anvil_render::draw::CursorStyle as RCursorStyle;
-        let mut cfg = anvil_config::Config::default();
-        cfg.cursor.style = CursorStyle::Block;
-        cfg.cursor.blink = false;
-        let cc = cursor_cfg_from_config(&cfg);
-        assert_eq!(cc.style, RCursorStyle::Block);
-        assert!(!cc.blink);
-    }
-
-    #[test]
-    fn cursor_cfg_from_config_bar_style() {
-        use anvil_config::CursorStyle;
-        use anvil_render::draw::CursorStyle as RCursorStyle;
-        let mut cfg = anvil_config::Config::default();
-        cfg.cursor.style = CursorStyle::Bar;
-        cfg.cursor.blink = true;
-        let cc = cursor_cfg_from_config(&cfg);
-        assert_eq!(cc.style, RCursorStyle::Bar);
-        assert!(cc.blink);
-    }
-
-    #[test]
-    fn cursor_cfg_from_config_underline_style() {
-        use anvil_config::CursorStyle;
-        use anvil_render::draw::CursorStyle as RCursorStyle;
-        let mut cfg = anvil_config::Config::default();
-        cfg.cursor.style = CursorStyle::Underline;
-        let cc = cursor_cfg_from_config(&cfg);
-        assert_eq!(cc.style, RCursorStyle::Underline);
-    }
-
-    // ── AA7: cursor color wire-up ────────────────────────────────────────────
-
-    #[test]
-    fn cursor_cfg_from_config_color_override_parsed() {
-        let mut cfg = anvil_config::Config::default();
-        cfg.cursor.color = Some("#ff4400".into());
-        let cc = cursor_cfg_from_config(&cfg);
-        assert_eq!(
-            cc.color,
-            Some([0xff, 0x44, 0x00]),
-            "AA7: cursor color override must wire through"
-        );
-    }
-
-    #[test]
-    fn cursor_cfg_from_config_no_color_yields_none() {
-        let cfg = anvil_config::Config::default();
-        let cc = cursor_cfg_from_config(&cfg);
-        assert!(cc.color.is_none(), "AA7: absent cursor.color must be None");
-    }
-
-    // ── AA8: cursor shape config verify ─────────────────────────────────────
-
-    /// AA8: cursor.style config is applied by cursor_cfg_from_config and
-    /// propagated to draw_cursor via CursorParams.  Verify all three shapes
-    /// round-trip through cursor_cfg_from_config without loss.
-    #[test]
-    fn cursor_shape_all_styles_applied() {
-        use anvil_config::CursorStyle;
-        use anvil_render::draw::CursorStyle as RCursorStyle;
-
-        let cases = [
-            (CursorStyle::Block, RCursorStyle::Block),
-            (CursorStyle::Bar, RCursorStyle::Bar),
-            (CursorStyle::Underline, RCursorStyle::Underline),
-        ];
-        for (config_style, expected) in cases {
-            let mut cfg = anvil_config::Config::default();
-            cfg.cursor.style = config_style;
-            let cc = cursor_cfg_from_config(&cfg);
-            assert_eq!(cc.style, expected, "AA8: cursor shape must be applied");
-        }
-    }
-
-    // ── all_pane_ids_in_tree ─────────────────────────────────────────────────
-
-    #[test]
-    fn all_pane_ids_in_tree_single_pane() {
-        let tab = anvil_workspace::tab::Tab::new_single_pane(80, 24, 100);
-        let ids = all_pane_ids_in_tree(&tab);
-        assert_eq!(ids.len(), 1);
-    }
-
-    #[test]
-    fn all_pane_ids_in_tree_after_split() {
-        let mut tab = anvil_workspace::tab::Tab::new_single_pane(80, 24, 100);
-        let new_id = tab
-            .split(anvil_workspace::layout::SplitDir::Horizontal, 40, 24, 100)
-            .unwrap();
-        let ids = all_pane_ids_in_tree(&tab);
-        assert_eq!(ids.len(), 2);
-        assert!(ids.contains(&new_id));
-    }
-
-    // ── shell_quote_arg ───────────────────────────────────────────────────────
-
-    fn collect_quote(s: &str) -> Vec<u8> {
-        let mut out = Vec::new();
-        shell_quote_arg(s, |chunk| out.extend_from_slice(chunk));
-        out
-    }
-
-    #[test]
-    fn shell_quote_arg_simple_path_unchanged() {
-        assert_eq!(collect_quote("/usr/local/bin"), b"/usr/local/bin");
-    }
-
-    #[test]
-    fn shell_quote_arg_single_quote_in_path_escaped() {
-        // "it's a file" → it'\''s a file
-        assert_eq!(collect_quote("it's"), b"it'\\''s");
-    }
-
-    #[test]
-    fn shell_quote_arg_multiple_quotes_all_escaped() {
-        assert_eq!(collect_quote("a'b'c"), b"a'\\''b'\\''c");
-    }
-
-    #[test]
-    fn shell_quote_arg_empty_string_emits_nothing() {
-        assert_eq!(collect_quote(""), b"");
-    }
-
-    #[test]
-    fn shell_quote_arg_leading_quote_escaped() {
-        assert_eq!(collect_quote("'hello"), b"'\\''hello");
-    }
-
-    #[test]
-    fn shell_quote_arg_trailing_quote_escaped() {
-        assert_eq!(collect_quote("hello'"), b"hello'\\''");
-    }
-
-    // ── platform_key_to_zig_key extended coverage ─────────────────────────────
-
-    #[test]
-    fn platform_key_to_zig_key_home_end_pageup_pagedown_delete() {
-        use anvil_workspace::keys::Key;
-        assert_eq!(platform_key_to_zig_key(KeyInput::Home), Some(Key::Home));
-        assert_eq!(platform_key_to_zig_key(KeyInput::End), Some(Key::End));
-        assert_eq!(platform_key_to_zig_key(KeyInput::PageUp), Some(Key::PageUp));
-        assert_eq!(
-            platform_key_to_zig_key(KeyInput::PageDown),
-            Some(Key::PageDown)
-        );
-        assert_eq!(platform_key_to_zig_key(KeyInput::Delete), Some(Key::Delete));
-    }
-
-    #[test]
-    fn platform_key_to_zig_key_all_function_keys() {
-        use anvil_workspace::keys::Key;
-        let expected = [
-            Key::F1,
-            Key::F2,
-            Key::F3,
-            Key::F4,
-            Key::F5,
-            Key::F6,
-            Key::F7,
-            Key::F8,
-            Key::F9,
-            Key::F10,
-            Key::F11,
-            Key::F12,
-        ];
-        for (n, exp) in expected.iter().enumerate() {
-            let n = n as u8 + 1;
-            assert_eq!(platform_key_to_zig_key(KeyInput::F(n)), Some(*exp), "F{n}");
-        }
-    }
-
-    // ── N3: toast system ─────────────────────────────────────────────────────
-
-    /// `push_toast` caps text at 60 characters.
-    #[test]
-    fn toast_text_capped_at_60_chars() {
-        // Build a minimal App-like struct — use only the toast VecDeque.
-        // We test the logic via the helper functions directly.
-        let long = "a".repeat(80);
-        let truncated: String = long.chars().take(App::TOAST_MAX_CHARS).collect();
-        assert_eq!(truncated.len(), 60, "toast text must be capped at 60 chars");
-    }
-
-    /// Toasts with `expires_at` in the past are removed by `tick_toasts`.
-    #[test]
-    fn expired_toasts_removed_on_tick() {
-        let mut q: std::collections::VecDeque<Toast> = std::collections::VecDeque::new();
-        let already_expired = Toast {
-            text: "old".into(),
-            kind: ToastKind::Info,
-            expires_at: Instant::now() - std::time::Duration::from_secs(10),
-        };
-        let still_live = Toast {
-            text: "new".into(),
-            kind: ToastKind::Success,
-            expires_at: Instant::now() + std::time::Duration::from_secs(10),
-        };
-        q.push_back(already_expired);
-        q.push_back(still_live);
-
-        // Manually apply the same drain logic as `tick_toasts`.
-        let now = Instant::now();
-        while q.front().is_some_and(|t| t.expires_at <= now) {
-            q.pop_front();
-        }
-
-        assert_eq!(
-            q.len(),
-            1,
-            "expired toast must be removed; 1 live toast remains"
-        );
-        assert_eq!(q.front().unwrap().text, "new");
-    }
-
-    // ── R2: humanize_bytes ────────────────────────────────────────────────────
-
-    #[test]
-    fn humanize_bytes_formats_sizes_correctly() {
-        assert_eq!(humanize_bytes(0), "0 B");
-        assert_eq!(humanize_bytes(1023), "1023 B");
-        assert_eq!(humanize_bytes(1024), "1.0 KB");
-        assert_eq!(humanize_bytes(12700), "12.4 KB");
-        assert_eq!(humanize_bytes(1024 * 1024), "1.0 MB");
-        assert_eq!(humanize_bytes(1024 * 1024 * 1024), "1.0 GB");
-    }
-
-    // ── R2: relative_time ─────────────────────────────────────────────────────
-
-    #[test]
-    fn relative_time_formats_deltas_correctly() {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        assert_eq!(relative_time(now), "just now");
-        assert_eq!(relative_time(now - 30), "just now");
-        assert_eq!(relative_time(now - 90), "1 minute ago");
-        assert_eq!(relative_time(now - 7200), "2 hours ago");
-        assert_eq!(relative_time(now - 3 * 86400), "3 days ago");
-    }
-
-    // ── T2: parse_blame_porcelain ─────────────────────────────────────────────
-
-    #[test]
-    fn parse_blame_porcelain_parses_committed_entry() {
-        // Minimal valid porcelain output for a committed line.
-        let porcelain = "\
-abc1234abc1234abc1234abc1234abc1234abc1234 1 1 1\n\
-author Jane Smith\n\
-author-mail <jane@example.com>\n\
-author-time 1700000000\n\
-author-tz +0000\n\
-committer Jane Smith\n\
-committer-mail <jane@example.com>\n\
-committer-time 1700000000\n\
-committer-tz +0000\n\
-summary Initial commit\n\
-filename src/main.rs\n\
-\tlet x = 1;\n";
-        let entry = parse_blame_porcelain(porcelain).expect("should parse committed entry");
-        assert_eq!(entry.author, "Jane Smith");
-        assert_eq!(entry.short_hash, "abc1234");
-        // time is relative so just assert it's non-empty
-        assert!(!entry.time_relative.is_empty());
-    }
-
-    #[test]
-    fn parse_blame_porcelain_returns_none_for_uncommitted() {
-        // All-zero hash means "Not Committed Yet".
-        let porcelain = "\
-0000000000000000000000000000000000000000 1 1 1\n\
-author Not Committed Yet\n\
-author-mail <not.committed.yet>\n\
-author-time 0\n\
-author-tz +0000\n\
-\tsome line\n";
-        let entry = parse_blame_porcelain(porcelain);
-        assert!(entry.is_none(), "uncommitted hash must return None");
-    }
-
-    #[test]
-    fn blame_relative_time_formats_correctly() {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        assert_eq!(blame_relative_time(now), "just now");
-        assert_eq!(blame_relative_time(now - 90), "1 min ago");
-        assert_eq!(blame_relative_time(now - 7200), "2 hr ago");
-        assert_eq!(blame_relative_time(now - 3 * 86400), "3 days ago");
-    }
-
-    // X6: url_at_col
-
-    #[test]
-    fn url_at_col_finds_http_url() {
-        let line = "see https://example.com for details\n";
-        assert_eq!(url_at_col(line, 4), Some("https://example.com".to_string()));
-    }
-
-    #[test]
-    fn url_at_col_returns_none_when_no_url() {
-        let line = "no url here\n";
-        assert_eq!(url_at_col(line, 2), None);
-    }
-
-    #[test]
-    fn url_at_col_returns_none_outside_url_span() {
-        let line = "text https://example.com end\n";
-        // col 0 is "t" in "text", before the URL.
-        assert_eq!(url_at_col(line, 0), None);
-    }
-
-    // X11: load_snippets parses a valid TOML file
-    #[test]
-    fn load_snippets_parses_toml_correctly() {
-        // Directly test the TOML parsing logic without touching HOME.
-        let toml_text = r#"
-[snippet.fn]
-body = "fn ${1:name}() {\n    $0\n}"
-
-[snippet.impl]
-body = "impl ${1:Type} {}"
-"#;
-        let table: toml::Table = toml_text.parse().expect("valid toml");
-        let mut snippets = HashMap::new();
-        if let Some(toml::Value::Table(snippet_table)) = table.get("snippet") {
-            for (trigger, val) in snippet_table {
-                if let toml::Value::Table(entry) = val {
-                    if let Some(toml::Value::String(body)) = entry.get("body") {
-                        snippets.insert(trigger.clone(), body.clone());
-                    }
-                }
-            }
-        }
-        assert_eq!(snippets.len(), 2);
-        assert!(snippets.contains_key("fn"));
-        assert!(snippets.contains_key("impl"));
-    }
-
-    // ── EE11: file:open prefix routing ───────────────────────────────────────
-
-    /// The Invoke handler strips "file:open:" and returns the abs path.
-    /// This test mirrors the routing logic at the Inbound::Invoke site.
-    #[test]
-    fn file_open_prefix_strips_to_abs_path() {
-        let id = "file:open:/home/user/project/src/main.rs";
-        let abs_path = id.strip_prefix("file:open:").expect("prefix must match");
-        assert_eq!(abs_path, "/home/user/project/src/main.rs");
-    }
-
-    #[test]
-    fn file_open_prefix_does_not_match_other_commands() {
-        let id = "task:run:build";
-        assert!(
-            id.strip_prefix("file:open:").is_none(),
-            "non-file:open: id must not match the file:open prefix"
-        );
-    }
-
-    // ── EE14: nvim pane argv construction ────────────────────────────────────
-
-    #[test]
-    fn nvim_pane_argv_has_correct_shape() {
-        let argv = nvim_pane_argv("/workspace/foo.rs");
-        assert_eq!(argv.len(), 3);
-        assert_eq!(argv[0], "/usr/bin/env");
-        assert_eq!(argv[1], "nvim");
-        assert_eq!(argv[2], "/workspace/foo.rs");
-    }
-}
+mod tests;

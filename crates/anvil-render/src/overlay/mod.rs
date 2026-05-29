@@ -136,6 +136,15 @@ impl OverlayStack {
         }
     }
 
+    fn overlay_id(overlay: &Overlay) -> OverlayId {
+        match overlay {
+            Overlay::Picker(p) => p.id,
+            Overlay::TextInput(ti) => ti.id,
+            Overlay::Tooltip(tt) => tt.id,
+            Overlay::Custom(c) => c.id(),
+        }
+    }
+
     /// Push an overlay onto the stack with a fresh animation.
     pub fn push(&mut self, overlay: Overlay) {
         self.entries.push(OverlayEntry {
@@ -143,6 +152,24 @@ impl OverlayStack {
             anim: OverlayAnim::new(),
             opened_at: Instant::now(),
         });
+    }
+
+    /// Replace an existing overlay snapshot by id without restarting its animation.
+    ///
+    /// Anchored editor overlays are refreshed from app state during render. Reusing
+    /// the entry keeps them from becoming perpetual "new" overlays that animate
+    /// every frame.
+    pub fn replace_or_push(&mut self, overlay: Overlay) {
+        let id = Self::overlay_id(&overlay);
+        if let Some(entry) = self
+            .entries
+            .iter_mut()
+            .find(|entry| Self::overlay_id(&entry.overlay) == id)
+        {
+            entry.overlay = overlay;
+            return;
+        }
+        self.push(overlay);
     }
 
     /// True when the stack has any entries (including those still animating out).
@@ -259,12 +286,7 @@ impl OverlayStack {
 
     /// The `OverlayId` of the topmost entry, if any.
     pub fn top_id(&self) -> Option<OverlayId> {
-        self.entries.last().map(|e| match &e.overlay {
-            Overlay::Picker(p) => p.id,
-            Overlay::TextInput(ti) => ti.id,
-            Overlay::Tooltip(tt) => tt.id,
-            Overlay::Custom(c) => c.id(),
-        })
+        self.entries.last().map(|e| Self::overlay_id(&e.overlay))
     }
 
     /// Mutable ref to the top overlay entry, if any.
@@ -275,28 +297,14 @@ impl OverlayStack {
     /// Remove any entry whose id matches `id` (immediate, no animation).
     /// Used to replace a custom overlay whose state has changed (e.g. SCM refresh).
     pub fn remove_by_id(&mut self, id: OverlayId) {
-        self.entries.retain(|e| {
-            let eid = match &e.overlay {
-                Overlay::Picker(p) => p.id,
-                Overlay::TextInput(ti) => ti.id,
-                Overlay::Tooltip(tt) => tt.id,
-                Overlay::Custom(c) => c.id(),
-            };
-            eid != id
-        });
+        self.entries.retain(|e| Self::overlay_id(&e.overlay) != id);
     }
 
     /// True if any entry with the given id is present in the stack.
     pub fn contains_id(&self, id: OverlayId) -> bool {
-        self.entries.iter().any(|e| {
-            let eid = match &e.overlay {
-                Overlay::Picker(p) => p.id,
-                Overlay::TextInput(ti) => ti.id,
-                Overlay::Tooltip(tt) => tt.id,
-                Overlay::Custom(c) => c.id(),
-            };
-            eid == id
-        })
+        self.entries
+            .iter()
+            .any(|e| Self::overlay_id(&e.overlay) == id)
     }
 
     /// Update the rows, query, and selection of the top `Picker` overlay.
@@ -338,4 +346,30 @@ impl OverlayStack {
 pub enum Submission {
     PickerRow { id: OverlayId, index: usize },
     TextValue { id: OverlayId, value: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replace_or_push_preserves_animation_state_for_existing_id() {
+        let mut stack = OverlayStack::new();
+        let mut first = TextInputOverlay::new(OverlayId::GotoLine, "go");
+        first.value = "1".to_string();
+        stack.push(Overlay::TextInput(first));
+        stack.entries[0].anim.tick(40.0);
+        let t = stack.entries[0].anim.t;
+
+        let mut next = TextInputOverlay::new(OverlayId::GotoLine, "go");
+        next.value = "2".to_string();
+        stack.replace_or_push(Overlay::TextInput(next));
+
+        assert_eq!(stack.entries.len(), 1);
+        assert_eq!(stack.entries[0].anim.t, t);
+        match &stack.entries[0].overlay {
+            Overlay::TextInput(ti) => assert_eq!(ti.value, "2"),
+            _ => panic!("expected text input overlay"),
+        }
+    }
 }

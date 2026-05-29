@@ -5,20 +5,19 @@
 //! spec (`context/2026-05-26-proportional-font-spec.md § Per-surface size table`).
 
 /// Explorer file/directory row label — Regular weight.
-pub const EXPLORER_ROW_PT: f64 = 13.0;
+pub const EXPLORER_ROW_PT: f64 = 11.0;
 
 /// Explorer section header (e.g. "OPEN EDITORS") — Regular weight.
 pub const EXPLORER_HEADER_PT: f64 = 10.0;
 
 /// Editor tab label (active and inactive) — Medium (active) / Regular (inactive).
-pub const TAB_LABEL_PT: f64 = 13.0;
+pub const TAB_LABEL_PT: f64 = 11.0;
 
 /// Context bar / breadcrumb segment — Regular weight.
-pub const CONTEXT_BAR_PT: f64 = 12.0;
+pub const CONTEXT_BAR_PT: f64 = 10.0;
 
 /// Status bar text — Regular weight.
-/// P5: bumped from 12pt to 13pt so the bar text matches the explorer row weight.
-pub const STATUS_PT: f64 = 13.0;
+pub const STATUS_PT: f64 = 10.5;
 
 /// Overlay card title — Semibold weight.
 pub const OVERLAY_TITLE_PT: f64 = 14.0;

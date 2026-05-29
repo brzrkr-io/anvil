@@ -8,7 +8,8 @@
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -393,9 +394,14 @@ fn poller_without_project_stays_no_project() {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 fn tempdir() -> PathBuf {
+    let counter = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!(
-        "anvil_caldera_test_{}",
+        "anvil_caldera_test_{}_{}_{}",
+        std::process::id(),
+        counter,
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
@@ -405,7 +411,7 @@ fn tempdir() -> PathBuf {
     dir
 }
 
-fn write_project_json(dir: &PathBuf, enabled: bool) {
+fn write_project_json(dir: &Path, enabled: bool) {
     let caldera_dir = dir.join(".caldera");
     std::fs::create_dir_all(&caldera_dir).unwrap();
     let json = format!(

@@ -510,6 +510,7 @@ mod tests {
     // --- Test handler -------------------------------------------------------
 
     #[derive(Debug)]
+    #[allow(clippy::large_enum_variant)]
     enum Event {
         Print(char),
         Execute(u8),

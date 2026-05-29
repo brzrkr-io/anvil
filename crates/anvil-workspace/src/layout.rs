@@ -57,6 +57,17 @@ pub enum SplitDir {
     Vertical,
 }
 
+/// Target zone when dragging a pane over another pane.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DockZone {
+    Left,
+    Right,
+    Top,
+    Bottom,
+    /// Drop into the pane/tab group instead of creating a split.
+    Center,
+}
+
 /// Stable handle into a pane registry (registry built in a later phase).
 pub type PaneId = u32;
 
@@ -82,6 +93,14 @@ pub struct Split {
 pub enum LayoutError {
     #[error("focused PaneId not found in tree")]
     FocusedNotFound,
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum DockError {
+    #[error("moving PaneId not found in tree")]
+    MovingNotFound,
+    #[error("target PaneId not found in tree")]
+    TargetNotFound,
 }
 
 /// A single entry in the layout output.
@@ -365,6 +384,74 @@ pub fn adjust_ratio(sp: &mut Split, divider_index: usize, delta: f64, min_ratio:
     sp.ratios[j] = total - new_i;
 }
 
+/// Classify a point inside `rect` into a Zed-style docking zone.
+///
+/// Large panes use a fixed compact edge band so the center remains easy to hit;
+/// small panes use a proportional band so edge drops are still reachable.
+pub fn dock_zone_for_point(rect: Rect, px: f64, py: f64) -> Option<DockZone> {
+    if !rect.contains(px, py) {
+        return None;
+    }
+
+    let band = (rect.w.min(rect.h) * 0.25).min(112.0);
+    let left = px - rect.x;
+    let right = rect.x + rect.w - px;
+    let top = py - rect.y;
+    let bottom = rect.y + rect.h - py;
+
+    let mut best = (DockZone::Left, left);
+    for candidate in [
+        (DockZone::Right, right),
+        (DockZone::Top, top),
+        (DockZone::Bottom, bottom),
+    ] {
+        if candidate.1 < best.1 {
+            best = candidate;
+        }
+    }
+
+    if best.1 <= band {
+        Some(best.0)
+    } else {
+        Some(DockZone::Center)
+    }
+}
+
+/// Move an existing leaf beside a target leaf, using the same split tree that
+/// keyboard-created panes use. This is the model operation behind drag docking.
+pub fn dock_leaf(
+    tree: &mut PaneTree,
+    moving: PaneId,
+    target: PaneId,
+    zone: DockZone,
+) -> Result<(), DockError> {
+    if !contains_leaf(&tree.root, moving) {
+        return Err(DockError::MovingNotFound);
+    }
+    if !contains_leaf(&tree.root, target) {
+        return Err(DockError::TargetNotFound);
+    }
+    if moving == target || zone == DockZone::Center {
+        tree.focused = target;
+        return Ok(());
+    }
+
+    let (dir, before) = match zone {
+        DockZone::Left => (SplitDir::Horizontal, true),
+        DockZone::Right => (SplitDir::Horizontal, false),
+        DockZone::Top => (SplitDir::Vertical, true),
+        DockZone::Bottom => (SplitDir::Vertical, false),
+        DockZone::Center => unreachable!(),
+    };
+
+    tree.close_leaf(moving).ok_or(DockError::MovingNotFound)?;
+    let moving_node = Box::new(PaneNode::Leaf(moving));
+    insert_adjacent(&mut tree.root, target, dir, before, moving_node)
+        .map_err(|_| DockError::TargetNotFound)?;
+    tree.focused = moving;
+    Ok(())
+}
+
 /// Walk the tree recursively and reset every `Split`'s ratios to a uniform
 /// (equal) distribution.  Used by Cmd+Shift+M (V6: equalize all panes).
 pub fn equalize_ratios(tree: &mut PaneTree) {
@@ -646,6 +733,88 @@ fn insert_beside_in_split(
     Err(new_node)
 }
 
+fn insert_adjacent(
+    node: &mut Box<PaneNode>,
+    target: PaneId,
+    dir: SplitDir,
+    before: bool,
+    new_node: Box<PaneNode>,
+) -> Result<(), Box<PaneNode>> {
+    match node.as_ref() {
+        PaneNode::Leaf(id) if *id == target => {
+            let old_leaf = Box::new(PaneNode::Leaf(*id));
+            let children = if before {
+                vec![new_node, old_leaf]
+            } else {
+                vec![old_leaf, new_node]
+            };
+            **node = PaneNode::Split(Split {
+                dir,
+                children,
+                ratios: vec![0.5, 0.5],
+            });
+            Ok(())
+        }
+        PaneNode::Leaf(_) => Err(new_node),
+        PaneNode::Split(_) => insert_adjacent_in_split(node, target, dir, before, new_node),
+    }
+}
+
+fn insert_adjacent_in_split(
+    node: &mut Box<PaneNode>,
+    target: PaneId,
+    dir: SplitDir,
+    before: bool,
+    mut new_node: Box<PaneNode>,
+) -> Result<(), Box<PaneNode>> {
+    let sp = match node.as_mut() {
+        PaneNode::Split(s) => s,
+        _ => unreachable!(),
+    };
+
+    for i in 0..sp.children.len() {
+        if let PaneNode::Leaf(id) = sp.children[i].as_ref() {
+            if *id == target {
+                if sp.dir == dir {
+                    let insert_at = if before { i } else { i + 1 };
+                    sp.children.insert(insert_at, new_node);
+                    let n = sp.children.len() as f64;
+                    sp.ratios = vec![1.0 / n; sp.children.len()];
+                } else {
+                    let old_leaf = sp.children.remove(i);
+                    let ratio_at_i = sp.ratios.remove(i);
+                    let children = if before {
+                        vec![new_node, old_leaf]
+                    } else {
+                        vec![old_leaf, new_node]
+                    };
+                    sp.children.insert(
+                        i,
+                        Box::new(PaneNode::Split(Split {
+                            dir,
+                            children,
+                            ratios: vec![0.5, 0.5],
+                        })),
+                    );
+                    sp.ratios.insert(i, ratio_at_i);
+                }
+                return Ok(());
+            }
+        }
+    }
+
+    for i in 0..sp.children.len() {
+        if matches!(sp.children[i].as_ref(), PaneNode::Split(_)) {
+            new_node = match insert_adjacent(&mut sp.children[i], target, dir, before, new_node) {
+                Ok(()) => return Ok(()),
+                Err(returned) => returned,
+            };
+        }
+    }
+
+    Err(new_node)
+}
+
 /// Remove the leaf `id` from under `node`.  Returns the next-focus id on
 /// success, `None` if not found.
 fn close_in_children(node: &mut Box<PaneNode>, id: PaneId) -> Option<PaneId> {
@@ -737,6 +906,13 @@ fn count_leaves(node: &PaneNode) -> usize {
     }
 }
 
+fn contains_leaf(node: &PaneNode, needle: PaneId) -> bool {
+    match node {
+        PaneNode::Leaf(id) => *id == needle,
+        PaneNode::Split(sp) => sp.children.iter().any(|child| contains_leaf(child, needle)),
+    }
+}
+
 fn first_leaf_id(node: &PaneNode) -> PaneId {
     match node {
         PaneNode::Leaf(id) => *id,
@@ -791,6 +967,22 @@ mod tests {
         tree
     }
 
+    fn leaf_order(tree: &PaneTree) -> Vec<PaneId> {
+        fn walk(node: &PaneNode, out: &mut Vec<PaneId>) {
+            match node {
+                PaneNode::Leaf(id) => out.push(*id),
+                PaneNode::Split(sp) => {
+                    for child in &sp.children {
+                        walk(child, out);
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(&tree.root, &mut out);
+        out
+    }
+
     #[test]
     fn init_single_leaf_focused() {
         let tree = PaneTree::init_single(1);
@@ -833,6 +1025,85 @@ mod tests {
         let tree = build(1, &[(SplitDir::Horizontal, 2), (SplitDir::Vertical, 3)]);
         assert_eq!(tree_depth(&tree.root), 3);
         assert_eq!(tree.leaf_count(), 3);
+        check_ratios_sum(&tree.root);
+    }
+
+    #[test]
+    fn dock_zone_classifies_edges_and_center() {
+        let rect = Rect {
+            x: 100.0,
+            y: 50.0,
+            w: 400.0,
+            h: 300.0,
+        };
+
+        assert_eq!(
+            dock_zone_for_point(rect, 108.0, 200.0),
+            Some(DockZone::Left)
+        );
+        assert_eq!(
+            dock_zone_for_point(rect, 492.0, 200.0),
+            Some(DockZone::Right)
+        );
+        assert_eq!(dock_zone_for_point(rect, 300.0, 58.0), Some(DockZone::Top));
+        assert_eq!(
+            dock_zone_for_point(rect, 300.0, 342.0),
+            Some(DockZone::Bottom)
+        );
+        assert_eq!(
+            dock_zone_for_point(rect, 300.0, 200.0),
+            Some(DockZone::Center)
+        );
+        assert_eq!(dock_zone_for_point(rect, 40.0, 200.0), None);
+    }
+
+    #[test]
+    fn dock_zone_uses_compact_fixed_edge_band_on_large_panes() {
+        let rect = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 1200.0,
+            h: 800.0,
+        };
+
+        assert_eq!(dock_zone_for_point(rect, 95.0, 400.0), Some(DockZone::Left));
+        assert_eq!(
+            dock_zone_for_point(rect, 130.0, 400.0),
+            Some(DockZone::Center)
+        );
+    }
+
+    #[test]
+    fn dock_leaf_moves_existing_pane_left_of_target() {
+        let mut tree = build(1, &[(SplitDir::Horizontal, 2), (SplitDir::Horizontal, 3)]);
+
+        dock_leaf(&mut tree, 3, 1, DockZone::Left).unwrap();
+
+        assert_eq!(leaf_order(&tree), vec![3, 1, 2]);
+        assert_eq!(tree.focused, 3);
+        check_ratios_sum(&tree.root);
+    }
+
+    #[test]
+    fn dock_leaf_moves_existing_pane_below_target_with_nested_split() {
+        let mut tree = build(1, &[(SplitDir::Horizontal, 2), (SplitDir::Horizontal, 3)]);
+
+        dock_leaf(&mut tree, 1, 2, DockZone::Bottom).unwrap();
+
+        assert_eq!(leaf_order(&tree), vec![2, 1, 3]);
+        assert_eq!(tree.focused, 1);
+        assert_eq!(tree.leaf_count(), 3);
+        check_ratios_sum(&tree.root);
+    }
+
+    #[test]
+    fn dock_leaf_center_focuses_target_without_reparenting() {
+        let mut tree = build(1, &[(SplitDir::Horizontal, 2), (SplitDir::Horizontal, 3)]);
+
+        dock_leaf(&mut tree, 3, 1, DockZone::Center).unwrap();
+
+        assert_eq!(leaf_order(&tree), vec![1, 2, 3]);
+        assert_eq!(tree.focused, 1);
         check_ratios_sum(&tree.root);
     }
 

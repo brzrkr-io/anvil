@@ -89,7 +89,7 @@ impl Docks {
             hud_visible,
             chrome_bottom_px,
             left_dock_visible,
-            260.0,
+            240.0,
             1.0,
         )
     }
@@ -109,7 +109,7 @@ impl Docks {
         chrome_bottom_px: f64,
         left_dock_visible: bool,
         left_dock_w_pt: f64,
-        ui_scale: f64,
+        _ui_scale: f64,
     ) -> Self {
         let cw = metrics.cell_w;
         // Must match the actual HUD paint width in main.rs::render_frame:
@@ -138,10 +138,10 @@ impl Docks {
                     0.0
                 },
                 right_w: if hud_visible { hud_w } else { 0.0 },
-                // 28pt context strip below the chrome tab row: IDE chip,
-                // project path, git chips.  Scaled by both `scale` (Retina)
-                // and `ui_scale` (user zoom) so the bar grows/shrinks with zoom (A4).
-                top_h: 28.0 * scale * ui_scale,
+                // IDE mode keeps one top chrome row. Project/file context lives
+                // in tabs, sidebars, and status surfaces instead of a second
+                // stacked strip that steals vertical space.
+                top_h: 0.0,
                 bottom_h: chrome_bottom_px,
             },
         }
@@ -268,7 +268,7 @@ mod tests {
     #[test]
     fn widths_sum_to_inner_w_ide() {
         let areas = docks_for(LayoutMode::Ide, false).compute_areas(INNER, MIN_W, MIN_H);
-        // left_w = 260 (D2 default); right_w = 24 (GRID_PAD, hud_visible=false); pane_w = 1280-260-24 = 996
+        // left_w = 240 default; right_w = 24 (GRID_PAD, hud_visible=false); pane_w = 1280-240-24 = 1016
         assert_eq!(
             areas.left_dock.w + areas.pane_area.w + areas.right_dock.w,
             INNER.w
@@ -333,22 +333,28 @@ mod tests {
     // ── IDE top bar height ────────────────────────────────────────────────────
 
     #[test]
-    fn ide_top_bar_h_is_28pt_at_1x() {
+    fn ide_mode_omits_secondary_context_strip() {
         let docks = docks_for(LayoutMode::Ide, false);
-        assert_eq!(docks.top_h, 28.0, "Ide top_h is a 28pt context strip");
+        assert_eq!(
+            docks.top_h, 0.0,
+            "IDE mode should use one compact window chrome row, not a stacked context strip"
+        );
         let areas = docks.compute_areas(INNER, MIN_W, MIN_H);
-        assert_eq!(areas.top_bar.h, 28.0);
+        assert_eq!(areas.top_bar.h, 0.0);
     }
 
     #[test]
-    fn ide_top_bar_h_scales_linearly() {
+    fn ide_top_bar_h_stays_zero_at_retina_scale() {
         let d2 = Docks::for_mode(LayoutMode::Ide, 2.0, metrics(10), false, BOTTOM_H);
-        assert_eq!(d2.top_h, 56.0, "top_h must scale linearly");
+        assert_eq!(
+            d2.top_h, 0.0,
+            "retina scale must not reintroduce the secondary top strip"
+        );
     }
 
-    /// A4: top_h must also scale with ui_scale (separate from Retina window_scale).
+    /// A4: ui_scale must not reintroduce a second IDE top strip.
     #[test]
-    fn ide_top_bar_h_scales_with_ui_scale() {
+    fn ide_top_bar_h_stays_zero_with_ui_scale() {
         let base = Docks::for_mode_with_left_dock_w(
             LayoutMode::Ide,
             1.0,
@@ -370,12 +376,12 @@ mod tests {
             1.5,
         );
         assert!(
-            (base.top_h - 28.0).abs() < 1e-9,
-            "base top_h at ui_scale=1 must be 28pt"
+            base.top_h.abs() < 1e-9,
+            "base top_h at ui_scale=1 must stay zero"
         );
         assert!(
-            (zoomed.top_h - 42.0).abs() < 1e-9,
-            "zoomed top_h at ui_scale=1.5 must be 42pt; got {}",
+            zoomed.top_h.abs() < 1e-9,
+            "zoomed top_h at ui_scale=1.5 must stay zero; got {}",
             zoomed.top_h
         );
     }

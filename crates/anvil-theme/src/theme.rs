@@ -1,8 +1,8 @@
 //! Terminal color themes. A [`Theme`] is plain data; [`resolve`] produces an
 //! active theme from a base name plus optional per-color overrides.
 //!
-//! The Mineral palette and semantic status colors are a brand contract —
-//! values must match BRAND.md exactly.
+//! The Mineral palette and semantic status colors are a brand contract:
+//! neutral chrome, sparse mineral accents, and state colors for meaning.
 
 use serde::{Deserialize, Serialize};
 
@@ -251,11 +251,11 @@ pub const EMBER_LIGHT: Theme = Theme {
 /// background to be distinguishable (≥1.3:1). border is nudged to ≥1.4:1
 /// against surface.
 pub const MINERAL_DARK: Theme = Theme {
-    background: [0x18, 0x1a, 0x21],
-    foreground: [0xd8, 0xdb, 0xe2],
-    accent: [0x54, 0xb7, 0xc0],  // luminous mineral
-    surface: [0x22, 0x26, 0x2f], // #22262f — clear lift above canvas
-    border: [0x3a, 0x40, 0x4e],  // #3a404e — panel edges (1.46:1 vs surface)
+    background: [0x10, 0x12, 0x14],
+    foreground: [0xdc, 0xe2, 0xe8],
+    accent: [0x6d, 0xcb, 0xd1],  // luminous mineral
+    surface: [0x1a, 0x1e, 0x21], // compact lifted glass surface
+    border: [0x34, 0x3c, 0x40],  // panel edges
     ansi: [
         [0x2c, 0x30, 0x3e],
         [0xe0, 0x8b, 0x82],
@@ -274,34 +274,33 @@ pub const MINERAL_DARK: Theme = Theme {
         [0x95, 0xd9, 0xde],
         [0xee, 0xf1, 0xf6],
     ],
-    // Chrome fields — filled with legacy hardcoded values from tabbar/statusbar/draw consts.
-    graphite: [0x0b, 0x0d, 0x0e],
-    charcoal: [0x16, 0x1a, 0x1c],
-    panel: [0x1d, 0x21, 0x29],
-    panel_raised: [0x22, 0x26, 0x2f],
-    surface_alt: [0x2a, 0x2f, 0x39], // one step above surface (#22262f)
-    hairline: [0x23, 0x26, 0x2b],
-    text_muted: [0xa1, 0xa4, 0xa9],
-    text_subtle: [0x6c, 0x6f, 0x74],
-    alloy: [0x86, 0x8e, 0xa6],
-    accent_primary: [0x54, 0xb7, 0xc0],
-    accent_bright: [0x54, 0xb7, 0xc0],
+    graphite: [0x09, 0x0a, 0x0b],
+    charcoal: [0x12, 0x15, 0x17],
+    panel: [0x17, 0x1b, 0x1e],
+    panel_raised: [0x1d, 0x22, 0x25],
+    surface_alt: [0x22, 0x28, 0x2c],
+    hairline: [0x26, 0x2c, 0x30],
+    text_muted: [0xa7, 0xad, 0xb4],
+    text_subtle: [0x74, 0x7b, 0x83],
+    alloy: [0x8b, 0x94, 0x9e],
+    accent_primary: [0x4a, 0xa4, 0xad],
+    accent_bright: [0x6d, 0xcb, 0xd1],
     accent_ember: [0xc5, 0x46, 0x2a],
-    verified: [0x3f, 0x8a, 0x5b],
-    failure: [0xb1, 0x3a, 0x30],
-    attention: [0xb0, 0x7a, 0x14],
+    verified: [0x50, 0xb0, 0x72],
+    failure: [0xc6, 0x4f, 0x45],
+    attention: [0xc9, 0x8f, 0x24],
     agent: [0x6a, 0x5f, 0xa3],
-    info: [0x54, 0xb7, 0xc0],
+    info: [0x4a, 0xa4, 0xad],
     syntax: SyntaxTheme {
-        keyword: [0x54, 0xb7, 0xc0],     // accent_bright
-        string: [0x3f, 0x8a, 0x5b],      // verified
-        number: [0xb0, 0x7a, 0x14],      // attention
-        comment: [0x6c, 0x6f, 0x74],     // text_subtle
-        function: [0x54, 0xb7, 0xc0],    // info
+        keyword: [0x6d, 0xcb, 0xd1],     // accent_bright
+        string: [0x50, 0xb0, 0x72],      // verified
+        number: [0xc9, 0x8f, 0x24],      // attention
+        comment: [0x74, 0x7b, 0x83],     // text_subtle
+        function: [0x4a, 0xa4, 0xad],    // info
         type_: [0x6a, 0x5f, 0xa3],       // agent
-        variable: [0xd8, 0xdb, 0xe2],    // foreground
-        operator: [0xa1, 0xa4, 0xa9],    // text_muted
-        punctuation: [0x6c, 0x6f, 0x74], // text_subtle
+        variable: [0xdc, 0xe2, 0xe8],    // foreground
+        operator: [0xa7, 0xad, 0xb4],    // text_muted
+        punctuation: [0x74, 0x7b, 0x83], // text_subtle
     },
 };
 
@@ -418,66 +417,63 @@ pub const SOLARIZED_LIGHT: Theme = Theme {
     },
 };
 
-/// Mineral Light — a refined reader-mode palette on the brand bone canvas.
-/// ANSI colors are mid-deep and gently muted; every slot is ≥4.5:1 on bone.
-/// Fixes vs prior version: accent darkened (#2c7a82 → #286e76, was 4.39:1),
-/// ansi[6] cyan matches accent, ansi[7] dark-grey replaces too-pale #7a828b
-/// (was 3.43:1), ansi[9] bright-red darkened (was 4.21:1), ansi[15] bright-
-/// white replaced: original #f6f8f9 was 1.07:1 on bone — now a mid steel-grey.
+/// Mineral Light — the value-inverted Mineral UI: near-white canvas, light
+/// glass panes, deep ink text, and the same semantic hue families as dark mode.
+/// Editor-facing muted tokens stay ≥4.5:1 on the light canvas so gutters,
+/// comments, tabs, and explorer metadata do not wash out.
 pub const MINERAL_LIGHT: Theme = Theme {
-    background: [0xee, 0xf1, 0xf2], // bone
-    foreground: [0x1b, 0x1f, 0x24], // ink
-    accent: [0x28, 0x6e, 0x76],     // mineral teal — 5.16:1 on bone
-    surface: [0xff, 0xff, 0xff],    // #ffffff — raised light panels (BRAND.md: "white only")
-    border: [0xb8, 0xbe, 0xc3],     // #b8bec3 — panel edges on bone (~1.88:1 vs white)
+    background: [0xfa, 0xfa, 0xfa], // Caldera light canvas
+    foreground: [0x00, 0x19, 0x34], // deep ink/navy inverse of dark warm text
+    accent: [0x0e, 0x5f, 0x68],     // dark mineral teal — ≥7:1 on canvas
+    surface: [0xf8, 0xf9, 0xfa],    // raised light glass surface
+    border: [0xb7, 0xc4, 0xca],     // panel edges on light glass
     ansi: [
-        [0x1b, 0x1f, 0x24],
-        [0xb5, 0x44, 0x3a],
-        [0x32, 0x79, 0x52],
-        [0x94, 0x64, 0x10],
-        [0x3f, 0x6c, 0x95],
-        [0x62, 0x55, 0x8f],
-        [0x28, 0x6e, 0x76],
-        [0x5e, 0x65, 0x6d],
-        [0x5d, 0x66, 0x71],
-        [0xad, 0x40, 0x33],
-        [0x35, 0x78, 0x50],
+        [0x00, 0x19, 0x34],
+        [0xa8, 0x32, 0x2a],
+        [0x2f, 0x78, 0x4d],
         [0x86, 0x59, 0x0e],
-        [0x37, 0x60, 0x8a],
-        [0x56, 0x4a, 0x83],
-        [0x25, 0x6a, 0x70],
-        [0x5f, 0x67, 0x6f],
+        [0x24, 0x5e, 0x8c],
+        [0x55, 0x45, 0x8e],
+        [0x0e, 0x5f, 0x68],
+        [0x52, 0x6b, 0x7e],
+        [0x52, 0x6b, 0x7e],
+        [0x9f, 0x2f, 0x27],
+        [0x27, 0x6a, 0x41],
+        [0x78, 0x50, 0x07],
+        [0x1d, 0x53, 0x7e],
+        [0x4c, 0x3d, 0x80],
+        [0x0a, 0x56, 0x60],
+        [0x39, 0x55, 0x71],
     ],
-    // Chrome hierarchy in light mode: background (bone) > graphite (cool gray)
-    // > charcoal (darker gray) > panel (white). graphite/charcoal must be
-    // distinct from background or the chrome strip vanishes in light mode.
-    graphite: [0xe2, 0xe6, 0xe9],
-    charcoal: [0xd6, 0xdb, 0xe0],
-    panel: [0xff, 0xff, 0xff],
+    // Chrome hierarchy in light mode mirrors dark glass: canvas > chrome strip
+    // > active tab/status > raised panes, all with visible separators.
+    graphite: [0xf5, 0xf7, 0xf9],
+    charcoal: [0xe6, 0xec, 0xef],
+    panel: [0xf8, 0xf9, 0xfa],
     panel_raised: [0xff, 0xff, 0xff],
-    surface_alt: [0xf2, 0xf4, 0xf5], // slightly darker than surface (#ffffff) on bone canvas
-    hairline: [0xb8, 0xbe, 0xc3],
-    text_muted: [0xa1, 0xa4, 0xa9],
-    text_subtle: [0x6c, 0x6f, 0x74],
-    alloy: [0x5d, 0x66, 0x71],
-    accent_primary: [0x28, 0x6e, 0x76],
-    accent_bright: [0x28, 0x6e, 0x76],
+    surface_alt: [0xee, 0xf3, 0xf5],
+    hairline: [0xc7, 0xd1, 0xd6],
+    text_muted: [0x39, 0x55, 0x71],
+    text_subtle: [0x52, 0x6b, 0x7e],
+    alloy: [0x52, 0x6b, 0x7e],
+    accent_primary: [0x0e, 0x5f, 0x68],
+    accent_bright: [0x0e, 0x5f, 0x68],
     accent_ember: [0xc5, 0x46, 0x2a],
-    verified: [0x32, 0x79, 0x52],
-    failure: [0xb5, 0x44, 0x3a],
-    attention: [0x94, 0x64, 0x10],
-    agent: [0x62, 0x55, 0x8f],
-    info: [0x28, 0x6e, 0x76],
+    verified: [0x2f, 0x78, 0x4d],
+    failure: [0xa8, 0x32, 0x2a],
+    attention: [0x86, 0x59, 0x0e],
+    agent: [0x55, 0x45, 0x8e],
+    info: [0x0e, 0x5f, 0x68],
     syntax: SyntaxTheme {
-        keyword: [0x28, 0x6e, 0x76],     // accent_bright
-        string: [0x32, 0x79, 0x52],      // verified
-        number: [0x94, 0x64, 0x10],      // attention
-        comment: [0x6c, 0x6f, 0x74],     // text_subtle
-        function: [0x28, 0x6e, 0x76],    // info
-        type_: [0x62, 0x55, 0x8f],       // agent
-        variable: [0x1b, 0x1f, 0x24],    // foreground
-        operator: [0xa1, 0xa4, 0xa9],    // text_muted
-        punctuation: [0x6c, 0x6f, 0x74], // text_subtle
+        keyword: [0x0e, 0x5f, 0x68],     // accent_bright
+        string: [0x2f, 0x78, 0x4d],      // verified
+        number: [0x86, 0x59, 0x0e],      // attention
+        comment: [0x52, 0x6b, 0x7e],     // text_subtle
+        function: [0x0e, 0x5f, 0x68],    // info
+        type_: [0x55, 0x45, 0x8e],       // agent
+        variable: [0x00, 0x19, 0x34],    // foreground
+        operator: [0x39, 0x55, 0x71],    // text_muted
+        punctuation: [0x52, 0x6b, 0x7e], // text_subtle
     },
 };
 
@@ -520,7 +516,7 @@ pub struct ThemeOverrides {
 
 // ── Resolution ───────────────────────────────────────────────────────────────
 
-/// Resolve a base theme by name. An unknown name falls back to [`EMBER_DARK`]
+/// Resolve a base theme by name. An unknown name falls back to [`MINERAL_DARK`]
 /// and prints a warning to stderr.
 pub fn by_name(name: &str) -> Theme {
     match name {
@@ -531,8 +527,8 @@ pub fn by_name(name: &str) -> Theme {
         "solarized-dark" => SOLARIZED_DARK,
         "solarized-light" => SOLARIZED_LIGHT,
         other => {
-            eprintln!("anvil: unknown theme \"{other}\", using ember-dark");
-            EMBER_DARK
+            eprintln!("anvil: unknown theme \"{other}\", using mineral-dark");
+            MINERAL_DARK
         }
     }
 }
@@ -593,7 +589,7 @@ mod tests {
 
     #[test]
     fn by_name_falls_back_to_dark_for_unknown() {
-        assert_eq!(by_name("nope").background, EMBER_DARK.background);
+        assert_eq!(by_name("nope").background, MINERAL_DARK.background);
     }
 
     // --- palette256 ---
@@ -705,6 +701,46 @@ mod tests {
             assert!(
                 contrast_ratio(*color, bg) >= 4.5,
                 "ansi color {color:?} fails 4.5:1 on light background"
+            );
+        }
+    }
+
+    #[test]
+    fn mineral_light_is_the_light_side_of_mineral_dark() {
+        let light = MINERAL_LIGHT;
+
+        assert_eq!(light.background, [0xfa, 0xfa, 0xfa], "light canvas");
+        assert_eq!(light.surface, [0xf8, 0xf9, 0xfa], "raised light glass");
+        assert_eq!(light.panel, [0xf8, 0xf9, 0xfa], "light panel inverse");
+        assert_eq!(light.foreground, [0x00, 0x19, 0x34], "deep ink text");
+        assert_eq!(light.text_muted, [0x39, 0x55, 0x71], "readable muted text");
+        assert_eq!(
+            light.text_subtle,
+            [0x52, 0x6b, 0x7e],
+            "readable subtle text"
+        );
+        assert_eq!(light.accent_ember, MINERAL_DARK.accent_ember);
+        assert_eq!(light.syntax.variable, light.foreground);
+        assert_eq!(light.syntax.comment, light.text_subtle);
+        assert_eq!(light.syntax.operator, light.text_muted);
+        assert!(relative_luminance(light.background) > 0.94);
+        assert!(relative_luminance(MINERAL_DARK.background) < 0.02);
+    }
+
+    #[test]
+    fn mineral_light_editor_tokens_remain_readable_on_light_canvas() {
+        let bg = MINERAL_LIGHT.background;
+        for (name, color) in [
+            ("text_muted", MINERAL_LIGHT.text_muted),
+            ("text_subtle", MINERAL_LIGHT.text_subtle),
+            ("alloy", MINERAL_LIGHT.alloy),
+            ("syntax.comment", MINERAL_LIGHT.syntax.comment),
+            ("syntax.operator", MINERAL_LIGHT.syntax.operator),
+            ("syntax.punctuation", MINERAL_LIGHT.syntax.punctuation),
+        ] {
+            assert!(
+                contrast_ratio(color, bg) >= 4.5,
+                "{name} {color:?} fails 4.5:1 on light background"
             );
         }
     }

@@ -7,11 +7,10 @@ use anvil_workspace::tab::TabManager;
 use crate::raster::{FontMetrics, GlyphPainter, PixelRect, Raster, UiTextPainter, UiWeight};
 use crate::ui_text_sizes::TAB_LABEL_PT;
 
-// Traffic lights (red/yellow/green) span ~78 *points* horizontally on macOS,
-// starting ~10pt from the window's left edge. We reserve a generous 80pt
-// (clear of even the rightmost green button) and convert to device pixels
-// at the actual window scale — 1× / 2× retina / 3× super-retina all work.
-const TRAFFIC_LIGHT_RESERVE_PT: f64 = 80.0;
+// Traffic lights (red/yellow/green) span roughly 70pt horizontally on macOS.
+// Keep the first app glyph outside that cluster so the brand mark does not
+// read like a fourth window button.
+const TRAFFIC_LIGHT_RESERVE_PT: f64 = 104.0;
 
 /// Hit region for a single element in the chrome row.
 #[derive(Clone, Debug)]
@@ -53,17 +52,15 @@ impl TabBarHits {
 ///
 /// Layout left-to-right:
 ///   1. Traffic-light reserved zone (~78 device-px) — nothing drawn here.
-///   2. Basin mark (U+F1396 md-circle_half_full) in theme.accent, immediately after the reserved zone.
-///   3. Content-width tabs (label + padding + close ×), then `+` button.
-///   4. Right-side indicators (branch `⎇` + name · clock) right-aligned.
+///   2. Content-width tabs (label + padding + close ×), then `+` button.
+///   3. Right-side indicators (branch `⎇` + name · clock) right-aligned.
 ///
 /// Active tab: theme.surface background + 2px bottom accent rule.
 /// Inactive tab: transparent (theme.background), theme.ansi[8] dim text.
 /// Unread dot: amber `·` on inactive tabs with PTY output since last focus.
 /// Close ×: shown on the active tab only (hover requires mouse tracking).
-/// `chrome_top_px` is the FIXED pixel height of the chrome strip — not tied
-/// to `cell_h`. Matches Option D's 36pt chrome row, scaled to device pixels
-/// by the caller. The terminal viewport starts at y = `chrome_top_px`
+/// `chrome_top_px` is the fixed pixel height of the chrome strip — not tied
+/// to `cell_h`. The terminal viewport starts at y = `chrome_top_px`
 /// (i.e. `raster.pad_y` is set to this value upstream).
 #[allow(clippy::too_many_arguments)]
 pub fn draw_tab_bar(
@@ -91,9 +88,10 @@ pub fn draw_tab_bar(
     }
 
     // ── Chrome strip background ──────────────────────────────────────────
-    // Full-width graphite from y=0 to the 1px hairline. The hairline lives
-    // at chrome_top_px - 1; the strip's painted region is [0, chrome_top_px).
+    // Full-width glass substrate from y=0 to the 1px hairline.
     raster.fill_pixel_rect(0.0, 0.0, total_w, chrome_top_px - 1.0, theme.graphite);
+    raster.fill_pixel_rect_alpha(0.0, 0.0, total_w, chrome_top_px - 1.0, theme.surface, 0.18);
+    raster.fill_pixel_rect_alpha(0.0, 0.0, total_w, 1.0, theme.foreground, 0.025);
 
     // Vertical position for chrome content: cell top centred in the chrome row.
     // glyph_at expects the cell-top (icon_top); ui_line expects the baseline.
@@ -101,23 +99,8 @@ pub fn draw_tab_bar(
     let glyph_y = icon_top + (cell_h - metrics.descent);
 
     // Reserve the traffic-light zone (left side of the chrome row).
-    let tl_reserve_px = TRAFFIC_LIGHT_RESERVE_PT * window_scale;
-    let basin_x = tl_reserve_px;
-
-    // ── Basin mark ─────────────────────────────────────────────────────────
-    // U+25D2 (◒) is absent from BlexMonoNerdFontMono; use U+F1396
-    // (md-circle_half_full) which IS present and is visually equivalent.
-    const BASIN_MARK: u32 = 0xF1396;
-    if basin_x + cell_w < total_w {
-        raster.glyph_at(
-            painter,
-            metrics,
-            basin_x,
-            icon_top,
-            BASIN_MARK,
-            theme.accent_bright,
-        );
-    }
+    let tl_reserve_px = traffic_light_safe_px(window_scale);
+    let content_start_x = tl_reserve_px + 2.0 * cell_w;
 
     // ── Right indicators (branch · clock) ────────────────────────────────
     let right_str = build_right_str(branch, clock);
@@ -145,7 +128,7 @@ pub fn draw_tab_bar(
     }
     // #7: reserve 1 cell on each side for scroll chevrons when strip overflows.
     let chevron_w = cell_w;
-    let tabs_start_x = basin_x + 2.0 * cell_w; // 2 cells of breathing after basin
+    let tabs_start_x = content_start_x;
     let tabs_end_x = (right_start_x - 2.0 * cell_w).max(tabs_start_x);
     let avail_tab_w = tabs_end_x - tabs_start_x;
 
@@ -434,6 +417,10 @@ fn build_right_str(branch: &str, clock: &str) -> String {
     }
 }
 
+fn traffic_light_safe_px(window_scale: f64) -> f64 {
+    TRAFFIC_LIGHT_RESERVE_PT * window_scale.max(1.0)
+}
+
 /// Pixel-positioned. Branch glyph in accent, branch name in text-muted,
 /// separator `·` in text_subtle, clock in text-muted. Matches D's `.right-indicators`.
 fn draw_right_indicators(
@@ -555,10 +542,14 @@ mod tests {
         anvil_theme::EMBER_DARK
     }
 
-    /// Chrome row always renders — even with 0 tabs the basin mark is drawn.
-    /// (Previously this was a no-op below 2 tabs; now chrome is always present.)
     #[test]
-    fn draw_tab_bar_noop_below_2_tabs() {
+    fn traffic_light_reserve_keeps_brand_mark_out_of_stoplight_cluster() {
+        assert_eq!(TRAFFIC_LIGHT_RESERVE_PT, 104.0);
+    }
+
+    /// Chrome row always renders, but the traffic-light safe zone stays empty.
+    #[test]
+    fn draw_tab_bar_below_2_tabs_keeps_traffic_zone_clean() {
         let m = metrics();
         let th = theme();
         let mut r = Raster::new(200, 80);
@@ -582,22 +573,22 @@ mod tests {
             &mut hits,
             0.0,
         );
-        // Basin mark must have been drawn (painter received U+F1396).
         let basin_calls: Vec<_> = painter
             .calls
             .iter()
             .filter(|&&(glyph, _)| glyph == 0xF1396)
             .collect();
         assert!(
-            !basin_calls.is_empty(),
-            "expected basin mark drawn for 0 tabs, painter calls: {:?}",
+            basin_calls.is_empty(),
+            "expected no app glyph in traffic-light zone, painter calls: {:?}",
             painter.calls
         );
     }
 
-    /// draw_tab_bar renders chrome even with 1 tab.
+    /// draw_tab_bar renders chrome even with 1 tab, with no app glyph crowding
+    /// the traffic-light cluster.
     #[test]
-    fn draw_tab_bar_noop_for_one_tab() {
+    fn draw_tab_bar_for_one_tab_keeps_traffic_zone_clean() {
         use anvil_workspace::tab::{Tab, TabManager};
         let m = metrics();
         let th = theme();
@@ -623,22 +614,22 @@ mod tests {
             &mut hits,
             0.0,
         );
-        // Chrome is rendered: basin mark present.
         let basin_calls: Vec<_> = painter
             .calls
             .iter()
             .filter(|&&(glyph, _)| glyph == 0xF1396)
             .collect();
         assert!(
-            !basin_calls.is_empty(),
-            "expected basin mark for 1 tab, painter calls: {:?}",
+            basin_calls.is_empty(),
+            "expected no basin mark for 1 tab, painter calls: {:?}",
             painter.calls
         );
     }
 
-    /// Basin mark U+F1396 (md-circle_half_full) is in the painter's call log.
+    /// The traffic-light safe zone stays empty so the top-left chrome remains
+    /// visually owned by the native macOS controls.
     #[test]
-    fn draw_tab_bar_basin_mark_in_painter_calls() {
+    fn draw_tab_bar_does_not_draw_basin_mark() {
         use anvil_workspace::tab::{Tab, TabManager};
         let m = metrics();
         let th = theme();
@@ -668,12 +659,12 @@ mod tests {
         let basin: Vec<_> = painter
             .calls
             .iter()
-            .filter(|&&(glyph, color)| glyph == 0xF1396 && color == th.accent_bright)
+            .filter(|&&(glyph, _)| glyph == 0xF1396)
             .collect();
         assert_eq!(
             basin.len(),
-            1,
-            "expected exactly one basin mark (U+F1396) in accent_bright; painter calls: {:?}",
+            0,
+            "expected no basin mark in top chrome; painter calls: {:?}",
             painter.calls
         );
     }

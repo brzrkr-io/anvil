@@ -25,6 +25,7 @@
 
 use std::collections::HashMap;
 use std::ffi::c_void;
+use std::sync::Once;
 
 // ── Inline LRU glyph cache ────────────────────────────────────────────────────
 
@@ -97,6 +98,7 @@ use thiserror::Error;
 /// The IBM Plex Mono build patched with developer icon glyphs (Nerd Font).
 /// Bundled so the prompt's icons have glyphs regardless of system fonts.
 static BUNDLED_FONT: &[u8] = include_bytes!("../../../assets/BlexMonoNerdFontMono-Regular.ttf");
+static REGISTER_BUNDLED_ONCE: Once = Once::new();
 
 /// Font loading errors.
 #[derive(Debug, Error)]
@@ -411,6 +413,10 @@ pub const CHROME_PT: f64 = 11.0;
 /// resolve it by family name.  Best-effort: on any failure the app falls back
 /// to system fonts — never fatal.
 pub fn register_bundled() {
+    REGISTER_BUNDLED_ONCE.call_once(register_bundled_inner);
+}
+
+fn register_bundled_inner() {
     // SAFETY: CGDataProvider::with_data with a null release callback and a
     // 'static byte slice is safe; the data outlives the process.
     let provider = unsafe {

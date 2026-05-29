@@ -6,7 +6,7 @@
 //! Usage:
 //!   cargo run --bin anvil-snapshot -- \
 //!       --width 1700 --height 1100 \
-//!       --theme ember-dark \
+//!       --theme mineral-dark \
 //!       --cwd /home/user/project \
 //!       --out /tmp/render.png
 
@@ -88,7 +88,7 @@ fn parse_args() -> Args {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let mut width = 1700usize;
     let mut height = 1100usize;
-    let mut theme = "ember-dark".to_string();
+    let mut theme = "mineral-dark".to_string();
     let mut cwd = "/tmp/project".to_string();
     let mut out = PathBuf::from("/tmp/anvil-snapshot.png");
     let mut scene: Option<Scene> = None;

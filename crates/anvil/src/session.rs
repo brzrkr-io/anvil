@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 /// backwards-compatible.
 /// Bump on any default change that should invalidate older saved sessions.
 /// Older sessions with `version < CURRENT_VERSION` are ignored on load.
-pub const CURRENT_VERSION: u32 = 3;
+pub const CURRENT_VERSION: u32 = 5;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct SessionState {
@@ -39,7 +39,7 @@ pub struct SessionState {
     /// Global UI scale multiplier (Cmd+=/Cmd+- zoom).  Default 1.0.
     pub ui_scale: f64,
 
-    /// Explorer sidebar width in logical points.  Default 300.
+    /// Explorer sidebar width in logical points.  Default 240.
     pub left_dock_w_pt: f64,
 
     /// Layout mode: `"terminal"` or `"ide"`.  Default `"terminal"`.
@@ -255,6 +255,21 @@ mod tests {
     }
 
     #[test]
+    fn load_session_ignores_pre_polish_layout_defaults() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cwd = dir.path();
+        let stale_json = r#"{"version":4,"ui_scale":1.0,"left_dock_w_pt":300.0,"layout_mode":"ide","editor_split_ratio":0.72,"expanded_dirs":[],"open_buffers":[]}"#;
+        if let Some(path) = session_path(cwd) {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, stale_json.as_bytes()).unwrap();
+        }
+        assert!(
+            load_session(cwd).is_none(),
+            "v4 sessions can persist wider pre-polish layout defaults"
+        );
+    }
+
+    #[test]
     fn session_recent_projects_round_trip() {
         let dir = tempfile::tempdir().expect("tempdir");
         let cwd = dir.path();
@@ -290,7 +305,10 @@ mod tests {
         // deserialise fine (serde default).
         let dir = tempfile::tempdir().expect("tempdir");
         let cwd = dir.path();
-        let old_json = r#"{"version":3,"ui_scale":1.0,"left_dock_w_pt":300.0,"layout_mode":"terminal","editor_split_ratio":0.0,"expanded_dirs":[],"open_buffers":[]}"#;
+        let old_json = format!(
+            r#"{{"version":{},"ui_scale":1.0,"left_dock_w_pt":300.0,"layout_mode":"terminal","editor_split_ratio":0.0,"expanded_dirs":[],"open_buffers":[]}}"#,
+            CURRENT_VERSION
+        );
         if let Some(path) = session_path(cwd) {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, old_json.as_bytes()).unwrap();
@@ -334,7 +352,10 @@ mod tests {
     fn session_font_scale_missing_defaults_to_zero() {
         let dir = tempfile::tempdir().expect("tempdir");
         let cwd = dir.path();
-        let old_json = r#"{"version":3,"ui_scale":1.0,"left_dock_w_pt":300.0,"layout_mode":"terminal","editor_split_ratio":0.0,"expanded_dirs":[],"open_buffers":[]}"#;
+        let old_json = format!(
+            r#"{{"version":{},"ui_scale":1.0,"left_dock_w_pt":300.0,"layout_mode":"terminal","editor_split_ratio":0.0,"expanded_dirs":[],"open_buffers":[]}}"#,
+            CURRENT_VERSION
+        );
         if let Some(path) = session_path(cwd) {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, old_json.as_bytes()).unwrap();

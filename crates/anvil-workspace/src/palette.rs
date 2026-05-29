@@ -40,13 +40,13 @@ pub struct Entry {
 pub const CATALOG: &[Entry] = &[
     Entry {
         id: "theme.dark",
-        title: "Switch to Ember Dark",
+        title: "Switch to Mineral Dark",
         subtitle: None,
         action: Action::ThemeDark,
     },
     Entry {
         id: "theme.light",
-        title: "Switch to Ember Light",
+        title: "Switch to Mineral Light",
         subtitle: None,
         action: Action::ThemeLight,
     },
@@ -203,12 +203,12 @@ mod tests {
     }
 
     #[test]
-    fn theme_catalog_names_ember_modes_and_system_appearance() {
+    fn theme_catalog_names_mineral_modes_and_system_appearance() {
         let dark = CATALOG.iter().find(|e| e.id == "theme.dark").unwrap();
         let light = CATALOG.iter().find(|e| e.id == "theme.light").unwrap();
         let system = CATALOG.iter().find(|e| e.id == "theme.system").unwrap();
-        assert_eq!(dark.title, "Switch to Ember Dark");
-        assert_eq!(light.title, "Switch to Ember Light");
+        assert_eq!(dark.title, "Switch to Mineral Dark");
+        assert_eq!(light.title, "Switch to Mineral Light");
         assert_eq!(system.title, "Follow System Appearance");
     }
 

@@ -8,6 +8,10 @@ use crate::editor_pane::EditorPaneRegistry;
 use crate::layout::{PaneId, PaneNode, PaneTree, Split, SplitDir};
 use crate::pane::PaneRegistry;
 
+/// Default IDE split: primary editor surface over a compact terminal drawer.
+pub const IDE_EDITOR_RATIO: f64 = 0.82;
+pub const IDE_DRAWER_RATIO: f64 = 1.0 - IDE_EDITOR_RATIO;
+
 /// True when a tab bar should be drawn — only with 2+ tabs (low-profile rule).
 pub fn bar_visible(count: usize) -> bool {
     count >= 2
@@ -209,7 +213,7 @@ impl Tab {
                 Box::new(PaneNode::Leaf(editor_id)),
                 Box::new(PaneNode::Leaf(terminal_id)),
             ],
-            ratios: vec![0.72, 0.28],
+            ratios: vec![IDE_EDITOR_RATIO, IDE_DRAWER_RATIO],
         });
         self.tree.focused = editor_id;
         Some(editor_id)
@@ -217,12 +221,30 @@ impl Tab {
 
     /// Return the first native editor pane in visual order.
     pub fn first_editor_pane_id(&self) -> Option<PaneId> {
-        first_leaf_matching(self.tree.root.as_ref(), &self.registry, LeafKind::Editor)
+        first_leaf_matching(self.tree.root.as_ref(), &self.registry, LeafKind::Editor).or_else(
+            || {
+                self.registry
+                    .iter()
+                    .find_map(|(id, pane)| pane.editor_id.is_some().then_some(id))
+            },
+        )
     }
 
     /// Return the first terminal pane in visual order.
     pub fn first_terminal_pane_id(&self) -> Option<PaneId> {
         first_leaf_matching(self.tree.root.as_ref(), &self.registry, LeafKind::Terminal)
+    }
+
+    /// Return all terminal panes currently attached to the pane tree in visual order.
+    pub fn terminal_pane_ids(&self) -> Vec<PaneId> {
+        let mut ids = Vec::new();
+        collect_leaf_matching(
+            self.tree.root.as_ref(),
+            &self.registry,
+            LeafKind::Terminal,
+            &mut ids,
+        );
+        ids
     }
 
     /// Collapse a mixed IDE layout back to a single terminal pane.
@@ -292,7 +314,7 @@ impl Tab {
                     Box::new(PaneNode::Leaf(editor_id)),
                     Box::new(PaneNode::Leaf(terminal_id)),
                 ],
-                ratios: vec![0.72, 0.28],
+                ratios: vec![IDE_EDITOR_RATIO, IDE_DRAWER_RATIO],
             })
         } else {
             PaneNode::Leaf(editor_id)
@@ -329,6 +351,29 @@ fn first_leaf_matching(
             .children
             .iter()
             .find_map(|child| first_leaf_matching(child.as_ref(), registry, kind)),
+    }
+}
+
+fn collect_leaf_matching(
+    node: &PaneNode,
+    registry: &crate::pane::PaneRegistry,
+    kind: LeafKind,
+    out: &mut Vec<PaneId>,
+) {
+    match node {
+        PaneNode::Leaf(id) => {
+            if registry.get(*id).is_some_and(|pane| match kind {
+                LeafKind::Editor => pane.editor_id.is_some(),
+                LeafKind::Terminal => pane.terminal.is_some(),
+            }) {
+                out.push(*id);
+            }
+        }
+        PaneNode::Split(split) => {
+            for child in &split.children {
+                collect_leaf_matching(child.as_ref(), registry, kind, out);
+            }
+        }
     }
 }
 
@@ -730,14 +775,14 @@ mod tests {
         );
         let editor_rect = entries.iter().find(|e| e.id == editor_id).unwrap().rect;
         let terminal_rect = entries.iter().find(|e| e.id == terminal_id).unwrap().rect;
-        // 0.72/0.28 split: editor ≈ 720, terminal ≈ 280.
+        // Compact IDE split: editor ≈ 820, terminal ≈ 180.
         assert!(
-            editor_rect.h > 650.0 && editor_rect.h < 800.0,
+            editor_rect.h > 780.0 && editor_rect.h < 860.0,
             "editor_rect.h={}",
             editor_rect.h
         );
         assert!(
-            terminal_rect.h > 200.0 && terminal_rect.h < 350.0,
+            terminal_rect.h > 140.0 && terminal_rect.h < 220.0,
             "terminal_rect.h={}",
             terminal_rect.h
         );
@@ -941,6 +986,51 @@ mod tests {
         assert!(tab.editor_panes.get_pane(editor_id).is_none());
     }
 
+    #[test]
+    fn hide_to_terminal_surface_restores_existing_editor_on_ide_round_trip() {
+        let mut tab = Tab::new_single_pane(80, 24, 1000);
+        let terminal_id = tab.focused_id();
+        let editor_id = tab
+            .promote_terminal_to_editor_drawer()
+            .expect("promotion creates editor");
+        let buffer_id = tab.editor_panes.get_pane(editor_id).unwrap().buffer_id;
+
+        let focused_terminal = tab
+            .hide_to_terminal_surface()
+            .expect("terminal remains available");
+        assert_eq!(focused_terminal, terminal_id);
+        assert!(matches!(tab.tree.root.as_ref(), PaneNode::Leaf(id) if *id == terminal_id));
+        assert!(tab.registry.get(editor_id).is_some());
+        assert!(tab.editor_panes.get_pane(editor_id).is_some());
+
+        let restored = tab
+            .ensure_ide_editor_surface()
+            .expect("hidden editor reattaches");
+
+        assert_eq!(restored, editor_id);
+        assert_eq!(tab.focused_id(), editor_id);
+        assert_eq!(
+            tab.editor_panes.get_pane(editor_id).unwrap().buffer_id,
+            buffer_id
+        );
+        assert!(matches!(tab.tree.root.as_ref(), PaneNode::Split(_)));
+    }
+
+    #[test]
+    fn terminal_pane_ids_survive_ide_round_trip_in_visual_order() {
+        let mut tab = Tab::new_single_pane(80, 24, 1000);
+        let terminal_id = tab.focused_id();
+        tab.promote_terminal_to_editor_drawer()
+            .expect("promotion creates editor");
+
+        tab.hide_to_terminal_surface()
+            .expect("terminal remains available");
+        tab.ensure_ide_editor_surface()
+            .expect("hidden editor reattaches");
+
+        assert_eq!(tab.terminal_pane_ids(), vec![terminal_id]);
+    }
+
     // ── anim_phase / target_phase ─────────────────────────────────────────────
 
     #[test]
@@ -1120,15 +1210,15 @@ mod tests {
             "drawer ratio must clamp to 0.60; got {dr}"
         );
 
-        // Mid-point passes through unchanged.
-        let (ed, dr) = clamp_editor_ratio(0.72);
+        // Compact default passes through unchanged.
+        let (ed, dr) = clamp_editor_ratio(0.82);
         assert!(
-            (ed - 0.72).abs() < 1e-9,
-            "mid-point must pass through unchanged; got {ed}"
+            (ed - 0.82).abs() < 1e-9,
+            "compact default must pass through unchanged; got {ed}"
         );
         assert!(
-            (dr - 0.28).abs() < 1e-9,
-            "drawer mid-point must be 0.28; got {dr}"
+            (dr - 0.18).abs() < 1e-9,
+            "compact drawer default must be 0.18; got {dr}"
         );
     }
 

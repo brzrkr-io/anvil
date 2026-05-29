@@ -49,6 +49,15 @@ impl Scrollback {
         self.rows.len()
     }
 
+    /// Drop every stored row while preserving the ring allocation.
+    pub fn clear(&mut self) {
+        for row in &mut self.rows {
+            *row = None;
+        }
+        self.head = 0;
+        self.count = 0;
+    }
+
     /// Copy `row` into the ring, trimming trailing blank cells. When the ring
     /// is full the oldest row is evicted. A push silently no-ops if `row` is
     /// empty and all blank (the allocation is still performed for non-blank rows).

@@ -182,6 +182,11 @@ impl SyntaxLayer {
         *self.visible_cache.borrow_mut() = None;
     }
 
+    /// True when this layer has a parsed tree and a highlight query.
+    pub fn has_highlights(&self) -> bool {
+        self.tree.is_some() && self.query.is_some()
+    }
+
     // ── Highlights query ──────────────────────────────────────────────────────
 
     /// Return highlight spans overlapping `[start_byte, end_byte)`.

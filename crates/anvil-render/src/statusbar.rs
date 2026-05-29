@@ -11,6 +11,8 @@ use crate::ui_text_sizes::STATUS_PT;
 /// Current editor mode, shown as the leftmost chip in the status bar (O3).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum StatusMode {
+    /// Terminal-first surface.
+    Terminal,
     /// Normal editing state (default).
     #[default]
     Editing,
@@ -70,11 +72,17 @@ pub fn draw_status_bar(
     }
 
     let strip_top = total_h - chrome_bottom_px;
-    // Charcoal fill across the bottom strip — reaches the window's bottom
-    // edge with no canvas peeking through.
-    raster.fill_pixel_rect(0.0, strip_top, total_w, chrome_bottom_px, theme.charcoal);
-    // 1px hairline at the top of the strip.
-    raster.fill_pixel_rect(0.0, strip_top, total_w, 1.0, theme.hairline);
+    // Compact glass strip at the window bottom.
+    raster.fill_pixel_rect(0.0, strip_top, total_w, chrome_bottom_px, theme.graphite);
+    raster.fill_pixel_rect_alpha(
+        0.0,
+        strip_top,
+        total_w,
+        chrome_bottom_px,
+        theme.surface,
+        0.58,
+    );
+    raster.fill_pixel_rect_alpha(0.0, strip_top, total_w, 1.0, theme.hairline, 0.9);
 
     // Cell top and baseline for vertically centred content in the strip.
     // glyph_at expects the cell-top (icon_top); ui_line expects the baseline (glyph_y).
@@ -86,18 +94,12 @@ pub fn draw_status_bar(
     let mut x = pad_x;
     {
         let (label, color) = match mode {
+            StatusMode::Terminal => ("TERMINAL", theme.text_subtle),
             StatusMode::Editing => ("EDITING", theme.text_subtle),
             StatusMode::Searching => ("SEARCHING", theme.accent_primary),
             StatusMode::Renaming => ("RENAMING", theme.accent_bright),
             StatusMode::Picking => ("PICKING", theme.accent_primary),
         };
-        // EDITING mode: subtle ember dot before the label as a brand signal.
-        if matches!(mode, StatusMode::Editing) {
-            let dot_size = 3.0;
-            let dot_y = icon_top + (cell_h - dot_size) * 0.5;
-            raster.fill_pixel_rect_alpha(x, dot_y, dot_size, dot_size, theme.accent_ember, 0.7);
-            x += dot_size + 4.0;
-        }
         raster.ui_line(
             ui_painter,
             label,
@@ -644,6 +646,44 @@ mod tests {
         assert!(
             !editing_draws.is_empty(),
             "expected EDITING in text_subtle via ui_painter"
+        );
+    }
+
+    #[test]
+    fn mode_chip_terminal_shows_in_text_subtle() {
+        let m = metrics();
+        let th = theme();
+        let mut r = Raster::new(400, 200);
+        let mut painter = StubPainter::default();
+        let mut up = StubUiPainter::default();
+        r.clear([0, 0, 0]);
+
+        let local_ctx = LocalContext::default();
+        let agent_snap = Snapshot::default();
+
+        draw_status_bar(
+            &mut r,
+            &mut painter,
+            &mut up,
+            m,
+            &th,
+            &local_ctx,
+            &agent_snap,
+            "",
+            m.cell_h * 2.0,
+            1.0,
+            0.0,
+            StatusMode::Terminal,
+        );
+
+        let terminal_draws: Vec<_> = up
+            .draws
+            .iter()
+            .filter(|(text, fg)| *text == "TERMINAL" && *fg == th.text_subtle)
+            .collect();
+        assert!(
+            !terminal_draws.is_empty(),
+            "expected TERMINAL in text_subtle via ui_painter"
         );
     }
 

@@ -86,8 +86,9 @@ pub struct FontCfg {
 impl Default for FontCfg {
     fn default() -> Self {
         FontCfg {
-            family: "IBM Plex Mono".into(),
-            // IBM Plex Mono's letterforms are visually compact; 15pt reads
+            family: "BlexMono Nerd Font Mono".into(),
+            // BlexMono is IBM Plex Mono patched with Nerd Font icons. Its
+            // letterforms are visually compact; 15pt reads
             // closer to other terminals' 14pt and gives the grid real presence
             // on Retina without crowding columns. Override in TOML if needed.
             size: 15.0,
@@ -213,6 +214,8 @@ pub struct Keybindings {
     pub layout_mode_toggle: String,
     /// Toggle the left explorer dock while staying in IDE mode.
     pub left_dock_toggle: String,
+    /// Open the recent-files palette without conflicting with layout switching.
+    pub recent_files: String,
     /// Open a new native editor pane (NE15: nvim path removed; this is the
     /// only editor path).
     pub editor_new: String,
@@ -254,6 +257,7 @@ impl Default for Keybindings {
             agent_start: "cmd+shift+return".into(),
             layout_mode_toggle: "cmd+shift+e".into(),
             left_dock_toggle: "cmd+b".into(),
+            recent_files: "cmd+opt+p".into(),
             editor_new: "cmd+e".into(),
             project_search: "cmd+shift+f".into(),
         }
@@ -287,11 +291,11 @@ pub struct ThemeTokenOverrides {
 ///
 /// ```toml
 /// # simple — bare string on one line
-/// theme = "ember-dark"
+/// theme = "system"
 ///
 /// # extended — table with optional per-token overrides
 /// [theme]
-/// override = "ember-dark"
+/// override = "mineral-dark"
 ///
 /// [theme.tokens]
 /// accent = "#ff0000"
@@ -311,20 +315,20 @@ pub struct ThemeSectionCfg {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(untagged)]
 pub enum ThemeEntry {
-    /// `theme = "ember-dark"` — simple bare string.
+    /// `theme = "system"` — simple bare string.
     Name(String),
-    /// `[theme]\n override = "ember-dark"` — extended table.
+    /// `[theme]\n override = "mineral-dark"` — extended table.
     Section(ThemeSectionCfg),
 }
 
 impl ThemeEntry {
-    /// The resolved base theme name; falls back to `"ember-dark"` when absent.
+    /// The resolved base theme name; falls back to `"system"` when absent.
     pub fn theme_name(&self) -> &str {
         match self {
             ThemeEntry::Name(s) => s.as_str(),
             ThemeEntry::Section(sec) => {
                 if sec.theme_override.is_empty() {
-                    "ember-dark"
+                    "system"
                 } else {
                     sec.theme_override.as_str()
                 }
@@ -343,7 +347,7 @@ impl ThemeEntry {
 
 impl Default for ThemeEntry {
     fn default() -> Self {
-        ThemeEntry::Name("ember-dark".into())
+        ThemeEntry::Name("system".into())
     }
 }
 
@@ -374,6 +378,28 @@ impl Default for EditorCfg {
             save_on_blur: false,
             italic_comments: true,
             bold_keywords: false,
+        }
+    }
+}
+
+/// Neovim/LazyVim terminal-pane integration.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct NvimCfg {
+    /// Optional NVIM_APPNAME. Set to "LazyVim" to launch that config tree.
+    pub appname: String,
+    /// Export Anvil theme tokens and send safe startup `--cmd` theme hints.
+    pub theme_sync: bool,
+    /// Optional colorscheme name to request after nvim starts.
+    pub colorscheme: String,
+}
+
+impl Default for NvimCfg {
+    fn default() -> Self {
+        NvimCfg {
+            appname: String::new(),
+            theme_sync: true,
+            colorscheme: String::new(),
         }
     }
 }
@@ -430,8 +456,8 @@ pub struct Config {
     pub cursor: CursorCfg,
     pub window: WindowCfg,
     /// Base theme name or extended `[theme]` table (AA3).
-    /// Simple: `theme = "ember-dark"`.
-    /// Extended: `[theme]\n override = "ember-dark"\n [theme.tokens]\n accent = "#ff0000"`.
+    /// Simple: `theme = "system"`.
+    /// Extended: `[theme]\n override = "mineral-dark"\n [theme.tokens]\n accent = "#ff0000"`.
     pub theme: ThemeEntry,
     pub layout_mode: StartupLayout,
     pub theme_overrides: ThemeOverrides,
@@ -439,6 +465,7 @@ pub struct Config {
     pub shell_integration: bool,
     pub prompt: PromptCfg,
     pub editor: EditorCfg,
+    pub nvim: NvimCfg,
     pub explorer: ExplorerCfg,
     /// Per-language syntax color overrides (AA4). Key is the language name
     /// as returned by the syntax layer (e.g. `"rust"`, `"python"`).
@@ -463,6 +490,7 @@ impl Default for Config {
             shell_integration: true,
             prompt: PromptCfg::default(),
             editor: EditorCfg::default(),
+            nvim: NvimCfg::default(),
             explorer: ExplorerCfg::default(),
             syntax: std::collections::HashMap::new(),
             tasks: std::collections::HashMap::new(),
@@ -693,9 +721,9 @@ accent = "#3aa0a8"
     fn partial_config_keeps_defaults_for_absent_fields() {
         let cfg = parse_str("scrollback = 200").unwrap();
         assert_eq!(cfg.scrollback, 200);
-        assert_eq!(cfg.font.family, "IBM Plex Mono");
+        assert_eq!(cfg.font.family, "BlexMono Nerd Font Mono");
         assert_eq!(cfg.cursor.style, CursorStyle::Block);
-        assert_eq!(cfg.theme.theme_name(), "ember-dark");
+        assert_eq!(cfg.theme.theme_name(), "system");
         assert_eq!(cfg.layout_mode, StartupLayout::Ide); // default when not set
     }
 
@@ -752,14 +780,39 @@ height = 1.0
     fn defaults_has_expected_values() {
         let cfg = Config::default();
         assert_eq!(cfg.scrollback, 100_000);
-        assert_eq!(cfg.font.family, "IBM Plex Mono");
+        assert_eq!(cfg.font.family, "BlexMono Nerd Font Mono");
         assert!(cfg.cursor.blink);
-        assert_eq!(cfg.theme.theme_name(), "ember-dark");
+        assert_eq!(cfg.theme.theme_name(), "system");
         assert_eq!(cfg.layout_mode, StartupLayout::Ide);
         assert!(cfg.shell_integration);
         assert!(cfg.prompt.enabled);
         assert!(cfg.prompt.transient);
         assert!(cfg.prompt.custom.is_empty());
+    }
+
+    #[test]
+    fn nvim_defaults_enable_theme_sync_without_forced_appname() {
+        let cfg = Config::default();
+        assert!(cfg.nvim.theme_sync);
+        assert!(cfg.nvim.appname.is_empty());
+        assert!(cfg.nvim.colorscheme.is_empty());
+    }
+
+    #[test]
+    fn nvim_section_parses_lazyvim_options() {
+        let cfg = parse_str(
+            r#"
+[nvim]
+appname = "LazyVim"
+theme_sync = false
+colorscheme = "catppuccin-mocha"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(cfg.nvim.appname, "LazyVim");
+        assert!(!cfg.nvim.theme_sync);
+        assert_eq!(cfg.nvim.colorscheme, "catppuccin-mocha");
     }
 
     #[test]
@@ -799,7 +852,7 @@ height = 1.0
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("bad.toml");
         // Write invalid UTF-8 bytes.
-        fs::write(&path, &[0xFF, 0xFE, 0x00]).unwrap();
+        fs::write(&path, [0xFF, 0xFE, 0x00]).unwrap();
         let cfg = load(&path);
         assert_eq!(cfg.scrollback, 100_000);
     }
@@ -927,6 +980,25 @@ new_tab = "ctrl+n"
     fn left_dock_toggle_default_chord_is_cmd_b() {
         let kb = Keybindings::default();
         assert_eq!(kb.left_dock_toggle, "cmd+b");
+    }
+
+    #[test]
+    fn recent_files_default_does_not_conflict_with_layout_toggle() {
+        let kb = Keybindings::default();
+        assert_eq!(kb.layout_mode_toggle, "cmd+shift+e");
+        assert_eq!(kb.recent_files, "cmd+opt+p");
+        assert_ne!(kb.recent_files, kb.layout_mode_toggle);
+    }
+
+    #[test]
+    fn config_parses_recent_files_keybinding_override() {
+        let src = r#"
+[keybindings]
+recent_files = "cmd+shift+p"
+"#;
+        let cfg = parse_str(src).unwrap();
+        assert_eq!(cfg.keybindings.recent_files, "cmd+shift+p");
+        assert_eq!(cfg.keybindings.layout_mode_toggle, "cmd+shift+e");
     }
 
     #[test]
@@ -1069,12 +1141,12 @@ accent = "#ff0000"
 
     #[test]
     fn theme_section_empty_override_falls_back_to_default() {
-        // [theme] with no override key → theme_name() returns "ember-dark".
+        // [theme] with no override key → theme_name() returns the hardcoded default.
         let src = "[theme]\n";
         let cfg = parse_str(src).unwrap();
         assert_eq!(
             cfg.theme.theme_name(),
-            "ember-dark",
+            "system",
             "AA3: empty override = default"
         );
     }

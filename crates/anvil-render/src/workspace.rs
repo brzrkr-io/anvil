@@ -46,6 +46,18 @@ pub struct EditorTabHit {
     pub rect: crate::raster::PixelRect,
 }
 
+/// A hit region for the actual editor text body, after tabs, breadcrumbs, and
+/// status chrome have been removed from the pane rect.
+#[derive(Clone, Debug)]
+pub struct EditorBodyHit {
+    /// Pane that owns this editor body.
+    pub pane_id: PaneId,
+    /// Active buffer rendered inside this body.
+    pub buffer_id: BufferId,
+    /// Body rect in device pixels (raster-absolute space).
+    pub rect: crate::raster::PixelRect,
+}
+
 /// Draw all panes in `tree` into `raster`, then draw divider hairlines over them.
 ///
 /// Parameters:
@@ -68,6 +80,7 @@ pub struct EditorTabHit {
 ///                        `LspManager::diagnostics_for` by `main.rs`. Empty map is fine.
 ///   hovered_editor_tab — currently hovered `(PaneId, BufferId)` for `×` show-on-hover.
 ///   editor_tab_hits    — output: cleared and repopulated with tab-strip click regions.
+///   editor_body_hits   — output: cleared and repopulated with editor body regions.
 ///   ui_scale           — logical zoom multiplier (separate from Retina window_scale).
 ///                        Pass `1.0` when no zoom is configured.
 ///   scroll_indicator_alpha — alpha for the M5 editor scrollbar thumb [0.0, 1.0].
@@ -94,10 +107,12 @@ pub fn draw_workspace(
     diag_by_pane: &HashMap<PaneId, Vec<RenderDiagnostic>>,
     hovered_editor_tab: Option<(PaneId, BufferId)>,
     editor_tab_hits: &mut Vec<EditorTabHit>,
+    editor_body_hits: &mut Vec<EditorBodyHit>,
     ui_scale: f64,
     scroll_indicator_alpha: f32,
 ) {
     editor_tab_hits.clear();
+    editor_body_hits.clear();
     let entries = tree.layout(inner, div_px);
 
     // Count how many editor-pane leaves exist (for focus ring, item 14).
@@ -126,7 +141,9 @@ pub fn draw_workspace(
 
             // G2: when the drawer is too short to render PTY cells, show a
             // collapsed button strip instead.
-            let collapse_threshold = 50.0 * ui_scale;
+            let collapse_threshold = (terminal_drawer_header_h(metrics, ui_scale, e.rect.h)
+                + metrics.cell_h)
+                .max(50.0 * ui_scale);
             if is_bottom_drawer(&e.rect, &inner, entries.len()) && e.rect.h < collapse_threshold {
                 draw_drawer_collapsed_strip(raster, painters.regular, metrics, theme, e.rect);
             } else {
@@ -153,7 +170,7 @@ pub fn draw_workspace(
                 // Reserve header_h at the top of the drawer before calling
                 // draw_viewport so the terminal cells don't overdraw the header.
                 let drawer_header_h = if is_bottom_drawer(&e.rect, &inner, entries.len()) {
-                    (24.0 * ui_scale).min(e.rect.h)
+                    terminal_drawer_header_h(metrics, ui_scale, e.rect.h)
                 } else {
                     0.0
                 };
@@ -191,7 +208,7 @@ pub fn draw_workspace(
                     );
                 }
 
-                // Living-scrollback indicator: paint a 4px ember bar at the
+                // Living-scrollback indicator: paint a 4px accent bar at the
                 // bottom edge of the pane when the user is scrolled up and new
                 // output has arrived below.
                 let unseen = pane.unseen_rows();
@@ -203,7 +220,7 @@ pub fn draw_workspace(
                         bar_y,
                         e.rect.w,
                         bar_h,
-                        theme.accent_ember,
+                        theme.accent_primary,
                         0.92,
                     );
                 }
@@ -233,6 +250,16 @@ pub fn draw_workspace(
                         editor_pane_count > 1,
                         ui_scale,
                     );
+                    editor_body_hits.push(EditorBodyHit {
+                        pane_id: e.id,
+                        buffer_id: ep.buffer_id,
+                        rect: crate::raster::PixelRect {
+                            x: editor_rect.x,
+                            y: editor_rect.y,
+                            w: editor_rect.w,
+                            h: editor_rect.h,
+                        },
+                    });
                     draw_editor_into(
                         raster,
                         painters.regular,
@@ -276,6 +303,220 @@ pub fn draw_workspace(
 
 fn is_bottom_drawer(rect: &Rect, inner: &Rect, leaf_count: usize) -> bool {
     leaf_count > 1 && rect.h <= inner.h * 0.40 && rect.y > inner.y + inner.h * 0.45
+}
+
+fn chrome_strip_h(base_h: f64, ui_scale: f64, metrics: FontMetrics) -> f64 {
+    let scale = ui_scale.max(0.5);
+    let vertical_pad = (8.0 * scale).round().max(8.0);
+    (base_h * scale)
+        .round()
+        .max((metrics.cell_h + vertical_pad).ceil())
+}
+
+fn terminal_drawer_header_h(metrics: FontMetrics, ui_scale: f64, pane_h: f64) -> f64 {
+    chrome_strip_h(24.0, ui_scale, metrics).min(pane_h.max(0.0))
+}
+
+/// Compute the text-body rect for a native editor pane without painting it.
+///
+/// The GPU path needs the same body hit box as the CPU renderer, even though
+/// it does not call `draw_editor_chrome`. Keep this geometry in one place so
+/// mouse selection, hscroll, and editor painting agree.
+pub fn editor_body_rect(
+    editor_panes: &EditorPaneRegistry,
+    active_buffer_id: BufferId,
+    ep: &EditorPane,
+    metrics: FontMetrics,
+    rect: Rect,
+    ui_scale: f64,
+) -> Rect {
+    let tabs_h = chrome_strip_h(EDITOR_TABS_H, ui_scale, metrics).min(rect.h.max(0.0));
+    if tabs_h <= 0.0 || rect.w <= 0.0 {
+        return rect;
+    }
+
+    let cursor_line = ep.cursors[0].pos.line;
+    let segments = breadcrumb_segments_at_line(editor_panes, active_buffer_id, cursor_line);
+    let remaining_after_tabs = (rect.h - tabs_h).max(0.0);
+    let crumb_h = if segments.is_empty() {
+        0.0
+    } else {
+        chrome_strip_h(EDITOR_BREADCRUMB_H, ui_scale, metrics).min(remaining_after_tabs)
+    };
+    let status_h_base = chrome_strip_h(EDITOR_STATUS_H, ui_scale, metrics);
+    let status_h = status_h_base.min((rect.h - tabs_h - crumb_h).max(0.0));
+
+    Rect {
+        x: rect.x,
+        y: rect.y + tabs_h + crumb_h,
+        w: rect.w,
+        h: (rect.h - tabs_h - crumb_h - status_h).max(0.0),
+    }
+}
+
+/// Rebuild editor body hit regions from pane layout without drawing.
+///
+/// Used by the GPU render path and by hit-test fallbacks. This intentionally
+/// ignores terminal leaves and editor panes whose active buffer is missing.
+#[allow(clippy::too_many_arguments)]
+pub fn collect_editor_body_hits(
+    tree: &PaneTree,
+    registry: &PaneRegistry,
+    editor_panes: &EditorPaneRegistry,
+    inner: Rect,
+    div_px: f64,
+    metrics: FontMetrics,
+    ui_scale: f64,
+    hits_out: &mut Vec<EditorBodyHit>,
+) {
+    hits_out.clear();
+    for entry in tree.layout(inner, div_px) {
+        let Some(pane) = registry.get(entry.id) else {
+            continue;
+        };
+        let Some(ep) = pane.editor_id.and_then(|_| editor_panes.get_pane(entry.id)) else {
+            continue;
+        };
+        if editor_panes.get_buffer(ep.buffer_id).is_none() {
+            continue;
+        }
+
+        let body = editor_body_rect(
+            editor_panes,
+            ep.buffer_id,
+            ep,
+            metrics,
+            entry.rect,
+            ui_scale,
+        );
+        hits_out.push(EditorBodyHit {
+            pane_id: entry.id,
+            buffer_id: ep.buffer_id,
+            rect: crate::raster::PixelRect {
+                x: body.x,
+                y: body.y,
+                w: body.w,
+                h: body.h,
+            },
+        });
+    }
+}
+
+/// Draw native editor panes into the CPU chrome raster without drawing terminal
+/// viewport cells.
+///
+/// GPU mode uses Metal for terminal cells but still composites `raster` for
+/// chrome. Native editor panes are not terminal cell batches, so they must be
+/// painted here before the GPU layer is presented.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_workspace_editors(
+    raster: &mut Raster,
+    painter: &mut dyn crate::raster::GlyphPainter,
+    tree: &PaneTree,
+    registry: &PaneRegistry,
+    editor_panes: &EditorPaneRegistry,
+    inner: Rect,
+    div_px: f64,
+    metrics: FontMetrics,
+    theme: &Theme,
+    focused_id: PaneId,
+    blink_phase: f32,
+    diag_by_pane: &HashMap<PaneId, Vec<RenderDiagnostic>>,
+    hovered_editor_tab: Option<(PaneId, BufferId)>,
+    editor_tab_hits: &mut Vec<EditorTabHit>,
+    editor_body_hits: &mut Vec<EditorBodyHit>,
+    ui_scale: f64,
+    scroll_indicator_alpha: f32,
+) {
+    editor_tab_hits.clear();
+    editor_body_hits.clear();
+    let entries = tree.layout(inner, div_px);
+    let editor_pane_count = entries
+        .iter()
+        .filter(|entry| {
+            registry
+                .get(entry.id)
+                .is_some_and(|pane| pane.terminal.is_none() && pane.editor_id.is_some())
+        })
+        .count();
+
+    for entry in &entries {
+        let Some(pane) = registry.get(entry.id) else {
+            continue;
+        };
+        if pane.terminal.is_some() {
+            continue;
+        }
+
+        let Some(ep) = pane.editor_id.and_then(|_| editor_panes.get_pane(entry.id)) else {
+            draw_empty_pane(raster, painter, metrics, theme, entry.rect);
+            continue;
+        };
+        let Some(buf) = editor_panes.get_buffer(ep.buffer_id) else {
+            draw_empty_pane(raster, painter, metrics, theme, entry.rect);
+            continue;
+        };
+
+        let empty = Vec::new();
+        let diags = diag_by_pane
+            .get(&entry.id)
+            .map(Vec::as_slice)
+            .unwrap_or(&empty);
+        let hovered_bid =
+            hovered_editor_tab.and_then(|(pid, bid)| (pid == entry.id).then_some(bid));
+        let editor_rect = draw_editor_chrome(
+            raster,
+            painter,
+            editor_panes,
+            ep.buffer_id,
+            &ep.open_buffers,
+            metrics,
+            theme,
+            entry.rect,
+            entry.id == focused_id,
+            hovered_bid,
+            entry.id,
+            editor_tab_hits,
+            ep,
+            editor_pane_count > 1,
+            ui_scale,
+        );
+        editor_body_hits.push(EditorBodyHit {
+            pane_id: entry.id,
+            buffer_id: ep.buffer_id,
+            rect: crate::raster::PixelRect {
+                x: editor_rect.x,
+                y: editor_rect.y,
+                w: editor_rect.w,
+                h: editor_rect.h,
+            },
+        });
+        draw_editor_into(
+            raster,
+            painter,
+            ep,
+            buf,
+            metrics,
+            theme,
+            editor_rect,
+            diags,
+            buf.git_gutter.as_ref(),
+            entry.id == focused_id,
+            if entry.id == focused_id {
+                blink_phase
+            } else {
+                0.0
+            },
+            if entry.id == focused_id {
+                scroll_indicator_alpha
+            } else {
+                0.0
+            },
+        );
+    }
+
+    raster.origin_x = 0.0;
+    raster.origin_y = 0.0;
 }
 
 /// Empty pane (no PTY, no editor). Solid `panel` base with a centered welcome
@@ -459,12 +700,7 @@ fn draw_terminal_drawer_chrome(
             let dots = "\u{22EF}"; // ⋯ MIDLINE HORIZONTAL ELLIPSIS (3 dots)
             let dot_w = metrics.cell_w * dots.chars().count() as f64;
             let dot_x = center_x - dot_w * 0.5;
-            let dot_y = rect.y - metrics.cell_h * 0.5 + 0.5;
-            let mut gx = dot_x;
-            for ch in dots.chars() {
-                raster.glyph_at(painter, metrics, gx, dot_y, ch as u32, theme.text_subtle);
-                gx += metrics.cell_w;
-            }
+            raster.fill_pixel_rect_alpha(dot_x, rect.y, dot_w, 1.0, theme.text_subtle, 0.35);
         }
         raster.fill_pixel_rect_alpha(
             rect.x,
@@ -476,7 +712,7 @@ fn draw_terminal_drawer_chrome(
         );
 
         const PAD_X: f64 = 8.0;
-        let text_y = rect.y + ((header_h - metrics.cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+        let text_y = rect.y + ((header_h - metrics.cell_h) * 0.5).max(0.0);
         let label = "TERMINAL";
         let mut gx = rect.x + PAD_X;
         let max_x = rect.x + rect.w - PAD_X;
@@ -505,13 +741,12 @@ fn draw_drawer_collapsed_strip(
     if rect.w <= 0.0 || rect.h <= 0.0 {
         return;
     }
-    const STRIP_H_BASE: f64 = 24.0;
-    let strip_h = STRIP_H_BASE.min(rect.h);
+    let strip_h = chrome_strip_h(24.0, 1.0, metrics).min(rect.h);
     raster.fill_pixel_rect(rect.x, rect.y, rect.w, strip_h, theme.charcoal);
     raster.fill_pixel_rect_alpha(rect.x, rect.y, rect.w, 1.0, theme.hairline, 0.92);
 
     const PAD_X: f64 = 8.0;
-    let text_y = rect.y + ((strip_h - metrics.cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+    let text_y = rect.y + ((strip_h - metrics.cell_h) * 0.5).max(0.0);
     let label = "\u{25b8} TERMINAL"; // ▸ TERMINAL
     let mut gx = rect.x + PAD_X;
     let max_x = rect.x + rect.w - PAD_X;
@@ -525,11 +760,11 @@ fn draw_drawer_collapsed_strip(
 }
 
 /// Height of the per-pane editor buffer tab strip in device pixels (base, before ui_scale).
-const EDITOR_TABS_H: f64 = 34.0;
+const EDITOR_TABS_H: f64 = 30.0;
 /// Height of the slim breadcrumb row below the tab strip (item 18, base before ui_scale).
-const EDITOR_BREADCRUMB_H: f64 = 22.0;
+const EDITOR_BREADCRUMB_H: f64 = 20.0;
 /// Height of the per-pane editor status bar at the bottom of the editor pane (item 8, base).
-const EDITOR_STATUS_H: f64 = 26.0;
+const EDITOR_STATUS_H: f64 = 22.0;
 /// Minimum per-tab width base (scaled by ui_scale at runtime).
 const TAB_MIN_W: f64 = 80.0;
 /// Maximum per-tab width base (scaled by ui_scale at runtime).
@@ -543,7 +778,7 @@ const TAB_CLOSE_W: f64 = 20.0;
 ///
 /// Paints `open_buffers` as horizontal tabs with `active_buffer_id` highlighted.
 /// Also paints a status bar at the bottom of the pane (item 8, scaled by `ui_scale`).
-/// Paints a 2px left-edge focus ring when focused and `multi_pane` is true (item 14).
+/// Pane-level focus is carried by active tabs and dividers, not a full-height rail.
 /// Writes hit regions (tab-body + close button per tab) into `hits_out`.
 ///
 /// `ui_scale` is the logical zoom multiplier; pass `1.0` for no zoom.
@@ -557,15 +792,15 @@ fn draw_editor_chrome(
     metrics: FontMetrics,
     theme: &Theme,
     rect: Rect,
-    pane_focused: bool,
+    _pane_focused: bool,
     hovered_buffer: Option<BufferId>,
     pane_id: PaneId,
     hits_out: &mut Vec<EditorTabHit>,
     ep: &EditorPane,
-    multi_pane: bool,
+    _multi_pane: bool,
     ui_scale: f64,
 ) -> Rect {
-    let tabs_h = EDITOR_TABS_H.min(rect.h.max(0.0));
+    let tabs_h = chrome_strip_h(EDITOR_TABS_H, ui_scale, metrics).min(rect.h.max(0.0));
     if tabs_h <= 0.0 || rect.w <= 0.0 {
         return rect;
     }
@@ -588,13 +823,6 @@ fn draw_editor_chrome(
         theme.hairline,
         0.92,
     );
-
-    // Left-edge focus ring (item 14): 2px accent_primary bar along the full pane
-    // height. Only painted when there are multiple editor panes so a solo pane
-    // does not show a distracting ring.
-    if pane_focused && multi_pane {
-        raster.fill_pixel_rect(rect.x, rect.y, 2.0, rect.h, theme.accent_primary);
-    }
 
     // Compute per-tab widths. Each tab is sized to its label but clamped.
     // Label = basename of tracked path, or "scratch".
@@ -664,7 +892,7 @@ fn draw_editor_chrome(
     let crumb_h = if segments.is_empty() {
         0.0
     } else {
-        EDITOR_BREADCRUMB_H.min(remaining_after_tabs)
+        chrome_strip_h(EDITOR_BREADCRUMB_H, ui_scale, metrics).min(remaining_after_tabs)
     };
     if crumb_h > 0.0 {
         let crumb_rect = Rect {
@@ -677,7 +905,7 @@ fn draw_editor_chrome(
     }
 
     // ── Status bar (item 8 / A5) ──────────────────────────────────────────────
-    let status_h_base = EDITOR_STATUS_H * ui_scale;
+    let status_h_base = chrome_strip_h(EDITOR_STATUS_H, ui_scale, metrics);
     let status_h = status_h_base.min((rect.h - tabs_h - crumb_h).max(0.0));
     if status_h > 0.0 {
         let buf = editor_panes.get_buffer(active_buffer_id);
@@ -799,7 +1027,7 @@ fn draw_breadcrumb_row(
 
     // Build a single string: "seg0 › seg1 › …"
     let text = segments.join(" \u{203a} ");
-    let text_y = rect.y + ((rect.h - metrics.cell_h) * 0.5 + metrics.descent * 0.5).max(0.0);
+    let text_y = rect.y + ((rect.h - metrics.cell_h) * 0.5).max(0.0);
     let mut gx = rect.x + 8.0; // 8px left pad
     let max_x = rect.x + rect.w - 4.0;
 
@@ -958,7 +1186,6 @@ fn draw_buffer_tab(
 
 /// Draw the editor status bar at the bottom of a pane (item 8).
 ///
-/// Left side: `main · no LSP · N diagnostics` (branch + LSP placeholder).
 /// Right side: `Ln X, Col Y · UTF-8 · <Language>`.
 /// Background: `theme.panel`, top edge: 1px `theme.hairline`.
 fn draw_editor_status_bar(
@@ -981,19 +1208,7 @@ fn draw_editor_status_bar(
 
     let cw = metrics.cell_w;
     let ch = metrics.cell_h;
-    let text_y = rect.y + ((rect.h - ch) * 0.5 + metrics.descent * 0.5).max(0.0);
-
-    // Left text: branch + LSP placeholder.
-    let left_label = "main \u{00b7} no LSP".to_string(); // · separators
-    let mut gx = rect.x + PAD_X;
-    let max_x = rect.x + rect.w - PAD_X;
-    for c in left_label.chars() {
-        if gx + cw > max_x {
-            break;
-        }
-        raster.glyph_at(painter, metrics, gx, text_y, c as u32, theme.text_subtle);
-        gx += cw;
-    }
+    let text_y = rect.y + ((rect.h - ch) * 0.5).max(0.0);
 
     // Right text: `Ln X, Col Y · UTF-8 · Language · Spaces:N` (or Tabs:N).
     let cursor_pos = ep.primary_cursor().pos;
@@ -1145,6 +1360,7 @@ mod tests {
     #[derive(Default)]
     struct StubPainter {
         pub calls: Vec<(u32, [u8; 3])>,
+        pub positions: Vec<(u32, PixelRect)>,
     }
 
     impl GlyphPainter for StubPainter {
@@ -1152,7 +1368,7 @@ mod tests {
         fn draw_glyph(
             &mut self,
             glyph_id: u32,
-            _dest: PixelRect,
+            dest: PixelRect,
             fg: [u8; 3],
             _metrics: FontMetrics,
             _pixels: &mut [u8],
@@ -1160,6 +1376,7 @@ mod tests {
             _bh: usize,
         ) {
             self.calls.push((glyph_id, fg));
+            self.positions.push((glyph_id, dest));
         }
     }
 
@@ -1222,6 +1439,7 @@ mod tests {
         let tree = PaneTree::init_single(first_id);
         let ep_reg = EditorPaneRegistry::default();
         let mut tab_hits = Vec::new();
+        let mut body_hits = Vec::new();
         draw_workspace(
             &mut r,
             &mut GridPainters {
@@ -1246,6 +1464,7 @@ mod tests {
             &HashMap::new(),
             None,
             &mut tab_hits,
+            &mut body_hits,
             1.0,
             0.0,
         );
@@ -1303,6 +1522,7 @@ mod tests {
 
         let ep_reg = EditorPaneRegistry::default();
         let mut tab_hits = Vec::new();
+        let mut body_hits = Vec::new();
         draw_workspace(
             &mut r,
             &mut GridPainters {
@@ -1327,6 +1547,7 @@ mod tests {
             &HashMap::new(),
             None,
             &mut tab_hits,
+            &mut body_hits,
             1.0,
             0.0,
         );
@@ -1429,6 +1650,92 @@ mod tests {
         assert_ne!(top_px_no_hdr, [0, 0, 0], "fallback hairline must paint");
     }
 
+    #[test]
+    fn terminal_drawer_header_keeps_label_and_content_from_colliding() {
+        let m = FontMetrics {
+            cell_w: 12.0,
+            cell_h: 32.0,
+            descent: 7.0,
+        };
+        let mut reg = PaneRegistry::default();
+        let top_id = reg.create_and_register(40, 8, 0);
+        let drawer_id = reg.create_and_register(40, 4, 0);
+        if let Some(pane) = reg.get_mut(drawer_id) {
+            if let Some(term) = pane.terminal.as_mut() {
+                term.feed(b"zzzz");
+            }
+        }
+
+        let mut tree = PaneTree::init_single(top_id);
+        tree.split(SplitDir::Vertical, drawer_id).unwrap();
+        if let anvil_workspace::layout::PaneNode::Split(split) = tree.root.as_mut() {
+            split.ratios = vec![0.72, 0.28];
+        }
+
+        let mut r = Raster::new(640, 420);
+        let mut painter = StubPainter::default();
+        let mut bold_p = StubPainter::default();
+        let mut italic_p = StubPainter::default();
+        let mut bold_italic_p = StubPainter::default();
+        let ep_reg = EditorPaneRegistry::default();
+        let theme = anvil_theme::MINERAL_DARK;
+        let inner = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 640.0,
+            h: 420.0,
+        };
+        let mut tab_hits = Vec::new();
+        let mut body_hits = Vec::new();
+
+        draw_workspace(
+            &mut r,
+            &mut GridPainters {
+                regular: &mut painter,
+                bold: &mut bold_p,
+                italic: &mut italic_p,
+                bold_italic: &mut bold_italic_p,
+            },
+            &tree,
+            &mut reg,
+            &ep_reg,
+            inner,
+            DIVIDER_PX,
+            m,
+            &theme,
+            None,
+            drawer_id,
+            0.0,
+            CursorConfig::default(),
+            None,
+            0.0,
+            &HashMap::new(),
+            None,
+            &mut tab_hits,
+            &mut body_hits,
+            1.0,
+            0.0,
+        );
+
+        let label = painter
+            .positions
+            .iter()
+            .find_map(|(cp, rect)| (*cp == 'T' as u32).then_some(*rect))
+            .expect("drawer label must render");
+        let content = painter
+            .positions
+            .iter()
+            .find_map(|(cp, rect)| (*cp == 'z' as u32).then_some(*rect))
+            .expect("drawer terminal content must render");
+
+        assert!(
+            content.y >= label.y + label.h + 4.0,
+            "drawer content y={} must start below label bottom={} with breathing room",
+            content.y,
+            label.y + label.h
+        );
+    }
+
     /// Native editor panes reserve a chrome strip before drawing buffer content.
     #[test]
     fn editor_chrome_paints_header_and_offsets_content_rect() {
@@ -1512,6 +1819,7 @@ mod tests {
         r.clear(theme.background);
         let ep_reg = EditorPaneRegistry::default();
         let mut tab_hits = Vec::new();
+        let mut body_hits = Vec::new();
         draw_workspace(
             &mut r,
             &mut GridPainters {
@@ -1536,6 +1844,7 @@ mod tests {
             &HashMap::new(),
             None,
             &mut tab_hits,
+            &mut body_hits,
             1.0,
             0.0,
         );
@@ -1628,6 +1937,7 @@ mod tests {
         r.clear(theme.background);
         let ep_reg = EditorPaneRegistry::default();
         let mut tab_hits = Vec::new();
+        let mut body_hits = Vec::new();
         draw_workspace(
             &mut r,
             &mut GridPainters {
@@ -1652,11 +1962,179 @@ mod tests {
             &HashMap::new(),
             None,
             &mut tab_hits,
+            &mut body_hits,
             1.0,
             0.0,
         );
         // "hello world" starts with 'h' — expect glyph calls.
         assert!(!painter.calls.is_empty());
+    }
+
+    #[test]
+    fn draw_workspace_records_editor_body_hit_after_chrome() {
+        use anvil_workspace::editor_pane::EditorPaneRegistry;
+
+        let m = metrics();
+        let mut r = Raster::new(400, 300);
+        let mut painter = StubPainter::default();
+        let mut bold_p = StubPainter::default();
+        let mut italic_p = StubPainter::default();
+        let mut bold_italic_p = StubPainter::default();
+        let mut ep_reg = EditorPaneRegistry::default();
+        let bid = ep_reg.new_pane(1);
+        let mut reg = PaneRegistry::default();
+        let id = reg.create_and_register_editor(bid);
+        let tree = PaneTree::init_single(id);
+        let inner = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 400.0,
+            h: 300.0,
+        };
+        let theme = anvil_theme::MINERAL_DARK;
+        r.clear(theme.background);
+        let mut tab_hits = Vec::new();
+        let mut body_hits = Vec::new();
+
+        draw_workspace(
+            &mut r,
+            &mut GridPainters {
+                regular: &mut painter,
+                bold: &mut bold_p,
+                italic: &mut italic_p,
+                bold_italic: &mut bold_italic_p,
+            },
+            &tree,
+            &mut reg,
+            &ep_reg,
+            inner,
+            DIVIDER_PX,
+            m,
+            &theme,
+            None,
+            id,
+            0.0,
+            CursorConfig::default(),
+            None,
+            0.0,
+            &HashMap::new(),
+            None,
+            &mut tab_hits,
+            &mut body_hits,
+            1.0,
+            0.0,
+        );
+
+        assert_eq!(body_hits.len(), 1);
+        let hit = &body_hits[0];
+        assert_eq!(hit.pane_id, id);
+        assert_eq!(hit.buffer_id, bid);
+        assert!(hit.rect.y > inner.y, "body must start below tab chrome");
+        assert!(
+            hit.rect.y + hit.rect.h < inner.y + inner.h,
+            "body must stop above status chrome"
+        );
+        assert_eq!(hit.rect.x, inner.x);
+        assert_eq!(hit.rect.w, inner.w);
+    }
+
+    #[test]
+    fn collect_editor_body_hits_records_editor_body_without_painting() {
+        use anvil_workspace::editor_pane::EditorPaneRegistry;
+
+        let m = metrics();
+        let mut ep_reg = EditorPaneRegistry::default();
+        let bid = ep_reg.new_pane(1);
+        let mut reg = PaneRegistry::default();
+        let id = reg.create_and_register_editor(bid);
+        let tree = PaneTree::init_single(id);
+        let inner = Rect {
+            x: 12.0,
+            y: 8.0,
+            w: 420.0,
+            h: 260.0,
+        };
+        let mut body_hits = Vec::new();
+
+        collect_editor_body_hits(
+            &tree,
+            &reg,
+            &ep_reg,
+            inner,
+            DIVIDER_PX,
+            m,
+            1.0,
+            &mut body_hits,
+        );
+
+        assert_eq!(body_hits.len(), 1);
+        let hit = &body_hits[0];
+        assert_eq!(hit.pane_id, id);
+        assert_eq!(hit.buffer_id, bid);
+        assert_eq!(hit.rect.x, inner.x);
+        assert_eq!(hit.rect.w, inner.w);
+        assert!(hit.rect.y > inner.y, "body must start below tabs");
+        assert!(
+            hit.rect.y + hit.rect.h < inner.y + inner.h,
+            "body must stop above editor status bar"
+        );
+    }
+
+    #[test]
+    fn draw_workspace_editors_paints_native_editor_in_gpu_chrome_layer() {
+        use anvil_editor::Position;
+        use anvil_workspace::editor_pane::EditorPaneRegistry;
+
+        let m = metrics();
+        let mut r = Raster::new(420, 260);
+        let mut painter = StubPainter::default();
+        let mut ep_reg = EditorPaneRegistry::default();
+        let bid = ep_reg.new_pane(1);
+        ep_reg
+            .get_buffer_mut(bid)
+            .unwrap()
+            .insert_str(Position { line: 0, col: 0 }, "hello gpu editor");
+        let mut reg = PaneRegistry::default();
+        let id = reg.create_and_register_editor(bid);
+        let tree = PaneTree::init_single(id);
+        let inner = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 420.0,
+            h: 260.0,
+        };
+        let theme = anvil_theme::MINERAL_DARK;
+        let mut tab_hits = Vec::new();
+        let mut body_hits = Vec::new();
+
+        draw_workspace_editors(
+            &mut r,
+            &mut painter,
+            &tree,
+            &reg,
+            &ep_reg,
+            inner,
+            DIVIDER_PX,
+            m,
+            &theme,
+            id,
+            0.0,
+            &HashMap::new(),
+            None,
+            &mut tab_hits,
+            &mut body_hits,
+            1.0,
+            0.0,
+        );
+
+        assert_eq!(body_hits.len(), 1);
+        assert!(
+            painter
+                .calls
+                .iter()
+                .any(|(glyph_id, _)| *glyph_id == 'h' as u32),
+            "GPU chrome editor pass must paint buffer text"
+        );
     }
 
     /// Item 8: editor chrome reserves a status-bar strip at the bottom; body rect
@@ -1710,12 +2188,76 @@ mod tests {
             total_reserved >= EDITOR_STATUS_H,
             "must reserve at least EDITOR_STATUS_H px; reserved={total_reserved}"
         );
+        let painted_text: String = painter
+            .calls
+            .iter()
+            .filter_map(|(cp, _)| char::from_u32(*cp))
+            .collect();
+        assert!(
+            !painted_text.contains("no LSP"),
+            "status bar should not paint unfinished filler text; got: {painted_text:?}"
+        );
     }
 
-    /// Item 14: a 2px accent_primary left rail is painted only for the focused pane
-    /// in a multi-pane layout.
     #[test]
-    fn editor_chrome_focus_ring_only_when_multi_pane() {
+    fn editor_chrome_rows_fit_large_chrome_font_metrics() {
+        use anvil_workspace::editor_pane::EditorPaneRegistry;
+        let m = FontMetrics {
+            cell_w: 12.0,
+            cell_h: 32.0,
+            descent: 7.0,
+        };
+        let mut r = Raster::new(460, 220);
+        let mut painter = StubPainter::default();
+        let theme = anvil_theme::MINERAL_DARK;
+        r.clear(theme.background);
+        let rect = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 460.0,
+            h: 220.0,
+        };
+        let mut ep_reg = EditorPaneRegistry::default();
+        let bid = ep_reg.new_pane(1);
+        let ep = ep_reg.get_pane(1).unwrap();
+        let open_bufs = vec![bid];
+        let mut hits = Vec::new();
+
+        let content = draw_editor_chrome(
+            &mut r,
+            &mut painter,
+            &ep_reg,
+            bid,
+            &open_bufs,
+            m,
+            &theme,
+            rect,
+            false,
+            None,
+            1,
+            &mut hits,
+            ep,
+            false,
+            1.0,
+        );
+
+        let top_reserved = content.y - rect.y;
+        let bottom_reserved = rect.y + rect.h - (content.y + content.h);
+        assert!(
+            top_reserved >= m.cell_h + 8.0,
+            "tab chrome reserved {top_reserved}px but chrome glyph height is {}px",
+            m.cell_h
+        );
+        assert!(
+            bottom_reserved >= m.cell_h + 8.0,
+            "status chrome reserved {bottom_reserved}px but chrome glyph height is {}px",
+            m.cell_h
+        );
+    }
+
+    /// Option A keeps pane chrome neutral; the active tab owns the accent.
+    #[test]
+    fn editor_chrome_does_not_paint_pane_level_focus_rail() {
         use anvil_workspace::editor_pane::EditorPaneRegistry;
         let m = metrics();
         let theme = anvil_theme::MINERAL_DARK;
@@ -1726,7 +2268,7 @@ mod tests {
             h: 200.0,
         };
 
-        // Single pane: no focus ring on left edge.
+        // Single pane: no focus rail on left edge.
         {
             let mut r = Raster::new(400, 300);
             r.clear(theme.background);
@@ -1753,16 +2295,15 @@ mod tests {
                 false, // multi_pane=false
                 1.0,   // ui_scale
             );
-            // Left edge (x=10) must NOT be accent_primary in single-pane mode.
             let mid_y = (rect.y + rect.h * 0.5) as usize;
             let px = pixel_at(&r, rect.x as usize, mid_y);
             assert_ne!(
                 px, theme.accent_primary,
-                "single-pane left edge must not show focus ring; got {px:?}"
+                "single-pane left edge must not show pane focus rail; got {px:?}"
             );
         }
 
-        // Multi pane + focused: left edge IS accent_primary.
+        // Multi pane + focused: still no pane-level accent rail.
         {
             let mut r = Raster::new(400, 300);
             r.clear(theme.background);
@@ -1791,9 +2332,9 @@ mod tests {
             );
             let mid_y = (rect.y + rect.h * 0.5) as usize;
             let px = pixel_at(&r, rect.x as usize, mid_y);
-            assert_eq!(
+            assert_ne!(
                 px, theme.accent_primary,
-                "multi-pane focused left edge must show focus ring; got {px:?}"
+                "multi-pane focused left edge must not show pane focus rail; got {px:?}"
             );
         }
     }

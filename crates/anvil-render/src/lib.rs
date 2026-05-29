@@ -29,11 +29,13 @@ pub use draw::{
     CursorConfig, CursorParams, CursorStyle, FoldedBlocks, GridPainters, cursor_opacity, draw_cell,
     draw_cursor, draw_viewport, draw_viewport_gpu, resolve_color, rule_row,
 };
-pub use editor::{RenderDiagnostic, RenderSeverity, draw_editor_into};
+pub use editor::{
+    RenderDiagnostic, RenderSeverity, draw_editor_into, editor_gutter_cols, editor_gutter_width,
+};
 pub use left_dock::{
     DirEntry as LeftDockEntry, DirSnapshot as LeftDockSnapshot, ExplorerHit, LeftDockHit,
     LeftDockHitKind, LeftDockHits, OutlineKind, OutlineRow, draw_left_dock,
     draw_left_dock_with_scroll,
 };
 pub use raster::{FontMetrics, GlyphPainter, PixelRect, Raster, UiTextPainter, UiWeight};
-pub use workspace::EditorTabHit;
+pub use workspace::{EditorBodyHit, EditorTabHit};

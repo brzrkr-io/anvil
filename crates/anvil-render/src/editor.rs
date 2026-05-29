@@ -6,14 +6,14 @@
 //!
 //! Features:
 //! - Solid background fill.
-//! - Left gutter with right-aligned line numbers in `theme.text_muted`.
+//! - Quiet left gutter with right-aligned line numbers over the editor surface.
 //! - Buffer rows rendered grapheme-by-grapheme in `theme.foreground`.
 //! - Long-line clip: lines wider than the content area get a `▸` marker at
 //!   the right edge in `theme.text_muted`.
 //! - Cursor: 2 px-wide vertical bar at `(cursor.pos.line, cursor.pos.col)` in
 //!   `theme.accent`.
-//! - Selection wash: `fill_pixel_rect_alpha` over selected cells at α=0.18
-//!   using `theme.accent_ember`.
+//! - Selection wash: `fill_pixel_rect_alpha` over selected cells using
+//!   `theme.accent_primary`.
 //! - Per-grapheme syntax color via `SyntaxLayer::highlights_for_range` (NE8). No soft-wrap (long lines clip).
 //! - Scroll is integer-row-aligned: `floor(editor_pane.scroll_pos)`.
 //! - Diagnostics gutter stripe (4 px wide, colored by severity) + row tint α=0.06 (NE10).
@@ -25,12 +25,91 @@ use anvil_editor::{
     Buffer, FoldRange, GitChange, GitGutter, IndentStyle, SyntaxRole, derive_fold_ranges,
     derive_outline_rows,
 };
-use anvil_theme::Theme;
+use anvil_theme::{Theme, mix};
 use anvil_workspace::{
-    bracket_match_for, editor_pane::EditorPane, layout::Rect, selection::Selection,
+    bracket_match_for,
+    editor_pane::EditorPane,
+    layout::Rect,
+    selection::{Point, Selection, SelectionMode},
 };
 
 use crate::raster::{FontMetrics, GlyphPainter, Raster};
+
+/// Number of terminal-cell columns reserved for the editor gutter.
+///
+/// The gutter contract is intentionally compact: enough columns for the widest
+/// visible line number, one breathing column before content, and two extra
+/// columns only when a git-change bar is present.
+pub fn editor_gutter_cols(line_count: usize, has_git_gutter: bool) -> usize {
+    let digit_cols = line_count.max(1).to_string().len();
+    let git_gutter_cols = if has_git_gutter { 2 } else { 0 };
+    digit_cols + 1 + git_gutter_cols
+}
+
+/// Pixel width reserved for the editor gutter.
+pub fn editor_gutter_width(line_count: usize, has_git_gutter: bool, cell_w: f64) -> f64 {
+    editor_gutter_cols(line_count, has_git_gutter) as f64 * cell_w
+}
+
+fn editor_gutter_line_number_color(theme: &Theme, active: bool) -> [u8; 3] {
+    if active {
+        mix(theme.text_muted, theme.accent_primary, 0.35)
+    } else {
+        mix(theme.surface, theme.text_muted, 0.36)
+    }
+}
+
+fn visible_logical_end_line(
+    line_count: usize,
+    scroll_line: usize,
+    visible_rows: usize,
+    hidden_lines: &std::collections::HashSet<usize>,
+) -> usize {
+    if visible_rows == 0 || scroll_line >= line_count {
+        return scroll_line.min(line_count);
+    }
+
+    let mut vrow = 0usize;
+    let mut line_idx = scroll_line;
+    while vrow < visible_rows && line_idx < line_count {
+        if !hidden_lines.contains(&line_idx) {
+            vrow += 1;
+        }
+        line_idx += 1;
+    }
+    line_idx
+}
+
+fn markdown_visible_fence_lines(
+    buffer: &Buffer,
+    scroll_line: usize,
+    visible_rows: usize,
+) -> std::collections::HashSet<usize> {
+    let line_count = buffer.line_count();
+    let end_line = scroll_line.saturating_add(visible_rows).min(line_count);
+    let mut set = std::collections::HashSet::new();
+    let mut in_fence = false;
+
+    for li in 0..end_line {
+        let line_s: String = buffer.line(li).chars().collect();
+        let trimmed = line_s.trim_start();
+        if trimmed.starts_with("```") {
+            in_fence = !in_fence;
+        } else if in_fence && li >= scroll_line {
+            set.insert(li);
+        }
+    }
+
+    set
+}
+
+fn syntax_role_at(spans: &[(std::ops::Range<usize>, SyntaxRole)], byte: usize) -> SyntaxRole {
+    spans
+        .iter()
+        .find(|(range, _)| range.contains(&byte))
+        .map(|(_, role)| *role)
+        .unwrap_or(SyntaxRole::Plain)
+}
 
 // ── Render-side diagnostic type (NE10) ───────────────────────────────────────
 
@@ -102,17 +181,14 @@ pub fn draw_editor_into(
 
     // ── Geometry ──────────────────────────────────────────────────────────────
     let line_count = buffer.line_count().max(1);
-    // Gutter width: digits needed for highest line number + 2 padding cols.
+    // Gutter width: digits needed for highest line number + 1 padding col.
     // When a git gutter is present, expand by 2 more columns (glyph + space).
     let digit_cols = line_count.to_string().len();
-    let git_gutter_cols = if gutter.is_some() { 2 } else { 0 };
-    let gutter_cols = digit_cols + 2 + git_gutter_cols;
-    let gutter_w = gutter_cols as f64 * cw;
+    let gutter_cols = editor_gutter_cols(line_count, gutter.is_some());
+    let gutter_w = editor_gutter_width(line_count, gutter.is_some(), cw);
 
     // ── Background: native editor surface, not terminal canvas ────────────────
     raster.fill_pixel_rect(rect.x, rect.y, rect.w, rect.h, theme.surface);
-    raster.fill_pixel_rect(rect.x, rect.y, gutter_w, rect.h, theme.graphite);
-    raster.fill_pixel_rect(rect.x + gutter_w - 1.0, rect.y, 1.0, rect.h, theme.hairline);
 
     // Available content columns to the right of the gutter.
     // P3: reserve 3px at the bottom for the horizontal scrollbar when it may be visible.
@@ -149,36 +225,35 @@ pub fn draw_editor_into(
         fold_ranges.iter().map(|fr| (fr.start, fr.end)).collect();
 
     // ── Selection bounds (pre-compute for wash pass) ──────────────────────────
-    let sel = &editor_pane.selection;
+    let cursor_selection = {
+        let cursor = editor_pane.primary_cursor();
+        (cursor.anchor != cursor.pos).then_some(Selection {
+            active: true,
+            anchor: Point {
+                row: cursor.anchor.line,
+                col: cursor.anchor.col,
+            },
+            head: Point {
+                row: cursor.pos.line,
+                col: cursor.pos.col,
+            },
+            mode: SelectionMode::Linear,
+        })
+    };
+    let sel = if editor_pane.selection.active {
+        &editor_pane.selection
+    } else {
+        cursor_selection.as_ref().unwrap_or(&editor_pane.selection)
+    };
 
-    // ── Full buffer text — computed once per frame for syntax queries. ────────
-    // TODO: replace with streaming / viewport-only allocation when buffers
-    // exceed typical sizes.
-    let full_text = buffer.to_text();
+    // Full-buffer text is only materialized for features that require byte
+    // slices from tree-sitter. Plain scratch buffers and unknown languages avoid
+    // this allocation entirely while scrolling.
+    let mut full_text: Option<String> = None;
 
     // H1: compute the leading whitespace of the logical line for continuation indent.
     // #1-word-break is implemented: wrap_starts pre-computed per-line; see below.
     // The `soft_wrap` flag is read per-line in the row loop below.
-
-    if buffer.byte_len() == 0 {
-        let hint_x = rect.x + gutter_w + 2.0 * cw;
-        let hint_y = rect.y + 2.0 * ch;
-        let hints = [
-            ("Anvil", theme.text_muted),
-            ("Cmd+P open file", theme.text_subtle),
-            ("Cmd+E new editor", theme.text_subtle),
-        ];
-        for (row, (hint, color)) in hints.iter().enumerate() {
-            let y = hint_y + row as f64 * ch;
-            for (i, ch_g) in hint.chars().enumerate() {
-                let gx = hint_x + i as f64 * cw;
-                if gx + cw > rect.x + rect.w {
-                    break;
-                }
-                raster.glyph_at(painter, metrics, gx, y, ch_g as u32, *color);
-            }
-        }
-    }
 
     // ── Cursor-line highlight (item 11) ──────────────────────────────────────
     // Paint a subtle row tint under the cursor line before drawing any glyphs
@@ -192,8 +267,6 @@ pub fn draw_editor_into(
             if cursor_vrow < visible_rows {
                 let tint_y = rect.y + cursor_vrow as f64 * ch;
                 raster.fill_pixel_rect_alpha(rect.x, tint_y, rect.w, ch, theme.surface, 0.55);
-                // Active row gutter pill: 2px accent_primary strip at left gutter edge.
-                raster.fill_pixel_rect(rect.x, tint_y, 2.0, ch, theme.accent_primary);
             }
         }
     }
@@ -207,7 +280,8 @@ pub fn draw_editor_into(
     //
     // Only shown when scroll_line > 0 and the syntax tree has symbols.
     if scroll_line > 0 && !buffer.diff_view {
-        let symbols = derive_outline_rows(buffer.syntax(), &full_text);
+        let text = full_text.get_or_insert_with(|| buffer.to_text());
+        let symbols = derive_outline_rows(buffer.syntax(), text.as_str());
         // Find the deepest symbol whose start line is < scroll_line.
         let sticky = symbols.iter().rev().find(|s| s.line < scroll_line);
         if let Some(sym) = sticky {
@@ -234,7 +308,7 @@ pub fn draw_editor_into(
                 OutlineSymbolKind::Other => "",
             };
             let label = format!("{}{}", prefix, sym.name);
-            let text_x = rect.x + gutter_w + cw;
+            let text_x = rect.x + gutter_w;
             let text_y = strip_y;
             let max_x = rect.x + rect.w - cw;
             let mut gx = text_x;
@@ -253,32 +327,12 @@ pub fn draw_editor_into(
     // interior rows (between the opening ``` and closing ``` delimiters).
     // Paint surface_alt backdrop rects before the glyph loop so text renders
     // over the tint. The set is computed per frame; buffers are typically small.
-    let fence_interior_lines: std::collections::HashSet<usize> = {
+    let fence_interior_lines: std::collections::HashSet<usize> =
         if buffer.language_id() == Some("markdown") {
-            let mut set = std::collections::HashSet::new();
-            let mut in_fence = false;
-            let mut fence_start = 0usize;
-            for li in 0..line_count {
-                let line_s: String = buffer.line(li).chars().collect();
-                let trimmed = line_s.trim_start();
-                if trimmed.starts_with("```") {
-                    if in_fence {
-                        // Closing delimiter — interior was fence_start..li (exclusive).
-                        in_fence = false;
-                    } else {
-                        in_fence = true;
-                        fence_start = li + 1;
-                    }
-                } else if in_fence {
-                    let _ = fence_start;
-                    set.insert(li);
-                }
-            }
-            set
+            markdown_visible_fence_lines(buffer, scroll_line, visible_rows)
         } else {
             std::collections::HashSet::new()
-        }
-    };
+        };
     // Paint fence backdrop rects for visible fence-interior rows.
     for &li in &fence_interior_lines {
         if li < scroll_line {
@@ -308,6 +362,26 @@ pub fn draw_editor_into(
     let mut line_idx = scroll_line;
     // P3: track maximum visible line length (in grapheme cols) for h-scrollbar.
     let mut max_line_len = 0usize;
+    let viewport_end_line =
+        visible_logical_end_line(line_count, scroll_line, visible_rows, &hidden_lines);
+    let viewport_highlights = if buffer.syntax().has_highlights() && scroll_line < line_count {
+        let start_byte = buffer.line_to_byte(scroll_line);
+        let end_byte = if viewport_end_line >= line_count {
+            buffer.byte_len()
+        } else {
+            buffer.line_to_byte(viewport_end_line)
+        };
+        if start_byte < end_byte {
+            let text = full_text.get_or_insert_with(|| buffer.to_text());
+            buffer
+                .syntax()
+                .highlights_for_range(start_byte, end_byte, text.as_str())
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
     while vrow < visible_rows && line_idx < line_count {
         // Skip lines hidden by an active fold (they don't consume a visual row).
         if hidden_lines.contains(&line_idx) {
@@ -366,25 +440,17 @@ pub fn draw_editor_into(
 
         // ── Selection wash for this row ───────────────────────────────────────
         if sel.active {
-            paint_selection_row(raster, sel, line_idx, vrow, rect, gutter_w, cw, ch, theme);
+            paint_selection_row(
+                raster, sel, line_idx, vrow, rect, gutter_w, cw, ch, col_offset, theme,
+            );
         }
 
         // ── Gutter: right-aligned line number ─────────────────────────────────
-        // Item 2: active line at full text_muted; non-active rows dimmed to ~0.5
-        // alpha by blending text_muted toward graphite.
+        // Active line stays readable; inactive rows recede into the editor
+        // surface so the gutter does not read as a separate bar.
         let line_num_str = (line_idx + 1).to_string();
         let cursor_line = editor_pane.primary_cursor().pos.line;
-        let gutter_color = if line_idx == cursor_line {
-            theme.text_muted
-        } else {
-            let m = theme.text_muted;
-            let g = theme.graphite;
-            [
-                ((m[0] as u16 + g[0] as u16) / 2) as u8,
-                ((m[1] as u16 + g[1] as u16) / 2) as u8,
-                ((m[2] as u16 + g[2] as u16) / 2) as u8,
-            ]
-        };
+        let gutter_color = editor_gutter_line_number_color(theme, line_idx == cursor_line);
         // Right-align within the digit columns (+1 left-pad space).
         let pad_cols = digit_cols.saturating_sub(line_num_str.len()) + 1;
         for (i, ch_g) in line_num_str.chars().enumerate() {
@@ -455,13 +521,6 @@ pub fn draw_editor_into(
         let line_str: String = line_slice.chars().collect();
         // Strip trailing newline before grapheme iteration.
         let line_content = line_str.trim_end_matches('\n').trim_end_matches('\r');
-        let line_byte_end = line_byte_start + line_content.len();
-
-        // Per-line syntax highlights (empty when no language is set).
-        let highlights =
-            buffer
-                .syntax()
-                .highlights_for_range(line_byte_start, line_byte_end, &full_text);
 
         let graphemes: Vec<&str> = line_content.graphemes(true).collect();
 
@@ -563,17 +622,12 @@ pub fn draw_editor_into(
                 }
                 cur_row_y = rect.y + vrow as f64 * ch;
                 vcol_in_row = continuation_indent;
-                // Paint the gutter background for the continuation row (no line number).
-                raster.fill_pixel_rect(rect.x, cur_row_y, gutter_w, ch, theme.graphite);
-                raster.fill_pixel_rect(rect.x + gutter_w - 1.0, cur_row_y, 1.0, ch, theme.hairline);
+                // Continuation rows inherit the same surface as the main editor
+                // so wrapped text does not create a gutter band.
             }
             // Resolve syntax color for the byte position of this grapheme.
             let b = grapheme_byte;
-            let role = highlights
-                .iter()
-                .find(|(r, _)| r.contains(&b))
-                .map(|(_, role)| *role)
-                .unwrap_or(SyntaxRole::Plain);
+            let role = syntax_role_at(&viewport_highlights, b);
             let fg = match role {
                 SyntaxRole::Plain => theme.foreground,
                 SyntaxRole::Keyword => theme.syntax.keyword,
@@ -781,29 +835,8 @@ pub fn draw_editor_into(
         line_idx += 1;
     }
 
-    // ── Tildes below buffer end (N2) ─────────────────────────────────────────
-    // Vim-style `~` markers for empty rows past the buffer's last line.
-    // Suppressed for scratch buffers (empty + no tracked path) so the
-    // welcome card has clean negative space — Option A aesthetic.
-    let is_scratch = line_count <= 1 && buffer.byte_len() == 0;
-    if !is_scratch {
-        let tilde_color = {
-            let s = theme.text_subtle;
-            let bg = theme.surface;
-            [
-                (s[0] as f32 * 0.4 + bg[0] as f32 * 0.6) as u8,
-                (s[1] as f32 * 0.4 + bg[1] as f32 * 0.6) as u8,
-                (s[2] as f32 * 0.4 + bg[2] as f32 * 0.6) as u8,
-            ]
-        };
-        let mut tilde_vrow = vrow;
-        while tilde_vrow < visible_rows {
-            let ty = rect.y + tilde_vrow as f64 * ch;
-            let tx = rect.x + gutter_w;
-            raster.glyph_at(painter, metrics, tx, ty, '~' as u32, tilde_color);
-            tilde_vrow += 1;
-        }
-    }
+    // Rows below EOF intentionally stay empty. The surface itself provides the
+    // boundary; Vim-style `~` filler made the native editor read as terminal UI.
 
     // ── Cursor bars — primary + secondary (NE13) ─────────────────────────────
     // Item 12 (Tier-B): use blink_phase → cursor_opacity so the editor cursor
@@ -818,11 +851,11 @@ pub fn draw_editor_into(
             if vrow < visible_rows && vcol < content_cols {
                 let cx = rect.x + gutter_w + vcol as f64 * cw;
                 let cy = rect.y + vrow as f64 * ch;
-                // Primary cursor: full accent color; secondary: accent_ember.
+                // Primary cursor: full accent color; secondary: bright accent.
                 let color = if i == 0 {
                     theme.accent
                 } else {
-                    theme.accent_ember
+                    theme.accent_bright
                 };
                 // 2 px-wide vertical bar, full cell height; alpha-driven by blink.
                 raster.fill_pixel_rect_alpha(cx, cy, 2.0, ch, color, cursor_alpha);
@@ -1025,7 +1058,7 @@ fn worst_severity(a: RenderSeverity, b: RenderSeverity) -> RenderSeverity {
 /// Paint the selection wash for a single buffer row.
 ///
 /// Computes the column range that is selected on `line_idx` and fills those
-/// cell rects with `theme.accent_ember` at α=0.18.  First and last selected
+/// cell rects with `theme.accent_primary`. First and last selected
 /// rows use column-precise bounds; middle rows fill the full content width.
 #[allow(clippy::too_many_arguments)]
 fn paint_selection_row(
@@ -1037,6 +1070,7 @@ fn paint_selection_row(
     gutter_w: f64,
     cw: f64,
     ch: f64,
+    col_offset: usize,
     theme: &Theme,
 ) {
     use anvil_workspace::selection::SelectionMode;
@@ -1077,12 +1111,21 @@ fn paint_selection_row(
         return;
     }
 
+    if col_end != usize::MAX && col_end <= col_offset {
+        return;
+    }
+
     let content_w = rect.w - gutter_w;
-    let x_start = rect.x + gutter_w + col_start as f64 * cw;
+    let visible_start = col_start.saturating_sub(col_offset);
+    let x_start = rect.x + gutter_w + visible_start as f64 * cw;
+    if x_start >= rect.x + rect.w {
+        return;
+    }
     let x_end = if col_end == usize::MAX {
         rect.x + rect.w
     } else {
-        (rect.x + gutter_w + col_end as f64 * cw).min(rect.x + rect.w)
+        let visible_end = col_end.saturating_sub(col_offset);
+        (rect.x + gutter_w + visible_end as f64 * cw).min(rect.x + rect.w)
     };
 
     let wash_w = (x_end - x_start).max(0.0).min(content_w);
@@ -1171,10 +1214,10 @@ mod tests {
 
     // ── draw_editor_empty_buffer_paints_only_gutter_line_one ─────────────────
 
-    /// An empty buffer renders the gutter line-number "1" and a muted editor
-    /// placeholder in the content area (not terminal foreground text).
+    /// An empty buffer renders the gutter line-number "1" without demo
+    /// placeholder text in the content area.
     #[test]
-    fn draw_editor_empty_buffer_paints_gutter_and_placeholder() {
+    fn draw_editor_empty_buffer_paints_gutter_without_placeholder() {
         let buf = Buffer::new();
         let pane = make_pane(1);
         let mut raster = Raster::new(400, 200);
@@ -1196,11 +1239,13 @@ mod tests {
             0.0,
         );
 
-        // The gutter should paint the digit '1' in text_muted.
+        // The gutter should paint the active digit '1' with the quiet active
+        // line-number color.
+        let active_gutter_color = editor_gutter_line_number_color(&theme, true);
         let gutter_calls: Vec<_> = painter
             .calls
             .iter()
-            .filter(|(_, fg)| *fg == theme.text_muted)
+            .filter(|(_, fg)| *fg == active_gutter_color)
             .collect();
         assert!(
             gutter_calls.iter().any(|(cp, _)| *cp == '1' as u32),
@@ -1214,11 +1259,11 @@ mod tests {
             .map(|(cp, _)| *cp)
             .collect();
         assert!(
-            hint_calls.contains(&('C' as u32)),
-            "empty buffer must paint command placeholder hints in subtle text, got: {hint_calls:?}"
+            hint_calls.is_empty(),
+            "empty buffer should stay visually quiet; got subtle placeholder glyphs: {hint_calls:?}"
         );
 
-        // No foreground calls (empty line has no graphemes and placeholder is subtle).
+        // No foreground calls (empty line has no graphemes).
         let fg_calls: Vec<_> = painter
             .calls
             .iter()
@@ -1228,6 +1273,100 @@ mod tests {
             fg_calls.is_empty(),
             "empty buffer must produce no foreground glyph calls, got: {fg_calls:?}"
         );
+    }
+
+    #[test]
+    fn editor_gutter_blends_into_surface_without_hard_bar() {
+        use crate::raster::pixel_at;
+
+        let buf = Buffer::from_text("one\ntwo\nthree\n");
+        let pane = make_pane(1);
+        let m = metrics();
+        let mut raster = Raster::new(400, 200);
+        raster.clear(MINERAL_DARK.background);
+        let mut painter = CapturePainter::default();
+        let theme = MINERAL_DARK;
+
+        draw_editor_into(
+            &mut raster,
+            &mut painter,
+            &pane,
+            &buf,
+            m,
+            &theme,
+            rect(),
+            &[],
+            None,
+            false,
+            0.0,
+            0.0,
+        );
+
+        let digit_cols = buf.line_count().max(1).to_string().len();
+        let gutter_w = (digit_cols + 1) as f64 * m.cell_w;
+        let row_mid_y = (m.cell_h * 1.5) as usize;
+
+        assert_eq!(
+            pixel_at(&raster, 2, row_mid_y),
+            theme.surface,
+            "line-number gutter must share the editor surface instead of painting a graphite slab"
+        );
+        assert_eq!(
+            pixel_at(&raster, gutter_w as usize - 1, row_mid_y),
+            theme.surface,
+            "line-number gutter must not have a hard vertical divider at the content edge"
+        );
+    }
+
+    #[test]
+    fn editor_gutter_geometry_uses_single_compact_padding_column() {
+        assert_eq!(editor_gutter_cols(0, false), 2);
+        assert_eq!(editor_gutter_cols(1, false), 2);
+        assert_eq!(editor_gutter_cols(9, false), 2);
+        assert_eq!(editor_gutter_cols(10, false), 3);
+        assert_eq!(editor_gutter_cols(10, true), 5);
+        assert_eq!(editor_gutter_width(10, true, 8.0), 40.0);
+    }
+
+    #[test]
+    fn editor_gutter_line_numbers_are_quiet_until_active() {
+        let theme = MINERAL_DARK;
+        let inactive = editor_gutter_line_number_color(&theme, false);
+        let active = editor_gutter_line_number_color(&theme, true);
+
+        assert_eq!(
+            inactive,
+            anvil_theme::mix(theme.surface, theme.text_muted, 0.36)
+        );
+        assert_eq!(
+            active,
+            anvil_theme::mix(theme.text_muted, theme.accent_primary, 0.35)
+        );
+        assert_ne!(inactive, active);
+    }
+
+    #[test]
+    fn visible_logical_end_line_skips_hidden_fold_rows() {
+        let hidden = std::collections::HashSet::from([2usize, 3, 4]);
+
+        assert_eq!(visible_logical_end_line(10, 0, 4, &hidden), 7);
+    }
+
+    #[test]
+    fn markdown_visible_fence_lines_only_returns_visible_interiors() {
+        let buffer = Buffer::from_text("before\n```\na\nb\n```\nafter\n");
+
+        let lines = markdown_visible_fence_lines(&buffer, 2, 2);
+
+        assert_eq!(lines, std::collections::HashSet::from([2usize, 3]));
+    }
+
+    #[test]
+    fn syntax_role_at_returns_plain_outside_spans() {
+        let spans = vec![(10usize..14usize, SyntaxRole::Keyword)];
+
+        assert_eq!(syntax_role_at(&spans, 12), SyntaxRole::Keyword);
+        assert_eq!(syntax_role_at(&spans, 14), SyntaxRole::Plain);
     }
 
     // ── draw_editor_hello_world_paints_each_grapheme ──────────────────────────
@@ -1293,7 +1432,7 @@ mod tests {
         let r = rect();
         let line_count = buf.line_count().max(1);
         let digit_cols = line_count.to_string().len();
-        let gutter_cols = digit_cols + 2;
+        let gutter_cols = digit_cols + 1;
         let gutter_w = gutter_cols as f64 * m.cell_w;
 
         let mut raster = Raster::new(400, 200);
@@ -1332,7 +1471,7 @@ mod tests {
     /// overflow marker in `theme.text_muted`.
     #[test]
     fn draw_editor_long_line_paints_overflow_marker() {
-        // content area = 400px, gutter ~3 cols * 8px = 24px, leaving 47 cols.
+        // content area = 400px, gutter ~2 cols * 8px = 16px, leaving 48 cols.
         // Build a line with 60 characters — well past 47.
         let long_line: String = "a".repeat(60) + "\n";
         let buf = Buffer::from_text(&long_line);
@@ -1788,8 +1927,8 @@ mod tests {
         let pane = make_pane(1); // cursor at line 0, col 0
 
         // cursor pixel x: gutter_w + 0 * cw.
-        // gutter_w = (1 digit + 2 padding) * cw = 3 * 8 = 24.
-        let gutter_w = 3 * m.cell_w as usize;
+        // gutter_w = (1 digit + 1 padding) * cw = 2 * 8 = 16.
+        let gutter_w = 2 * m.cell_w as usize;
         let cursor_x = gutter_w;
         let cursor_y = 0;
 
@@ -1869,7 +2008,7 @@ mod tests {
         let m = metrics();
         let r = rect();
         let theme = MINERAL_DARK;
-        let gutter_w = 3 * m.cell_w as usize; // 1-digit + 2 pad
+        let gutter_w = 2 * m.cell_w as usize; // 1-digit + 1 pad
 
         let mut raster = Raster::new(400, 200);
         raster.clear(theme.background);
@@ -1924,7 +2063,7 @@ mod tests {
         let m = metrics();
         let r = rect();
         let theme = MINERAL_DARK;
-        let gutter_w = 3 * m.cell_w as usize;
+        let gutter_w = 2 * m.cell_w as usize;
 
         let mut raster = Raster::new(400, 200);
         raster.clear(theme.background);
@@ -1959,6 +2098,95 @@ mod tests {
         assert_ne!(
             ember, primary,
             "test pre-condition: accent_ember and accent_primary must differ in MINERAL_DARK"
+        );
+    }
+
+    #[test]
+    fn selection_wash_tracks_horizontal_scroll_offset() {
+        use crate::raster::pixel_at;
+        use anvil_workspace::selection::{Point, Selection, SelectionMode};
+
+        let buf = Buffer::from_text("abcdefghijklmnopqrstuvwxyz\n");
+        let mut pane = make_pane(1);
+        pane.scroll_x = 10.0;
+        pane.selection = Selection {
+            active: true,
+            anchor: Point { row: 0, col: 12 },
+            head: Point { row: 0, col: 16 },
+            mode: SelectionMode::Linear,
+        };
+
+        let m = metrics();
+        let r = rect();
+        let theme = MINERAL_DARK;
+        let gutter_w = 2 * m.cell_w as usize;
+
+        let mut raster = Raster::new(400, 200);
+        raster.clear(theme.background);
+        let mut painter = CapturePainter::default();
+        draw_editor_into(
+            &mut raster,
+            &mut painter,
+            &pane,
+            &buf,
+            m,
+            &theme,
+            r,
+            &[],
+            None,
+            false,
+            0.0,
+            0.0,
+        );
+
+        let before_span = pixel_at(&raster, gutter_w + m.cell_w as usize + 2, 2);
+        let in_span = pixel_at(&raster, gutter_w + 2 * m.cell_w as usize + 2, 2);
+        assert_eq!(
+            before_span, theme.surface,
+            "selection must not tint visible columns before the scrolled span"
+        );
+        assert_ne!(
+            in_span, theme.surface,
+            "selection should start at visible col 2 after scroll_x=10"
+        );
+    }
+
+    #[test]
+    fn cursor_anchor_selection_paints_wash() {
+        use crate::raster::pixel_at;
+
+        let buf = Buffer::from_text("abcdef\n");
+        let mut pane = make_pane(1);
+        pane.cursors[0].anchor = Position { line: 0, col: 1 };
+        pane.cursors[0].pos = Position { line: 0, col: 4 };
+
+        let m = metrics();
+        let r = rect();
+        let theme = MINERAL_DARK;
+        let gutter_w = 2 * m.cell_w as usize;
+
+        let mut raster = Raster::new(400, 200);
+        raster.clear(theme.background);
+        let mut painter = CapturePainter::default();
+        draw_editor_into(
+            &mut raster,
+            &mut painter,
+            &pane,
+            &buf,
+            m,
+            &theme,
+            r,
+            &[],
+            None,
+            false,
+            0.0,
+            0.0,
+        );
+
+        let px = pixel_at(&raster, gutter_w + 2 * m.cell_w as usize + 2, 2);
+        assert_ne!(
+            px, theme.surface,
+            "cursor anchor selection should tint selected cells"
         );
     }
 
@@ -2089,7 +2317,7 @@ mod tests {
         let r = rect();
 
         // Compute gutter_w for this buffer (2 lines → digit_cols = 1).
-        let gutter_w = (1 + 2) as f64 * m.cell_w; // digit_cols=1, +2 padding
+        let gutter_w = (1 + 1) as f64 * m.cell_w; // digit_cols=1, +1 padding
 
         let mut raster = Raster::new(400, 200);
         raster.clear([0, 0, 0]);
@@ -2134,14 +2362,14 @@ mod tests {
         );
     }
 
-    // ── N2: tildes below buffer end ────────────────────────────────────────────
+    // ── N2: empty rows below buffer end ────────────────────────────────────────
 
-    /// When the buffer has fewer lines than the viewport, `~` glyphs must be
-    /// painted in the empty visual rows below the last line.
+    /// When the buffer has fewer lines than the viewport, empty visual rows stay
+    /// quiet instead of painting Vim-style `~` markers.
     #[test]
-    fn tildes_painted_below_buffer_end() {
+    fn no_tildes_painted_below_buffer_end() {
         // Single-line buffer in a 200px-tall pane → 12 visible rows at 16px
-        // cell_h; all but the first should show `~`.
+        // cell_h; rows below EOF should be blank editor surface.
         let buf = Buffer::from_text("hello\n");
         let pane = make_pane(1);
         let mut raster = Raster::new(400, 200);
@@ -2162,11 +2390,11 @@ mod tests {
             0.0,
         );
 
-        // There must be at least one `~` (codepoint 0x7E) glyph in the output.
+        // Modern editor surfaces should not fill negative space with `~`.
         let has_tilde = painter.calls.iter().any(|(cp, _)| *cp == '~' as u32);
         assert!(
-            has_tilde,
-            "tilde glyphs must be painted below the last buffer line"
+            !has_tilde,
+            "tilde glyphs make the empty editor body look dated and noisy"
         );
     }
 

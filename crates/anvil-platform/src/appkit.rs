@@ -36,7 +36,7 @@ use objc2_app_kit::{
     NSAppearance, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
     NSBackingStoreType, NSCursor, NSDragOperation, NSDraggingInfo, NSEvent, NSEventModifierFlags,
     NSImage, NSMenu, NSMenuItem, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow,
-    NSWindowDelegate, NSWindowStyleMask, NSWindowTitleVisibility,
+    NSWindowButton, NSWindowDelegate, NSWindowStyleMask, NSWindowTitleVisibility,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSData, NSNotification, NSPoint, NSRect, NSSize, NSString, NSTimer,
@@ -292,9 +292,9 @@ pub(crate) fn decode_key_event(event: &NSEvent) -> Option<KeyEvent> {
         return Some(KeyEvent { key: named, mods });
     }
 
-    // For control/option combos use charactersIgnoringModifiers so the raw
-    // letter is delivered, not the control character.
-    let nsstr = if mods.control || mods.option {
+    // For command/control/option combos use charactersIgnoringModifiers so
+    // shortcut dispatch sees the base key instead of a menu/control glyph.
+    let nsstr = if mods.command || mods.control || mods.option {
         event.charactersIgnoringModifiers()
     } else {
         event.characters()
@@ -884,6 +884,53 @@ pub struct AppKitApp {
 
 /// Bytes of the bundled application icon (PNG).
 const APP_ICON_PNG: &[u8] = include_bytes!("../../../assets/app-icon.png");
+const ANVIL_TOP_CHROME_PT: f64 = 32.0;
+const TRAFFIC_LIGHT_LEFT_PT: f64 = 16.0;
+const TRAFFIC_LIGHT_TOP_MARGIN_PT: f64 = 5.0;
+
+fn traffic_light_y(button_h: f64) -> f64 {
+    (ANVIL_TOP_CHROME_PT - button_h - TRAFFIC_LIGHT_TOP_MARGIN_PT)
+        .max(0.0)
+        .round()
+}
+
+fn align_traffic_lights(window: &NSWindow) {
+    let Some(close) = window.standardWindowButton(NSWindowButton::CloseButton) else {
+        return;
+    };
+    let Some(miniaturize) = window.standardWindowButton(NSWindowButton::MiniaturizeButton) else {
+        return;
+    };
+    let Some(zoom) = window.standardWindowButton(NSWindowButton::ZoomButton) else {
+        return;
+    };
+    // SAFETY: The standard window buttons are AppKit-owned NSView instances
+    // attached to the title-bar hierarchy. We only read their superview chain
+    // on the main thread and bail out if AppKit does not provide it.
+    let title_bar_container_view = unsafe { close.superview().and_then(|view| view.superview()) };
+    let Some(title_bar_container_view) = title_bar_container_view else {
+        return;
+    };
+
+    let mut title_bar_rect = NSView::frame(&title_bar_container_view);
+    title_bar_rect.size.height = ANVIL_TOP_CHROME_PT;
+    title_bar_rect.origin.y = (window.frame().size.height - ANVIL_TOP_CHROME_PT).max(0.0);
+    title_bar_container_view.setFrame(title_bar_rect);
+
+    let close_rect = NSView::frame(&close);
+    let miniaturize_rect = NSView::frame(&miniaturize);
+    let button_gap = (miniaturize_rect.origin.x - close_rect.origin.x)
+        .abs()
+        .max(close_rect.size.width + 6.0);
+    let button_y = traffic_light_y(close_rect.size.height);
+
+    for (idx, button) in [close, miniaturize, zoom].into_iter().enumerate() {
+        let mut rect = NSView::frame(&button);
+        rect.origin.x = TRAFFIC_LIGHT_LEFT_PT + idx as f64 * button_gap;
+        rect.origin.y = button_y;
+        button.setFrameOrigin(rect.origin);
+    }
+}
 
 impl AppKitApp {
     /// Bootstrap the AppKit shell.
@@ -953,11 +1000,8 @@ impl AppKitApp {
             let _: () = unsafe { msg_send![&*window, setAppearance: &*dark] };
         }
 
-        // Paint the title-bar/traffic-light region with the chrome graphite
-        // tint (EMBER_DARK #16110d = 22,17,13) so it blends with our chrome
-        // strip rather than showing the system title-bar material.
-        // NOTE: this is hardcoded to EMBER_DARK; dynamic theme-switch support
-        // is a follow-up task.
+        // Paint the title-bar/traffic-light region with the Mineral graphite
+        // tint so it blends with the compact chrome strip.
         // SAFETY: NSColor class and colorWithRed:green:blue:alpha: are safe
         // to call on the main thread.
         unsafe {
@@ -965,13 +1009,14 @@ impl AppKitApp {
             let cls = objc2::runtime::AnyClass::get(cls_name).expect("NSColor must be available");
             let bg_color: Retained<NSObject> = msg_send![
                 cls,
-                colorWithRed: (22.0_f64 / 255.0),
-                green: (17.0_f64 / 255.0),
-                blue: (13.0_f64 / 255.0),
+                colorWithRed: (9.0_f64 / 255.0),
+                green: (10.0_f64 / 255.0),
+                blue: (11.0_f64 / 255.0),
                 alpha: 1.0_f64
             ];
             let _: () = msg_send![&*window, setBackgroundColor: &*bg_color];
         }
+        align_traffic_lights(&window);
 
         // ── Handler Rc → raw pointer for ivars ───────────────────────────────
         // We box each clone of the Rc and take a raw pointer.  The boxes are
@@ -1158,13 +1203,14 @@ impl AppKitApp {
             let cls = objc2::runtime::AnyClass::get(cls_name).expect("NSColor must exist");
             let bg: Retained<NSObject> = msg_send![
                 cls,
-                colorWithRed: (22.0_f64 / 255.0),
-                green: (17.0_f64 / 255.0),
-                blue: (13.0_f64 / 255.0),
+                colorWithRed: (9.0_f64 / 255.0),
+                green: (10.0_f64 / 255.0),
+                blue: (11.0_f64 / 255.0),
                 alpha: 1.0_f64
             ];
             let _: () = msg_send![&*window, setBackgroundColor: &*bg];
         }
+        align_traffic_lights(&window);
 
         // AnvilView
         let view_box: Box<Rc<RefCell<dyn AppHandler>>> = Box::new(Rc::clone(&handler));
@@ -1271,6 +1317,12 @@ fn set_application_icon(app: &NSApplication, _mtm: MainThreadMarker) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn traffic_light_y_keeps_standard_buttons_inside_thin_chrome() {
+        assert_eq!(traffic_light_y(14.0), 13.0);
+        assert_eq!(traffic_light_y(30.0), 0.0);
+    }
 
     // ── modifier decoding ────────────────────────────────────────────────────
 

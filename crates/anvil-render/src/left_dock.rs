@@ -85,7 +85,7 @@ pub struct DirEntry {
 }
 
 /// Snapshot of a directory's top-level entries.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DirSnapshot {
     /// The directory that was listed. Empty means "no cwd yet".
     pub root: String,
@@ -133,20 +133,18 @@ pub struct OutlineRow {
 // ── Row geometry ──────────────────────────────────────────────────────────────
 
 /// Base height of a section header row in points (multiplied by `ui_scale`).
-const HEADER_H_BASE: f64 = 30.0;
+const HEADER_H_BASE: f64 = 22.0;
 
 /// Base height of a content row in points (multiplied by `ui_scale`).
-/// Bumped from 28 → 34 so Explorer reads as IDE chrome rather than a
-/// terminal grid; gives glyph rows real breathing room.
-const ROW_H_BASE: f64 = 34.0;
+const ROW_H_BASE: f64 = 22.0;
 
 /// Base horizontal padding inside the dock (multiplied by `ui_scale`).
-const PAD_X_BASE: f64 = 18.0;
+const PAD_X_BASE: f64 = 8.0;
 
 /// Base indent per depth level in device pixels (multiplied by `ui_scale`).
-const INDENT_PX_BASE: f64 = 18.0;
+const INDENT_PX_BASE: f64 = 12.0;
 
-/// Derive row geometry from the current UI scale.
+/// Derive row geometry from the current UI scale and actual chrome glyph size.
 struct RowMetrics {
     header_h: f64,
     row_h: f64,
@@ -155,12 +153,15 @@ struct RowMetrics {
 }
 
 impl RowMetrics {
-    fn from_scale(ui_scale: f64) -> Self {
+    fn from_scale(ui_scale: f64, metrics: FontMetrics) -> Self {
+        let scale = ui_scale.max(0.5);
+        let vertical_pad = (6.0 * scale).round().max(6.0);
+        let min_text_h = (metrics.cell_h + vertical_pad).ceil();
         Self {
-            header_h: (HEADER_H_BASE * ui_scale).round(),
-            row_h: (ROW_H_BASE * ui_scale).round(),
-            pad_x: (PAD_X_BASE * ui_scale).round(),
-            indent_px: (INDENT_PX_BASE * ui_scale).round(),
+            header_h: (HEADER_H_BASE * scale).round().max(min_text_h),
+            row_h: (ROW_H_BASE * scale).round().max(min_text_h),
+            pad_x: (PAD_X_BASE * scale).round(),
+            indent_px: (INDENT_PX_BASE * scale).round(),
         }
     }
 }
@@ -265,24 +266,24 @@ pub fn draw_left_dock_with_scroll(
     }
 
     // ── Background ────────────────────────────────────────────────────────────
-    // Direction A sidebar: a quiet Mineral panel, not a red/brown block. The
-    // Ember wash is only a trace so Explorer reads as a tool rail beside the
-    // editor instead of competing with the file contents.
-    raster.fill_pixel_rect(rect.x, rect.y, rect.w, rect.h, theme.charcoal);
-    raster.fill_pixel_rect_alpha(rect.x, rect.y, rect.w, rect.h, theme.accent_ember, 0.02);
+    // Glass-style sidebar: a dark base plus translucent lifted surface, with a
+    // single edge hairline. Accent is reserved for selected rows.
+    raster.fill_pixel_rect(rect.x, rect.y, rect.w, rect.h, theme.graphite);
+    raster.fill_pixel_rect_alpha(rect.x, rect.y, rect.w, rect.h, theme.surface, 0.46);
+    raster.fill_pixel_rect_alpha(rect.x, rect.y, rect.w, 1.0, theme.foreground, 0.035);
 
-    // Right-edge 1px warm hairline.
+    // Right-edge 1px hairline.
     raster.fill_pixel_rect_alpha(
         rect.x + rect.w - 1.0,
         rect.y,
         1.0,
         rect.h,
-        theme.accent_bright,
-        0.28,
+        theme.hairline,
+        0.72,
     );
 
     // ── Section height: #9 collapse shrinks a section to header-only ─────────
-    let rm = RowMetrics::from_scale(ui_scale);
+    let rm = RowMetrics::from_scale(ui_scale, metrics);
     // When both are collapsed the remaining space goes to explorer.
     let explorer_h = if explorer_collapsed {
         rm.header_h
@@ -307,12 +308,13 @@ pub fn draw_left_dock_with_scroll(
     };
 
     // Divider between sections.
-    raster.fill_pixel_rect(
+    raster.fill_pixel_rect_alpha(
         rect.x,
         rect.y + explorer_h,
         rect.w - 1.0,
         1.0,
         theme.hairline,
+        0.70,
     );
 
     let ui_metrics = metrics;
@@ -355,6 +357,16 @@ pub fn draw_left_dock_with_scroll(
 /// Width of the icons-only dock in logical points (before ui_scale).
 const ICONS_ONLY_W_BASE: f64 = 48.0;
 
+const ICON_FOLDER: char = '\u{f07b}'; // nf-fa-folder
+const ICON_FOLDER_OPEN: char = '\u{f07c}'; // nf-fa-folder_open
+const ICON_FILE: char = '\u{f15b}'; // nf-fa-file
+const ICON_FILE_TEXT: char = '\u{f0f6}'; // nf-fa-file_text_o
+const ICON_FILE_CODE: char = '\u{f1c9}'; // nf-fa-file_code_o
+const ICON_FILE_IMAGE: char = '\u{f1c5}'; // nf-fa-file_image_o
+const ICON_FILE_ARCHIVE: char = '\u{f1c6}'; // nf-fa-file_archive_o
+const ICON_COG: char = '\u{f013}'; // nf-fa-cog
+const ICON_LOCK: char = '\u{f023}'; // nf-fa-lock
+
 /// Draw a slim icon-only sidebar: one file/dir icon per row, no labels.
 /// Hit map is populated so click-to-open/toggle still works.
 #[allow(clippy::too_many_arguments)]
@@ -373,20 +385,20 @@ fn draw_left_dock_icons_only(
     hits: &mut LeftDockHits,
     ui_scale: f64,
 ) -> LeftDockHits {
-    let rm = RowMetrics::from_scale(ui_scale);
+    let rm = RowMetrics::from_scale(ui_scale, metrics);
     let slim_w = (ICONS_ONLY_W_BASE * ui_scale).min(rect.w);
 
     // Background.
-    raster.fill_pixel_rect(rect.x, rect.y, slim_w, rect.h, theme.charcoal);
-    raster.fill_pixel_rect_alpha(rect.x, rect.y, slim_w, rect.h, theme.accent_ember, 0.02);
+    raster.fill_pixel_rect(rect.x, rect.y, slim_w, rect.h, theme.graphite);
+    raster.fill_pixel_rect_alpha(rect.x, rect.y, slim_w, rect.h, theme.surface, 0.46);
     // Right-edge hairline.
     raster.fill_pixel_rect_alpha(
         rect.x + slim_w - 1.0,
         rect.y,
         1.0,
         rect.h,
-        theme.accent_bright,
-        0.28,
+        theme.hairline,
+        0.72,
     );
 
     let snap = match snapshot {
@@ -440,43 +452,50 @@ fn draw_left_dock_icons_only(
         let row_x = rect.x + 2.0;
         let row_w = (slim_w - 4.0).max(0.0);
         if selected {
-            raster.fill_pixel_rect(
+            raster.fill_pixel_rect_alpha(
                 row_x,
-                row_top + 2.0,
+                row_top + 1.0,
                 row_w,
-                (row_h - 4.0).max(0.0),
-                theme.panel,
+                (row_h - 2.0).max(0.0),
+                theme.accent_primary,
+                0.13,
             );
             raster.fill_pixel_rect(
                 row_x,
-                row_top + 2.0,
+                row_top + 1.0,
                 2.0,
-                (row_h - 4.0).max(0.0),
+                (row_h - 2.0).max(0.0),
                 theme.accent_primary,
             );
         } else if hovered {
-            // Hover: surface_alt fill (one step above sidebar background).
-            raster.fill_pixel_rect(
+            raster.fill_pixel_rect_alpha(
                 row_x,
-                row_top + 2.0,
+                row_top + 1.0,
                 row_w,
-                (row_h - 4.0).max(0.0),
+                (row_h - 2.0).max(0.0),
                 theme.surface_alt,
+                0.32,
             );
         }
 
-        // P4: icons-only mode — dir chevron accent_primary, files keep per-ext color.
         let (icon_ch, icon_color) = if *is_dir {
             let ch = if expanded_dirs.contains(path) {
-                '▾'
+                ICON_FOLDER_OPEN
             } else {
-                '▸'
+                ICON_FOLDER
             };
-            (ch, theme.accent_primary)
+            (ch, theme.text_muted)
         } else {
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            let (ch, col) = file_icon_colored(name, theme);
-            (ch, if selected { theme.accent_primary } else { col })
+            let (ch, _col) = file_icon_colored(name, theme);
+            (
+                ch,
+                if selected {
+                    theme.accent_primary
+                } else {
+                    theme.text_subtle
+                },
+            )
         };
 
         raster.glyph_at(
@@ -563,14 +582,14 @@ fn draw_explorer_section(
         chevron as u32,
         theme.text_subtle,
     );
-    // Item 1: "EXPLORER" header at Semibold weight, text_muted color.
+    // Option A: section labels are quiet chrome, not alerts.
     raster.ui_line(
         ui_painter,
         header_label,
         rect.x + pad_x + cell_w * 1.5,
         header_baseline,
         EXPLORER_HEADER_PT,
-        UiWeight::Semibold,
+        UiWeight::Regular,
         theme.text_muted,
     );
     if !header_meta.is_empty() {
@@ -591,7 +610,14 @@ fn draw_explorer_section(
         );
     }
     // Hairline under header.
-    raster.fill_pixel_rect(rect.x, rect.y + header_h - 1.0, rect.w, 1.0, theme.hairline);
+    raster.fill_pixel_rect_alpha(
+        rect.x,
+        rect.y + header_h - 1.0,
+        rect.w,
+        1.0,
+        theme.hairline,
+        0.70,
+    );
 
     // #9: section is collapsed — only the header row is shown.
     if collapsed {
@@ -777,29 +803,29 @@ fn draw_explorer_section(
                 let row_x = rect.x + 6.0;
                 let row_w = (rect.w - 12.0).max(0.0);
                 if selected {
-                    // Solid panel fill + 2px accent_primary left rail.
-                    raster.fill_pixel_rect(
+                    raster.fill_pixel_rect_alpha(
                         row_x,
-                        row_top + 2.0,
+                        row_top + 1.0,
                         row_w,
-                        (row_h - 4.0).max(0.0),
-                        theme.panel,
+                        (row_h - 2.0).max(0.0),
+                        theme.accent_primary,
+                        0.13,
                     );
                     raster.fill_pixel_rect(
                         row_x,
-                        row_top + 2.0,
+                        row_top + 1.0,
                         2.0,
-                        (row_h - 4.0).max(0.0),
+                        (row_h - 2.0).max(0.0),
                         theme.accent_primary,
                     );
                 } else if hovered_row == Some(slot_i) {
-                    // Hover: surface_alt fill (one step above sidebar background).
-                    raster.fill_pixel_rect(
+                    raster.fill_pixel_rect_alpha(
                         row_x,
-                        row_top + 2.0,
+                        row_top + 1.0,
                         row_w,
-                        (row_h - 4.0).max(0.0),
+                        (row_h - 2.0).max(0.0),
                         theme.surface_alt,
+                        0.32,
                     );
                 }
 
@@ -827,44 +853,17 @@ fn draw_explorer_section(
                             1.0,
                             row_h,
                             theme.text_subtle,
-                            0.25,
+                            0.16,
                         );
                     }
                 }
 
-                // File icon column: placed after the tree indent area.
-                let icon_x = rect.x + pad_x + indent;
-
-                // Directory chevron toggles ▸/▾ based on expanded_dirs.
-                // P4: dir chevron → accent_primary so directories feel heavier
-                // than file rows. File icon keeps per-ext semantic color.
-                let (icon_ch, icon_color) = if *is_dir {
-                    let chevron = if expanded_dirs.contains(path) {
-                        '▾'
-                    } else {
-                        '▸'
-                    };
-                    (chevron, theme.accent_primary)
-                } else {
-                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                    let (ch, col) = file_icon_colored(name, theme);
-                    (ch, if selected { theme.accent_primary } else { col })
-                };
-
-                raster.glyph_at(
-                    painter,
-                    metrics,
-                    icon_x,
-                    icon_top,
-                    icon_ch as u32,
-                    icon_color,
-                );
-
-                // Slightly tighter icon-to-label gap: 1.5 cells instead of 2.
-                let label_x = icon_x + (cell_w * 1.5).ceil();
-                let max_x = rect.x + rect.w - pad_x;
-
-                // Name: entry filename only (not full path).
+                // Tree rows use stable lanes: chevron, file/folder icon, git
+                // badge, then label. Keeping these separate avoids collisions
+                // like "Mcrates" while preserving a compact explorer.
+                let chevron_x = rect.x + pad_x + indent;
+                let file_icon_x = chevron_x + (cell_w * 1.45).ceil();
+                let badge_x = file_icon_x + (cell_w * 1.55).ceil();
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
                 // ── Git status badge (item 10) ────────────────────────────────
@@ -876,8 +875,61 @@ fn draw_explorer_section(
                         .and_then(|p| child_snapshots.get(p))
                         .and_then(|cs| cs.git_marks.get(name).copied())
                 });
+
+                if *is_dir {
+                    let chevron = if expanded_dirs.contains(path) {
+                        '▾'
+                    } else {
+                        '▸'
+                    };
+                    raster.glyph_at(
+                        painter,
+                        metrics,
+                        chevron_x,
+                        icon_top,
+                        chevron as u32,
+                        theme.text_subtle,
+                    );
+                    let folder_icon = if expanded_dirs.contains(path) {
+                        ICON_FOLDER_OPEN
+                    } else {
+                        ICON_FOLDER
+                    };
+                    raster.glyph_at(
+                        painter,
+                        metrics,
+                        file_icon_x,
+                        icon_top,
+                        folder_icon as u32,
+                        theme.text_muted,
+                    );
+                } else {
+                    let (file_icon, file_icon_color) = file_icon_colored(name, theme);
+                    raster.glyph_at(
+                        painter,
+                        metrics,
+                        file_icon_x,
+                        icon_top,
+                        file_icon as u32,
+                        if selected {
+                            theme.accent_primary
+                        } else {
+                            file_icon_color
+                        },
+                    );
+                }
+
+                // Badge rows reserve a full lane after the type icon so status
+                // glyphs cannot crash into names.
+                let label_x = if git_badge.is_some() {
+                    badge_x + (cell_w * 1.55).ceil()
+                } else {
+                    file_icon_x + (cell_w * 1.7).ceil()
+                };
+                let max_x = rect.x + rect.w - pad_x;
+
                 if let Some(badge) = git_badge {
-                    // Badge rendered in the gap between the file icon and the label.
+                    // Badge rendered in its own lane between the tree marker and label.
                     // Color: M=attention, A=verified, ?=text_subtle, D=failure.
                     // Single ASCII char — keep on mono path.
                     let badge_color = match badge {
@@ -886,7 +938,6 @@ fn draw_explorer_section(
                         'D' => theme.failure,
                         _ => theme.text_subtle,
                     };
-                    let badge_x = label_x - cell_w;
                     raster.glyph_at(
                         painter,
                         metrics,
@@ -898,11 +949,10 @@ fn draw_explorer_section(
                 }
 
                 // P4: visual hierarchy — dirs are "heavier" anchors, files are
-                // quieter leaf nodes. Selected file keeps accent_primary.
-                // Dirs: text_muted (unchanged); files: text_muted (was foreground).
-                // Active file: accent_primary (already handled by selected guard).
+                // quieter leaf nodes. Selected rows use foreground text on the
+                // accent rail so the type icon can carry the accent.
                 let label_color = if selected {
-                    theme.accent_primary
+                    theme.foreground
                 } else {
                     theme.text_muted
                 };
@@ -1100,7 +1150,7 @@ fn draw_outline_section(
         },
         kind: LeftDockHitKind::OutlineHeader,
     });
-    // Item 1: "OUTLINE" header always at text_muted (same as EXPLORER), Semibold.
+    // Item 1: "OUTLINE" header always at text_muted (same as EXPLORER), regular.
     // Item 10 accent_bright was removed; text_muted keeps both headers visually
     // consistent and readable without competing with content.
     let header_color = theme.text_muted;
@@ -1123,10 +1173,17 @@ fn draw_outline_section(
         rect.x + pad_x + cell_w * 1.5,
         outline_header_baseline,
         EXPLORER_HEADER_PT,
-        UiWeight::Semibold,
+        UiWeight::Regular,
         header_color,
     );
-    raster.fill_pixel_rect(rect.x, rect.y + header_h - 1.0, rect.w, 1.0, theme.hairline);
+    raster.fill_pixel_rect_alpha(
+        rect.x,
+        rect.y + header_h - 1.0,
+        rect.w,
+        1.0,
+        theme.hairline,
+        0.70,
+    );
 
     // #9: collapsed — only header shown.
     if collapsed {
@@ -1224,27 +1281,29 @@ fn outline_kind_glyph(kind: OutlineKind) -> &'static str {
 ///
 /// Callers that don't have a `Theme` can use [`file_icon`] for plain ASCII.
 pub fn file_icon_colored(name: &str, theme: &Theme) -> (char, [u8; 3]) {
-    // BMP-range glyphs only — Nerd Font private-use codepoints render as
-    // .notdef boxes when the primary font is IBM Plex Mono (no Nerd icons).
-    // Use semantically-meaningful Unicode that's in Plex Mono.
     match name {
-        "Cargo.toml" | "Cargo.lock" => return ('\u{25C8}', theme.attention), // ◈ rust hint
+        "Cargo.toml" => return (ICON_COG, theme.attention),
+        "Cargo.lock" => return (ICON_LOCK, theme.text_muted),
         "README.md" | "README.MD" | "readme.md" => {
-            return ('\u{25C6}', theme.accent_bright); // ◆ filled
+            return (ICON_FILE_TEXT, theme.accent_bright);
         }
         _ => {}
     }
     let ext = name.rfind('.').map(|i| &name[i + 1..]).unwrap_or("");
     match ext {
-        "rs" => ('\u{25C8}', theme.attention), // ◈ rust files
-        "md" | "markdown" => ('\u{25C6}', theme.text_muted), // ◆ markdown
-        "toml" | "yaml" | "yml" => ('\u{25C7}', theme.text_muted), // ◇ config
-        "json" => ('\u{25C7}', theme.text_muted), // ◇
-        "html" | "htm" => ('\u{2329}', theme.text_muted), // ⟨ markup-ish
-        "css" => ('\u{2698}', theme.text_muted), // ⚘ style hint
-        "txt" => ('\u{2261}', theme.text_muted), // ≡ lines
-        "lock" => ('\u{229E}', theme.text_muted), // ⊞ closed
-        _ => ('\u{25CB}', theme.text_muted),   // ○ default
+        "rs" => (ICON_FILE_CODE, theme.attention),
+        "md" | "markdown" | "txt" => (ICON_FILE_TEXT, theme.text_muted),
+        "toml" | "yaml" | "yml" => (ICON_COG, theme.text_muted),
+        "json" | "html" | "htm" | "css" | "js" | "jsx" | "ts" | "tsx" | "py" | "go" | "zig"
+        | "c" | "h" | "cpp" | "hpp" | "swift" | "sh" | "bash" | "zsh" => {
+            (ICON_FILE_CODE, theme.text_muted)
+        }
+        "lock" => (ICON_LOCK, theme.text_muted),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "ico" => {
+            (ICON_FILE_IMAGE, theme.text_muted)
+        }
+        "zip" | "gz" | "tgz" | "tar" | "bz2" | "xz" | "7z" => (ICON_FILE_ARCHIVE, theme.text_muted),
+        _ => (ICON_FILE, theme.text_muted),
     }
 }
 
@@ -1314,6 +1373,7 @@ mod tests {
     #[derive(Default)]
     struct StubPainter {
         pub glyphs: Vec<(u32, [u8; 3])>,
+        pub glyph_positions: Vec<(u32, PixelRect)>,
     }
 
     impl GlyphPainter for StubPainter {
@@ -1321,7 +1381,7 @@ mod tests {
         fn draw_glyph(
             &mut self,
             glyph_id: u32,
-            _dest: PixelRect,
+            dest: PixelRect,
             fg: [u8; 3],
             _metrics: FontMetrics,
             _pixels: &mut [u8],
@@ -1329,6 +1389,7 @@ mod tests {
             _bh: usize,
         ) {
             self.glyphs.push((glyph_id, fg));
+            self.glyph_positions.push((glyph_id, dest));
         }
     }
 
@@ -1336,6 +1397,8 @@ mod tests {
     #[derive(Default)]
     struct StubUiPainter {
         pub draws: Vec<(String, [u8; 3])>,
+        pub attrs: Vec<(String, f64, UiWeight, [u8; 3])>,
+        pub positions: Vec<(String, f64, f64)>,
     }
 
     impl UiTextPainter for StubUiPainter {
@@ -1348,10 +1411,10 @@ mod tests {
         fn draw_line(
             &mut self,
             text: &str,
-            _x_px: f64,
-            _baseline_y_px: f64,
-            _size_pt: f64,
-            _weight: UiWeight,
+            x_px: f64,
+            baseline_y_px: f64,
+            size_pt: f64,
+            weight: UiWeight,
             fg: [u8; 3],
             _pixels: &mut [u8],
             _bitmap_w: usize,
@@ -1359,6 +1422,8 @@ mod tests {
         ) {
             if !text.is_empty() {
                 self.draws.push((text.to_string(), fg));
+                self.attrs.push((text.to_string(), size_pt, weight, fg));
+                self.positions.push((text.to_string(), x_px, baseline_y_px));
             }
         }
     }
@@ -1373,6 +1438,38 @@ mod tests {
 
     fn theme() -> Theme {
         anvil_theme::EMBER_DARK
+    }
+
+    #[test]
+    fn explorer_row_metrics_reserve_glyph_breathing_room() {
+        let m = FontMetrics {
+            cell_w: 11.0,
+            cell_h: 28.0,
+            descent: 6.0,
+        };
+        let rm = RowMetrics::from_scale(1.0, m);
+
+        assert!(
+            rm.header_h >= m.cell_h + 6.0,
+            "header_h={} must fit a {}px glyph plus breathing room",
+            rm.header_h,
+            m.cell_h
+        );
+        assert!(
+            rm.row_h >= m.cell_h + 6.0,
+            "row_h={} must fit a {}px glyph plus breathing room",
+            rm.row_h,
+            m.cell_h
+        );
+    }
+
+    #[test]
+    fn explorer_row_metrics_default_to_dense_twenty_two_px_rows() {
+        let rm = RowMetrics::from_scale(1.0, metrics());
+
+        assert_eq!(rm.header_h, 22.0);
+        assert_eq!(rm.row_h, 22.0);
+        assert_eq!(rm.pad_x, 8.0);
     }
 
     fn dock_rect() -> Rect {
@@ -1520,7 +1617,7 @@ mod tests {
             Some(&LeftDockHitKind::Explorer(ExplorerHit::Row(0)))
         );
         assert_eq!(
-            hits.at(12.0, 68.0),
+            hits.at(12.0, 56.0),
             Some(&LeftDockHitKind::Explorer(ExplorerHit::Row(1)))
         );
     }
@@ -1576,6 +1673,52 @@ mod tests {
             ),
             Some(&LeftDockHitKind::Explorer(ExplorerHit::Row(0))),
             "right side of row should be clickable, not just the label"
+        );
+    }
+
+    #[test]
+    fn explorer_rows_are_compact_but_still_clickable() {
+        let m = metrics();
+        let th = anvil_theme::MINERAL_DARK;
+        let mut r = Raster::new(800, 800);
+        let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
+
+        let snap = DirSnapshot {
+            root: "/anvil".to_string(),
+            entries: vec![DirEntry {
+                name: "main.rs".to_string(),
+                is_dir: false,
+                is_symlink: false,
+            }],
+            git_marks: Default::default(),
+        };
+
+        let hits = draw_left_dock(
+            &mut r,
+            &mut p,
+            &mut up,
+            m,
+            &th,
+            Some(&snap),
+            None,
+            None,
+            dock_rect(),
+        );
+        let row_hit = hits
+            .hits
+            .iter()
+            .find(|hit| hit.kind == LeftDockHitKind::Explorer(ExplorerHit::Row(0)))
+            .expect("row hit region should be emitted for visible explorer row");
+
+        assert!(
+            row_hit.rect.h <= 22.0,
+            "explorer rows should be compact like an editor file tree, got height {}",
+            row_hit.rect.h
+        );
+        assert!(
+            row_hit.rect.h >= 20.0,
+            "compact explorer rows still need reliable mouse targets"
         );
     }
 
@@ -1678,27 +1821,28 @@ mod tests {
             "expected 'main.rs' in text_muted via ui_painter for file entry label"
         );
 
-        // Rust files use ◈ (U+25C8) — BMP-range glyph that IBM Plex Mono renders.
-        let rust_icon_cp = '\u{25C8}' as u32;
+        // Plain file rows render a compact file icon before the label. Git
+        // badges use a separate lane so icons never crash into names.
+        let file_icon_cp = ICON_FILE_CODE as u32;
         let file_icon: Vec<_> = p
             .glyphs
             .iter()
-            .filter(|(cp, _)| *cp == rust_icon_cp)
+            .filter(|(cp, fg)| *cp == file_icon_cp && *fg == th.attention)
             .collect();
         assert!(
             !file_icon.is_empty(),
-            "expected ◈ (U+25C8) for inactive .rs file"
+            "expected Rust file row to paint a compact file icon before the label"
         );
 
-        // P4: dir chevron ▸ (U+25B8) uses accent_primary — dirs are heavier anchors.
+        // Inactive directory chevrons stay muted; selection owns the accent.
         let dir_chevron: Vec<_> = p
             .glyphs
             .iter()
-            .filter(|(cp, fg)| *cp == '\u{25B8}' as u32 && *fg == th.accent_primary)
+            .filter(|(cp, fg)| *cp == '\u{25B8}' as u32 && *fg == th.text_subtle)
             .collect();
         assert!(
             !dir_chevron.is_empty(),
-            "expected dir chevron ▸ in accent_primary (P4: dirs are heavier anchors)"
+            "expected inactive dir chevron ▸ in text_subtle"
         );
     }
 
@@ -1739,35 +1883,33 @@ mod tests {
             dock_rect(),
         );
 
-        // Selected row signaled by icon color: U+E7A8 (Nerd Font rust, item 3) paints
-        // in accent_primary for the active file, theme.attention for inactive.
-        // Labels stay foreground for both (selection visible via row bg + left rail).
-        let rust_cp = '\u{25C8}' as u32;
-        let selected_icon: Vec<_> = p
-            .glyphs
+        // Selected row is signaled through subtle row chrome and foreground text;
+        // inactive files remain muted.
+        let selected_label: Vec<_> = up
+            .draws
             .iter()
-            .filter(|(cp, fg)| *cp == rust_cp && *fg == th.accent_primary)
+            .filter(|(text, fg)| text == "main.rs" && *fg == th.foreground)
             .collect();
         assert_eq!(
-            selected_icon.len(),
+            selected_label.len(),
             1,
-            "exactly one file icon (the active one) should paint in accent_primary"
+            "active file label should paint once in foreground"
         );
 
-        let inactive_icon: Vec<_> = p
-            .glyphs
+        let inactive_label: Vec<_> = up
+            .draws
             .iter()
-            .filter(|(cp, fg)| *cp == rust_cp && *fg == th.attention)
+            .filter(|(text, fg)| text == "editor.rs" && *fg == th.text_muted)
             .collect();
         assert_eq!(
-            inactive_icon.len(),
+            inactive_label.len(),
             1,
-            "exactly one inactive file icon should paint in theme.attention (rust tint)"
+            "inactive file label should paint once in text_muted"
         );
     }
 
-    /// Hover paints solid `surface_alt` only when the row is not selected.
-    /// Selected row suppresses hover rendering.
+    /// Hover paints a translucent lift only when the row is not selected.
+    /// Selected row suppresses hover rendering and keeps the accent rail.
     #[test]
     fn hover_paints_panel_only_when_not_selected() {
         let m = metrics();
@@ -1790,8 +1932,34 @@ mod tests {
             git_marks: Default::default(),
         };
 
-        // Row 0 is hovered, not selected — should get surface_alt fill.
+        // Row 0 is hovered, not selected — should lift from the base glass
+        // without becoming a solid surface_alt block.
         {
+            let mut base = Raster::new(800, 800);
+            base.clear(th.charcoal);
+            let mut base_p = StubPainter::default();
+            let mut base_up = StubUiPainter::default();
+            draw_left_dock_with_scroll(
+                &mut base,
+                &mut base_p,
+                &mut base_up,
+                m,
+                &th,
+                Some(&snap),
+                None,
+                None,
+                dock_rect(),
+                0,
+                None,
+                &HashSet::new(),
+                &HashMap::new(),
+                0.0,
+                1.0,
+                None,
+                false,
+                false,
+            );
+
             let mut r = Raster::new(800, 800);
             r.clear(th.charcoal);
             let mut p = StubPainter::default();
@@ -1816,18 +1984,20 @@ mod tests {
                 false,
                 false,
             );
-            // Row 0 occupies y=[header_h, header_h+row_h) = [32, 60).
-            // The fill rect is row_top+2 .. row_top+row_h-2 = [34, 58).
-            // Sample the fill interior: x=50, y=38 (inside fill strip).
+            // Sample the fill interior.
+            let base_px = pixel_at(&base, 50, 38);
             let px = pixel_at(&r, 50, 38);
-            assert_eq!(
+            assert_ne!(
+                px, base_px,
+                "hovered non-selected row should visibly lift from the base glass"
+            );
+            assert_ne!(
                 px, th.surface_alt,
-                "hovered non-selected row must be filled with surface_alt, got {px:?}"
+                "hovered non-selected row should not be a solid surface_alt block, got {px:?}"
             );
         }
 
         // Row 0 is both hovered AND selected — selected wins, no plain panel hover.
-        // Selected fill is also panel, but with a 2px accent_primary left rail.
         // The left-rail pixel (x=6+1=7) should be accent_primary, not just panel.
         {
             let mut r = Raster::new(800, 800);
@@ -1862,6 +2032,87 @@ mod tests {
                 "selected row must show accent_primary left rail even when also hovered, got {rail_px:?}"
             );
         }
+    }
+
+    #[test]
+    fn explorer_row_chrome_is_translucent_not_blocky() {
+        let m = metrics();
+        let th = anvil_theme::MINERAL_DARK;
+
+        let snap = DirSnapshot {
+            root: "/anvil/src".to_string(),
+            entries: vec![DirEntry {
+                name: "foo.rs".to_string(),
+                is_dir: false,
+                is_symlink: false,
+            }],
+            git_marks: Default::default(),
+        };
+
+        let mut hovered = Raster::new(800, 800);
+        hovered.clear(th.charcoal);
+        let mut hovered_painter = StubPainter::default();
+        let mut hovered_ui = StubUiPainter::default();
+        draw_left_dock_with_scroll(
+            &mut hovered,
+            &mut hovered_painter,
+            &mut hovered_ui,
+            m,
+            &th,
+            Some(&snap),
+            None,
+            None,
+            dock_rect(),
+            0,
+            Some(0),
+            &HashSet::new(),
+            &HashMap::new(),
+            0.0,
+            1.0,
+            None,
+            false,
+            false,
+        );
+        let hover_px = pixel_at(&hovered, 50, 30);
+        assert_ne!(
+            hover_px, th.surface_alt,
+            "hover row should be a translucent lift, not a solid surface_alt block"
+        );
+
+        let mut selected = Raster::new(800, 800);
+        selected.clear(th.charcoal);
+        let mut selected_painter = StubPainter::default();
+        let mut selected_ui = StubUiPainter::default();
+        draw_left_dock_with_scroll(
+            &mut selected,
+            &mut selected_painter,
+            &mut selected_ui,
+            m,
+            &th,
+            Some(&snap),
+            Some(Path::new("/anvil/src/foo.rs")),
+            None,
+            dock_rect(),
+            0,
+            Some(0),
+            &HashSet::new(),
+            &HashMap::new(),
+            0.0,
+            1.0,
+            None,
+            false,
+            false,
+        );
+        let selected_px = pixel_at(&selected, 50, 30);
+        assert_ne!(
+            selected_px, th.panel,
+            "selected row should not be a solid panel block"
+        );
+        assert_eq!(
+            pixel_at(&selected, 6, 30),
+            th.accent_primary,
+            "selected row should retain a crisp accent rail"
+        );
     }
 
     /// Outline section with `None` shows only the header row (no body copy).
@@ -1908,11 +2159,11 @@ mod tests {
         );
     }
 
-    /// Background is a neutral Mineral panel with only a trace Ember wash.
+    /// Background is a neutral glass-style Mineral panel, not an Ember block.
     #[test]
     fn background_is_quiet_mineral_sidebar() {
         let m = metrics();
-        let th = theme();
+        let th = anvil_theme::MINERAL_DARK;
         let mut r = Raster::new(800, 800);
         r.clear([0, 0, 0]);
         let mut p = StubPainter::default();
@@ -1937,8 +2188,8 @@ mod tests {
             "sidebar must not regress to red/brown block"
         );
         assert!(
-            px[0] >= th.charcoal[0],
-            "trace wash should lift charcoal slightly"
+            px[0] > th.graphite[0] && px[0] < th.surface[0],
+            "glass fill should blend between graphite and surface: {px:?}"
         );
         assert!(
             px[0].saturating_sub(px[2]) <= 12,
@@ -2091,6 +2342,43 @@ mod tests {
             outline_bright.is_empty(),
             "OUTLINE header must NOT use accent_bright"
         );
+    }
+
+    #[test]
+    fn section_headers_use_regular_quiet_chrome_weight() {
+        let m = metrics();
+        let th = theme();
+        let mut r = Raster::new(800, 800);
+        let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
+
+        draw_left_dock(
+            &mut r,
+            &mut p,
+            &mut up,
+            m,
+            &th,
+            None,
+            None,
+            None,
+            dock_rect(),
+        );
+
+        let explorer = up
+            .attrs
+            .iter()
+            .find(|(text, _, _, _)| text == "EXPLORER")
+            .expect("EXPLORER header should render");
+        let outline = up
+            .attrs
+            .iter()
+            .find(|(text, _, _, _)| text == "OUTLINE")
+            .expect("OUTLINE header should render");
+
+        assert_eq!(explorer.2, UiWeight::Regular);
+        assert_eq!(outline.2, UiWeight::Regular);
+        assert_eq!(explorer.3, th.text_muted);
+        assert_eq!(outline.3, th.text_muted);
     }
 
     /// Item 9: overflow smoke test — scroll offset changes which entries are rendered.
@@ -2487,6 +2775,29 @@ mod tests {
         assert_eq!(file_icon("file.xyz"), "\u{25C7}", "unknown extension → ◇");
     }
 
+    #[test]
+    fn file_icon_colored_returns_nerd_font_glyphs() {
+        let th = theme();
+
+        assert_eq!(
+            file_icon_colored("main.rs", &th),
+            (ICON_FILE_CODE, th.attention)
+        );
+        assert_eq!(
+            file_icon_colored("README.md", &th),
+            (ICON_FILE_TEXT, th.accent_bright)
+        );
+        assert_eq!(
+            file_icon_colored("Cargo.toml", &th),
+            (ICON_COG, th.attention)
+        );
+        assert_eq!(
+            file_icon_colored("archive.tar", &th),
+            (ICON_FILE_ARCHIVE, th.text_muted)
+        );
+        assert_eq!(file_icon_colored("binary", &th), (ICON_FILE, th.text_muted));
+    }
+
     // ── G1: icon-only and hide modes ──────────────────────────────────────────
 
     /// G1: rect.w < 60pt (hide threshold) returns empty hits, no panic.
@@ -2648,6 +2959,57 @@ mod tests {
         assert!(
             !badge_calls.is_empty(),
             "modified-file badge 'M' must render in attention color"
+        );
+    }
+
+    #[test]
+    fn git_badge_keeps_clear_gap_before_label() {
+        let m = metrics();
+        let th = theme();
+        let mut r = Raster::new(800, 800);
+        let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
+
+        let mut git_marks = HashMap::new();
+        git_marks.insert("crates".to_string(), 'M');
+        let snap = DirSnapshot {
+            root: "/anvil".to_string(),
+            entries: vec![DirEntry {
+                name: "crates".to_string(),
+                is_dir: true,
+                is_symlink: false,
+            }],
+            git_marks,
+        };
+
+        draw_left_dock(
+            &mut r,
+            &mut p,
+            &mut up,
+            m,
+            &th,
+            Some(&snap),
+            None,
+            None,
+            dock_rect(),
+        );
+
+        let badge_rect = p
+            .glyph_positions
+            .iter()
+            .find_map(|(cp, rect)| (*cp == 'M' as u32).then_some(*rect))
+            .expect("modified badge must render");
+        let label_x = up
+            .positions
+            .iter()
+            .find_map(|(text, x, _)| (text == "crates").then_some(*x))
+            .expect("entry label must render");
+
+        assert!(
+            badge_rect.x + badge_rect.w + 3.0 <= label_x,
+            "badge at x={} w={} must not collide with label_x={label_x}",
+            badge_rect.x,
+            badge_rect.w
         );
     }
 

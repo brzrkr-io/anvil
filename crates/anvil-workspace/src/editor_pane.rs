@@ -2923,7 +2923,12 @@ pub fn pixel_to_position(
     if col_pixel < 0.0 {
         return Position { line: row, col: 0 };
     }
-    let cell_col = (col_pixel / metrics.cell_w).round() as usize;
+    let visible_col = (col_pixel / metrics.cell_w).round() as usize;
+    let cell_col = if editor_pane.soft_wrap {
+        visible_col
+    } else {
+        visible_col.saturating_add(editor_pane.scroll_x.floor() as usize)
+    };
 
     // Walk line graphemes and clamp to line length.
     let line_len = if line_count == 0 {
@@ -3561,6 +3566,16 @@ mod tests {
         assert_eq!(pos.line, last_line);
         // col clamped to "hi" length = 2
         assert!(pos.col <= 2);
+    }
+
+    #[test]
+    fn pixel_to_position_adds_horizontal_scroll_offset() {
+        let (mut pane, buf) = make_pane_with_text("abcdefghijklmnopqrstuvwxyz\n");
+        pane.scroll_x = 12.0;
+        let metrics = test_metrics();
+        let rel_x = 4.0 * metrics.cell_w;
+        let pos = pixel_to_position(&pane, &buf, rel_x, 0.0, metrics, 0);
+        assert_eq!(pos, Position { line: 0, col: 16 });
     }
 
     // ── NE7 action tests ─────────────────────────────────────────────────────

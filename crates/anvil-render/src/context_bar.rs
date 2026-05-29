@@ -56,20 +56,12 @@ pub fn draw_context_bar(
     let by = rect.y;
     let cell_h = metrics.cell_h;
 
-    // DD6: 4pt graphite gap between the OS tab-strip chrome and the context bar.
-    // Paint the top 4 device pixels as a dark graphite strip, then the charcoal
-    // bar body below it — without touching the rect geometry so pane layout is
-    // unchanged.
-    const GAP_PT: f64 = 4.0;
-    raster.fill_pixel_rect(bx, by, bar_w, GAP_PT, theme.graphite);
-    raster.fill_pixel_rect(
-        bx,
-        by + GAP_PT,
-        bar_w,
-        (bar_h - GAP_PT).max(0.0),
-        theme.charcoal,
-    );
-    raster.fill_pixel_rect(bx, by + bar_h - 1.0, bar_w, 1.0, theme.hairline);
+    // Compact glass strip: dark substrate, translucent lifted surface, and a
+    // single bottom hairline. No decorative wash.
+    raster.fill_pixel_rect(bx, by, bar_w, bar_h, theme.graphite);
+    raster.fill_pixel_rect_alpha(bx, by, bar_w, bar_h, theme.surface, 0.58);
+    raster.fill_pixel_rect_alpha(bx, by, bar_w, 1.0, theme.foreground, 0.035);
+    raster.fill_pixel_rect_alpha(bx, by + bar_h - 1.0, bar_w, 1.0, theme.hairline, 0.9);
 
     // Baseline for ui_line calls in this bar.
     let baseline_y =
@@ -95,7 +87,7 @@ pub fn draw_context_bar(
         // [scratch] — visually the chip reads "anvil" alone, matching the
         // Option A topbar's quiet identity.
         Some("[scratch]") => cwd_base,
-        Some(name) => format!("{cwd_base}  ›  {name}"),
+        Some(name) => format!("{cwd_base} · {name}"),
         None => cwd_base,
     };
     draw_run_ellipsized(
@@ -122,61 +114,6 @@ pub fn draw_context_bar(
             by,
             bar_h,
             false,
-        );
-    }
-
-    if local.git != GitState::NoRepo {
-        let mut rx = bx + bar_w - 12.0;
-        let dirty = local.git_dirty > 0 || local.git == GitState::Dirty;
-        let tok = if dirty { "dirty" } else { "clean" };
-        rx = draw_chip_right(
-            raster, painter, ui_painter, metrics, theme, tok, rx, by, bar_h, dirty,
-        );
-        rx -= 8.0;
-        if !local.head_short.is_empty() {
-            rx = draw_chip_right(
-                raster,
-                painter,
-                ui_painter,
-                metrics,
-                theme,
-                &local.head_short,
-                rx,
-                by,
-                bar_h,
-                false,
-            );
-            rx -= 8.0;
-        }
-        // ↑N ↓M ahead/behind chip (S3).
-        if local.git_ahead > 0 || local.git_behind > 0 {
-            let ab_label = match (local.git_ahead, local.git_behind) {
-                (a, 0) => format!("\u{2191}{a}"),
-                (0, b) => format!("\u{2193}{b}"),
-                (a, b) => format!("\u{2191}{a} \u{2193}{b}"),
-            };
-            rx = draw_chip_right(
-                raster, painter, ui_painter, metrics, theme, &ab_label, rx, by, bar_h, false,
-            );
-            rx -= 8.0;
-        }
-        let branch = if local.branch.is_empty() {
-            "main"
-        } else {
-            &local.branch
-        };
-        let branch_label = format!("git {branch}");
-        let _ = draw_chip_right(
-            raster,
-            painter,
-            ui_painter,
-            metrics,
-            theme,
-            &branch_label,
-            rx,
-            by,
-            bar_h,
-            dirty,
         );
     }
 }
@@ -222,19 +159,20 @@ pub fn draw_push_pull_chips(
         raster, painter, ui_painter, metrics, theme, pull_label, x, by, bar_h, false,
     );
 
-    let chip_y = by + ((bar_h - 20.0) * 0.5).max(0.0);
+    let chip_h = 18.0;
+    let chip_y = by + ((bar_h - chip_h) * 0.5).max(0.0);
     Some((
         PixelRect {
             x: push_x,
             y: chip_y,
             w: push_w,
-            h: 20.0,
+            h: chip_h,
         },
         PixelRect {
             x: pull_x,
             y: chip_y,
             w: pull_w,
-            h: 20.0,
+            h: chip_h,
         },
     ))
 }
@@ -253,15 +191,16 @@ fn draw_chip(
     accent: bool,
 ) -> f64 {
     let label_w = ui_painter.measure(label, CONTEXT_BAR_PT, UiWeight::Regular);
-    let w = label_w + 14.0;
-    let y = by + ((bar_h - 20.0) * 0.5).max(0.0);
+    let w = label_w + 12.0;
+    let chip_h = 18.0;
+    let y = by + ((bar_h - chip_h) * 0.5).max(0.0);
     raster.fill_pixel_rect_alpha(
         x,
         y,
         w,
-        20.0,
+        chip_h,
         theme.surface,
-        if accent { 0.34 } else { 0.22 },
+        if accent { 0.42 } else { 0.26 },
     );
     raster.fill_pixel_rect_alpha(
         x,
@@ -269,9 +208,9 @@ fn draw_chip(
         w,
         1.0,
         theme.accent_bright,
-        if accent { 0.36 } else { 0.16 },
+        if accent { 0.28 } else { 0.12 },
     );
-    raster.fill_pixel_rect_alpha(x, y + 19.0, w, 1.0, theme.hairline, 0.8);
+    raster.fill_pixel_rect_alpha(x, y + chip_h - 1.0, w, 1.0, theme.hairline, 0.78);
     let color = if accent {
         theme.accent
     } else {
@@ -312,7 +251,7 @@ fn draw_chip_right(
     accent: bool,
 ) -> f64 {
     let label_w = ui_painter.measure(label, CONTEXT_BAR_PT, UiWeight::Regular);
-    let w = label_w + 14.0;
+    let w = label_w + 12.0;
     let x = right - w;
     draw_chip(
         raster, painter, ui_painter, metrics, theme, label, x, by, bar_h, accent,
@@ -527,9 +466,9 @@ mod tests {
         );
     }
 
-    // Dirty branch uses accent color.
+    // Compact context bar keeps git metadata out of the primary chrome.
     #[test]
-    fn dirty_branch_uses_accent() {
+    fn dirty_branch_hidden_from_primary_chrome() {
         let m = font_metrics();
         let th = theme();
         let mut r = Raster::new(800, 100);
@@ -545,21 +484,17 @@ mod tests {
         };
         draw_context_bar(&mut r, &mut p, &mut up, m, &th, &local, None, bar_rect());
 
-        // "git main" chip drawn in accent (dirty=true)
-        let has_accent = up
-            .draws
-            .iter()
-            .any(|(text, fg)| *fg == th.accent && text.contains("main"));
+        let has_branch = up.draws.iter().any(|(text, _)| text.contains("main"));
         assert!(
-            has_accent,
-            "expected branch 'main' in accent color, got {:?}",
+            !has_branch,
+            "dirty branch should not render in primary chrome, got {:?}",
             up.draws
         );
     }
 
-    // Clean branch uses text_subtle.
+    // Clean branch is also hidden from the compact context row.
     #[test]
-    fn clean_branch_uses_text_subtle() {
+    fn clean_branch_hidden_from_primary_chrome() {
         let m = font_metrics();
         let th = theme();
         let mut r = Raster::new(800, 100);
@@ -575,13 +510,10 @@ mod tests {
         };
         draw_context_bar(&mut r, &mut p, &mut up, m, &th, &local, None, bar_rect());
 
-        let has_subtle = up
-            .draws
-            .iter()
-            .any(|(text, fg)| *fg == th.text_subtle && text.contains("main"));
+        let has_branch = up.draws.iter().any(|(text, _)| text.contains("main"));
         assert!(
-            has_subtle,
-            "expected branch 'main' in text_subtle for clean branch, got {:?}",
+            !has_branch,
+            "clean branch should not render in primary chrome, got {:?}",
             up.draws
         );
     }
@@ -607,9 +539,42 @@ mod tests {
         assert!(!has_git, "no repo → no git branch chip, got {:?}", up.draws);
     }
 
-    // head_short appears on the right when set.
     #[test]
-    fn head_short_shown_when_present() {
+    fn compact_context_bar_hides_git_metadata_by_default() {
+        let m = font_metrics();
+        let th = theme();
+        let mut r = Raster::new(800, 100);
+        let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
+
+        let local = LocalContext {
+            cwd: "/anvil".to_string(),
+            git: GitState::Dirty,
+            branch: "rust-port".to_string(),
+            git_dirty: 17,
+            head_short: "abc1234".to_string(),
+            ..LocalContext::default()
+        };
+        draw_context_bar(&mut r, &mut p, &mut up, m, &th, &local, None, bar_rect());
+
+        let all_text = up
+            .draws
+            .iter()
+            .map(|(text, _)| text.as_str())
+            .collect::<String>();
+        assert!(
+            !all_text.contains("git ")
+                && !all_text.contains("rust-port")
+                && !all_text.contains("abc1234")
+                && !all_text.contains("dirty"),
+            "compact context bar should not render git metadata by default, got {:?}",
+            up.draws
+        );
+    }
+
+    // Commit SHA stays out of the primary context row.
+    #[test]
+    fn head_short_hidden_from_primary_chrome() {
         let m = font_metrics();
         let th = theme();
         let mut r = Raster::new(800, 100);
@@ -623,13 +588,10 @@ mod tests {
         };
         draw_context_bar(&mut r, &mut p, &mut up, m, &th, &local, None, bar_rect());
 
-        let has_head = up
-            .draws
-            .iter()
-            .any(|(text, fg)| *fg == th.text_subtle && text.contains("abc1234"));
+        let has_head = up.draws.iter().any(|(text, _)| text.contains("abc1234"));
         assert!(
-            has_head,
-            "expected head_short 'abc1234' in text_subtle, got {:?}",
+            !has_head,
+            "head_short should not render in primary chrome, got {:?}",
             up.draws
         );
     }
@@ -670,6 +632,84 @@ mod tests {
         );
     }
 
+    #[test]
+    fn editor_path_uses_compact_middle_dot_separator() {
+        let m = font_metrics();
+        let th = theme();
+        let mut r = Raster::new(800, 100);
+        let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
+
+        let local = LocalContext {
+            cwd: "/Users/test/anvil".to_string(),
+            ..LocalContext::default()
+        };
+        let ed = ContextBarEditor {
+            name: "README.md",
+            modified: false,
+            syntax_pending: false,
+        };
+        draw_context_bar(
+            &mut r,
+            &mut p,
+            &mut up,
+            m,
+            &th,
+            &local,
+            Some(ed),
+            bar_rect(),
+        );
+
+        let has_path = up
+            .draws
+            .iter()
+            .any(|(text, fg)| *fg == th.text_muted && text.contains("anvil · README.md"));
+        assert!(
+            has_path,
+            "expected compact editor path separator, got {:?}",
+            up.draws
+        );
+    }
+
+    #[test]
+    fn compact_context_bar_does_not_render_git_action_chips() {
+        let m = font_metrics();
+        let th = theme();
+        let mut r = Raster::new(800, 100);
+        let mut p = StubPainter::default();
+        let mut up = StubUiPainter::default();
+
+        let local = LocalContext {
+            cwd: "/Users/test/anvil".to_string(),
+            git: GitState::Ok,
+            branch: "main".to_string(),
+            ..LocalContext::default()
+        };
+        let ed = ContextBarEditor {
+            name: "README.md",
+            modified: false,
+            syntax_pending: false,
+        };
+        draw_context_bar(
+            &mut r,
+            &mut p,
+            &mut up,
+            m,
+            &th,
+            &local,
+            Some(ed),
+            bar_rect(),
+        );
+
+        assert!(
+            !up.draws.iter().any(|(text, _)| text.contains("push")
+                || text.contains("pull")
+                || text.contains("git ")),
+            "compact context bar should not render git action/status chips, got {:?}",
+            up.draws
+        );
+    }
+
     // F4: path text longer than available width gets an ellipsis char appended.
     #[test]
     fn long_path_gets_ellipsis() {
@@ -699,9 +739,9 @@ mod tests {
         );
     }
 
-    // S3: ahead/behind chip rendered when ahead > 0.
+    // Ahead/behind counts stay out of the primary compact context row.
     #[test]
-    fn ahead_behind_chip_rendered() {
+    fn ahead_behind_chip_hidden_from_primary_chrome() {
         let m = font_metrics();
         let th = theme();
         let mut r = Raster::new(800, 100);
@@ -719,18 +759,13 @@ mod tests {
 
         let all_text: String = up.draws.iter().map(|(t, _)| t.as_str()).collect();
         assert!(
-            all_text.contains('\u{2191}'),
-            "expected ↑ in ahead/behind chip, got {:?}",
+            !all_text.contains('\u{2191}'),
+            "expected no ↑ in compact context bar, got {:?}",
             up.draws
         );
         assert!(
-            all_text.contains('\u{2193}'),
-            "expected ↓ in ahead/behind chip, got {:?}",
-            up.draws
-        );
-        assert!(
-            all_text.contains('3'),
-            "expected ahead count '3', got {:?}",
+            !all_text.contains('\u{2193}'),
+            "expected no ↓ in compact context bar, got {:?}",
             up.draws
         );
     }

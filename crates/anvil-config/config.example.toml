@@ -18,7 +18,7 @@ shell_integration = true
 # ── Font ──────────────────────────────────────────────────────────────────────
 
 [font]
-family = "IBM Plex Mono"  # Any font family name installed on macOS.
+family = "BlexMono Nerd Font Mono"  # Bundled IBM Plex Mono build with developer icons.
 size   = 14.0             # Point size. Minimum 4.0.
 
 # ── Cursor ────────────────────────────────────────────────────────────────────
@@ -35,9 +35,9 @@ height = 640.0    # Initial window height in points. Minimum 150.
 
 # ── Theme ─────────────────────────────────────────────────────────────────────
 
-# Built-in themes: "ember-dark" (default), "ember-light", "mineral-dark", "mineral-light".
-# "system" follows the current macOS light/dark appearance with the Ember pair.
-theme = "ember-dark"
+# Built-in themes: "system" (default), "mineral-dark", "mineral-light", "ember-dark", "ember-light".
+# "system" follows the current macOS light/dark appearance with the Mineral pair.
+theme = "system"
 
 # Startup surface: "auto" picks IDE in project directories and straight terminal elsewhere.
 # Use "terminal" to always start as a clean terminal; Cmd+Shift+E toggles IDE back on.
@@ -103,6 +103,11 @@ layout_mode = "auto"
 # focus_right        = "cmd+shift+l"
 # focus_up           = "cmd+shift+k"
 # focus_down         = "cmd+shift+j"
+# layout_mode_toggle = "cmd+shift+e"
+# left_dock_toggle   = "cmd+b"
+# recent_files       = "cmd+opt+p"
+# editor_new         = "cmd+e"
+# project_search     = "cmd+shift+f"
 
 # ── Prompt ────────────────────────────────────────────────────────────────────
 
@@ -116,3 +121,13 @@ transient = true   # Collapse previous prompts to a minimal marker.
 # [[prompt.custom]]
 # label   = "aws"
 # command = "echo prod"
+
+# ── Neovim / LazyVim ─────────────────────────────────────────────────────────
+
+[nvim]
+# Optional NVIM_APPNAME. Set to "LazyVim" to launch ~/.config/LazyVim.
+appname = ""
+# Export ANVIL_THEME_* tokens and send safe startup theme hints to nvim.
+theme_sync = true
+# Optional colorscheme name; leave empty to let normal nvim/LazyVim config decide.
+colorscheme = ""

@@ -852,6 +852,35 @@ impl Terminal {
         }
     }
 
+    fn retain_marks<F>(&mut self, mut keep: F)
+    where
+        F: FnMut(PromptMark) -> bool,
+    {
+        let mut w = 0;
+        for i in 0..self.mark_count {
+            if keep(self.marks[i]) {
+                self.marks[w] = self.marks[i];
+                self.mark_completion_times[w] = self.mark_completion_times[i];
+                w += 1;
+            }
+        }
+        for i in w..self.mark_count {
+            self.mark_completion_times[i] = None;
+        }
+        self.mark_count = w;
+    }
+
+    fn clear_scrollback(&mut self) {
+        let cleared = self.history.len();
+        if cleared > 0 {
+            self.evicted_lines = self.evicted_lines.saturating_add(cleared);
+            self.history.clear();
+            let min_abs = self.evicted_lines;
+            self.retain_marks(|mark| mark.line >= min_abs);
+        }
+        self.viewport_offset = 0;
+    }
+
     fn set_title(&mut self, text: &[u8]) {
         self.title_len = copy_into(&mut self.title_buf, text);
     }
@@ -954,14 +983,7 @@ impl Terminal {
 
     fn invalidate_grid_marks(&mut self) {
         let base = self.evicted_lines + self.history.len();
-        let mut w = 0;
-        for i in 0..self.mark_count {
-            if self.marks[i].line < base {
-                self.marks[w] = self.marks[i];
-                w += 1;
-            }
-        }
-        self.mark_count = w;
+        self.retain_marks(|mark| mark.line < base);
     }
 
     fn reverse_index(&mut self) {
@@ -1102,8 +1124,13 @@ impl Terminal {
             }
             b'J' => {
                 let mode = vt_param(params, 0, 0);
-                self.active().erase_display(mode);
-                if (mode == 2 || mode == 3) && !self.on_alt {
+                if mode == 3 && !self.on_alt {
+                    self.clear_scrollback();
+                    self.active().mark_all_dirty();
+                } else {
+                    self.active().erase_display(mode);
+                }
+                if mode == 2 && !self.on_alt {
                     self.invalidate_grid_marks();
                 }
             }
@@ -1479,6 +1506,40 @@ mod tests {
         term.feed(b"\x1B[0J");
         assert_eq!("AAAA", viewport_text(&mut term, 0));
         assert_eq!("CC  ", viewport_text(&mut term, 2));
+    }
+
+    #[test]
+    fn ed_mode_3_clears_scrollback_without_erasing_visible_grid() {
+        let mut term = make_terminal(4, 2);
+        term.feed(b"1111\r\n2222\r\n3333");
+        let hist = term.scrollback_len();
+        assert!(hist > 0);
+        assert_eq!("2222", viewport_text(&mut term, 0));
+        assert_eq!("3333", viewport_text(&mut term, 1));
+
+        term.scroll_viewport(hist as isize);
+        assert!(term.viewport_offset() > 0);
+
+        term.feed(b"\x1B[3J");
+
+        assert_eq!(0, term.scrollback_len());
+        assert_eq!(0, term.viewport_offset());
+        assert_eq!("2222", viewport_text(&mut term, 0));
+        assert_eq!("3333", viewport_text(&mut term, 1));
+    }
+
+    #[test]
+    fn clear_command_sequence_clears_scrollback_and_visible_grid() {
+        let mut term = make_terminal(4, 2);
+        term.feed(b"1111\r\n2222\r\n3333");
+        assert!(term.scrollback_len() > 0);
+
+        term.feed(b"\x1B[3J\x1B[H\x1B[2J");
+
+        assert_eq!(0, term.scrollback_len());
+        assert_eq!(0, term.viewport_offset());
+        assert_eq!("    ", viewport_text(&mut term, 0));
+        assert_eq!("    ", viewport_text(&mut term, 1));
     }
 
     #[test]

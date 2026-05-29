@@ -11,7 +11,7 @@ use anvil_term::{
     Block, BlockState, Cell, Color, CursorShape, DirtySet, MatchKind, Search, Terminal,
 };
 use anvil_theme::{Theme, mix};
-use anvil_workspace::selection::Selection;
+use anvil_workspace::selection::{Selection, SelectionMode};
 
 use crate::atlas::GlyphRasterizer;
 use crate::batch::CellBatch;
@@ -112,6 +112,34 @@ pub fn cursor_opacity(p: f32) -> f32 {
     // (1 + cos(2πp)) / 2 → smooth 1.0 → 0 → 1.0 across [0, 1).
     let pulse = 0.5 + 0.5 * (std::f32::consts::TAU * p).cos();
     MIN + (1.0 - MIN) * pulse
+}
+
+/// Coarse redraw bucket for opacity animations.
+///
+/// Rendering may still use a smooth opacity value; this bucket is only for
+/// deciding when a small opacity delta is worth scheduling another frame.
+pub fn opacity_redraw_bucket(opacity: f32, min_opacity: f32, max_bucket: u8) -> u8 {
+    if max_bucket == 0 {
+        return 0;
+    }
+    let span = (1.0 - min_opacity).max(f32::EPSILON);
+    let normalized = ((opacity - min_opacity) / span).clamp(0.0, 1.0);
+    (normalized * max_bucket as f32).round() as u8
+}
+
+/// Coarse redraw bucket for cursor opacity.
+pub fn cursor_opacity_bucket(opacity: f32) -> u8 {
+    opacity_redraw_bucket(opacity, 0.35, 1)
+}
+
+/// Running-block status dot opacity for pulse phase `p` in [0,1).
+pub fn running_pulse_opacity(p: f32) -> f32 {
+    0.45 + 0.55 * (std::f32::consts::TAU * p).sin().max(0.0)
+}
+
+/// Coarse redraw bucket for the running-block status dot pulse.
+pub fn running_pulse_bucket(phase: f32) -> u8 {
+    opacity_redraw_bucket(running_pulse_opacity(phase), 0.45, 1)
 }
 
 // ── Prompt-rule predicate ─────────────────────────────────────────────────────
@@ -359,7 +387,8 @@ fn compute_block_header_chars(
 /// Draw the synthesized block header row (CPU path).
 ///
 /// Draws over the raw terminal cells at the command row:
-///   - command text in foreground color (col 1 onward; col 0 is accent bar)
+///   - status prompt marker in col 0
+///   - command text in foreground color (col 2 onward)
 ///   - duration in muted color, right-aligned before exit indicator
 ///   - exit indicator: "✓" (exit 0), "✗ N" (exit N), "…" (running)
 ///   - fold indicator "▾" at far right
@@ -378,13 +407,15 @@ fn draw_block_header_cpu(
     cols: usize,
 ) {
     let fg = theme.foreground;
+    let accent = block_accent_color(block, theme);
+    raster.cell_glyph(painter, metrics, 0, ry, '\u{2192}' as u32, accent);
 
-    // Command text: col 1..cols-18 (leave room for right metadata).
+    // Command text: col 2..cols-18 (leave room for prompt marker and right metadata).
     draw_text_row(
         raster,
         painter,
         metrics,
-        1,
+        2,
         ry,
         cmd_text,
         fg,
@@ -412,12 +443,41 @@ fn draw_block_header_gpu(
     metrics: FontMetrics,
     theme: &Theme,
     block: &Block,
+    cmd_text: &str,
     viewport_y: usize,
     cols: usize,
     cw: f32,
     ch: f32,
     y_shift: f32,
 ) {
+    let marker_rect = raster.cell_rect(metrics, 0.0, viewport_y as f64);
+    let marker_xy = [marker_rect.x as f32, marker_rect.y as f32 - y_shift];
+    let marker_slot = rasterizer.glyph_slot('\u{2192}' as u32, metrics);
+    batch.push_cell(
+        marker_xy,
+        [cw, ch],
+        marker_slot,
+        block_accent_color(block, theme),
+        theme.panel_raised,
+    );
+
+    let command_max_col = cols.saturating_sub(18);
+    for (i, cp) in cmd_text.chars().enumerate() {
+        let col = 2 + i;
+        if col >= command_max_col {
+            break;
+        }
+        let rect = raster.cell_rect(metrics, col as f64, viewport_y as f64);
+        let xy = [rect.x as f32, rect.y as f32 - y_shift];
+        let wh = [cw, ch];
+        if cp == ' ' {
+            batch.push_cell(xy, wh, None, theme.foreground, theme.panel_raised);
+        } else {
+            let slot = rasterizer.glyph_slot(cp as u32, metrics);
+            batch.push_cell(xy, wh, slot, theme.foreground, theme.panel_raised);
+        }
+    }
+
     if let Some((start_col, chars)) = compute_block_header_chars(block, cols, theme) {
         for (i, (cp, color)) in chars.into_iter().enumerate() {
             let col = start_col + i;
@@ -463,11 +523,12 @@ fn block_accent_color(block: &Block, theme: &Theme) -> [u8; 3] {
 trait ViewportSink {
     /// Clear one row's background to `bg` before redrawing (CPU only; GPU no-op).
     fn clear_row_bg(&mut self, ry: usize, m: FontMetrics, bg: [u8; 3]);
-    /// Paint a selection wash over a full row (CPU only; GPU no-op).
-    fn fill_selection_row(
+    /// Paint a row span wash (CPU only; GPU no-op).
+    fn fill_row_span(
         &mut self,
         ry: usize,
-        cols: usize,
+        col_start: usize,
+        col_end: usize,
         m: FontMetrics,
         rgb: [u8; 3],
         alpha: f64,
@@ -581,18 +642,23 @@ impl ViewportSink for CpuSink<'_> {
         self.raster.clear_pixel_rows(y_top, y_bot, bg);
     }
 
-    fn fill_selection_row(
+    fn fill_row_span(
         &mut self,
         ry: usize,
-        cols: usize,
+        col_start: usize,
+        col_end: usize,
         m: FontMetrics,
         rgb: [u8; 3],
         alpha: f64,
     ) {
-        let px = self.raster.origin_x;
+        if col_start >= col_end {
+            return;
+        }
+        let px = self.raster.origin_x + col_start as f64 * m.cell_w;
         let py = self.raster.origin_y + ry as f64 * m.cell_h;
+        let w = (col_end - col_start) as f64 * m.cell_w;
         self.raster
-            .fill_pixel_rect_alpha(px, py, cols as f64 * m.cell_w, m.cell_h, rgb, alpha);
+            .fill_pixel_rect_alpha(px, py, w, m.cell_h, rgb, alpha);
     }
 
     fn draw_cell(
@@ -673,11 +739,7 @@ impl ViewportSink for CpuSink<'_> {
 
         // Running-block header dot: sine-modulated 2×2 dot at col 0 while block is Running.
         if block.state == BlockState::Running {
-            let alpha = 0.45
-                + 0.55
-                    * (std::f32::consts::TAU * self.running_pulse_phase)
-                        .sin()
-                        .max(0.0);
+            let alpha = running_pulse_opacity(self.running_pulse_phase);
             let dot_px = (m.cell_w * 0.5 - 1.0).max(0.0);
             let dot_py = m.cell_h * 0.5 - 1.0;
             self.raster.fill_pixel_rect_alpha(
@@ -704,7 +766,7 @@ impl ViewportSink for CpuSink<'_> {
                     py,
                     cols as f64 * m.cell_w,
                     2.0,
-                    theme.accent_ember,
+                    theme.accent_primary,
                     alpha,
                 );
             }
@@ -835,10 +897,11 @@ impl ViewportSink for GpuSink<'_> {
         // GPU path has no per-pixel buffer to clear.
     }
 
-    fn fill_selection_row(
+    fn fill_row_span(
         &mut self,
         _ry: usize,
-        _cols: usize,
+        _col_start: usize,
+        _col_end: usize,
         _m: FontMetrics,
         _rgb: [u8; 3],
         _alpha: f64,
@@ -898,7 +961,7 @@ impl ViewportSink for GpuSink<'_> {
         ry: usize,
         cols: usize,
         block: &Block,
-        _cmd_text: &str,
+        cmd_text: &str,
         m: FontMetrics,
         theme: &Theme,
     ) {
@@ -909,6 +972,7 @@ impl ViewportSink for GpuSink<'_> {
             m,
             theme,
             block,
+            cmd_text,
             ry,
             cols,
             self.cw,
@@ -918,11 +982,7 @@ impl ViewportSink for GpuSink<'_> {
 
         // Running-block header dot: sine-modulated color at col 0 while block is Running.
         if block.state == BlockState::Running {
-            let alpha = 0.45
-                + 0.55
-                    * (std::f32::consts::TAU * self.running_pulse_phase)
-                        .sin()
-                        .max(0.0);
+            let alpha = running_pulse_opacity(self.running_pulse_phase);
             let dot_col = 0.5_f64 - 1.0 / m.cell_w; // ~center of col 0
             let dot_row = ry as f64 + 0.5 - 1.0 / m.cell_h;
             let rect = self.raster.cell_rect(m, dot_col, dot_row);
@@ -1019,6 +1079,33 @@ impl ViewportSink for GpuSink<'_> {
 
 // ── Unified draw loop ─────────────────────────────────────────────────────────
 
+fn selection_span_for_row(selection: Selection, row: usize, cols: usize) -> Option<(usize, usize)> {
+    if !selection.active || cols == 0 {
+        return None;
+    }
+
+    let (s, e) = selection.ordered();
+    if row < s.row || row > e.row {
+        return None;
+    }
+
+    let (start, end) = match selection.mode {
+        SelectionMode::Rect => {
+            let lo = selection.anchor.col.min(selection.head.col);
+            let hi = selection.anchor.col.max(selection.head.col);
+            (lo, hi)
+        }
+        SelectionMode::Linear if s.row == e.row => (s.col, e.col),
+        SelectionMode::Linear if row == s.row => (s.col, cols),
+        SelectionMode::Linear if row == e.row => (0, e.col),
+        SelectionMode::Linear => (0, cols),
+    };
+
+    let start = start.min(cols);
+    let end = end.min(cols);
+    (start < end).then_some((start, end))
+}
+
 /// Unified viewport draw body shared by CPU and GPU paths.
 ///
 /// `off_opt` is `None` for the live-bottom path and `Some(off)` for smooth
@@ -1089,16 +1176,15 @@ fn draw_viewport_into(
             }
         }
 
-        // Selection row wash (pre-pass, CPU only; GPU no-op).
-        if selection.active {
-            let (s, e) = selection.ordered();
-            if crow >= s.row && crow <= e.row {
-                let lum = theme.background[0] as f64 * 0.2126
-                    + theme.background[1] as f64 * 0.7152
-                    + theme.background[2] as f64 * 0.0722;
-                let alpha = if lum / 255.0 > 0.5 { 0.18 } else { 0.22 };
-                sink.fill_selection_row(y, cols, metrics, theme.accent_ember, alpha);
-            }
+        // Selection wash (pre-pass, CPU only; GPU no-op). Single-row and
+        // endpoint rows use exact column spans so selection never reads as a
+        // full-width status band.
+        if let Some((col_start, col_end)) = selection_span_for_row(selection, crow, cols) {
+            let lum = theme.background[0] as f64 * 0.2126
+                + theme.background[1] as f64 * 0.7152
+                + theme.background[2] as f64 * 0.0722;
+            let alpha = if lum / 255.0 > 0.5 { 0.18 } else { 0.22 };
+            sink.fill_row_span(y, col_start, col_end, metrics, theme.accent_primary, alpha);
         }
 
         // Diff-row tint (unified diff +/- content lines only).
@@ -1111,12 +1197,18 @@ fn draw_viewport_into(
                 } else {
                     theme.failure
                 };
-                sink.fill_selection_row(y, cols, metrics, rgb, 0.12);
+                sink.fill_row_span(y, 0, cols, metrics, rgb, 0.12);
             }
         }
 
-        // Draw all cells in this row.
-        {
+        let draws_block_header = block_opt
+            .as_ref()
+            .is_some_and(|block| abs == block.command_line && !folded.contains(block.command_line));
+
+        // Draw all cells in this row. Synthesized block headers own their row;
+        // painting raw prompt cells underneath causes visible double text after
+        // pane resizes and mode switches.
+        if !draws_block_header {
             let row: Vec<Cell> = match off_opt {
                 None => terminal
                     .viewport_row(y)
@@ -1146,7 +1238,7 @@ fn draw_viewport_into(
 
         // Block header overlay.
         if let Some(ref block) = block_opt {
-            if abs == block.command_line && !folded.contains(block.command_line) {
+            if draws_block_header {
                 let cmd_text = read_command_text(terminal, crow, block.command_start_col as usize);
                 sink.draw_block_header(y, cols, block, &cmd_text, metrics, theme);
             }
@@ -1349,7 +1441,7 @@ pub fn draw_viewport_gpu(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::raster::PixelRect;
+    use crate::raster::{PixelRect, pixel_at};
     use anvil_term::{DEFAULT_CAPACITY, Terminal};
     use anvil_theme::MINERAL_DARK;
 
@@ -1451,6 +1543,74 @@ mod tests {
         }
     }
 
+    #[test]
+    fn cursor_opacity_bucket_limits_idle_blink_redraws() {
+        let mut phase = 0.0_f32;
+        let mut last = cursor_opacity_bucket(cursor_opacity(phase));
+        let mut transitions = 0;
+        for _ in 0..60 {
+            phase += 1.0 / 60.0;
+            if phase >= 1.0 {
+                phase -= 1.0;
+            }
+            let next = cursor_opacity_bucket(cursor_opacity(phase));
+            if next != last {
+                transitions += 1;
+                last = next;
+            }
+        }
+        assert!(
+            transitions <= 2,
+            "idle blink should not force per-frame redraws, got {transitions}"
+        );
+    }
+
+    #[test]
+    fn opacity_redraw_bucket_limits_agent_pulse_redraws() {
+        let mut phase = 0.0_f32;
+        let mut last =
+            opacity_redraw_bucket(0.5 + 0.5 * (std::f32::consts::TAU * phase).sin(), 0.5, 2);
+        let mut transitions = 0;
+        for _ in 0..60 {
+            phase += 0.3 / 60.0;
+            if phase >= 1.0 {
+                phase -= 1.0;
+            }
+            let opacity = 0.5 + 0.5 * (std::f32::consts::TAU * phase).sin();
+            let next = opacity_redraw_bucket(opacity, 0.5, 2);
+            if next != last {
+                transitions += 1;
+                last = next;
+            }
+        }
+        assert!(
+            transitions <= 2,
+            "agent pulse should not force near-frame-rate redraws, got {transitions}"
+        );
+    }
+
+    #[test]
+    fn running_pulse_bucket_limits_running_block_redraws() {
+        let mut phase = 0.0_f32;
+        let mut last = running_pulse_bucket(phase);
+        let mut transitions = 0;
+        for _ in 0..60 {
+            phase += 1.5 / 60.0;
+            if phase >= 1.0 {
+                phase -= 1.0;
+            }
+            let next = running_pulse_bucket(phase);
+            if next != last {
+                transitions += 1;
+                last = next;
+            }
+        }
+        assert!(
+            transitions <= 6,
+            "running block pulse should not force per-frame redraws, got {transitions}"
+        );
+    }
+
     // ── draw_viewport zero-allocation guarantee (by-construction note)
     //
     // The draw loop is allocation-free by construction:
@@ -1541,6 +1701,69 @@ mod tests {
             0.0,
         );
         // No panic; scroll path exercised.
+    }
+
+    #[test]
+    fn terminal_selection_tints_only_selected_columns_on_single_row() {
+        let m = metrics();
+        let mut r = Raster::new(160, 80);
+        let mut painter = StubPainter::default();
+        let mut bold_p = StubPainter::default();
+        let mut italic_p = StubPainter::default();
+        let mut bold_italic_p = StubPainter::default();
+        let mut t = make_terminal(12, 3);
+        let theme = MINERAL_DARK;
+        r.clear(theme.background);
+
+        use anvil_workspace::selection::{Point, Selection};
+        let sel = Selection {
+            active: true,
+            anchor: Point { row: 0, col: 2 },
+            head: Point { row: 0, col: 5 },
+            ..Selection::default()
+        };
+
+        draw_viewport(
+            &mut r,
+            &mut GridPainters {
+                regular: &mut painter,
+                bold: &mut bold_p,
+                italic: &mut italic_p,
+                bold_italic: &mut bold_italic_p,
+            },
+            &mut t,
+            m,
+            &theme,
+            0.0,
+            sel,
+            None,
+            None,
+            0.0,
+            160.0,
+            FoldedBlocks::empty(),
+            None,
+            0.0,
+        );
+
+        let y = (m.cell_h * 0.5) as usize;
+        let selected_x = (2.0 * m.cell_w + 1.0) as usize;
+        let before_x = 1usize;
+        let after_x = (6.0 * m.cell_w + 1.0) as usize;
+        assert_ne!(
+            pixel_at(&r, selected_x, y),
+            theme.background,
+            "selected columns should receive the selection wash"
+        );
+        assert_eq!(
+            pixel_at(&r, before_x, y),
+            theme.background,
+            "selection wash must not fill columns before the selected span"
+        );
+        assert_eq!(
+            pixel_at(&r, after_x, y),
+            theme.background,
+            "selection wash must not fill columns after the selected span"
+        );
     }
 
     // ── resolve_color
@@ -1640,11 +1863,12 @@ mod tests {
         let theme = MINERAL_DARK;
         r.clear(theme.background);
 
-        let mut cell = Cell::default();
-        cell.cp = 'X';
-        cell.fg = Color::Rgb([255, 0, 0]);
-        cell.bg = Color::Rgb([0, 0, 255]);
-        cell.attrs = Attrs::INVERSE;
+        let cell = Cell {
+            cp: 'X',
+            fg: Color::Rgb([255, 0, 0]),
+            bg: Color::Rgb([0, 0, 255]),
+            attrs: Attrs::INVERSE,
+        };
 
         draw_cell(
             &mut r,
@@ -2070,6 +2294,133 @@ mod tests {
         assert!(
             calls_folded < calls_unfolded,
             "folded viewport should produce fewer glyph calls ({calls_folded}) than unfolded ({calls_unfolded})"
+        );
+    }
+
+    #[derive(Default)]
+    struct RecordingSink {
+        raw_cells: Vec<(usize, usize, char)>,
+        headers: Vec<(usize, String)>,
+    }
+
+    impl ViewportSink for RecordingSink {
+        fn clear_row_bg(&mut self, _ry: usize, _m: FontMetrics, _bg: [u8; 3]) {}
+
+        fn fill_row_span(
+            &mut self,
+            _ry: usize,
+            _col_start: usize,
+            _col_end: usize,
+            _m: FontMetrics,
+            _rgb: [u8; 3],
+            _alpha: f64,
+        ) {
+        }
+
+        fn draw_cell(
+            &mut self,
+            x: usize,
+            y: usize,
+            _content_row: usize,
+            cell: Cell,
+            _m: FontMetrics,
+            _theme: &Theme,
+            _sel: Selection,
+            _search: Option<&Search>,
+        ) {
+            self.raw_cells.push((x, y, cell.cp));
+        }
+
+        fn draw_fold_summary(
+            &mut self,
+            _ry: usize,
+            _cols: usize,
+            _hidden: usize,
+            _m: FontMetrics,
+            _theme: &Theme,
+        ) {
+        }
+
+        fn draw_block_header(
+            &mut self,
+            ry: usize,
+            _cols: usize,
+            _block: &Block,
+            cmd_text: &str,
+            _m: FontMetrics,
+            _theme: &Theme,
+        ) {
+            self.headers.push((ry, cmd_text.to_string()));
+        }
+
+        fn draw_prompt_rule(
+            &mut self,
+            _ry: f64,
+            _m: FontMetrics,
+            _rgb: [u8; 3],
+            _x_start: f64,
+            _x_end: f64,
+        ) {
+        }
+
+        fn draw_cursor(
+            &mut self,
+            _t: &mut Terminal,
+            _cp: CursorParams,
+            _m: FontMetrics,
+            _theme: &Theme,
+            _rows: usize,
+            _cols: usize,
+        ) {
+        }
+    }
+
+    #[test]
+    fn block_header_rows_do_not_draw_raw_cells_under_overlay() {
+        let mut t = make_terminal(40, 6);
+        t.feed(b"\x1b]133;A\x07");
+        t.feed(b"> ");
+        t.feed(b"\x1b]133;B\x07");
+        t.feed(b"echo anvil-mode-toggle-check\r\n");
+        t.feed(b"\x1b]133;C\x07");
+        t.feed(b"anvil-mode-toggle-check\r\n");
+        t.feed(b"\x1b]133;D;exit_code=0\x07");
+        t.feed(b"\x1b]133;A\x07");
+
+        let block = t.block_at(0).expect("command block should exist");
+        let command_viewport_row = block.command_line - t.evicted_lines;
+        let mut sink = RecordingSink::default();
+
+        draw_viewport_into(
+            &mut sink,
+            &mut t,
+            metrics(),
+            &MINERAL_DARK,
+            6,
+            40,
+            None,
+            6,
+            Selection::default(),
+            None,
+            None,
+            0.0,
+            400.0,
+            &FoldedBlocks::empty(),
+            None,
+        );
+
+        assert_eq!(
+            sink.headers,
+            vec![(
+                command_viewport_row,
+                "echo anvil-mode-toggle-check".to_string()
+            )]
+        );
+        assert!(
+            sink.raw_cells
+                .iter()
+                .all(|(_, y, _)| *y != command_viewport_row),
+            "raw terminal cells must not be painted underneath a synthesized block header"
         );
     }
 

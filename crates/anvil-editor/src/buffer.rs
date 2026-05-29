@@ -2045,7 +2045,7 @@ mod tests {
         // Build a 100 MB file: repeat an 80-byte line until we hit 100 MB.
         const TARGET: usize = 100 * 1024 * 1024;
         let line = b"Hello, Anvil! This is a filler line for the 100MB scaling test.\n";
-        let repeats = (TARGET + line.len() - 1) / line.len();
+        let repeats = TARGET.div_ceil(line.len());
         {
             use std::io::Write;
             let mut f = fs::File::create(&path).unwrap();

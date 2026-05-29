@@ -22,7 +22,7 @@ impl EnvKind {
 }
 
 /// A parsed kubectl context: cluster name, namespace, and environment tier.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KubeCtx {
     pub cluster: String,
     pub namespace: String,
