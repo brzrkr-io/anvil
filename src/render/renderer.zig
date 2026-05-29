@@ -1,7 +1,8 @@
 const std = @import("std");
 const Terminal = @import("../vt/terminal.zig").Terminal;
 const palette = @import("palette.zig");
-const CellInstance = @import("instance.zig").CellInstance;
+const inst = @import("instance.zig");
+const CellInstance = inst.CellInstance;
 const Atlas = @import("atlas.zig").Atlas;
 
 pub const GridSize = struct { cols: u16, rows: u16 };
@@ -51,7 +52,13 @@ pub const Renderer = struct {
             var c: u16 = 0;
             while (c < term.grid.cols) : (c += 1) {
                 const cell = if (c < cells.len) cells[c] else @import("../vt/cell.zig").Cell.blank;
-                var fg = palette.resolve(cell.fg, true);
+                // Bold maps the 8 base ANSI colors to their bright variant.
+                var fg_color = cell.fg;
+                if (cell.attrs.bold) {
+                    if (fg_color == .indexed and fg_color.indexed < 8)
+                        fg_color = .{ .indexed = fg_color.indexed + 8 };
+                }
+                var fg = palette.resolve(fg_color, true);
                 var bg = palette.resolve(cell.bg, false);
                 if (cell.attrs.reverse) {
                     const t = fg;
@@ -62,12 +69,17 @@ pub const Renderer = struct {
                     fg = palette.selectionFg();
                     bg = palette.selectionBg();
                 }
+                var flags: u32 = 0;
+                if (cell.attrs.underline) flags |= inst.flag_underline;
+                if (cell.attrs.strike) flags |= inst.flag_strike;
+                if (cell.attrs.dim) flags |= inst.flag_dim;
                 out[n] = .{
                     .x = ox + @as(f32, @floatFromInt(c)) * self.cell_w,
                     .y = y,
                     .fg = fg.f32x4(),
                     .bg = bg.f32x4(),
                     .uv = self.atlas.uvOrigin(cell.cp),
+                    .flags = flags,
                 };
                 n += 1;
             }

@@ -6,7 +6,13 @@ pub const CellInstance = extern struct {
     fg: [4]f32,
     bg: [4]f32,
     uv: [2]f32,
+    /// Render flags drawn in-shader. bit0 underline, bit1 strike, bit2 dim.
+    flags: u32 = 0,
 };
+
+pub const flag_underline: u32 = 1;
+pub const flag_strike: u32 = 2;
+pub const flag_dim: u32 = 4;
 
 /// What Zig hands the shim each frame. Matches `FrameData` read in shim.m.
 pub const FrameData = extern struct {

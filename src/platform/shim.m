@@ -67,7 +67,7 @@ extern void anvil_set_theme_mode(int mode);
 extern void anvil_set_os_dark(int is_dark);
 extern int anvil_theme_is_dark(void);
 
-#define INSTANCE_STRIDE (12 * sizeof(float))
+#define INSTANCE_STRIDE (13 * sizeof(float))
 #define MAX_INSTANCES 60000
 #define ATLAS_SCALE 2.0
 #define BAR_H_PT 20.0 // compact title-bar height, logical points
