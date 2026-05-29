@@ -19,6 +19,7 @@ pub const Cell = struct {
     fg: Color = .default,
     bg: Color = .default,
     attrs: Attrs = .{},
+    link: u16 = 0, // 0 = no link; non-zero = index+1 into Terminal.link table
 
     pub const blank: Cell = .{};
 };

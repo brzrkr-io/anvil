@@ -84,6 +84,12 @@ pub const Terminal = struct {
     marks: [256]Mark = undefined,
     marks_start: usize = 0,
     marks_n: usize = 0,
+    // OSC 8 hyperlink table. link id 0 = no link; ids 1..links_n index here.
+    // Capped at 256 entries; new URIs past the cap are silently ignored.
+    link_uris: [256][256]u8 = undefined,
+    link_uri_lens: [256]u16 = [_]u16{0} ** 256,
+    links_n: u16 = 0,
+    cur_link: u16 = 0, // link id stamped on newly printed cells (0 = none)
 
     /// Window title set via OSC 0/2 (empty until the shell sets one).
     pub fn title(self: *const Terminal) []const u8 {
@@ -119,6 +125,38 @@ pub const Terminal = struct {
         @memcpy(self.clip_buf[0..n], data[0..n]);
         self.clip_len = n;
         self.clip_pending = true;
+    }
+
+    /// OSC 8: set the current hyperlink URI. Empty uri clears the active link.
+    /// Interns the URI into the link table (cap 256); silently ignores past cap.
+    pub fn setLink(self: *Terminal, uri: []const u8) void {
+        if (uri.len == 0) {
+            self.cur_link = 0;
+            return;
+        }
+        const n = @min(uri.len, 256);
+        // Check if this URI is already interned.
+        var i: u16 = 0;
+        while (i < self.links_n) : (i += 1) {
+            if (self.link_uri_lens[i] == n and
+                std.mem.eql(u8, self.link_uris[i][0..n], uri[0..n]))
+            {
+                self.cur_link = i + 1;
+                return;
+            }
+        }
+        if (self.links_n >= 256) return; // cap reached; keep cur_link as-is
+        @memcpy(self.link_uris[self.links_n][0..n], uri[0..n]);
+        self.link_uri_lens[self.links_n] = @intCast(n);
+        self.links_n += 1;
+        self.cur_link = self.links_n; // 1-based
+    }
+
+    /// Return the URI for link id `id` (1-based), or empty slice if invalid.
+    pub fn linkUri(self: *const Terminal, id: u16) []const u8 {
+        if (id == 0 or id > self.links_n) return "";
+        const i = id - 1;
+        return self.link_uris[i][0..self.link_uri_lens[i]];
     }
 
     /// Return and clear a pending clipboard write, or null if none.
@@ -287,6 +325,8 @@ pub const Terminal = struct {
         self.clip_pending = false;
         self.marks_start = 0;
         self.marks_n = 0;
+        self.links_n = 0;
+        self.cur_link = 0;
     }
 
     /// Total logical lines = scrollback history + the live grid.
@@ -518,12 +558,12 @@ pub const Terminal = struct {
             self.lineFeed();
         }
         const c = self.grid.at(self.cy, self.cx);
-        c.* = .{ .cp = cp, .fg = self.pen.fg, .bg = self.pen.bg, .attrs = self.pen.attrs };
+        c.* = .{ .cp = cp, .fg = self.pen.fg, .bg = self.pen.bg, .attrs = self.pen.attrs, .link = self.cur_link };
         self.cx += 1;
         if (w == 2) {
             // Trailing spacer: blank glyph carrying the pen background.
             const s = self.grid.at(self.cy, self.cx);
-            s.* = .{ .cp = ' ', .fg = self.pen.fg, .bg = self.pen.bg, .attrs = self.pen.attrs };
+            s.* = .{ .cp = ' ', .fg = self.pen.fg, .bg = self.pen.bg, .attrs = self.pen.attrs, .link = self.cur_link };
             self.cx += 1;
         }
     }

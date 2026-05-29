@@ -583,6 +583,36 @@ fn runAction(id: cmd.ActionId) void {
     }
 }
 
+var link_buf: [512]u8 = undefined;
+
+/// Return the hyperlink URI under device-pixel coordinate (x, y).
+/// Writes the URI into an internal buffer and sets *out_ptr / *out_len.
+/// Returns 1 if a link was found, 0 otherwise.
+export fn anvil_link_at(x: f32, y: f32, out_ptr: *[*]const u8, out_len: *usize) callconv(.c) c_int {
+    if (!ready) return 0;
+    const np = layoutPanes(&pane_buf);
+    for (pane_buf[0..np]) |p| {
+        if (!contains(p.rect, x, y)) continue;
+        const s = mgr.byId(p.id) orelse continue;
+        const ox = p.rect.x + renderer.pad_x;
+        const oy = p.rect.y + renderer.pad_x;
+        const cf = (x - ox) / renderer.cell_w;
+        const rf = (y - oy) / renderer.cell_h;
+        const col: u16 = @intFromFloat(std.math.clamp(cf, 0, @as(f32, @floatFromInt(s.term.grid.cols - 1))));
+        const row: u16 = @intFromFloat(std.math.clamp(rf, 0, @as(f32, @floatFromInt(s.term.grid.rows - 1))));
+        const cell = s.term.viewRow(row)[col];
+        if (cell.link == 0) return 0;
+        const uri = s.term.linkUri(cell.link);
+        if (uri.len == 0) return 0;
+        const n = @min(uri.len, link_buf.len);
+        @memcpy(link_buf[0..n], uri[0..n]);
+        out_ptr.* = &link_buf;
+        out_len.* = n;
+        return 1;
+    }
+    return 0;
+}
+
 var copy_buf: [1 << 20]u8 = undefined;
 
 export fn anvil_copy(out_len: *usize) callconv(.c) [*]const u8 {

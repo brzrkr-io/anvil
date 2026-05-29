@@ -214,6 +214,12 @@ pub const Parser = struct {
                 }
             },
 
+            8 => { // OSC 8 ; params ; URI  (hyperlink)
+                // pt = "params;URI" (second semicolon separates params from URI)
+                const sc = std.mem.indexOfScalar(u8, pt, ';') orelse return;
+                term.setLink(pt[sc + 1 ..]);
+            },
+
             52 => { // set clipboard: Pc ; <base64>. Query ("?") is ignored.
                 const sc = std.mem.indexOfScalar(u8, pt, ';') orelse return;
                 const data = pt[sc + 1 ..];
@@ -466,6 +472,22 @@ test "bracketed paste mode toggles via 2004" {
     try std.testing.expect(t.bracketed_paste);
     p.feed(&t, "\x1b[?2004l");
     try std.testing.expect(!t.bracketed_paste);
+}
+
+test "OSC 8 hyperlink: cells carry link id and URI resolves" {
+    var t = try Terminal.init(std.testing.allocator, 1, 20);
+    defer t.deinit();
+    var p = Parser{};
+    // OSC 8 ; params ; https://example.com ST, then text, then OSC 8 ; ; ST
+    p.feed(&t, "\x1b]8;;https://example.com\x1b\\hi\x1b]8;;\x1b\\");
+    const h = t.grid.at(0, 0);
+    const i = t.grid.at(0, 1);
+    const after = t.grid.at(0, 2);
+    try std.testing.expect(h.link != 0);
+    try std.testing.expect(i.link != 0);
+    try std.testing.expectEqual(h.link, i.link);
+    try std.testing.expectEqualStrings("https://example.com", t.linkUri(h.link));
+    try std.testing.expectEqual(@as(u16, 0), after.link); // cleared after close
 }
 
 test "OSC 52 sets clipboard from base64, ignores query" {

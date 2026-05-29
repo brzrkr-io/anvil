@@ -82,6 +82,7 @@ extern void anvil_set_theme_mode(int mode);
 extern void anvil_set_os_dark(int is_dark);
 extern int anvil_theme_is_dark(void);
 extern void anvil_save_session(void);
+extern int anvil_link_at(float x, float y, const char **out_ptr, size_t *out_len);
 
 #define INSTANCE_STRIDE (13 * sizeof(float))
 #define MAX_INSTANCES 60000
@@ -531,6 +532,26 @@ static void layoutTrafficLights(NSWindow *win) {
                 (float)((self.bounds.size.height - p.y) * scale));
 }
 - (void)mouseDown:(NSEvent *)e {
+    if (e.modifierFlags & NSEventModifierFlagCommand) {
+        NSPoint p = [self convertPoint:e.locationInWindow fromView:nil];
+        CGFloat scale = self.window.backingScaleFactor;
+        float px = (float)(p.x * scale);
+        float py = (float)((self.bounds.size.height - p.y) * scale);
+        const char *uri_ptr = NULL;
+        size_t uri_len = 0;
+        if (anvil_link_at(px, py, &uri_ptr, &uri_len) && uri_ptr && uri_len > 0) {
+            NSString *uriStr = [[NSString alloc] initWithBytes:uri_ptr length:uri_len
+                                                      encoding:NSUTF8StringEncoding];
+            NSURL *url = uriStr ? [NSURL URLWithString:uriStr] : nil;
+            NSString *scheme = url.scheme.lowercaseString;
+            if (url && ([scheme isEqualToString:@"http"] ||
+                        [scheme isEqualToString:@"https"] ||
+                        [scheme isEqualToString:@"file"])) {
+                [[NSWorkspace sharedWorkspace] openURL:url];
+            }
+            return;
+        }
+    }
     [self sendMouse:e kind:0];
 }
 - (void)mouseDragged:(NSEvent *)e {
