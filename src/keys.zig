@@ -47,6 +47,18 @@ const terminal = [_]Binding{
     .{ .chord = "\u{2318}\u{2191}", .action = "Jump to Prev Prompt" },
     .{ .chord = "\u{2318}\u{2193}", .action = "Jump to Next Prompt" },
     .{ .chord = "\u{2318}R", .action = "Restart Shell" },
+    .{ .chord = "\u{2318}\u{21e7}Space", .action = "Copy Mode" },
+};
+
+const copy_mode_bindings = [_]Binding{
+    .{ .chord = "h/j/k/l", .action = "Move Caret" },
+    .{ .chord = "Arrows", .action = "Move Caret" },
+    .{ .chord = "w / b", .action = "Word Forward / Back" },
+    .{ .chord = "g / G", .action = "Top / Bottom" },
+    .{ .chord = "^U / ^D", .action = "Half Page Up / Down" },
+    .{ .chord = "v", .action = "Start Visual Selection" },
+    .{ .chord = "y / Enter", .action = "Copy Selection & Exit" },
+    .{ .chord = "Esc / q", .action = "Exit Copy Mode" },
 };
 
 pub const sections = [_]Section{
@@ -55,9 +67,10 @@ pub const sections = [_]Section{
     .{ .title = "Panes", .items = &panes },
     .{ .title = "Tabs", .items = &tabs },
     .{ .title = "Terminal", .items = &terminal },
+    .{ .title = "Copy Mode", .items = &copy_mode_bindings },
 };
 
-pub const total_bindings: usize = general.len + search_bindings.len + panes.len + tabs.len + terminal.len;
+pub const total_bindings: usize = general.len + search_bindings.len + panes.len + tabs.len + terminal.len + copy_mode_bindings.len;
 
 test "sections non-empty" {
     try std.testing.expect(sections.len > 0);
@@ -73,5 +86,5 @@ test "all bindings have non-empty chord and action" {
 }
 
 test "total binding count" {
-    try std.testing.expectEqual(@as(usize, 28), total_bindings);
+    try std.testing.expectEqual(@as(usize, 37), total_bindings);
 }

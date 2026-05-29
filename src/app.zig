@@ -13,6 +13,7 @@ const config = @import("config.zig");
 const keys = @import("keys.zig");
 const persist = @import("session_persist.zig");
 const chip_mod = @import("context_chip.zig");
+const copy_mode_mod = @import("copy_mode.zig");
 
 const shader_src = @embedFile("platform/shaders.metal");
 const font_data = @embedFile("font_ttf");
@@ -41,6 +42,7 @@ var ready = false;
 var cpal = cmd.Palette{};
 var srch = search.Search{};
 var help_open: bool = false;
+var copy_mode = copy_mode_mod.CopyMode{};
 var overlay: [128 * 7]f32 = undefined; // colored rects (x,y,w,h,r,g,b)
 var ctx_chip: chip_mod.Chip = .{};
 
@@ -567,6 +569,58 @@ export fn anvil_help_key(key: c_int) callconv(.c) void {
     }
 }
 
+export fn anvil_copy_mode_toggle() callconv(.c) void {
+    if (!ready) return;
+    if (copy_mode.open) {
+        copy_mode.exit();
+        focused().term.clearSelection();
+    } else {
+        cpal.hide();
+        srch.hide();
+        help_open = false;
+        copy_mode.enter(&focused().term);
+    }
+}
+
+export fn anvil_copy_mode_open() callconv(.c) c_int {
+    return if (copy_mode.open) 1 else 0;
+}
+
+/// key: 0 esc/q exit, 1 v visual, 2 y/enter copy+exit, 3 up/k, 4 down/j,
+/// 5 left/h, 6 right/l, 7 g (top), 8 G (bottom), 9 ctrl-u half up,
+/// 10 ctrl-d half down, 11 w word forward, 12 b word back.
+export fn anvil_copy_mode_key(key: c_int) callconv(.c) void {
+    if (!ready) return;
+    const t = &focused().term;
+    switch (key) {
+        0 => { // esc / q
+            copy_mode.exit();
+            t.clearSelection();
+        },
+        1 => copy_mode.startVisual(), // v
+        2 => { // y / enter — copy and exit
+            if (copy_mode.visual) {
+                var len: usize = 0;
+                const txt = anvil_copy(&len);
+                if (len > 0) anvil_pasteboard_write(txt, len);
+            }
+            copy_mode.exit();
+            t.clearSelection();
+        },
+        3 => copy_mode.move(t, -1, 0), // up / k
+        4 => copy_mode.move(t, 1, 0), // down / j
+        5 => copy_mode.move(t, 0, -1), // left / h
+        6 => copy_mode.move(t, 0, 1), // right / l
+        7 => copy_mode.gotoTop(t), // g
+        8 => copy_mode.gotoBottom(t), // G
+        9 => copy_mode.halfPage(t, -1), // ctrl-u
+        10 => copy_mode.halfPage(t, 1), // ctrl-d
+        11 => copy_mode.wordForward(t), // w
+        12 => copy_mode.wordBack(t), // b
+        else => {},
+    }
+}
+
 export fn anvil_cfg_error_open() callconv(.c) c_int {
     return if (cfg_error_len > 0) 1 else 0;
 }
@@ -698,9 +752,17 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
         if (multi and s.id != mgr.focused) {
             for (instances[start..n]) |*ci| ci.flags |= inst.flag_dim;
         }
-        if (s.id == mgr.focused and s.term.view_offset == 0 and cursorVisible(&s.term)) {
+        const show_live_cursor = s.id == mgr.focused and !copy_mode.open and
+            s.term.view_offset == 0 and cursorVisible(&s.term);
+        if (show_live_cursor) {
             instances[n] = renderer.cursorInstance(&s.term, ox, oy);
             n += 1;
+        }
+        if (s.id == mgr.focused and copy_mode.open) {
+            if (n < instances.len) {
+                instances[n] = copyModeCaret(th, ox, oy);
+                n += 1;
+            }
         }
     }
     // Tab labels in the title bar: program title (or cwd basename, or number),
@@ -861,6 +923,24 @@ fn putRect(ri: usize, x: f32, y: f32, w: f32, h: f32, c: theme.Rgb) void {
     o[4] = f[0];
     o[5] = f[1];
     o[6] = f[2];
+}
+
+/// A block caret for copy mode, rendered in the status.trace color (mineral/cyan).
+fn copyModeCaret(th: *const theme.Theme, ox: f32, oy: f32) inst.CellInstance {
+    const s = focused();
+    const row = @min(copy_mode.row, s.term.grid.rows - 1);
+    const col = @min(copy_mode.col, s.term.grid.cols - 1);
+    const cells = s.term.viewRow(row);
+    const cp = if (col < cells.len) cells[col].cp else ' ';
+    const caret_color = th.ansi[6]; // status.trace = mineral/cyan
+    const cell_bg = palette.resolve(if (col < cells.len) cells[col].bg else .default, false);
+    return .{
+        .x = ox + @as(f32, @floatFromInt(col)) * renderer.cell_w,
+        .y = oy + @as(f32, @floatFromInt(row)) * renderer.cell_h,
+        .fg = cell_bg.f32x4(),
+        .bg = caret_color.f32x4(),
+        .uv = renderer.atlas.uvOrigin(cp),
+    };
 }
 
 /// Inline run-block rails: a 3px vertical bar in each pane's left gutter,

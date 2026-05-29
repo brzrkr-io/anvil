@@ -77,6 +77,9 @@ extern void anvil_search_key(int key);
 extern void anvil_help_toggle(void);
 extern int anvil_help_open(void);
 extern void anvil_help_key(int key);
+extern void anvil_copy_mode_toggle(void);
+extern int anvil_copy_mode_open(void);
+extern void anvil_copy_mode_key(int key);
 extern int anvil_cfg_error_open(void);
 extern void anvil_cfg_error_dismiss(void);
 extern void anvil_respawn(void);
@@ -591,11 +594,47 @@ static void layoutTrafficLights(NSWindow *win) {
     if (cmd && ilc == 'f') { anvil_search_toggle(); return; }
     // Cmd+/ toggles the keyboard shortcut cheatsheet from any state.
     if (cmd && ilc == '/') { anvil_help_toggle(); return; }
+    // Cmd+Shift+Space toggles copy mode from any state.
+    {
+        BOOL shift = (f & NSEventModifierFlagShift) != 0;
+        if (cmd && shift && ich == ' ') { anvil_copy_mode_toggle(); return; }
+    }
 
     // While the cheatsheet is open it captures all keys; the PTY sees nothing.
     if (anvil_help_open()) {
         unichar ch = s.length ? [s characterAtIndex:0] : 0;
         if (ch == 0x1b) { anvil_help_key(0); return; } // esc closes
+        return; // swallow everything else
+    }
+
+    // While copy mode is open it captures all keys; the PTY sees nothing.
+    if (anvil_copy_mode_open()) {
+        BOOL shift = (f & NSEventModifierFlagShift) != 0;
+        if (cmd) return; // swallow other Cmd shortcuts
+        unichar ch = s.length ? [s characterAtIndex:0] : 0;
+        switch (ch) {
+            case 0x1b: anvil_copy_mode_key(0); return; // esc
+            case '\r': case '\n': anvil_copy_mode_key(2); return; // enter = copy+exit
+            case NSUpArrowFunctionKey:   anvil_copy_mode_key(3); return;
+            case NSDownArrowFunctionKey: anvil_copy_mode_key(4); return;
+            case NSLeftArrowFunctionKey:  anvil_copy_mode_key(5); return;
+            case NSRightArrowFunctionKey: anvil_copy_mode_key(6); return;
+        }
+        unichar lch = (ch >= 'A' && ch <= 'Z') ? ch + 32 : ch;
+        if (lch == 'q') { anvil_copy_mode_key(0); return; }
+        if (lch == 'v') { anvil_copy_mode_key(1); return; }
+        if (lch == 'y') { anvil_copy_mode_key(2); return; }
+        if (lch == 'k') { anvil_copy_mode_key(3); return; }
+        if (lch == 'j') { anvil_copy_mode_key(4); return; }
+        if (lch == 'h') { anvil_copy_mode_key(5); return; }
+        if (lch == 'l') { anvil_copy_mode_key(6); return; }
+        if (lch == 'g' && !shift) { anvil_copy_mode_key(7); return; }
+        if (lch == 'g' && shift)  { anvil_copy_mode_key(8); return; } // G
+        // Ctrl+U = 0x15, Ctrl+D = 0x04
+        if (ch == 0x15) { anvil_copy_mode_key(9);  return; }
+        if (ch == 0x04) { anvil_copy_mode_key(10); return; }
+        if (lch == 'w') { anvil_copy_mode_key(11); return; }
+        if (lch == 'b') { anvil_copy_mode_key(12); return; }
         return; // swallow everything else
     }
 
