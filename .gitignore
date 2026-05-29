@@ -14,5 +14,6 @@ docs/superpowers/
 .zig/
 .zig-cache/
 zig-out/
+zls.json
 
 .claude/worktrees/
