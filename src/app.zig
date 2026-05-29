@@ -519,7 +519,7 @@ export fn anvil_search_char(c: u8) callconv(.c) void {
     if (srch.current()) |m| jumpToMatch(m);
 }
 
-/// key: 0 esc, 1 enter (next match), 2 prev match, 4 backspace.
+/// key: 0 esc, 1 enter (next match), 2 prev match, 4 backspace, 5 toggle regex.
 export fn anvil_search_key(key: c_int) callconv(.c) void {
     if (!ready) return;
     switch (key) {
@@ -535,6 +535,10 @@ export fn anvil_search_key(key: c_int) callconv(.c) void {
         },
         4 => {
             srch.backspace(&focused().term);
+            if (srch.current()) |m| jumpToMatch(m);
+        },
+        5 => {
+            srch.toggleRegex(&focused().term);
             if (srch.current()) |m| jumpToMatch(m);
         },
         else => {},
@@ -1079,13 +1083,21 @@ fn emitSearch(th: *const theme.Theme, start: usize) struct { text: usize, rects:
         putGlyph(n, tx + @as(f32, @floatFromInt(i + 1)) * cw, by, th.fg, th.bar, c);
         n += 1;
     }
-    // Match count, right-aligned: "cur/total" (1-based, 0/0 when no matches).
-    var cbuf: [24]u8 = undefined;
+    // Right-aligned status: optional "[R]"/"[R?]" regex indicator + "cur/total".
+    var cbuf: [32]u8 = undefined;
     const cur = if (srch.count == 0) 0 else srch.cur + 1;
     const cnt = std.fmt.bufPrint(&cbuf, "{d}/{d}", .{ cur, srch.count }) catch "";
-    const cnt_x = bx + bw - pad - @as(f32, @floatFromInt(cnt.len)) * cw;
+    const mode_label: []const u8 = if (srch.regex_mode) (if (srch.bad_pattern) "[R?] " else "[R] ") else "";
+    const total_right_len = mode_label.len + cnt.len;
+    var rx = bx + bw - pad - @as(f32, @floatFromInt(total_right_len)) * cw;
+    for (mode_label, 0..) |c, i| {
+        const fg = if (srch.bad_pattern) th.ansi[3] else th.ansi[6];
+        putGlyph(n, rx + @as(f32, @floatFromInt(i)) * cw, by, fg, th.bar, c);
+        n += 1;
+    }
+    rx += @as(f32, @floatFromInt(mode_label.len)) * cw;
     for (cnt, 0..) |c, i| {
-        putGlyph(n, cnt_x + @as(f32, @floatFromInt(i)) * cw, by, th.separator, th.bar, c);
+        putGlyph(n, rx + @as(f32, @floatFromInt(i)) * cw, by, th.separator, th.bar, c);
         n += 1;
     }
     return .{ .text = n - start, .rects = ri };

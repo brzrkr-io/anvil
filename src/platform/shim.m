@@ -610,6 +610,7 @@ static void layoutTrafficLights(NSWindow *win) {
             case NSUpArrowFunctionKey:   anvil_search_key(2); return; // prev
             case NSDownArrowFunctionKey: anvil_search_key(1); return; // next
             case 0x7f: case 0x08: anvil_search_key(4); return; // backspace
+            case '\t': anvil_search_key(5); return; // tab = toggle regex mode
         }
         if (ch >= 0x20 && ch < 0x7f) { anvil_search_char((unsigned char)ch); return; }
         return;

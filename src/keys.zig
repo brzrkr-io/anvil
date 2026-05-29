@@ -14,6 +14,12 @@ const general = [_]Binding{
     .{ .chord = "\u{2318}V", .action = "Paste" },
 };
 
+const search_bindings = [_]Binding{
+    .{ .chord = "\u{21a9}/\u{21e7}\u{21a9}", .action = "Next / Prev Match" },
+    .{ .chord = "Tab", .action = "Toggle Regex Mode" },
+    .{ .chord = "Esc", .action = "Close Search" },
+};
+
 const panes = [_]Binding{
     .{ .chord = "\u{2318}D", .action = "Split Right" },
     .{ .chord = "\u{2318}\u{21e7}D", .action = "Split Down" },
@@ -45,12 +51,13 @@ const terminal = [_]Binding{
 
 pub const sections = [_]Section{
     .{ .title = "General", .items = &general },
+    .{ .title = "Search", .items = &search_bindings },
     .{ .title = "Panes", .items = &panes },
     .{ .title = "Tabs", .items = &tabs },
     .{ .title = "Terminal", .items = &terminal },
 };
 
-pub const total_bindings: usize = general.len + panes.len + tabs.len + terminal.len;
+pub const total_bindings: usize = general.len + search_bindings.len + panes.len + tabs.len + terminal.len;
 
 test "sections non-empty" {
     try std.testing.expect(sections.len > 0);
@@ -66,5 +73,5 @@ test "all bindings have non-empty chord and action" {
 }
 
 test "total binding count" {
-    try std.testing.expectEqual(@as(usize, 25), total_bindings);
+    try std.testing.expectEqual(@as(usize, 28), total_bindings);
 }

@@ -24,6 +24,7 @@ test {
     _ = @import("palette.zig");
     _ = @import("config.zig");
     _ = @import("search.zig");
+    _ = @import("regex.zig");
     _ = @import("keys.zig");
     _ = @import("session_persist.zig");
     _ = @import("context_chip.zig");

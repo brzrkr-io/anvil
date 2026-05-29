@@ -1,5 +1,6 @@
 const std = @import("std");
 const Terminal = @import("vt/terminal.zig").Terminal;
+const regex = @import("regex.zig");
 
 const max_query = 128;
 const max_matches = 512;
@@ -16,6 +17,8 @@ pub const Search = struct {
     matches: [max_matches]Match = undefined,
     count: usize = 0,
     cur: usize = 0,
+    regex_mode: bool = false,
+    bad_pattern: bool = false,
 
     pub fn show(self: *Search) void {
         self.open = true;
@@ -45,6 +48,11 @@ pub const Search = struct {
         self.run(term);
     }
 
+    pub fn toggleRegex(self: *Search, term: *Terminal) void {
+        self.regex_mode = !self.regex_mode;
+        self.run(term);
+    }
+
     pub fn current(self: *const Search) ?Match {
         if (self.count == 0) return null;
         return self.matches[self.cur];
@@ -64,19 +72,67 @@ pub const Search = struct {
         return self.matches[self.cur];
     }
 
-    /// Rescan the whole buffer for the query (case-insensitive substring).
-    /// Resets the current match to the last (most recent) hit.
+    /// Rescan the whole buffer. Uses regex matching when regex_mode is on;
+    /// falls back to case-insensitive substring on compile failure.
     pub fn run(self: *Search, term: *Terminal) void {
         self.count = 0;
+        self.bad_pattern = false;
         const q = self.queryStr();
         if (q.len == 0) return;
+
+        if (self.regex_mode) {
+            if (regex.compile(q)) |pat| {
+                var line: usize = 0;
+                const total = term.totalLines();
+                while (line < total and self.count < max_matches) : (line += 1) {
+                    const cells = term.logicalRow(line);
+                    findInRowRegex(self, cells, line, &pat);
+                }
+            } else {
+                self.bad_pattern = true;
+                self.runSubstring(term, q);
+            }
+        } else {
+            self.runSubstring(term, q);
+        }
+
+        self.cur = if (self.count == 0) 0 else self.count - 1;
+    }
+
+    fn runSubstring(self: *Search, term: *Terminal, q: []const u8) void {
         var line: usize = 0;
         const total = term.totalLines();
         while (line < total and self.count < max_matches) : (line += 1) {
             const cells = term.logicalRow(line);
             findInRow(self, cells, line, q);
         }
-        self.cur = if (self.count == 0) 0 else self.count - 1;
+    }
+
+    fn findInRowRegex(self: *Search, cells: []const @import("vt/cell.zig").Cell, line: usize, pat: *const regex.Pattern) void {
+        // Extract ASCII text from cells into a scratch buffer.
+        var buf: [512]u8 = undefined;
+        var blen: usize = 0;
+        for (cells) |cell| {
+            if (blen >= buf.len) break;
+            const cp = cell.cp;
+            buf[blen] = if (cp > 0 and cp <= 0x7e) @intCast(cp) else ' ';
+            blen += 1;
+        }
+        const text = buf[0..blen];
+        var start: usize = 0;
+        while (start <= text.len) {
+            const r = regex.search(pat, text[start..]) orelse break;
+            if (self.count >= max_matches) break;
+            self.matches[self.count] = .{
+                .line = line,
+                .col = @intCast(start + r.start),
+                .len = @intCast(@max(1, r.len)),
+            };
+            self.count += 1;
+            const advance = r.start + @max(1, r.len);
+            if (start + advance <= start) break;
+            start += advance;
+        }
     }
 
     fn findInRow(self: *Search, cells: []const @import("vt/cell.zig").Cell, line: usize, q: []const u8) void {
@@ -154,4 +210,62 @@ test "matches found in scrollback history" {
     for ("needle") |ch| s.typeChar(ch, &t);
     try std.testing.expectEqual(@as(usize, 1), s.count);
     try std.testing.expectEqual(@as(usize, 0), s.current().?.line); // oldest line
+}
+
+test "regex mode: dot and plus match" {
+    var t = try Terminal.init(std.testing.allocator, 1, 20);
+    defer t.deinit();
+    for ("foo123bar") |ch| t.print(ch);
+    var s = Search{};
+    s.show();
+    s.regex_mode = true;
+    for ("[0-9]+") |ch| s.typeChar(ch, &t);
+    try std.testing.expectEqual(@as(usize, 1), s.count);
+    const m = s.current().?;
+    try std.testing.expectEqual(@as(u16, 3), m.col);
+    try std.testing.expectEqual(@as(u16, 3), m.len);
+}
+
+test "regex mode: bad pattern falls back to substring, sets bad_pattern" {
+    var t = try Terminal.init(std.testing.allocator, 1, 20);
+    defer t.deinit();
+    for ("*star*") |ch| t.print(ch);
+    var s = Search{};
+    s.show();
+    s.regex_mode = true;
+    for ("*star*") |ch| s.typeChar(ch, &t); // leading * is invalid regex
+    try std.testing.expect(s.bad_pattern);
+    // Fell back to substring; "*star*" is a literal match.
+    try std.testing.expectEqual(@as(usize, 1), s.count);
+}
+
+test "toggleRegex reruns search" {
+    var t = try Terminal.init(std.testing.allocator, 1, 20);
+    defer t.deinit();
+    for ("abc123") |ch| t.print(ch);
+    var s = Search{};
+    s.show();
+    for ("abc") |ch| s.typeChar(ch, &t);
+    try std.testing.expectEqual(@as(usize, 1), s.count);
+    // Enable regex mode via toggle — same result for literal query.
+    s.toggleRegex(&t);
+    try std.testing.expect(s.regex_mode);
+    try std.testing.expectEqual(@as(usize, 1), s.count);
+    // Toggle off.
+    s.toggleRegex(&t);
+    try std.testing.expect(!s.regex_mode);
+}
+
+test "match count for known buffer" {
+    var t = try Terminal.init(std.testing.allocator, 1, 30);
+    defer t.deinit();
+    for ("error: bad error: very bad") |ch| t.print(ch);
+    var s = Search{};
+    s.show();
+    for ("error") |ch| s.typeChar(ch, &t);
+    try std.testing.expectEqual(@as(usize, 2), s.count);
+    // cur starts at last match (index 1).
+    try std.testing.expectEqual(@as(usize, 1), s.cur);
+    _ = s.next(); // wraps to index 0
+    try std.testing.expectEqual(@as(usize, 0), s.cur);
 }
