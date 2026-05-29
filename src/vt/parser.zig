@@ -292,6 +292,16 @@ test "mouse modes set and clear via DEC private modes" {
     try std.testing.expectEqual(@import("terminal.zig").MouseMode.off, t.mouse);
 }
 
+test "bracketed paste mode toggles via 2004" {
+    var t = try Terminal.init(std.testing.allocator, 1, 4);
+    defer t.deinit();
+    var p = Parser{};
+    p.feed(&t, "\x1b[?2004h");
+    try std.testing.expect(t.bracketed_paste);
+    p.feed(&t, "\x1b[?2004l");
+    try std.testing.expect(!t.bracketed_paste);
+}
+
 test "UTF-8 multibyte decode" {
     var t = try Terminal.init(std.testing.allocator, 1, 10);
     defer t.deinit();

@@ -46,6 +46,7 @@ pub const Terminal = struct {
     cwd_len: usize = 0,
     mouse: MouseMode = .off,
     mouse_sgr: bool = false, // SGR (1006) extended encoding
+    bracketed_paste: bool = false, // mode 2004
 
     /// Window title set via OSC 0/2 (empty until the shell sets one).
     pub fn title(self: *const Terminal) []const u8 {
@@ -408,6 +409,7 @@ pub const Terminal = struct {
             1002 => self.mouse = if (enable) .button else .off,
             1003 => self.mouse = if (enable) .any else .off,
             1006 => self.mouse_sgr = enable,
+            2004 => self.bracketed_paste = enable,
             else => {},
         }
     }

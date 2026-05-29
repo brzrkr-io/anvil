@@ -166,6 +166,20 @@ export fn anvil_input(ptr: [*]const u8, len: usize) callconv(.c) void {
     focused().write(ptr[0..len]);
 }
 
+/// Paste clipboard text. Wraps in bracketed-paste markers when the program
+/// enabled mode 2004 so editors can tell a paste from typing.
+export fn anvil_paste(ptr: [*]const u8, len: usize) callconv(.c) void {
+    if (!ready) return;
+    const s = focused();
+    if (s.term.bracketed_paste) {
+        s.write("\x1b[200~");
+        s.write(ptr[0..len]);
+        s.write("\x1b[201~");
+    } else {
+        s.write(ptr[0..len]);
+    }
+}
+
 export fn anvil_scroll(delta: c_int) callconv(.c) void {
     if (!ready) return;
     const s = focused();

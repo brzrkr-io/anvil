@@ -49,6 +49,7 @@ extern void anvil_atlas_params(AtlasParams *out);
 extern void anvil_set_metrics(float cell_w, float cell_h);
 extern int anvil_poll(void);
 extern void anvil_input(const char *bytes, size_t len);
+extern void anvil_paste(const char *bytes, size_t len);
 extern void anvil_scroll(int delta);
 extern void anvil_mouse(int kind, float x, float y);
 extern void anvil_split(int axis);
@@ -508,7 +509,7 @@ static void layoutTrafficLights(NSWindow *win) {
 - (void)pasteClipboard {
     NSString *str = [[NSPasteboard generalPasteboard] stringForType:NSPasteboardTypeString];
     const char *u = str.UTF8String;
-    if (u) anvil_input(u, strlen(u));
+    if (u) anvil_paste(u, strlen(u));
 }
 - (void)keyDown:(NSEvent *)e {
     NSString *s = e.characters;
