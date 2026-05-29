@@ -643,6 +643,26 @@ test "alt screen swaps to a blank grid and restores primary" {
     try std.testing.expect(t.stash == null);
 }
 
+test "alt-screen scrolling does not pollute scrollback" {
+    var t = try Terminal.init(std.testing.allocator, 2, 2);
+    defer t.deinit();
+    // Build one scrollback line on the primary screen.
+    t.print('a');
+    t.carriageReturn();
+    t.lineFeed();
+    t.lineFeed(); // 'a' row scrolls into history
+    try std.testing.expectEqual(@as(usize, 1), t.scrollback.len());
+
+    t.setMode(1049, true);
+    // Scroll a lot inside the alt screen; history must not grow.
+    var i: u8 = 0;
+    while (i < 10) : (i += 1) t.lineFeed();
+    try std.testing.expectEqual(@as(usize, 1), t.scrollback.len());
+
+    t.setMode(1049, false);
+    try std.testing.expectEqual(@as(usize, 1), t.scrollback.len());
+}
+
 test "redundant alt enter is a no-op" {
     var t = try Terminal.init(std.testing.allocator, 2, 2);
     defer t.deinit();
