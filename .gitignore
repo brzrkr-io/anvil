@@ -11,6 +11,7 @@ docs/superpowers/
 /target
 
 # Zig
+.zig/
 .zig-cache/
 zig-out/
 
