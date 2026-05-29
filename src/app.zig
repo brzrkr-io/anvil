@@ -161,6 +161,18 @@ fn pushThemeColors() void {
     const fg = [3]u8{ th.fg.r, th.fg.g, th.fg.b };
     const bg = [3]u8{ th.bg.r, th.bg.g, th.bg.b };
     for (mgr.sessions.items) |*s| s.term.setThemeColors(fg, bg, ansi);
+    updateThemeEnv();
+}
+
+/// Export ANVIL_THEME so newly spawned shells (and the bundled nvim colorscheme)
+/// know our active variant without a query round-trip. Set on change only.
+var last_theme_dark: ?bool = null;
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+fn updateThemeEnv() void {
+    const dark = effectiveDark();
+    if (last_theme_dark == dark) return;
+    last_theme_dark = dark;
+    _ = setenv("ANVIL_THEME", if (dark) "mineral-dark" else "mineral-light", 1);
 }
 
 export fn anvil_set_theme_mode(m: c_int) callconv(.c) void {
