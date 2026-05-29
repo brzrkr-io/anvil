@@ -63,10 +63,28 @@ pub const Pty = struct {
 
     pub fn write(self: *Pty, bytes: []const u8) void {
         var off: usize = 0;
+        var stalls: u8 = 0;
         while (off < bytes.len) {
             const n = c.write(self.master, bytes.ptr + off, bytes.len - off);
-            if (n <= 0) return;
-            off += @intCast(n);
+            if (n > 0) {
+                off += @intCast(n);
+                stalls = 0;
+                continue;
+            }
+            // Nonblocking master: EAGAIN means the kernel buffer is full. Wait
+            // briefly for writability and retry so large pastes/heredocs are not
+            // truncated. Bound the wait so a stuck reader can't hang the UI.
+            if (n == -1 and std.posix.errno(n) == .AGAIN and stalls < 50) {
+                var pfd = [_]std.posix.pollfd{.{
+                    .fd = self.master,
+                    .events = std.posix.POLL.OUT,
+                    .revents = 0,
+                }};
+                _ = std.posix.poll(&pfd, 100) catch {};
+                stalls += 1;
+                continue;
+            }
+            return; // real error (EPIPE on dead shell, etc.) or give-up
         }
     }
 
