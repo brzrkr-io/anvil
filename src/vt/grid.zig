@@ -3,6 +3,7 @@ const Cell = @import("cell.zig").Cell;
 
 pub const Grid = struct {
     cells: []Cell,
+    wrapped: []bool, // per-row: true if the line soft-wrapped into the next
     rows: u16,
     cols: u16,
     alloc: std.mem.Allocator,
@@ -10,11 +11,14 @@ pub const Grid = struct {
     pub fn init(alloc: std.mem.Allocator, rows: u16, cols: u16) !Grid {
         const cells = try alloc.alloc(Cell, @as(usize, rows) * cols);
         @memset(cells, Cell.blank);
-        return .{ .cells = cells, .rows = rows, .cols = cols, .alloc = alloc };
+        const wrapped = try alloc.alloc(bool, rows);
+        @memset(wrapped, false);
+        return .{ .cells = cells, .wrapped = wrapped, .rows = rows, .cols = cols, .alloc = alloc };
     }
 
     pub fn deinit(self: *Grid) void {
         self.alloc.free(self.cells);
+        self.alloc.free(self.wrapped);
     }
 
     pub fn at(self: *Grid, r: u16, col: u16) *Cell {
@@ -28,10 +32,12 @@ pub const Grid = struct {
 
     pub fn clear(self: *Grid) void {
         @memset(self.cells, Cell.blank);
+        @memset(self.wrapped, false);
     }
 
     pub fn clearRow(self: *Grid, r: u16) void {
         @memset(self.row(r), Cell.blank);
+        self.wrapped[r] = false;
     }
 
     pub fn scrollUp(self: *Grid, n: u16) void {
@@ -41,8 +47,10 @@ pub const Grid = struct {
             const dst = self.cells[0 .. @as(usize, moved) * self.cols];
             const src = self.cells[@as(usize, lines) * self.cols ..][0 .. @as(usize, moved) * self.cols];
             std.mem.copyForwards(Cell, dst, src);
+            std.mem.copyForwards(bool, self.wrapped[0..moved], self.wrapped[lines..][0..moved]);
         }
         @memset(self.cells[@as(usize, moved) * self.cols ..], Cell.blank);
+        @memset(self.wrapped[moved..], false);
     }
 };
 

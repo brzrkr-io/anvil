@@ -136,41 +136,126 @@ pub const Terminal = struct {
             return;
         }
 
-        const old_rows = self.grid.rows;
-        if (new_rows < old_rows) {
-            var i: u16 = 0;
-            while (i < old_rows - new_rows) : (i += 1) self.scrollback.push(self.grid.row(i));
-        }
-
-        var ng = try Grid.init(self.grid.alloc, new_rows, new_cols);
-        const copy_cols = @min(self.grid.cols, new_cols);
-        const keep = @min(old_rows, new_rows);
-        var i: u16 = 0;
-        while (i < keep) : (i += 1) {
-            const src = self.grid.row(old_rows - keep + i);
-            @memcpy(ng.row(new_rows - keep + i)[0..copy_cols], src[0..copy_cols]);
-        }
-
-        var top: u16 = new_rows - keep; // blank rows above the kept region
-        while (top > 0) {
-            const line = self.scrollback.pop() orelse break;
-            top -= 1;
-            const n = @min(@as(u16, @intCast(line.len)), new_cols);
-            @memcpy(ng.row(top)[0..n], line[0..n]);
-            self.grid.alloc.free(line);
-        }
-
-        self.grid.deinit();
-        self.grid = ng;
-
-        const dcy = @as(i32, new_rows) - @as(i32, old_rows);
-        self.cy = @intCast(std.math.clamp(@as(i32, self.cy) + dcy, 0, new_rows - 1));
-        self.cx = @min(self.cx, new_cols - 1);
+        try self.reflow(new_rows, new_cols);
         if (self.view_offset > self.scrollback.len()) self.view_offset = self.scrollback.len();
+    }
+
+    /// Rewrap the primary grid to a new width and height. Logical lines (runs of
+    /// soft-wrapped rows) are re-chunked at new_cols; the result is bottom-
+    /// anchored, top overflow spills to scrollback, and slack pulls history back.
+    fn reflow(self: *Terminal, new_rows: u16, new_cols: u16) !void {
+        const alloc = self.grid.alloc;
+        const old = &self.grid;
+
+        // 1. Flatten into logical lines (owned []Cell), tracking the cursor.
+        var lines: std.ArrayListUnmanaged([]Cell) = .empty;
+        defer {
+            for (lines.items) |l| alloc.free(l);
+            lines.deinit(alloc);
+        }
+        var cur: std.ArrayListUnmanaged(Cell) = .empty;
+        defer cur.deinit(alloc);
+
+        // Content extends to the cursor row or the last non-blank row, whichever
+        // is lower. Trailing blank rows are screen space, not content.
+        var content_rows: u16 = self.cy + 1;
+        var rr: u16 = old.rows;
+        while (rr > 0) {
+            rr -= 1;
+            if (old.wrapped[rr] or trimLen(old.row(rr)) > 0) {
+                content_rows = @max(content_rows, rr + 1);
+                break;
+            }
+        }
+
+        var cursor_line: usize = 0;
+        var cursor_abscol: usize = 0;
+        var r: u16 = 0;
+        while (r < content_rows) : (r += 1) {
+            if (r == self.cy) {
+                cursor_line = lines.items.len;
+                cursor_abscol = cur.items.len + self.cx;
+            }
+            const cells = old.row(r);
+            const take: usize = if (old.wrapped[r]) old.cols else trimLen(cells);
+            try cur.appendSlice(alloc, cells[0..take]);
+            if (!old.wrapped[r]) {
+                try lines.append(alloc, try cur.toOwnedSlice(alloc));
+            }
+        }
+        if (cur.items.len > 0) try lines.append(alloc, try cur.toOwnedSlice(alloc));
+
+        // 2. Re-chunk each logical line into new_cols-wide rows.
+        var outrows: std.ArrayListUnmanaged([]Cell) = .empty;
+        var outwrap: std.ArrayListUnmanaged(bool) = .empty;
+        defer {
+            for (outrows.items) |l| alloc.free(l);
+            outrows.deinit(alloc);
+            outwrap.deinit(alloc);
+        }
+        var new_cy: ?usize = null;
+        var new_cx: u16 = 0;
+        for (lines.items, 0..) |line, li| {
+            const nchunks: usize = if (line.len == 0) 1 else (line.len + new_cols - 1) / new_cols;
+            var ci: usize = 0;
+            while (ci < nchunks) : (ci += 1) {
+                const off = ci * new_cols;
+                const buf = try alloc.alloc(Cell, new_cols);
+                @memset(buf, Cell.blank);
+                const n = if (line.len > off) @min(@as(usize, new_cols), line.len - off) else 0;
+                @memcpy(buf[0..n], line[off .. off + n]);
+                try outrows.append(alloc, buf);
+                try outwrap.append(alloc, ci < nchunks - 1);
+            }
+            if (li == cursor_line and new_cy == null) {
+                var chunk = cursor_abscol / new_cols;
+                if (chunk >= nchunks) chunk = nchunks - 1;
+                new_cy = outrows.items.len - nchunks + chunk;
+                new_cx = @intCast(@min(cursor_abscol - chunk * new_cols, new_cols - 1));
+            }
+        }
+
+        // 3. Place bottom-anchored into a fresh grid.
+        var ng = try Grid.init(alloc, new_rows, new_cols);
+        const total = outrows.items.len;
+        if (total >= new_rows) {
+            const spill = total - new_rows;
+            var i: usize = 0;
+            while (i < spill) : (i += 1) self.scrollback.push(outrows.items[i]);
+            i = 0;
+            while (i < new_rows) : (i += 1) {
+                @memcpy(ng.row(@intCast(i)), outrows.items[spill + i]);
+                ng.wrapped[i] = outwrap.items[spill + i];
+            }
+            const cl = new_cy orelse (total - 1);
+            self.cy = @intCast(@min(if (cl >= spill) cl - spill else 0, new_rows - 1));
+        } else {
+            const top_blank: u16 = @intCast(new_rows - total);
+            var i: usize = 0;
+            while (i < total) : (i += 1) {
+                @memcpy(ng.row(top_blank + @as(u16, @intCast(i))), outrows.items[i]);
+                ng.wrapped[top_blank + i] = outwrap.items[i];
+            }
+            var t: u16 = top_blank;
+            while (t > 0) {
+                const line = self.scrollback.pop() orelse break;
+                t -= 1;
+                const n = @min(@as(u16, @intCast(line.len)), new_cols);
+                @memcpy(ng.row(t)[0..n], line[0..n]);
+                alloc.free(line);
+            }
+            const cl = new_cy orelse (if (total > 0) total - 1 else 0);
+            self.cy = @intCast(@min(top_blank + cl, new_rows - 1));
+        }
+        self.cx = @min(new_cx, new_cols - 1);
+
+        old.deinit();
+        self.grid = ng;
     }
 
     pub fn print(self: *Terminal, cp: u21) void {
         if (self.cx >= self.grid.cols) {
+            self.grid.wrapped[self.cy] = true; // soft wrap, not a hard line break
             self.cx = 0;
             self.lineFeed();
         }
@@ -297,6 +382,12 @@ pub const Terminal = struct {
         }
     }
 
+    fn trimLen(cells: []const Cell) usize {
+        var n: usize = cells.len;
+        while (n > 0 and cells[n - 1].cp == ' ') n -= 1;
+        return n;
+    }
+
     fn copyResized(old: *Grid, new_rows: u16, new_cols: u16) !Grid {
         var ng = try Grid.init(old.alloc, new_rows, new_cols);
         const copy_cols = @min(old.cols, new_cols);
@@ -305,6 +396,7 @@ pub const Terminal = struct {
         while (i < keep) : (i += 1) {
             const src = old.row(old.rows - keep + i);
             @memcpy(ng.row(new_rows - keep + i)[0..copy_cols], src[0..copy_cols]);
+            ng.wrapped[new_rows - keep + i] = old.wrapped[old.rows - keep + i];
         }
         return ng;
     }
@@ -552,6 +644,34 @@ test "resize grow pulls history back into the new top rows" {
     try std.testing.expectEqual(@as(u21, 'a'), t.viewRow(0)[0].cp);
     try std.testing.expectEqual(@as(u21, 'b'), t.viewRow(1)[0].cp);
     try std.testing.expectEqual(@as(u21, 'c'), t.viewRow(2)[0].cp);
+}
+
+test "reflow splits a wrapped line when narrowing" {
+    var t = try Terminal.init(std.testing.allocator, 3, 4);
+    defer t.deinit();
+    for ("abcdef") |ch| t.print(ch); // row0 "abcd" (wrapped), row1 "ef"
+    try std.testing.expect(t.grid.wrapped[0]);
+
+    try t.resize(3, 2); // "abcdef" rechunks to ab/cd/ef
+    try std.testing.expectEqual(@as(u21, 'a'), t.viewRow(0)[0].cp);
+    try std.testing.expectEqual(@as(u21, 'b'), t.viewRow(0)[1].cp);
+    try std.testing.expectEqual(@as(u21, 'c'), t.viewRow(1)[0].cp);
+    try std.testing.expectEqual(@as(u21, 'e'), t.viewRow(2)[0].cp);
+    try std.testing.expect(t.grid.wrapped[0]);
+    try std.testing.expect(t.grid.wrapped[1]);
+    try std.testing.expect(!t.grid.wrapped[2]);
+}
+
+test "reflow rejoins a wrapped line when widening" {
+    var t = try Terminal.init(std.testing.allocator, 3, 2);
+    defer t.deinit();
+    for ("abcdef") |ch| t.print(ch); // ab/cd/ef chain
+    try std.testing.expect(t.grid.wrapped[0]);
+
+    try t.resize(3, 6); // rejoins into one row "abcdef"
+    try std.testing.expectEqual(@as(u21, 'a'), t.viewRow(2)[0].cp);
+    try std.testing.expectEqual(@as(u21, 'f'), t.viewRow(2)[5].cp);
+    try std.testing.expect(!t.grid.wrapped[2]);
 }
 
 test "selection extracts text, trims trailing blanks, joins rows" {

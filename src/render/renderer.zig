@@ -35,7 +35,7 @@ pub const Renderer = struct {
             const cells = term.viewRow(r);
             var c: u16 = 0;
             while (c < term.grid.cols) : (c += 1) {
-                const cell = cells[c];
+                const cell = if (c < cells.len) cells[c] else @import("../vt/cell.zig").Cell.blank;
                 var fg = palette.resolve(cell.fg, true);
                 var bg = palette.resolve(cell.bg, false);
                 if (cell.attrs.reverse) {
