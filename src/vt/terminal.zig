@@ -286,7 +286,10 @@ pub const Terminal = struct {
     }
 
     pub fn print(self: *Terminal, cp: u21) void {
-        if (self.cx >= self.grid.cols) {
+        const w = @import("width.zig").charWidth(cp);
+        if (w == 0) return; // combining mark: drop (no shaping yet)
+        // A wide glyph needs two columns; wrap early if only one is left.
+        if (self.cx + w > self.grid.cols) {
             self.grid.wrapped[self.cy] = true; // soft wrap, not a hard line break
             self.cx = 0;
             self.lineFeed();
@@ -294,6 +297,12 @@ pub const Terminal = struct {
         const c = self.grid.at(self.cy, self.cx);
         c.* = .{ .cp = cp, .fg = self.pen.fg, .bg = self.pen.bg, .attrs = self.pen.attrs };
         self.cx += 1;
+        if (w == 2) {
+            // Trailing spacer: blank glyph carrying the pen background.
+            const s = self.grid.at(self.cy, self.cx);
+            s.* = .{ .cp = ' ', .fg = self.pen.fg, .bg = self.pen.bg, .attrs = self.pen.attrs };
+            self.cx += 1;
+        }
     }
 
     pub fn lineFeed(self: *Terminal) void {
@@ -509,6 +518,27 @@ test "print wraps and advances cursor" {
     try std.testing.expectEqual(@as(u21, 'c'), t.grid.at(0, 2).cp);
     try std.testing.expectEqual(@as(u21, 'd'), t.grid.at(1, 0).cp);
     try std.testing.expectEqual(@as(u16, 1), t.cx);
+    try std.testing.expectEqual(@as(u16, 1), t.cy);
+}
+
+test "wide glyph occupies two columns" {
+    var t = try Terminal.init(std.testing.allocator, 1, 5);
+    defer t.deinit();
+    t.print(0x4E00); // 一, width 2
+    t.print('x');
+    try std.testing.expectEqual(@as(u21, 0x4E00), t.grid.at(0, 0).cp);
+    try std.testing.expectEqual(@as(u21, ' '), t.grid.at(0, 1).cp); // spacer
+    try std.testing.expectEqual(@as(u21, 'x'), t.grid.at(0, 2).cp);
+    try std.testing.expectEqual(@as(u16, 3), t.cx);
+}
+
+test "wide glyph wraps when one column remains" {
+    var t = try Terminal.init(std.testing.allocator, 2, 3);
+    defer t.deinit();
+    t.print('a');
+    t.print('b'); // cols 0,1 filled; one column left
+    t.print(0x4E00); // can't fit in col 2 → wraps to next row
+    try std.testing.expectEqual(@as(u21, 0x4E00), t.grid.at(1, 0).cp);
     try std.testing.expectEqual(@as(u16, 1), t.cy);
 }
 
