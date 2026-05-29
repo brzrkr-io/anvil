@@ -591,6 +591,18 @@ static void layoutTrafficLights(NSWindow *win) {
     unichar ilc = (ich >= 'A' && ich <= 'Z') ? ich + 32 : ich;
     BOOL cmd = (f & NSEventModifierFlagCommand) != 0;
 
+    // Cmd+N opens a new window (separate process, no session restore/save).
+    if (cmd && ilc == 'n') {
+        NSString *exe = [[NSBundle mainBundle] executablePath];
+        if (!exe) exe = [[NSProcessInfo processInfo].arguments firstObject];
+        if (exe) {
+            NSTask *task = [[NSTask alloc] init];
+            task.launchPath = exe;
+            task.arguments = @[@"--new"];
+            [task launch];
+        }
+        return;
+    }
     // Cmd+K toggles the command palette from any state.
     if (cmd && ilc == 'k') { anvil_palette_toggle(); return; }
     // Cmd+F toggles scrollback search from any state.

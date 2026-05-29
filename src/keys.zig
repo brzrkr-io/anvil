@@ -7,6 +7,7 @@ pub const Binding = struct { chord: []const u8, action: []const u8 };
 pub const Section = struct { title: []const u8, items: []const Binding };
 
 const general = [_]Binding{
+    .{ .chord = "\u{2318}N", .action = "New Window" },
     .{ .chord = "\u{2318}K", .action = "Command Palette" },
     .{ .chord = "\u{2318}F", .action = "Search Scrollback" },
     .{ .chord = "\u{2318}/", .action = "Keyboard Shortcuts" },
@@ -93,5 +94,5 @@ test "all bindings have non-empty chord and action" {
 }
 
 test "total binding count" {
-    try std.testing.expectEqual(@as(usize, 40), total_bindings);
+    try std.testing.expectEqual(@as(usize, 41), total_bindings);
 }

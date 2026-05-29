@@ -8,6 +8,8 @@ pub const CliArgs = struct {
     dump_path: ?[]const u8 = null,
     /// Non-null when a positional path arg was given and validated.
     start_dir: ?[]const u8 = null,
+    /// True when --new was passed: skip session restore and save.
+    fresh: bool = false,
 };
 
 /// Parse process argv (after skipping argv[0]).
@@ -33,6 +35,10 @@ pub fn parse(args: []const [*:0]const u8) CliArgs {
             }
             return result;
         }
+        if (std.mem.eql(u8, a, "--new")) {
+            result.fresh = true;
+            continue;
+        }
         if (!std.mem.startsWith(u8, a, "-")) {
             result.start_dir = a;
         }
@@ -51,6 +57,7 @@ pub const help_text =
     \\  --help, -h        Show this help and exit
     \\  --version, -v     Print version and exit
     \\  --dump <path>     Headless render to PNG and exit
+    \\  --new             Open a fresh window (skip session restore/save)
     \\
 ;
 
@@ -97,4 +104,18 @@ test "parse: --dump takes priority over positional" {
 test "parse: positional before flags" {
     const a = parse(&.{ "/my/dir", "--version" });
     try std.testing.expectEqual(Mode.version, a.mode);
+}
+
+test "parse: --new sets fresh" {
+    const a = parse(&.{"--new"});
+    try std.testing.expectEqual(Mode.run, a.mode);
+    try std.testing.expect(a.fresh);
+    try std.testing.expect(a.start_dir == null);
+}
+
+test "parse: --new with path sets fresh and start_dir" {
+    const a = parse(&.{ "--new", "/my/dir" });
+    try std.testing.expectEqual(Mode.run, a.mode);
+    try std.testing.expect(a.fresh);
+    try std.testing.expectEqualStrings("/my/dir", a.start_dir.?);
 }

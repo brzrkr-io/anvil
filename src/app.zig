@@ -54,6 +54,10 @@ var caldera_drawer: bool = false;
 /// Set by main() before window.run() to open the first shell in a chosen dir.
 pub var start_cwd: []const u8 = "";
 
+/// Set by main() when --new was passed. Skips session restore on init and
+/// session save on quit, preventing the persist race with the primary window.
+pub var suppress_persist: bool = false;
+
 var cfg: config.Config = .{};
 var cfg_loaded = false;
 var cfg_path_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -255,9 +259,11 @@ export fn anvil_resize(px_w: f32, px_h: f32) callconv(.c) void {
         const ws = workspaceRect();
         const g = renderer.paneGrid(ws.w, ws.h);
         var restored = false;
-        if (persist.loadFromFile(std.heap.page_allocator)) |state| {
-            mgr.spawnFromState(state, g.rows, g.cols) catch {};
-            restored = mgr.tabs.items.len > 0;
+        if (!suppress_persist) {
+            if (persist.loadFromFile(std.heap.page_allocator)) |state| {
+                mgr.spawnFromState(state, g.rows, g.cols) catch {};
+                restored = mgr.tabs.items.len > 0;
+            }
         }
         if (!restored) mgr.spawnFirstWithCwd(g.rows, g.cols, start_cwd) catch return;
         caldera.start(std.heap.page_allocator);
@@ -269,7 +275,7 @@ export fn anvil_resize(px_w: f32, px_h: f32) callconv(.c) void {
 }
 
 export fn anvil_save_session() callconv(.c) void {
-    if (!ready) return;
+    if (!ready or suppress_persist) return;
     persist.saveToFile(std.heap.page_allocator, &mgr);
 }
 

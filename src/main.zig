@@ -40,6 +40,7 @@ pub fn main(init: std.process.Init.Minimal) void {
             return;
         },
         .run => {
+            if (args.fresh) app.suppress_persist = true;
             if (args.start_dir) |dir| {
                 var z_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
                 @memcpy(z_buf[0..dir.len], dir);
