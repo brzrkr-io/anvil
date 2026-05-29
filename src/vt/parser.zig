@@ -9,6 +9,7 @@ pub const Parser = struct {
     nparams: usize = 0,
     cur: u16 = 0,
     has_param: bool = false,
+    private: bool = false,
 
     // UTF-8 accumulator
     cp: u21 = 0,
@@ -68,6 +69,7 @@ pub const Parser = struct {
                 self.nparams = 0;
                 self.cur = 0;
                 self.has_param = false;
+                self.private = false;
                 self.state = .csi;
             },
             '7' => {
@@ -94,6 +96,7 @@ pub const Parser = struct {
             ';' => {
                 self.pushParam();
             },
+            '?' => self.private = true,
             0x40...0x7e => {
                 self.pushParam();
                 self.dispatch(term, b);
@@ -133,6 +136,8 @@ pub const Parser = struct {
             'X' => term.eraseChars(self.arg(0, 1)),
             's' => term.saveCursor(),
             'u' => term.restoreCursor(),
+            'h' => if (self.private) term.setMode(self.arg(0, 0), true),
+            'l' => if (self.private) term.setMode(self.arg(0, 0), false),
             'm' => term.sgr(self.params[0..self.nparams]),
             else => {},
         }
@@ -184,6 +189,25 @@ test "DECSC/DECRC save and restore cursor" {
     var p = Parser{};
     p.feed(&t, "ab\x1b7cd\x1b8X");
     try std.testing.expectEqual(@as(u21, 'X'), t.grid.at(0, 2).cp);
+}
+
+test "CSI ?1049h/l enters and exits the alt screen" {
+    var t = try Terminal.init(std.testing.allocator, 2, 4);
+    defer t.deinit();
+    var p = Parser{};
+    p.feed(&t, "A\x1b[?1049hB");
+    try std.testing.expectEqual(@as(u21, 'B'), t.grid.at(0, 0).cp); // on alt
+    p.feed(&t, "\x1b[?1049l");
+    try std.testing.expectEqual(@as(u21, 'A'), t.grid.at(0, 0).cp); // primary back
+}
+
+test "private prefix does not leak into next sequence" {
+    var t = try Terminal.init(std.testing.allocator, 1, 4);
+    defer t.deinit();
+    var p = Parser{};
+    // a private set, then a plain CSI K must not be treated as private
+    p.feed(&t, "\x1b[?25lab\x1b[1G\x1b[K");
+    try std.testing.expectEqual(@as(u21, ' '), t.grid.at(0, 0).cp);
 }
 
 test "UTF-8 multibyte decode" {

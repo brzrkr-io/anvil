@@ -10,6 +10,9 @@ pub const Terminal = struct {
     cy: u16 = 0,
     saved_cx: u16 = 0,
     saved_cy: u16 = 0,
+    stash: ?Grid = null, // primary grid, parked while the alt screen is active
+    alt_cx: u16 = 0,
+    alt_cy: u16 = 0,
     pen: Cell = .{},
 
     pub fn init(alloc: std.mem.Allocator, rows: u16, cols: u16) !Terminal {
@@ -18,6 +21,7 @@ pub const Terminal = struct {
 
     pub fn deinit(self: *Terminal) void {
         self.grid.deinit();
+        if (self.stash) |*g| g.deinit();
     }
 
     pub fn print(self: *Terminal, cp: u21) void {
@@ -112,6 +116,34 @@ pub const Terminal = struct {
         const r = self.grid.row(self.cy);
         const end = @min(self.cx + n, self.grid.cols);
         @memset(r[self.cx..end], Cell.blank);
+    }
+
+    pub fn setMode(self: *Terminal, mode: u16, enable: bool) void {
+        switch (mode) {
+            47, 1047, 1049 => if (enable) self.enterAlt() else self.exitAlt(),
+            else => {},
+        }
+    }
+
+    fn enterAlt(self: *Terminal) void {
+        if (self.stash != null) return;
+        const g = Grid.init(self.grid.alloc, self.grid.rows, self.grid.cols) catch return;
+        self.alt_cx = self.cx;
+        self.alt_cy = self.cy;
+        self.stash = self.grid;
+        self.grid = g;
+        self.cx = 0;
+        self.cy = 0;
+    }
+
+    fn exitAlt(self: *Terminal) void {
+        if (self.stash) |primary| {
+            self.grid.deinit();
+            self.grid = primary;
+            self.stash = null;
+            self.cx = @min(self.alt_cx, self.grid.cols - 1);
+            self.cy = @min(self.alt_cy, self.grid.rows - 1);
+        }
     }
 
     pub fn eraseInLine(self: *Terminal, mode: u16) void {
@@ -261,6 +293,34 @@ test "save and restore cursor" {
     t.restoreCursor();
     try std.testing.expectEqual(@as(u16, 1), t.cy);
     try std.testing.expectEqual(@as(u16, 2), t.cx);
+}
+
+test "alt screen swaps to a blank grid and restores primary" {
+    var t = try Terminal.init(std.testing.allocator, 2, 4);
+    defer t.deinit();
+    for ("hi") |ch| t.print(ch); // primary: row 0 = "hi", cursor at col 2
+
+    t.setMode(1049, true);
+    try std.testing.expectEqual(@as(u21, ' '), t.grid.at(0, 0).cp); // alt is blank
+    try std.testing.expectEqual(@as(u16, 0), t.cx);
+    t.print('X');
+    try std.testing.expectEqual(@as(u21, 'X'), t.grid.at(0, 0).cp);
+
+    t.setMode(1049, false);
+    try std.testing.expectEqual(@as(u21, 'h'), t.grid.at(0, 0).cp); // primary restored
+    try std.testing.expectEqual(@as(u21, 'i'), t.grid.at(0, 1).cp);
+    try std.testing.expectEqual(@as(u16, 2), t.cx); // cursor restored
+    try std.testing.expect(t.stash == null);
+}
+
+test "redundant alt enter is a no-op" {
+    var t = try Terminal.init(std.testing.allocator, 2, 2);
+    defer t.deinit();
+    t.print('a');
+    t.setMode(1049, true);
+    t.setMode(47, true); // already in alt; must not lose the parked primary
+    t.setMode(1049, false);
+    try std.testing.expectEqual(@as(u21, 'a'), t.grid.at(0, 0).cp);
 }
 
 test "sgr sets and resets pen" {
