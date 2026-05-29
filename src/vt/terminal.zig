@@ -50,6 +50,10 @@ pub const Terminal = struct {
     stash: ?Grid = null, // primary grid, parked while the alt screen is active
     alt_cx: u16 = 0,
     alt_cy: u16 = 0,
+    scroll_top: u16 = 0, // DECSTBM region top (0-based, inclusive)
+    scroll_bot: u16 = 0, // DECSTBM region bottom (0-based, inclusive)
+    reply_buf: [64]u8 = undefined, // queued response to a host query (DA/CPR/DSR)
+    reply_len: usize = 0,
     scrollback: Scrollback,
     view_offset: usize = 0, // lines scrolled up into history; 0 = live bottom
     selection: ?Selection = null,
@@ -235,6 +239,7 @@ pub const Terminal = struct {
         return .{
             .grid = try Grid.init(alloc, rows, cols),
             .scrollback = try Scrollback.init(alloc, scrollback_cap),
+            .scroll_bot = rows - 1,
         };
     }
 
@@ -329,6 +334,10 @@ pub const Terminal = struct {
     /// Does not rewrap wrapped lines.
     pub fn resize(self: *Terminal, new_rows: u16, new_cols: u16) !void {
         if (new_rows == self.grid.rows and new_cols == self.grid.cols) return;
+
+        // A resize resets the scroll region to the full new height.
+        self.scroll_top = 0;
+        self.scroll_bot = new_rows - 1;
 
         if (self.stash) |*primary| {
             const a = try copyResized(&self.grid, new_rows, new_cols);
@@ -480,16 +489,91 @@ pub const Terminal = struct {
     }
 
     pub fn lineFeed(self: *Terminal) void {
-        if (self.cy + 1 >= self.grid.rows) {
-            if (self.stash == null) {
+        if (self.cy == self.scroll_bot) {
+            // Scrolling at the region bottom. Push to scrollback only for a
+            // normal full-height scroll on the primary screen.
+            if (self.stash == null and self.scroll_top == 0 and self.scroll_bot == self.grid.rows - 1) {
                 self.scrollback.push(self.grid.row(0));
                 if (self.view_offset > 0 and self.view_offset < self.scrollback.len())
                     self.view_offset += 1; // stay anchored to history while scrolled
             }
-            self.grid.scrollUp(1);
-        } else {
+            self.grid.scrollRegionUp(self.scroll_top, self.scroll_bot, 1);
+        } else if (self.cy + 1 < self.grid.rows) {
             self.cy += 1;
         }
+    }
+
+    /// IND (ESC D): line feed, keeping the column.
+    pub fn index(self: *Terminal) void {
+        self.lineFeed();
+    }
+
+    /// RI (ESC M): reverse line feed. Scrolls the region down at the top.
+    pub fn reverseIndex(self: *Terminal) void {
+        if (self.cy == self.scroll_top) {
+            self.grid.scrollRegionDown(self.scroll_top, self.scroll_bot, 1);
+        } else if (self.cy > 0) {
+            self.cy -= 1;
+        }
+    }
+
+    /// NEL (ESC E): carriage return + line feed.
+    pub fn nextLine(self: *Terminal) void {
+        self.cx = 0;
+        self.lineFeed();
+    }
+
+    /// Queue a response to a host query; drained to the PTY by the session.
+    pub fn reply(self: *Terminal, bytes: []const u8) void {
+        if (self.reply_len + bytes.len > self.reply_buf.len) return;
+        @memcpy(self.reply_buf[self.reply_len..][0..bytes.len], bytes);
+        self.reply_len += bytes.len;
+    }
+
+    /// CPR (CSI 6n): report the 1-based cursor position.
+    pub fn reportCursor(self: *Terminal) void {
+        var buf: [32]u8 = undefined;
+        const s = std.fmt.bufPrint(&buf, "\x1b[{d};{d}R", .{ self.cy + 1, self.cx + 1 }) catch return;
+        self.reply(s);
+    }
+
+    /// DECSTBM (CSI t;b r): set the scroll region and home the cursor.
+    pub fn setScrollRegion(self: *Terminal, top1: u16, bot1: u16) void {
+        const top: u16 = if (top1 > 0) top1 - 1 else 0;
+        const bot: u16 = if (bot1 == 0 or bot1 > self.grid.rows) self.grid.rows - 1 else bot1 - 1;
+        if (bot <= top) {
+            self.scroll_top = 0;
+            self.scroll_bot = self.grid.rows - 1;
+        } else {
+            self.scroll_top = top;
+            self.scroll_bot = bot;
+        }
+        self.cx = 0;
+        self.cy = 0;
+    }
+
+    /// IL (CSI L): insert n blank lines at the cursor row, within the region.
+    pub fn insertLines(self: *Terminal, n: u16) void {
+        if (self.cy < self.scroll_top or self.cy > self.scroll_bot) return;
+        self.grid.scrollRegionDown(self.cy, self.scroll_bot, n);
+        self.cx = 0;
+    }
+
+    /// DL (CSI M): delete n lines at the cursor row, within the region.
+    pub fn deleteLines(self: *Terminal, n: u16) void {
+        if (self.cy < self.scroll_top or self.cy > self.scroll_bot) return;
+        self.grid.scrollRegionUp(self.cy, self.scroll_bot, n);
+        self.cx = 0;
+    }
+
+    /// SU (CSI S): scroll the region up by n lines.
+    pub fn scrollUp(self: *Terminal, n: u16) void {
+        self.grid.scrollRegionUp(self.scroll_top, self.scroll_bot, n);
+    }
+
+    /// SD (CSI T): scroll the region down by n lines.
+    pub fn scrollDown(self: *Terminal, n: u16) void {
+        self.grid.scrollRegionDown(self.scroll_top, self.scroll_bot, n);
     }
 
     pub fn carriageReturn(self: *Terminal) void {
@@ -590,6 +674,8 @@ pub const Terminal = struct {
         self.cx = 0;
         self.cy = 0;
         self.view_offset = 0;
+        self.scroll_top = 0;
+        self.scroll_bot = self.grid.rows - 1;
     }
 
     fn exitAlt(self: *Terminal) void {
@@ -599,6 +685,8 @@ pub const Terminal = struct {
             self.stash = null;
             self.cx = @min(self.alt_cx, self.grid.cols - 1);
             self.cy = @min(self.alt_cy, self.grid.rows - 1);
+            self.scroll_top = 0;
+            self.scroll_bot = self.grid.rows - 1;
         }
     }
 
@@ -1009,6 +1097,49 @@ test "jumpPrompt scrolls to the prompt above, then back to bottom" {
 
     t.jumpPrompt(1); // jump down to the later prompt (live grid → bottom)
     try std.testing.expectEqual(@as(usize, 0), t.view_offset);
+}
+
+test "DECSTBM confines line feed scrolling to the region" {
+    var t = try Terminal.init(std.testing.allocator, 5, 4);
+    defer t.deinit();
+    // Region = rows 2..4 (1-based), i.e. indices 1..3.
+    t.setScrollRegion(2, 4);
+    try std.testing.expectEqual(@as(u16, 1), t.scroll_top);
+    try std.testing.expectEqual(@as(u16, 3), t.scroll_bot);
+    // Mark a fixed line outside the region and one inside.
+    t.grid.at(0, 0).cp = 'X'; // row 0 must never move
+    t.setCursor(2, 1); // row index 1 (region top)
+    t.grid.at(1, 0).cp = 'a';
+    t.setCursor(4, 1); // row index 3 (region bottom)
+    t.grid.at(3, 0).cp = 'b';
+    t.lineFeed(); // at region bottom → region scrolls up
+    try std.testing.expectEqual(@as(u21, 'X'), t.grid.at(0, 0).cp); // untouched
+    try std.testing.expectEqual(@as(u21, 'b'), t.grid.at(2, 0).cp); // moved up within region
+    try std.testing.expectEqual(@as(u21, ' '), t.grid.at(3, 0).cp); // region bottom blanked
+}
+
+test "reverseIndex scrolls the region down at its top" {
+    var t = try Terminal.init(std.testing.allocator, 4, 4);
+    defer t.deinit();
+    t.setScrollRegion(1, 3); // indices 0..2
+    t.grid.at(0, 0).cp = 'a';
+    t.setCursor(1, 1); // region top (index 0)
+    t.reverseIndex();
+    try std.testing.expectEqual(@as(u21, ' '), t.grid.at(0, 0).cp); // top blanked
+    try std.testing.expectEqual(@as(u21, 'a'), t.grid.at(1, 0).cp); // pushed down
+}
+
+test "insertLines and deleteLines act within the region" {
+    var t = try Terminal.init(std.testing.allocator, 4, 4);
+    defer t.deinit();
+    t.grid.at(1, 0).cp = 'a';
+    t.grid.at(2, 0).cp = 'b';
+    t.setCursor(2, 1); // index 1
+    t.insertLines(1); // blank line at row 1, push a/b down
+    try std.testing.expectEqual(@as(u21, ' '), t.grid.at(1, 0).cp);
+    try std.testing.expectEqual(@as(u21, 'a'), t.grid.at(2, 0).cp);
+    t.deleteLines(1); // remove row 1, pull a back up
+    try std.testing.expectEqual(@as(u21, 'a'), t.grid.at(1, 0).cp);
 }
 
 test "commandEnd sets the last mark's run state from the exit code" {

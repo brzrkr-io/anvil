@@ -33,7 +33,14 @@ pub const Session = struct {
         var buf: [8192]u8 = undefined;
         while (true) {
             switch (self.pty.read(&buf)) {
-                .data => |n| self.parser.feed(&self.term, buf[0..n]),
+                .data => |n| {
+                    self.parser.feed(&self.term, buf[0..n]);
+                    // Flush any query responses (DA/CPR/DSR) back to the shell.
+                    if (self.term.reply_len > 0) {
+                        self.pty.write(self.term.reply_buf[0..self.term.reply_len]);
+                        self.term.reply_len = 0;
+                    }
+                },
                 .would_block => return true,
                 .eof => return false,
             }

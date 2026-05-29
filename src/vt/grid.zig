@@ -52,6 +52,42 @@ pub const Grid = struct {
         @memset(self.cells[@as(usize, moved) * self.cols ..], Cell.blank);
         @memset(self.wrapped[moved..], false);
     }
+
+    /// Scroll rows in the inclusive region [top, bot] up by n; bottom n rows
+    /// of the region are blanked. top/bot are 0-based row indices.
+    pub fn scrollRegionUp(self: *Grid, top: u16, bot: u16, n: u16) void {
+        if (bot < top or bot >= self.rows) return;
+        const height = bot - top + 1;
+        const lines = @min(n, height);
+        const moved = height - lines;
+        var i: u16 = 0;
+        while (i < moved) : (i += 1) {
+            const d = top + i;
+            const s = top + i + lines;
+            std.mem.copyForwards(Cell, self.row(d), self.row(s));
+            self.wrapped[d] = self.wrapped[s];
+        }
+        i = 0;
+        while (i < lines) : (i += 1) self.clearRow(bot - i);
+    }
+
+    /// Scroll rows in the inclusive region [top, bot] down by n; top n rows
+    /// of the region are blanked.
+    pub fn scrollRegionDown(self: *Grid, top: u16, bot: u16, n: u16) void {
+        if (bot < top or bot >= self.rows) return;
+        const height = bot - top + 1;
+        const lines = @min(n, height);
+        const moved = height - lines;
+        var i: u16 = 0;
+        while (i < moved) : (i += 1) {
+            const d = bot - i;
+            const s = bot - i - lines;
+            std.mem.copyForwards(Cell, self.row(d), self.row(s));
+            self.wrapped[d] = self.wrapped[s];
+        }
+        i = 0;
+        while (i < lines) : (i += 1) self.clearRow(top + i);
+    }
 };
 
 test "init blanks the grid" {

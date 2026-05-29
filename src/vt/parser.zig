@@ -10,6 +10,7 @@ pub const Parser = struct {
     cur: u16 = 0,
     has_param: bool = false,
     private: bool = false,
+    gt: bool = false, // CSI '>' prefix (secondary device attributes)
     intermediate: u8 = 0, // CSI intermediate byte (0x20–0x2f), e.g. SP for DECSCUSR
 
     // OSC accumulator (terminated by BEL or ST = ESC \)
@@ -77,6 +78,7 @@ pub const Parser = struct {
                 self.cur = 0;
                 self.has_param = false;
                 self.private = false;
+                self.gt = false;
                 self.intermediate = 0;
                 self.state = .csi;
             },
@@ -86,6 +88,18 @@ pub const Parser = struct {
             },
             '8' => {
                 term.restoreCursor();
+                self.state = .ground;
+            },
+            'D' => {
+                term.index();
+                self.state = .ground;
+            },
+            'M' => {
+                term.reverseIndex();
+                self.state = .ground;
+            },
+            'E' => {
+                term.nextLine();
                 self.state = .ground;
             },
             ']' => {
@@ -166,6 +180,7 @@ pub const Parser = struct {
                 self.pushParam();
             },
             '?' => self.private = true,
+            '>' => self.gt = true,
             0x20...0x2f => self.intermediate = b,
             0x40...0x7e => {
                 self.pushParam();
@@ -204,12 +219,27 @@ pub const Parser = struct {
             'P' => term.deleteChars(self.arg(0, 1)),
             '@' => term.insertChars(self.arg(0, 1)),
             'X' => term.eraseChars(self.arg(0, 1)),
+            'L' => term.insertLines(self.arg(0, 1)),
+            'M' => term.deleteLines(self.arg(0, 1)),
+            'S' => term.scrollUp(self.arg(0, 1)),
+            'T' => term.scrollDown(self.arg(0, 1)),
+            'r' => if (!self.private) term.setScrollRegion(self.arg(0, 1), self.arg(1, 0)),
             's' => term.saveCursor(),
             'u' => term.restoreCursor(),
             'h' => if (self.private) term.setMode(self.arg(0, 0), true),
             'l' => if (self.private) term.setMode(self.arg(0, 0), false),
             'm' => term.sgr(self.params[0..self.nparams]),
             'q' => if (self.intermediate == ' ') term.setCursorStyle(self.arg(0, 1)),
+            'c' => if (!self.private) {
+                // Device attributes. Primary → VT220+ANSI color; secondary →
+                // a terminal-id triple. nvim uses these as startup sync cookies.
+                if (self.gt) term.reply("\x1b[>0;10;0c") else term.reply("\x1b[?62;22c");
+            },
+            'n' => if (!self.private) switch (self.arg(0, 0)) {
+                5 => term.reply("\x1b[0n"), // device status: OK
+                6 => term.reportCursor(), // cursor position report
+                else => {},
+            },
             else => {},
         }
     }
@@ -380,6 +410,20 @@ test "OSC 133 D updates the run state from the exit code" {
     p.feed(&t, "\x1b]133;A\x07");
     p.feed(&t, "\x1b]133;D\x07"); // bare D → success
     try std.testing.expectEqual(MarkState.ok, t.markAt(t.marks_n - 1).state);
+}
+
+test "device attributes and cursor report queue replies" {
+    var t = try Terminal.init(std.testing.allocator, 5, 10);
+    defer t.deinit();
+    var p = Parser{};
+    p.feed(&t, "\x1b[c"); // primary DA
+    try std.testing.expectEqualStrings("\x1b[?62;22c", t.reply_buf[0..t.reply_len]);
+    t.reply_len = 0;
+    p.feed(&t, "\x1b[>c"); // secondary DA
+    try std.testing.expectEqualStrings("\x1b[>0;10;0c", t.reply_buf[0..t.reply_len]);
+    t.reply_len = 0;
+    p.feed(&t, "\x1b[3;7H\x1b[6n"); // move to row 3 col 7, then CPR
+    try std.testing.expectEqualStrings("\x1b[3;7R", t.reply_buf[0..t.reply_len]);
 }
 
 test "DECSCUSR sets cursor shape and blink" {
