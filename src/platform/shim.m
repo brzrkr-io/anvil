@@ -76,6 +76,8 @@ extern void anvil_search_key(int key);
 extern void anvil_help_toggle(void);
 extern int anvil_help_open(void);
 extern void anvil_help_key(int key);
+extern int anvil_cfg_error_open(void);
+extern void anvil_cfg_error_dismiss(void);
 extern void anvil_respawn(void);
 extern const char *anvil_copy(size_t *out_len);
 extern void anvil_set_theme_mode(int mode);
@@ -625,6 +627,11 @@ static void layoutTrafficLights(NSWindow *win) {
         }
         if (ch >= 0x20 && ch < 0x7f) { anvil_palette_char((unsigned char)ch); return; }
         return;
+    }
+
+    if (anvil_cfg_error_open()) {
+        unichar ch = s.length ? [s characterAtIndex:0] : 0;
+        if (ch == 0x1b) { anvil_cfg_error_dismiss(); return; }
     }
 
     if (f & NSEventModifierFlagCommand) {

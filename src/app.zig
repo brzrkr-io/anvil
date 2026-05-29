@@ -44,6 +44,8 @@ var cfg_loaded = false;
 var cfg_path_buf: [std.fs.max_path_bytes]u8 = undefined;
 var cfg_path: ?[:0]const u8 = null;
 var cfg_mtime: ?i128 = null;
+var cfg_error_buf: [128]u8 = undefined;
+var cfg_error_len: usize = 0;
 
 /// `$HOME/.config/anvil/config.toml`, or null if HOME is unset.
 fn configPath() ?[:0]const u8 {
@@ -56,9 +58,13 @@ fn configPath() ?[:0]const u8 {
 }
 
 /// Load config and apply it. Records the file mtime for change detection.
+/// Captures any parse error into cfg_error_buf; clears it on clean load.
 fn loadConfig() void {
     const path = configPath() orelse return;
-    cfg = config.load(path);
+    const result = config.loadFull(path);
+    cfg = result.cfg;
+    cfg_error_len = result.err_len;
+    if (result.err_len > 0) @memcpy(cfg_error_buf[0..result.err_len], result.err[0..result.err_len]);
     cfg_loaded = true;
     theme_mode = switch (cfg.theme) {
         .system => .system,
@@ -542,6 +548,14 @@ export fn anvil_help_key(key: c_int) callconv(.c) void {
     }
 }
 
+export fn anvil_cfg_error_open() callconv(.c) c_int {
+    return if (cfg_error_len > 0) 1 else 0;
+}
+
+export fn anvil_cfg_error_dismiss() callconv(.c) void {
+    cfg_error_len = 0;
+}
+
 /// Scroll the focused terminal so `m` is visible and select its span, reusing
 /// the normal selection highlight. Centers the match line when possible.
 fn jumpToMatch(m: search.Match) void {
@@ -716,8 +730,9 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
     } else {
         const rails = emitRunRails(th);
         const ex = emitExitedPanes(th, rails, n);
-        out.overlay_count = @intCast(rails + ex.rects);
-        out.palette_text_count = @intCast(ex.text);
+        const ce = emitCfgError(th, rails + ex.rects, n + ex.text);
+        out.overlay_count = @intCast(rails + ex.rects + ce.rects);
+        out.palette_text_count = @intCast(ex.text + ce.text);
     }
 
     out.pending_count = renderer.atlas.pending_n;
@@ -762,6 +777,34 @@ fn emitRunRails(th: *const theme.Theme) usize {
         }
     }
     return ri;
+}
+
+/// Render a one-line config error banner at the top of the workspace using
+/// the semantic failure color. Returns rect and text instance counts written.
+fn emitCfgError(th: *const theme.Theme, ri_start: usize, inst_start: usize) struct { rects: usize, text: usize } {
+    if (cfg_error_len == 0) return .{ .rects = 0, .text = 0 };
+    const cw = renderer.cell_w;
+    const ch = renderer.cell_h;
+    const bar_color = theme.Rgb{ .r = 0xb1, .g = 0x3a, .b = 0x30 }; // status.failure
+    const text_color = theme.Rgb{ .r = 0xee, .g = 0xf1, .b = 0xf2 }; // bone
+    putRect(ri_start, 0, bar_h, win_w, ch, bar_color);
+    const msg = cfg_error_buf[0..cfg_error_len];
+    var ni = inst_start;
+    for (msg, 0..) |byte, i| {
+        const gx = renderer.pad_x + @as(f32, @floatFromInt(i)) * cw;
+        if (gx + cw > win_w) break;
+        if (ni >= instances.len) break;
+        instances[ni] = .{
+            .x = gx,
+            .y = bar_h,
+            .fg = text_color.f32x4(),
+            .bg = bar_color.f32x4(),
+            .uv = renderer.atlas.uvOrigin(@intCast(byte)),
+        };
+        ni += 1;
+    }
+    _ = th;
+    return .{ .rects = 1, .text = ni - inst_start };
 }
 
 const exited_msg = "[process exited — Cmd+R to restart]";
