@@ -13,9 +13,15 @@ const c = @cImport({
 /// the file can grow without breaking older builds. Missing file or parse
 /// errors fall back to defaults — a bad config never stops the app.
 pub const ThemeMode = enum { system, light, dark };
+pub const CursorStyle = enum { block, underline, bar };
 
 pub const Config = struct {
     theme: ThemeMode = .system,
+    font_size: f32 = 13,
+    padding_x: f32 = 8,
+    padding_y: f32 = 6,
+    cursor_style: CursorStyle = .block,
+    cursor_blink: bool = true,
 };
 
 /// Parse config text. Always succeeds; unrecognized lines are skipped.
@@ -38,6 +44,25 @@ fn applyKey(cfg: *Config, key: []const u8, val: []const u8) void {
         if (std.mem.eql(u8, val, "system")) cfg.theme = .system;
         if (std.mem.eql(u8, val, "light")) cfg.theme = .light;
         if (std.mem.eql(u8, val, "dark")) cfg.theme = .dark;
+    } else if (std.mem.eql(u8, key, "font_size")) {
+        if (std.fmt.parseFloat(f32, val)) |v| {
+            if (v >= 6 and v <= 72) cfg.font_size = v;
+        } else |_| {}
+    } else if (std.mem.eql(u8, key, "padding_x")) {
+        if (std.fmt.parseFloat(f32, val)) |v| {
+            if (v >= 0 and v <= 200) cfg.padding_x = v;
+        } else |_| {}
+    } else if (std.mem.eql(u8, key, "padding_y")) {
+        if (std.fmt.parseFloat(f32, val)) |v| {
+            if (v >= 0 and v <= 200) cfg.padding_y = v;
+        } else |_| {}
+    } else if (std.mem.eql(u8, key, "cursor_style")) {
+        if (std.mem.eql(u8, val, "block")) cfg.cursor_style = .block;
+        if (std.mem.eql(u8, val, "underline")) cfg.cursor_style = .underline;
+        if (std.mem.eql(u8, val, "bar")) cfg.cursor_style = .bar;
+    } else if (std.mem.eql(u8, key, "cursor_blink")) {
+        if (std.mem.eql(u8, val, "true")) cfg.cursor_blink = true;
+        if (std.mem.eql(u8, val, "false")) cfg.cursor_blink = false;
     }
 }
 
@@ -88,6 +113,26 @@ test "parse reads theme, ignoring comments and unknown keys" {
 test "parse tolerates bare values and whitespace" {
     const cfg = parse("  theme=light  ");
     try std.testing.expectEqual(ThemeMode.light, cfg.theme);
+}
+
+test "parse reads font size, padding, and cursor options" {
+    const cfg = parse(
+        \\font_size = 15.5
+        \\padding_x = 12
+        \\padding_y = 4
+        \\cursor_style = "bar"
+        \\cursor_blink = false
+    );
+    try std.testing.expectEqual(@as(f32, 15.5), cfg.font_size);
+    try std.testing.expectEqual(@as(f32, 12), cfg.padding_x);
+    try std.testing.expectEqual(@as(f32, 4), cfg.padding_y);
+    try std.testing.expectEqual(CursorStyle.bar, cfg.cursor_style);
+    try std.testing.expect(!cfg.cursor_blink);
+}
+
+test "parse rejects out-of-range font size" {
+    const cfg = parse("font_size = 999");
+    try std.testing.expectEqual(@as(f32, 13), cfg.font_size); // default kept
 }
 
 test "parse falls back to defaults on junk" {

@@ -31,6 +31,8 @@ var cpal = cmd.Palette{};
 var srch = search.Search{};
 var overlay: [8 * 7]f32 = undefined; // up to 8 colored rects (x,y,w,h,r,g,b)
 
+var cfg: config.Config = .{};
+var cfg_loaded = false;
 var cfg_path_buf: [std.fs.max_path_bytes]u8 = undefined;
 var cfg_path: ?[:0]const u8 = null;
 var cfg_mtime: ?i128 = null;
@@ -48,13 +50,28 @@ fn configPath() ?[:0]const u8 {
 /// Load config and apply it. Records the file mtime for change detection.
 fn loadConfig() void {
     const path = configPath() orelse return;
-    const cfg = config.load(path);
+    cfg = config.load(path);
+    cfg_loaded = true;
     theme_mode = switch (cfg.theme) {
         .system => .system,
         .light => .light,
         .dark => .dark,
     };
+    renderer.pad_x = cfg.padding_x;
+    renderer.pad_y = bar_h + cfg.padding_y;
     cfg_mtime = config.mtime(path);
+}
+
+/// Stamp the configured default cursor onto the focused session. Programs may
+/// still override it at runtime via DECSCUSR.
+fn applyCursorDefault() void {
+    const t = &focused().term;
+    t.cursor_style = switch (cfg.cursor_style) {
+        .block => .block,
+        .underline => .underline,
+        .bar => .bar,
+    };
+    t.cursor_blink = cfg.cursor_blink;
 }
 
 /// Reload config if the file changed on disk. Cheap stat, called each poll.
@@ -65,6 +82,7 @@ fn reloadConfigIfChanged() void {
         if (m == prev) return;
     }
     loadConfig();
+    if (ready) relayout(); // padding may have changed the usable grid
 }
 
 fn focused() *Session {
@@ -129,7 +147,8 @@ export fn anvil_shader_src(out_len: *usize) callconv(.c) [*]const u8 {
 }
 
 export fn anvil_atlas_params(out: *AtlasParams) callconv(.c) void {
-    out.* = .{ .cols = atlasmod.cols, .rows = atlasmod.rows_n, .pt_size = font_pt };
+    if (!cfg_loaded) loadConfig(); // font size must be known before the atlas builds
+    out.* = .{ .cols = atlasmod.cols, .rows = atlasmod.rows_n, .pt_size = cfg.font_size };
 }
 
 export fn anvil_set_metrics(cell_w: f32, cell_h: f32) callconv(.c) void {
@@ -141,11 +160,12 @@ export fn anvil_resize(px_w: f32, px_h: f32) callconv(.c) void {
     win_w = px_w;
     win_h = px_h;
     if (!ready) {
+        loadConfig(); // padding affects the grid; load before sizing
         const ws = workspaceRect();
         const g = renderer.paneGrid(ws.w, ws.h);
         mgr.spawnFirst(g.rows, g.cols) catch return;
-        loadConfig();
         ready = true;
+        applyCursorDefault();
         return;
     }
     relayout();
@@ -270,6 +290,7 @@ export fn anvil_split(axis: c_int) callconv(.c) void {
     const s = focused();
     const a: pane.Axis = if (axis == 0) .x else .y;
     mgr.splitFocused(a, s.term.grid.rows, s.term.grid.cols) catch return;
+    applyCursorDefault();
     relayout();
 }
 
@@ -290,6 +311,7 @@ export fn anvil_new_tab() callconv(.c) void {
     const ws = workspaceRect();
     const g = renderer.paneGrid(ws.w, ws.h);
     mgr.newTab(g.rows, g.cols) catch return;
+    applyCursorDefault();
     relayout();
 }
 
