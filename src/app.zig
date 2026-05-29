@@ -1,7 +1,5 @@
 const std = @import("std");
-const Terminal = @import("vt/terminal.zig").Terminal;
-const Parser = @import("vt/parser.zig").Parser;
-const Pty = @import("pty.zig").Pty;
+const Session = @import("session.zig").Session;
 const Renderer = @import("render/renderer.zig").Renderer;
 const inst = @import("render/instance.zig");
 const palette = @import("render/palette.zig");
@@ -12,13 +10,10 @@ const max_instances = 60000;
 const font_pt: f32 = 13.0;
 const bar_h: f32 = 40; // compact title bar, device pixels (20pt @2x)
 
-var term: Terminal = undefined;
-var parser: Parser = .{};
-var pty: Pty = undefined;
+var session: Session = undefined;
 var renderer = Renderer{ .cell_w = 16, .cell_h = 32, .pad_x = 8, .pad_y = bar_h + 6, .pad_bottom = 8 };
 var instances: [max_instances]inst.CellInstance = undefined;
 var ready = false;
-var spawned = false;
 
 const ThemeMode = enum(c_int) { system = 0, light = 1, dark = 2 };
 var theme_mode: ThemeMode = .system;
@@ -74,19 +69,11 @@ export fn anvil_set_metrics(cell_w: f32, cell_h: f32) callconv(.c) void {
 export fn anvil_resize(px_w: f32, px_h: f32) callconv(.c) void {
     const g = renderer.gridSize(px_w, px_h);
     if (ready) {
-        if (g.cols == term.grid.cols and g.rows == term.grid.rows) return;
-        term.resize(g.rows, g.cols) catch return;
+        if (g.cols == session.term.grid.cols and g.rows == session.term.grid.rows) return;
+        session.resize(g.rows, g.cols) catch return;
     } else {
-        term = Terminal.init(std.heap.page_allocator, g.rows, g.cols) catch return;
+        session = Session.init(std.heap.page_allocator, g.rows, g.cols) catch return;
         ready = true;
-    }
-
-    if (!spawned) {
-        pty = Pty.spawn(g.rows, g.cols) catch return;
-        pty.setNonblock();
-        spawned = true;
-    } else {
-        pty.resize(g.rows, g.cols);
     }
 }
 
@@ -94,29 +81,18 @@ export fn anvil_resize(px_w: f32, px_h: f32) callconv(.c) void {
 /// exited (EOF) so the front-end can quit.
 export fn anvil_poll() callconv(.c) c_int {
     if (!ready) return 1;
-    var buf: [8192]u8 = undefined;
-    while (true) {
-        switch (pty.read(&buf)) {
-            .data => |n| parser.feed(&term, buf[0..n]),
-            .would_block => return 1,
-            .eof => return 0,
-        }
-    }
+    return if (session.poll()) 1 else 0;
 }
 
 export fn anvil_input(ptr: [*]const u8, len: usize) callconv(.c) void {
-    if (!spawned) return;
-    if (ready) {
-        if (term.view_offset != 0) term.view_offset = 0; // typing jumps to live
-        term.clearSelection();
-    }
-    pty.write(ptr[0..len]);
+    if (!ready) return;
+    session.write(ptr[0..len]);
 }
 
 export fn anvil_scroll(delta: c_int) callconv(.c) void {
     if (!ready) return;
-    term.clearSelection();
-    term.scrollView(@intCast(delta));
+    session.term.clearSelection();
+    session.term.scrollView(@intCast(delta));
 }
 
 /// kind: 0 = press (start), 1 = drag, 2 = release (extend). x/y in device px.
@@ -124,11 +100,11 @@ export fn anvil_mouse(kind: c_int, x: f32, y: f32) callconv(.c) void {
     if (!ready) return;
     const cf = (x - renderer.pad_x) / renderer.cell_w;
     const rf = (y - renderer.pad_y) / renderer.cell_h;
-    const col: u16 = @intFromFloat(std.math.clamp(cf, 0, @as(f32, @floatFromInt(term.grid.cols - 1))));
-    const row: u16 = @intFromFloat(std.math.clamp(rf, 0, @as(f32, @floatFromInt(term.grid.rows - 1))));
+    const col: u16 = @intFromFloat(std.math.clamp(cf, 0, @as(f32, @floatFromInt(session.term.grid.cols - 1))));
+    const row: u16 = @intFromFloat(std.math.clamp(rf, 0, @as(f32, @floatFromInt(session.term.grid.rows - 1))));
     switch (kind) {
-        0 => term.selectStart(row, col),
-        else => term.selectExtend(row, col),
+        0 => session.term.selectStart(row, col),
+        else => session.term.selectExtend(row, col),
     }
 }
 
@@ -139,7 +115,7 @@ export fn anvil_copy(out_len: *usize) callconv(.c) [*]const u8 {
         out_len.* = 0;
         return &copy_buf;
     }
-    out_len.* = term.selectionText(copy_buf[0..]);
+    out_len.* = session.term.selectionText(copy_buf[0..]);
     return &copy_buf;
 }
 
@@ -151,9 +127,9 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
         out.bg = th.bg.f32x3();
         return;
     }
-    var n = renderer.buildInstances(&term, instances[0..]);
-    if (term.view_offset == 0) {
-        instances[n] = renderer.cursorInstance(&term);
+    var n = renderer.buildInstances(&session.term, instances[0..]);
+    if (session.term.view_offset == 0) {
+        instances[n] = renderer.cursorInstance(&session.term);
         n += 1;
     }
     out.* = .{

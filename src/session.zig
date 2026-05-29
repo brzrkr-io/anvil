@@ -1,0 +1,48 @@
+const std = @import("std");
+const Terminal = @import("vt/terminal.zig").Terminal;
+const Parser = @import("vt/parser.zig").Parser;
+const Pty = @import("pty.zig").Pty;
+
+/// One terminal session: a VT emulator, its parser, and the PTY feeding it.
+pub const Session = struct {
+    term: Terminal,
+    parser: Parser = .{},
+    pty: Pty,
+
+    pub fn init(alloc: std.mem.Allocator, rows: u16, cols: u16) !Session {
+        var term = try Terminal.init(alloc, rows, cols);
+        errdefer term.deinit();
+        var pty = try Pty.spawn(rows, cols);
+        pty.setNonblock();
+        return .{ .term = term, .pty = pty };
+    }
+
+    pub fn deinit(self: *Session) void {
+        self.pty.deinit();
+        self.term.deinit();
+    }
+
+    pub fn resize(self: *Session, rows: u16, cols: u16) !void {
+        try self.term.resize(rows, cols);
+        self.pty.resize(rows, cols);
+    }
+
+    /// Drain pending shell output into the terminal. Returns false on EOF.
+    pub fn poll(self: *Session) bool {
+        var buf: [8192]u8 = undefined;
+        while (true) {
+            switch (self.pty.read(&buf)) {
+                .data => |n| self.parser.feed(&self.term, buf[0..n]),
+                .would_block => return true,
+                .eof => return false,
+            }
+        }
+    }
+
+    /// Send input to the shell; typing jumps to the live view and clears selection.
+    pub fn write(self: *Session, bytes: []const u8) void {
+        if (self.term.view_offset != 0) self.term.view_offset = 0;
+        self.term.clearSelection();
+        self.pty.write(bytes);
+    }
+};
