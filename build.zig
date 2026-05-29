@@ -20,6 +20,13 @@ pub fn build(b: *std.Build) void {
             .imports = &.{.{ .name = "anvil", .module = mod }},
         }),
     });
+    exe.root_module.addCSourceFile(.{
+        .file = b.path("src/platform/shim.m"),
+        .flags = &.{"-fobjc-arc"},
+    });
+    exe.root_module.linkFramework("Cocoa", .{});
+    exe.root_module.linkFramework("QuartzCore", .{});
+    exe.root_module.linkFramework("Metal", .{});
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);

@@ -25,6 +25,8 @@ zig build test     # run all test blocks
 | [src/vt/grid.zig](../src/vt/grid.zig) | `Grid`: flat `[]Cell` of rows×cols. `at`/`row`/`clear`/`scrollUp`. |
 | [src/vt/terminal.zig](../src/vt/terminal.zig) | `Terminal`: cursor + pen state. print/cursor-move/erase/SGR. The screen model. |
 | [src/vt/parser.zig](../src/vt/parser.zig) | `Parser`: byte-stream state machine (ground/escape/csi). UTF-8 + CSI → `Terminal` calls. |
+| [src/platform/shim.m](../src/platform/shim.m) | Obj-C ceremony only: NSWindow + CAMetalLayer + Metal clear-frame. Exposes C `anvil_run`. |
+| [src/platform/window.zig](../src/platform/window.zig) | Zig wrapper over the shim's C entry points. |
 
 Core logic (root.zig) is kept separate from the front-end (main.zig) on
 purpose — M2's window/render will consume the core, same as Ghostty's libghostty.
@@ -58,3 +60,18 @@ Zig 0.16 is moving to a new `std.Io` model. `std.posix.read` exists but
   no rendering. 12 tests green.
 - **M2 — Window + render** AppKit `NSWindow` + `CAMetalLayer`, draw the grid,
   wire input to the pty. First on-screen native terminal.
+  - **M2.1** ✅ window on screen — shim creates NSWindow + Metal layer, clears each frame.
+  - **M2.2** Metal pipeline — draw colored cell-background quads from the grid.
+  - **M2.3** CoreText glyph atlas — rasterize + draw text.
+  - **M2.4** wire PTY → `Parser` → `Terminal` → render, and keyboard → pty.
+
+## Obj-C interop: the shim rule
+
+macOS surfaces (AppKit/Metal) are reached through a thin Obj-C shim
+([src/platform/shim.m](../src/platform/shim.m)) that exposes plain C functions;
+Zig calls them as C and links the frameworks (`Cocoa`, `QuartzCore`, `Metal`).
+
+**Standing rule: logic in Zig, ceremony in shim.** The `.m` only allocs objects,
+sets properties, and forwards callbacks. Every *decision* — what to draw, input
+mapping, layout — lives in Zig where it's testable. Keeps the shim from becoming
+a second god-file. No `objc_msgSend`-by-hand, no external objc wrapper.
