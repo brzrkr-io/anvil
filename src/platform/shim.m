@@ -21,6 +21,8 @@ typedef struct {
     const float *overlay; // flat x,y,w,h,r,g,b per palette rect
     uint32_t overlay_count;
     uint32_t palette_text_count; // glyph instances after `count`, drawn last
+    const void *pending; // PendingGlyph[]: {uint32 cp, uint32 slot}
+    uint32_t pending_count;
 } FrameData;
 
 typedef struct {
@@ -36,7 +38,7 @@ typedef struct {
 } SolidUniforms;
 
 typedef struct {
-    uint32_t first, count, cols, rows;
+    uint32_t cols, rows;
     float pt_size;
 } AtlasParams;
 
@@ -75,6 +77,10 @@ static id<MTLRenderPipelineState> gPipeline;
 static id<MTLRenderPipelineState> gSolidPipeline;
 static id<MTLBuffer> gInstanceBuf;
 static id<MTLTexture> gAtlas;
+static CTFontRef gFont;   // kept alive for lazy glyph rasterization
+static int gGW, gGH;      // glyph cell size in pixels
+static uint32_t gCols, gRows; // atlas grid dimensions (cells)
+static CGFloat gDescent;  // font descent, for baseline placement
 static CAMetalLayer *gLayer;
 static double gLastW, gLastH;
 static NSWindow *gWindow;
@@ -125,60 +131,97 @@ static void buildPipeline(void) {
                                         options:MTLResourceStorageModeShared];
 }
 
-// Rasterize glyphs first..first+count into a cols x rows grid texture (R8).
-// Atlas layout (grid, range) is decided by Zig; here is the CoreText ceremony.
+// Allocate an empty cols x rows glyph-cache texture (R8). Glyphs are
+// rasterized lazily by rasterizeGlyph as Zig requests slots. Grid layout is
+// decided by Zig; here is the CoreText/Metal ceremony.
 static void buildAtlas(void) {
     AtlasParams ap = {0};
     anvil_atlas_params(&ap);
+    gCols = ap.cols;
+    gRows = ap.rows;
 
     CGFloat sz = ap.pt_size * ATLAS_SCALE;
-    CTFontRef font = CTFontCreateWithName(CFSTR("Menlo"), sz, NULL);
-    CGFloat ascent = CTFontGetAscent(font);
-    CGFloat descent = CTFontGetDescent(font);
-    CGFloat leading = CTFontGetLeading(font);
+    gFont = CTFontCreateWithName(CFSTR("Menlo"), sz, NULL);
+    CGFloat ascent = CTFontGetAscent(gFont);
+    CGFloat descent = CTFontGetDescent(gFont);
+    CGFloat leading = CTFontGetLeading(gFont);
 
     UniChar mch = 'M';
     CGGlyph mg;
-    CTFontGetGlyphsForCharacters(font, &mch, &mg, 1);
+    CTFontGetGlyphsForCharacters(gFont, &mch, &mg, 1);
     CGSize adv;
-    CTFontGetAdvancesForGlyphs(font, kCTFontOrientationHorizontal, &mg, &adv, 1);
+    CTFontGetAdvancesForGlyphs(gFont, kCTFontOrientationHorizontal, &mg, &adv, 1);
 
-    int gw = (int)ceil(adv.width);
-    int gh = (int)ceil(ascent + descent + leading);
-    int aw = gw * ap.cols;
-    int ah = gh * ap.rows;
-    anvil_set_metrics((float)gw, (float)gh);
+    gGW = (int)ceil(adv.width);
+    gGH = (int)ceil(ascent + descent + leading);
+    gDescent = descent;
+    anvil_set_metrics((float)gGW, (float)gGH);
 
-    uint8_t *buf = calloc((size_t)aw * ah, 1);
-    CGColorSpaceRef gray = CGColorSpaceCreateDeviceGray();
-    CGContextRef ctx = CGBitmapContextCreate(buf, aw, ah, 8, aw, gray, kCGImageAlphaNone);
-    CGContextSetGrayFillColor(ctx, 1.0, 1.0);
-
-    for (uint32_t i = 0; i < ap.count; i++) {
-        UniChar ch = (UniChar)(ap.first + i);
-        CGGlyph g;
-        if (!CTFontGetGlyphsForCharacters(font, &ch, &g, 1)) continue;
-        int col = i % ap.cols;
-        int row = i / ap.cols;
-        CGPoint pt = CGPointMake(col * gw, ah - (row + 1) * gh + descent);
-        CTFontDrawGlyphs(font, &g, &pt, 1, ctx);
-    }
-
+    int aw = gGW * (int)gCols;
+    int ah = gGH * (int)gRows;
     MTLTextureDescriptor *td =
         [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR8Unorm
                                                            width:aw
                                                           height:ah
                                                        mipmapped:NO];
     gAtlas = [gDevice newTextureWithDescriptor:td];
+    // Metal textures aren't guaranteed zeroed; clear so unrasterized slots are
+    // blank rather than garbage.
+    uint8_t *zero = calloc((size_t)aw * ah, 1);
     [gAtlas replaceRegion:MTLRegionMake2D(0, 0, aw, ah)
               mipmapLevel:0
-                withBytes:buf
+                withBytes:zero
               bytesPerRow:aw];
+    free(zero);
+}
+
+// Rasterize one codepoint into its cache slot. Uses a CTLine so the system
+// font cascade fills glyphs Menlo lacks (box-drawing, symbols, etc).
+static void rasterizeGlyph(uint32_t cp, uint32_t slot) {
+    if (!gAtlas || !gFont) return;
+    int col = (int)(slot % gCols);
+    int row = (int)(slot / gCols);
+
+    uint8_t *buf = calloc((size_t)gGW * gGH, 1);
+    CGColorSpaceRef gray = CGColorSpaceCreateDeviceGray();
+    CGContextRef ctx = CGBitmapContextCreate(buf, gGW, gGH, 8, gGW, gray, kCGImageAlphaNone);
+    CGContextSetGrayFillColor(ctx, 1.0, 1.0);
+
+    CFStringRef s = CFStringCreateWithBytes(NULL, (const UInt8 *)&cp, 4,
+                                            kCFStringEncodingUTF32LE, false);
+    if (s) {
+        // Draw with the context fill color (white) so the R8 mask captures
+        // coverage; without this CTLine defaults to black and the slot stays 0.
+        CFStringRef keys[2] = {kCTFontAttributeName, kCTForegroundColorFromContextAttributeName};
+        CFTypeRef vals[2] = {gFont, kCFBooleanTrue};
+        CFDictionaryRef attrs = CFDictionaryCreate(NULL, (const void **)keys, (const void **)vals, 2,
+                                                   &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+        CFAttributedStringRef as = CFAttributedStringCreate(NULL, s, attrs);
+        CTLineRef line = CTLineCreateWithAttributedString(as);
+        CGContextSetTextPosition(ctx, 0, gDescent);
+        CTLineDraw(line, ctx);
+        CFRelease(line);
+        CFRelease(as);
+        CFRelease(attrs);
+        CFRelease(s);
+    }
+
+    [gAtlas replaceRegion:MTLRegionMake2D(col * gGW, row * gGH, gGW, gGH)
+              mipmapLevel:0
+                withBytes:buf
+              bytesPerRow:gGW];
 
     CGContextRelease(ctx);
     CGColorSpaceRelease(gray);
     free(buf);
-    CFRelease(font);
+}
+
+// Drain the frame's pending-glyph list into the cache texture.
+static void drainPending(const FrameData *fd) {
+    const uint32_t *pg = (const uint32_t *)fd->pending;
+    for (uint32_t i = 0; i < fd->pending_count; i++) {
+        rasterizeGlyph(pg[i * 2], pg[i * 2 + 1]);
+    }
 }
 
 static void drawSolid(id<MTLRenderCommandEncoder> enc, CGSize ds,
@@ -212,6 +255,7 @@ static void render(void) {
 
     FrameData fd = {0};
     anvil_frame(&fd);
+    drainPending(&fd);
 
     id<CAMetalDrawable> drawable = [gLayer nextDrawable];
     if (!drawable) return;
@@ -305,6 +349,7 @@ void anvil_dump(const char *path, uint32_t w, uint32_t h) {
 
         FrameData fd = {0};
         anvil_frame(&fd);
+        drainPending(&fd);
 
         MTLTextureDescriptor *td =
             [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm

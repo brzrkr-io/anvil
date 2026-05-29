@@ -30,4 +30,8 @@ pub const FrameData = extern struct {
     overlay: [*]const f32,
     overlay_count: u32,
     palette_text_count: u32,
+    // Glyphs newly assigned a cache slot this frame; the shim rasterizes each
+    // `cp` into its `slot` before drawing. Empty once the cache is warm.
+    pending: [*]const @import("atlas.zig").PendingGlyph,
+    pending_count: u32,
 };

@@ -4,6 +4,7 @@ const SessionManager = @import("session_manager.zig").SessionManager;
 const pane = @import("workspace/pane_tree.zig");
 const Renderer = @import("render/renderer.zig").Renderer;
 const inst = @import("render/instance.zig");
+const atlasmod = @import("render/atlas.zig");
 const palette = @import("render/palette.zig");
 const theme = @import("render/theme.zig");
 const cmd = @import("palette.zig");
@@ -115,8 +116,6 @@ export fn anvil_theme_is_dark() callconv(.c) c_int {
 }
 
 const AtlasParams = extern struct {
-    first: u32,
-    count: u32,
     cols: u32,
     rows: u32,
     pt_size: f32,
@@ -128,8 +127,7 @@ export fn anvil_shader_src(out_len: *usize) callconv(.c) [*]const u8 {
 }
 
 export fn anvil_atlas_params(out: *AtlasParams) callconv(.c) void {
-    const a = renderer.atlas;
-    out.* = .{ .first = a.first, .count = a.count, .cols = a.cols, .rows = a.rows(), .pt_size = font_pt };
+    out.* = .{ .cols = atlasmod.cols, .rows = atlasmod.rows_n, .pt_size = font_pt };
 }
 
 export fn anvil_set_metrics(cell_w: f32, cell_h: f32) callconv(.c) void {
@@ -314,6 +312,7 @@ export fn anvil_copy(out_len: *usize) callconv(.c) [*]const u8 {
 export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
     const th = activeTheme();
     palette.setActive(th);
+    renderer.atlas.resetPending(); // before any glyph lookup this frame
     out.* = .{
         .instances = &instances,
         .count = 0,
@@ -331,6 +330,8 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
         .overlay = &overlay,
         .overlay_count = 0,
         .palette_text_count = 0,
+        .pending = &renderer.atlas.pending,
+        .pending_count = 0,
     };
     if (!ready) return;
 
@@ -376,6 +377,8 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
         out.palette_text_count = @intCast(r.text);
         out.overlay_count = @intCast(r.rects);
     }
+
+    out.pending_count = renderer.atlas.pending_n;
 }
 
 fn putRect(ri: usize, x: f32, y: f32, w: f32, h: f32, c: theme.Rgb) void {

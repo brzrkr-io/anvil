@@ -1,63 +1,146 @@
 const std = @import("std");
 
-/// Glyph atlas layout. The shim rasterizes glyphs `first..first+count` into a
-/// `cols`-wide grid texture; this maps a codepoint to its normalized UV origin.
+/// Cache geometry. `capacity` must be a power of two (cheap hash masking) and
+/// equal `cols * rows_n`. The shim allocates a `cols`x`rows_n` grid texture.
+pub const cols: u16 = 32;
+pub const rows_n: u16 = 32;
+pub const capacity: u16 = cols * rows_n; // 1024 slots
+
+/// One glyph the shim must rasterize this frame: `cp` into grid `slot`.
+/// Layout matches the C `PendingGlyph` read in shim.m (two u32s).
+pub const PendingGlyph = extern struct { cp: u32, slot: u32 };
+
+/// Dynamic glyph atlas. Maps each codepoint to a slot in the grid texture,
+/// rasterizing on first use (lazy). Slot 0 is the blank cell, shared by space
+/// and control codepoints. When the cache fills, further new codepoints fall
+/// back to blank — no eviction yet (LRU is a later refinement).
+///
+/// Open-addressing hash, no allocator: the table lives inline so the atlas is a
+/// plain value with comptime-zeroed buckets. `keys[i] == 0` marks an empty
+/// bucket; real keys are always > ' ' since blanks short-circuit to slot 0.
 pub const Atlas = struct {
-    first: u21 = 32,
-    count: u16 = 95,
-    cols: u16 = 16,
+    keys: [capacity]u32 = [_]u32{0} ** capacity,
+    vals: [capacity]u16 = undefined,
+    next: u16 = 1, // slot 0 reserved for blank
+    pending: [capacity]PendingGlyph = undefined,
+    pending_n: u16 = 0,
 
-    pub fn rows(self: Atlas) u16 {
-        return (self.count + self.cols - 1) / self.cols;
+    pub fn rows(_: *const Atlas) u16 {
+        return rows_n;
     }
 
-    pub fn cellUV(self: Atlas) [2]f32 {
+    /// Size of one glyph cell in normalized UV.
+    pub fn cellUV(_: *const Atlas) [2]f32 {
         return .{
-            1.0 / @as(f32, @floatFromInt(self.cols)),
-            1.0 / @as(f32, @floatFromInt(self.rows())),
+            1.0 / @as(f32, @floatFromInt(cols)),
+            1.0 / @as(f32, @floatFromInt(rows_n)),
         };
     }
 
-    /// UV of the top-left corner of `cp`'s atlas cell. Out-of-range codepoints
-    /// map to the first slot (the space glyph), rendering blank.
-    pub fn uvOrigin(self: Atlas, cp: u21) [2]f32 {
-        const idx: u16 = if (cp >= self.first and cp < self.first + self.count)
-            @intCast(cp - self.first)
-        else
-            0;
-        const col = idx % self.cols;
-        const row = idx / self.cols;
+    fn slotUV(slot: u16) [2]f32 {
         return .{
-            @as(f32, @floatFromInt(col)) / @as(f32, @floatFromInt(self.cols)),
-            @as(f32, @floatFromInt(row)) / @as(f32, @floatFromInt(self.rows())),
+            @as(f32, @floatFromInt(slot % cols)) / @as(f32, @floatFromInt(cols)),
+            @as(f32, @floatFromInt(slot / cols)) / @as(f32, @floatFromInt(rows_n)),
         };
+    }
+
+    /// Slot for `cp`, assigning one and queueing a raster on first use. Space
+    /// and control codepoints share the blank slot 0. Returns 0 when the cache
+    /// is full.
+    pub fn slotFor(self: *Atlas, cp: u21) u16 {
+        if (cp <= ' ') return 0;
+        const mask: u32 = capacity - 1;
+        var i: u32 = (@as(u32, cp) *% 2654435761) & mask;
+        while (self.keys[i] != 0) {
+            if (self.keys[i] == cp) return self.vals[i];
+            i = (i + 1) & mask;
+        }
+        if (self.next >= capacity) return 0; // full → blank
+        const slot = self.next;
+        self.next += 1;
+        self.keys[i] = cp;
+        self.vals[i] = slot;
+        self.pending[self.pending_n] = .{ .cp = cp, .slot = slot };
+        self.pending_n += 1;
+        return slot;
+    }
+
+    /// UV of the top-left of `cp`'s cell, assigning + queueing on first use.
+    pub fn uvOrigin(self: *Atlas, cp: u21) [2]f32 {
+        return slotUV(self.slotFor(cp));
+    }
+
+    /// Drop the pending list. Called once at the start of each frame, before
+    /// any glyph lookups, so `pending` holds only this frame's new codepoints.
+    pub fn resetPending(self: *Atlas) void {
+        self.pending_n = 0;
     }
 };
 
-test "rows is ceil(count/cols)" {
-    try std.testing.expectEqual(@as(u16, 6), (Atlas{ .count = 95, .cols = 16 }).rows());
-    try std.testing.expectEqual(@as(u16, 1), (Atlas{ .count = 16, .cols = 16 }).rows());
-    try std.testing.expectEqual(@as(u16, 2), (Atlas{ .count = 17, .cols = 16 }).rows());
+test "blank and controls map to slot 0 without queueing" {
+    var a = Atlas{};
+    try std.testing.expectEqual(@as(u16, 0), a.slotFor(' '));
+    try std.testing.expectEqual(@as(u16, 0), a.slotFor('\n'));
+    try std.testing.expectEqual(@as(u16, 0), a.slotFor(0));
+    try std.testing.expectEqual(@as(u16, 0), a.pending_n);
 }
 
-test "uvOrigin maps codepoint to grid cell" {
-    const a = Atlas{ .first = 32, .count = 95, .cols = 16 };
-    // 'A' (65) -> idx 33 -> col 1, row 2
-    const uv = a.uvOrigin('A');
-    try std.testing.expectApproxEqAbs(@as(f32, 1.0 / 16.0), uv[0], 0.0001);
-    try std.testing.expectApproxEqAbs(@as(f32, 2.0 / 6.0), uv[1], 0.0001);
+test "first printable gets slot 1 and queues a raster" {
+    var a = Atlas{};
+    try std.testing.expectEqual(@as(u16, 1), a.slotFor('A'));
+    try std.testing.expectEqual(@as(u16, 1), a.pending_n);
+    try std.testing.expectEqual(@as(u32, 'A'), a.pending[0].cp);
+    try std.testing.expectEqual(@as(u32, 1), a.pending[0].slot);
 }
 
-test "uvOrigin first slot for space and out-of-range" {
-    const a = Atlas{};
-    try std.testing.expectEqual([2]f32{ 0, 0 }, a.uvOrigin(' '));
-    try std.testing.expectEqual([2]f32{ 0, 0 }, a.uvOrigin(0x1F600)); // emoji, unsupported
-    try std.testing.expectEqual([2]f32{ 0, 0 }, a.uvOrigin(0)); // control
+test "repeat lookup is cached, distinct codepoints get distinct slots" {
+    var a = Atlas{};
+    const s1 = a.slotFor('A');
+    const s2 = a.slotFor('A');
+    const s3 = a.slotFor('B');
+    try std.testing.expectEqual(s1, s2);
+    try std.testing.expect(s1 != s3);
+    try std.testing.expectEqual(@as(u16, 2), a.pending_n); // A, B — A not requeued
+}
+
+test "non-ASCII codepoints are cached like any other" {
+    var a = Atlas{};
+    const dot = a.slotFor(0x25CF); // ●
+    const check = a.slotFor(0x2713); // ✓
+    try std.testing.expect(dot != 0);
+    try std.testing.expect(check != 0);
+    try std.testing.expect(dot != check);
+}
+
+test "resetPending clears the queue but keeps the cache" {
+    var a = Atlas{};
+    const s = a.slotFor('A');
+    a.resetPending();
+    try std.testing.expectEqual(@as(u16, 0), a.pending_n);
+    try std.testing.expectEqual(s, a.slotFor('A')); // still cached
+    try std.testing.expectEqual(@as(u16, 0), a.pending_n); // no requeue
+}
+
+test "cache full falls back to blank" {
+    var a = Atlas{};
+    // Fill every slot past 0 with distinct codepoints.
+    var cp: u21 = '!';
+    while (a.next < capacity) : (cp += 1) _ = a.slotFor(cp);
+    try std.testing.expectEqual(capacity, a.next);
+    try std.testing.expectEqual(@as(u16, 0), a.slotFor(0x10FFFF)); // overflow → blank
 }
 
 test "cellUV is one grid cell" {
-    const a = Atlas{ .count = 95, .cols = 16 };
+    const a = Atlas{};
     const uv = a.cellUV();
-    try std.testing.expectApproxEqAbs(@as(f32, 1.0 / 16.0), uv[0], 0.0001);
-    try std.testing.expectApproxEqAbs(@as(f32, 1.0 / 6.0), uv[1], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0 / 32.0), uv[0], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0 / 32.0), uv[1], 0.0001);
+}
+
+test "uvOrigin places slot in the grid" {
+    var a = Atlas{};
+    _ = a.slotFor('A'); // slot 1 -> col 1, row 0
+    const uv = a.uvOrigin('A');
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0 / 32.0), uv[0], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), uv[1], 0.0001);
 }
