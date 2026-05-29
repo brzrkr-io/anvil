@@ -1,7 +1,7 @@
 const std = @import("std");
 const Terminal = @import("terminal.zig").Terminal;
 
-const State = enum { ground, escape, csi, osc, osc_esc };
+const State = enum { ground, escape, csi, osc, osc_esc, charset };
 
 pub const Parser = struct {
     state: State = .ground,
@@ -21,6 +21,11 @@ pub const Parser = struct {
     cp: u21 = 0,
     pending: u8 = 0,
 
+    // Charset designation (SCS). We track which Gn set is being designated and
+    // whether G0 is DEC Special Graphics (line-drawing). G0 is the active GL set.
+    charset_set: u8 = 0, // the intermediate: '(' G0, ')' G1, '*' G2, '+' G3
+    g0_graphics: bool = false,
+
     pub fn feed(self: *Parser, term: *Terminal, bytes: []const u8) void {
         for (bytes) |b| self.byte(term, b);
     }
@@ -32,6 +37,7 @@ pub const Parser = struct {
             .csi => self.csi(term, b),
             .osc => self.osc(term, b),
             .osc_esc => self.oscEsc(term, b),
+            .charset => self.charset(b),
         }
     }
 
@@ -55,7 +61,7 @@ pub const Parser = struct {
             0x0d => term.carriageReturn(),
             else => {
                 if (b < 0x80) {
-                    term.print(b);
+                    term.print(if (self.g0_graphics) decGraphics(b) else b);
                 } else if (b & 0xe0 == 0xc0) {
                     self.cp = b & 0x1f;
                     self.pending = 1;
@@ -106,11 +112,55 @@ pub const Parser = struct {
                 self.osc_len = 0;
                 self.state = .osc;
             },
+            '(', ')', '*', '+' => {
+                self.charset_set = b; // designator byte follows
+                self.state = .charset;
+            },
             else => {
                 self.state = .ground;
                 self.byte(term, b);
             },
         }
+    }
+
+    /// SCS final byte: pick the charset for the set named by `charset_set`.
+    /// '0' = DEC Special Graphics (line-drawing), 'B' = ASCII; others ignored.
+    fn charset(self: *Parser, b: u8) void {
+        if (self.charset_set == '(') self.g0_graphics = (b == '0');
+        self.state = .ground;
+    }
+
+    /// Translate a byte through the DEC Special Graphics set (VT100 line-drawing).
+    /// Only 0x5f–0x7e differ from ASCII; everything else passes through.
+    fn decGraphics(b: u8) u21 {
+        return switch (b) {
+            0x60 => 0x25c6, // ◆
+            0x61 => 0x2592, // ▒
+            0x66 => 0x00b0, // °
+            0x67 => 0x00b1, // ±
+            0x6a => 0x2518, // ┘
+            0x6b => 0x2510, // ┐
+            0x6c => 0x250c, // ┌
+            0x6d => 0x2514, // └
+            0x6e => 0x253c, // ┼
+            0x6f => 0x23ba, // ⎺
+            0x70 => 0x23bb, // ⎻
+            0x71 => 0x2500, // ─
+            0x72 => 0x23bc, // ⎼
+            0x73 => 0x23bd, // ⎽
+            0x74 => 0x251c, // ├
+            0x75 => 0x2524, // ┤
+            0x76 => 0x2534, // ┴
+            0x77 => 0x252c, // ┬
+            0x78 => 0x2502, // │
+            0x79 => 0x2264, // ≤
+            0x7a => 0x2265, // ≥
+            0x7b => 0x03c0, // π
+            0x7c => 0x2260, // ≠
+            0x7d => 0x00a3, // £
+            0x7e => 0x00b7, // ·
+            else => b,
+        };
     }
 
     fn osc(self: *Parser, term: *Terminal, b: u8) void {
@@ -309,6 +359,27 @@ test "private prefix does not leak into next sequence" {
     // a private set, then a plain CSI K must not be treated as private
     p.feed(&t, "\x1b[?25lab\x1b[1G\x1b[K");
     try std.testing.expectEqual(@as(u21, ' '), t.grid.at(0, 0).cp);
+}
+
+test "SCS designator is consumed, not printed" {
+    var t = try Terminal.init(std.testing.allocator, 1, 10);
+    defer t.deinit();
+    var p = Parser{};
+    // ESC ( B (select ASCII for G0) must leave no literal "(B" on screen.
+    p.feed(&t, "\x1b(BX");
+    try std.testing.expectEqual(@as(u21, 'X'), t.grid.at(0, 0).cp);
+    try std.testing.expectEqual(@as(u21, ' '), t.grid.at(0, 1).cp);
+}
+
+test "DEC Special Graphics maps G0 to line-drawing" {
+    var t = try Terminal.init(std.testing.allocator, 1, 10);
+    defer t.deinit();
+    var p = Parser{};
+    // ESC ( 0 selects line-drawing: 'q' -> ─, 'x' -> │; ESC ( B restores ASCII.
+    p.feed(&t, "\x1b(0qx\x1b(Bq");
+    try std.testing.expectEqual(@as(u21, 0x2500), t.grid.at(0, 0).cp); // ─
+    try std.testing.expectEqual(@as(u21, 0x2502), t.grid.at(0, 1).cp); // │
+    try std.testing.expectEqual(@as(u21, 'q'), t.grid.at(0, 2).cp); // ASCII again
 }
 
 test "OSC 2 sets window title (BEL terminated)" {
