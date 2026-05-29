@@ -151,6 +151,18 @@ fn activeTheme() *const theme.Theme {
     return if (effectiveDark()) &theme.mineral_dark else &theme.mineral_light;
 }
 
+/// Push the active theme's fg/bg/ANSI into every terminal so the parser can
+/// answer OSC 10/11/4 color queries — this is how nvim detects our background
+/// and selects the matching light/dark colorscheme.
+fn pushThemeColors() void {
+    const th = activeTheme();
+    var ansi: [16][3]u8 = undefined;
+    for (th.ansi, 0..) |c, i| ansi[i] = .{ c.r, c.g, c.b };
+    const fg = [3]u8{ th.fg.r, th.fg.g, th.fg.b };
+    const bg = [3]u8{ th.bg.r, th.bg.g, th.bg.b };
+    for (mgr.sessions.items) |*s| s.term.setThemeColors(fg, bg, ansi);
+}
+
 export fn anvil_set_theme_mode(m: c_int) callconv(.c) void {
     theme_mode = @enumFromInt(m);
 }
@@ -209,6 +221,7 @@ export fn anvil_resize(px_w: f32, px_h: f32) callconv(.c) void {
 export fn anvil_poll() callconv(.c) c_int {
     if (!ready) return 1;
     reloadConfigIfChanged();
+    pushThemeColors();
     var alive: c_int = 1;
     for (mgr.sessions.items) |*s| {
         if (!s.poll() and s.id == mgr.focused) alive = 0;

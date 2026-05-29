@@ -194,6 +194,14 @@ pub const Parser = struct {
         switch (ps) {
             0, 2 => term.setTitle(pt),
             7 => term.setCwd(pt),
+            10 => if (std.mem.eql(u8, pt, "?")) term.replyOscColor(10, null, term.q_fg),
+            11 => if (std.mem.eql(u8, pt, "?")) term.replyOscColor(11, null, term.q_bg),
+            4 => { // OSC 4 ; <index> ; ? — report a palette color
+                const sc = std.mem.indexOfScalar(u8, pt, ';') orelse return;
+                if (!std.mem.eql(u8, pt[sc + 1 ..], "?")) return;
+                const idx = std.fmt.parseInt(u8, pt[0..sc], 10) catch return;
+                if (idx < 16) term.replyOscColor(4, idx, term.q_ansi[idx]);
+            },
             133 => if (pt.len > 0) { // shell-integration marks
                 if (pt[0] == 'D') {
                     // D or D;<code> → command end; bare D means success.
@@ -380,6 +388,26 @@ test "DEC Special Graphics maps G0 to line-drawing" {
     try std.testing.expectEqual(@as(u21, 0x2500), t.grid.at(0, 0).cp); // ─
     try std.testing.expectEqual(@as(u21, 0x2502), t.grid.at(0, 1).cp); // │
     try std.testing.expectEqual(@as(u21, 'q'), t.grid.at(0, 2).cp); // ASCII again
+}
+
+test "OSC 11 background query is answered with the theme color" {
+    var t = try Terminal.init(std.testing.allocator, 1, 10);
+    defer t.deinit();
+    t.setThemeColors(.{ 0x11, 0x22, 0x33 }, .{ 0x0b, 0x0d, 0x0e }, t.q_ansi);
+    var p = Parser{};
+    p.feed(&t, "\x1b]11;?\x07");
+    try std.testing.expectEqualStrings("\x1b]11;rgb:0b0b/0d0d/0e0e\x07", t.reply_buf[0..t.reply_len]);
+}
+
+test "OSC 4 palette query reports the indexed color" {
+    var t = try Terminal.init(std.testing.allocator, 1, 10);
+    defer t.deinit();
+    var ansi = t.q_ansi;
+    ansi[1] = .{ 0xaa, 0xbb, 0xcc };
+    t.setThemeColors(t.q_fg, t.q_bg, ansi);
+    var p = Parser{};
+    p.feed(&t, "\x1b]4;1;?\x07");
+    try std.testing.expectEqualStrings("\x1b]4;1;rgb:aaaa/bbbb/cccc\x07", t.reply_buf[0..t.reply_len]);
 }
 
 test "OSC 2 sets window title (BEL terminated)" {

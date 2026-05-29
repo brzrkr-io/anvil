@@ -52,8 +52,18 @@ pub const Terminal = struct {
     alt_cy: u16 = 0,
     scroll_top: u16 = 0, // DECSTBM region top (0-based, inclusive)
     scroll_bot: u16 = 0, // DECSTBM region bottom (0-based, inclusive)
-    reply_buf: [64]u8 = undefined, // queued response to a host query (DA/CPR/DSR)
+    reply_buf: [256]u8 = undefined, // queued response to a host query (DA/CPR/DSR/OSC color)
     reply_len: usize = 0,
+    // Active theme colors, pushed down by the app so the parser can answer
+    // OSC 10/11/4 color queries (lets nvim/etc. detect our bg and match it).
+    q_fg: [3]u8 = .{ 0xd2, 0xd8, 0xdb },
+    q_bg: [3]u8 = .{ 0x0b, 0x0d, 0x0e },
+    q_ansi: [16][3]u8 = .{
+        .{ 0x16, 0x1a, 0x1c }, .{ 0xb1, 0x3a, 0x30 }, .{ 0x3f, 0x8a, 0x5b }, .{ 0xb0, 0x7a, 0x14 },
+        .{ 0x4a, 0x6f, 0x8a }, .{ 0x6a, 0x5f, 0xa3 }, .{ 0x2f, 0x7f, 0x86 }, .{ 0xd2, 0xd8, 0xdb },
+        .{ 0x4a, 0x55, 0x5c }, .{ 0xcf, 0x53, 0x46 }, .{ 0x57, 0xa6, 0x73 }, .{ 0xcf, 0x96, 0x2b },
+        .{ 0x5d, 0x86, 0xa3 }, .{ 0x83, 0x77, 0xc0 }, .{ 0x3f, 0x9a, 0xa1 }, .{ 0xee, 0xf1, 0xf2 },
+    },
     scrollback: Scrollback,
     view_offset: usize = 0, // lines scrolled up into history; 0 = live bottom
     selection: ?Selection = null,
@@ -528,6 +538,24 @@ pub const Terminal = struct {
         if (self.reply_len + bytes.len > self.reply_buf.len) return;
         @memcpy(self.reply_buf[self.reply_len..][0..bytes.len], bytes);
         self.reply_len += bytes.len;
+    }
+
+    /// Update the theme colors used to answer OSC 10/11/4 color queries.
+    pub fn setThemeColors(self: *Terminal, fg: [3]u8, bg: [3]u8, ansi: [16][3]u8) void {
+        self.q_fg = fg;
+        self.q_bg = bg;
+        self.q_ansi = ansi;
+    }
+
+    /// Answer an OSC 10/11/4 color query in xterm's `rgb:RR/GG/BB` form
+    /// (8-bit doubled to 16-bit). `idx` is the palette index for OSC 4, else null.
+    pub fn replyOscColor(self: *Terminal, ps: u16, idx: ?u8, c: [3]u8) void {
+        var buf: [48]u8 = undefined;
+        const s = if (idx) |i|
+            std.fmt.bufPrint(&buf, "\x1b]{d};{d};rgb:{x:0>2}{x:0>2}/{x:0>2}{x:0>2}/{x:0>2}{x:0>2}\x07", .{ ps, i, c[0], c[0], c[1], c[1], c[2], c[2] }) catch return
+        else
+            std.fmt.bufPrint(&buf, "\x1b]{d};rgb:{x:0>2}{x:0>2}/{x:0>2}{x:0>2}/{x:0>2}{x:0>2}\x07", .{ ps, c[0], c[0], c[1], c[1], c[2], c[2] }) catch return;
+        self.reply(s);
     }
 
     /// CPR (CSI 6n): report the 1-based cursor position.
