@@ -22,6 +22,20 @@ const Split = struct {
     b: Node,
 };
 
+/// Public mirror of Node used for serialization; owns its own memory via the
+/// provided allocator. Free with `freeExport`.
+pub const NodeExport = union(enum) {
+    leaf: usize,
+    split: *SplitExport,
+};
+
+pub const SplitExport = struct {
+    axis: Axis,
+    ratio: f32,
+    a: *NodeExport,
+    b: *NodeExport,
+};
+
 /// A binary tree of split panes. Leaves carry opaque session ids; the tree
 /// owns only structure and layout geometry. Focus lives in the caller.
 pub const PaneTree = struct {
@@ -61,9 +75,14 @@ pub const PaneTree = struct {
     /// Split the leaf carrying `target` into two along `axis`; `new_id` becomes
     /// the second pane. No-op if `target` is not present.
     pub fn split(self: *PaneTree, target: usize, axis: Axis, new_id: usize) !void {
+        return self.splitWithRatio(target, axis, new_id, 0.5);
+    }
+
+    /// Like split but uses the given ratio for the first child's fraction.
+    pub fn splitWithRatio(self: *PaneTree, target: usize, axis: Axis, new_id: usize, ratio: f32) !void {
         const slot = findLeaf(&self.root, target) orelse return;
         const sp = try self.alloc.create(Split);
-        sp.* = .{ .axis = axis, .ratio = 0.5, .a = slot.*, .b = .{ .leaf = new_id } };
+        sp.* = .{ .axis = axis, .ratio = ratio, .a = slot.*, .b = .{ .leaf = new_id } };
         slot.* = .{ .split = sp };
     }
 
@@ -218,6 +237,40 @@ pub const PaneTree = struct {
     /// Any surviving leaf id — useful for re-homing focus after a close.
     pub fn anyLeaf(self: *const PaneTree) usize {
         return firstLeaf(self.root);
+    }
+
+    /// Export the tree structure for serialization. Caller owns the returned
+    /// memory and must call `freeExport` when done.
+    pub fn exportRoot(self: *const PaneTree, alloc: std.mem.Allocator) !NodeExport {
+        return exportNode(alloc, self.root);
+    }
+
+    fn exportNode(alloc: std.mem.Allocator, node: Node) !NodeExport {
+        switch (node) {
+            .leaf => |id| return .{ .leaf = id },
+            .split => |sp| {
+                const ex = try alloc.create(SplitExport);
+                const a_ptr = try alloc.create(NodeExport);
+                a_ptr.* = try exportNode(alloc, sp.a);
+                const b_ptr = try alloc.create(NodeExport);
+                b_ptr.* = try exportNode(alloc, sp.b);
+                ex.* = .{ .axis = sp.axis, .ratio = sp.ratio, .a = a_ptr, .b = b_ptr };
+                return .{ .split = ex };
+            },
+        }
+    }
+
+    pub fn freeExport(alloc: std.mem.Allocator, node: NodeExport) void {
+        switch (node) {
+            .leaf => {},
+            .split => |sp| {
+                freeExport(alloc, sp.a.*);
+                freeExport(alloc, sp.b.*);
+                alloc.destroy(sp.a);
+                alloc.destroy(sp.b);
+                alloc.destroy(sp);
+            },
+        }
     }
 
     /// Collect every leaf id into `out` (size >= count()); returns the count.

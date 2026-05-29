@@ -21,23 +21,30 @@ pub const Pty = struct {
     pid: std.posix.pid_t,
 
     pub fn spawn(rows: u16, cols: u16) !Pty {
+        return spawnCwd(rows, cols, null);
+    }
+
+    pub fn spawnCwd(rows: u16, cols: u16, cwd: ?[*:0]const u8) !Pty {
         var master: c_int = -1;
         var ws = c.struct_winsize{ .ws_row = rows, .ws_col = cols, .ws_xpixel = 0, .ws_ypixel = 0 };
         const pid = c.forkpty(&master, null, null, &ws);
         if (pid < 0) return error.ForkptyFailed;
         if (pid == 0) {
-            childExec();
+            childExec(cwd);
             unreachable;
         }
         return .{ .master = @intCast(master), .pid = @intCast(pid) };
     }
 
-    fn childExec() void {
+    fn childExec(cwd: ?[*:0]const u8) void {
         _ = c.setenv("TERM", "xterm-256color", 1);
-        _ = c.setenv("COLORTERM", "truecolor", 1); // signal 24-bit to nvim/etc.
-        // Launched from Finder/Dock the cwd is "/"; start the shell in $HOME.
-        const home = c.getenv("HOME");
-        if (home != null) _ = c.chdir(home);
+        _ = c.setenv("COLORTERM", "truecolor", 1);
+        if (cwd) |dir| {
+            _ = c.chdir(dir);
+        } else {
+            const home = c.getenv("HOME");
+            if (home != null) _ = c.chdir(home);
+        }
         const env = c.getenv("SHELL");
         const shell: [*c]const u8 = if (env != null) env else "/bin/zsh";
         _ = c.execlp(shell, shell, @as([*c]const u8, null));

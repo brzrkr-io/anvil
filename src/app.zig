@@ -11,6 +11,7 @@ const cmd = @import("palette.zig");
 const search = @import("search.zig");
 const config = @import("config.zig");
 const keys = @import("keys.zig");
+const persist = @import("session_persist.zig");
 
 const shader_src = @embedFile("platform/shaders.metal");
 const font_data = @embedFile("font_ttf");
@@ -225,15 +226,25 @@ export fn anvil_resize(px_w: f32, px_h: f32) callconv(.c) void {
     win_w = px_w;
     win_h = px_h;
     if (!ready) {
-        loadConfig(); // padding affects the grid; load before sizing
+        loadConfig();
         const ws = workspaceRect();
         const g = renderer.paneGrid(ws.w, ws.h);
-        mgr.spawnFirst(g.rows, g.cols) catch return;
+        var restored = false;
+        if (persist.loadFromFile(std.heap.page_allocator)) |state| {
+            mgr.spawnFromState(state, g.rows, g.cols) catch {};
+            restored = mgr.tabs.items.len > 0;
+        }
+        if (!restored) mgr.spawnFirst(g.rows, g.cols) catch return;
         ready = true;
         applyCursorDefault();
         return;
     }
     relayout();
+}
+
+export fn anvil_save_session() callconv(.c) void {
+    if (!ready) return;
+    persist.saveToFile(std.heap.page_allocator, &mgr);
 }
 
 /// Drain pending shell output into the terminal. Returns 0 only when every

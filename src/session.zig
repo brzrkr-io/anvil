@@ -12,9 +12,13 @@ pub const Session = struct {
     exited: bool = false,
 
     pub fn init(alloc: std.mem.Allocator, rows: u16, cols: u16) !Session {
+        return initWithCwd(alloc, rows, cols, null);
+    }
+
+    pub fn initWithCwd(alloc: std.mem.Allocator, rows: u16, cols: u16, cwd: ?[*:0]const u8) !Session {
         var term = try Terminal.init(alloc, rows, cols);
         errdefer term.deinit();
-        var pty = try Pty.spawn(rows, cols);
+        var pty = try Pty.spawnCwd(rows, cols, cwd);
         pty.setNonblock();
         return .{ .term = term, .pty = pty };
     }

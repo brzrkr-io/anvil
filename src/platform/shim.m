@@ -81,6 +81,7 @@ extern const char *anvil_copy(size_t *out_len);
 extern void anvil_set_theme_mode(int mode);
 extern void anvil_set_os_dark(int is_dark);
 extern int anvil_theme_is_dark(void);
+extern void anvil_save_session(void);
 
 #define INSTANCE_STRIDE (13 * sizeof(float))
 #define MAX_INSTANCES 60000
@@ -680,7 +681,7 @@ static void layoutTrafficLights(NSWindow *win) {
 }
 @end
 
-@interface AnvilController : NSObject
+@interface AnvilController : NSObject <NSApplicationDelegate>
 @end
 
 @implementation AnvilController
@@ -694,6 +695,10 @@ static void layoutTrafficLights(NSWindow *win) {
     (void)n;
     anvil_set_os_dark(osIsDark() ? 1 : 0);
     applyAppearance();
+}
+- (void)applicationWillTerminate:(NSNotification *)n {
+    (void)n;
+    anvil_save_session();
 }
 @end
 
@@ -782,6 +787,7 @@ void anvil_run(void) {
         gWindow = win;
 
         gController = [[AnvilController alloc] init];
+        NSApp.delegate = gController;
         anvil_set_os_dark(osIsDark() ? 1 : 0);
         buildMenu();
         applyAppearance();

@@ -1,6 +1,7 @@
 const std = @import("std");
 const Session = @import("session.zig").Session;
 const pane = @import("workspace/pane_tree.zig");
+const persist = @import("session_persist.zig");
 
 const max_panes = 64;
 
@@ -33,6 +34,61 @@ pub const SessionManager = struct {
         try self.tabs.append(self.alloc, pane.PaneTree.init(self.alloc, id));
         self.active_tab = 0;
         self.focused = id;
+    }
+
+    /// Restore tabs and pane splits from a persisted state. Each leaf spawns a
+    /// shell in its saved cwd. Falls back to nothing on allocation failure so
+    /// the caller can fall back to spawnFirst.
+    pub fn spawnFromState(self: *SessionManager, state: persist.StateJson, rows: u16, cols: u16) !void {
+        for (state.tabs) |tab| {
+            const root_cwd = firstCwd(tab.root);
+            const root_id = try self.addWithCwd(rows, cols, root_cwd);
+            var tree = pane.PaneTree.init(self.alloc, root_id);
+            try self.spawnNodeSplits(&tree, tab.root, root_id, rows, cols);
+            try self.tabs.append(self.alloc, tree);
+        }
+        if (self.tabs.items.len == 0) return error.NoTabs;
+        const active = @min(state.active_tab, self.tabs.items.len - 1);
+        self.active_tab = active;
+        self.focused = self.tabs.items[active].anyLeaf();
+    }
+
+    fn firstCwd(node: persist.NodeJson) []const u8 {
+        return switch (node) {
+            .leaf => |lf| lf.cwd,
+            .split => |sp| firstCwd(sp.a.*),
+        };
+    }
+
+    fn spawnNodeSplits(self: *SessionManager, tree: *pane.PaneTree, node: persist.NodeJson, node_id: usize, rows: u16, cols: u16) !void {
+        switch (node) {
+            .leaf => {},
+            .split => |sp| {
+                const b_cwd = if (sp.b.* == .leaf) sp.b.leaf.cwd else firstCwd(sp.b.*);
+                const b_id = try self.addWithCwd(rows, cols, b_cwd);
+                try tree.splitWithRatio(node_id, if (sp.axis == 0) pane.Axis.x else pane.Axis.y, b_id, sp.ratio);
+                try self.spawnNodeSplits(tree, sp.a.*, node_id, rows, cols);
+                try self.spawnNodeSplits(tree, sp.b.*, b_id, rows, cols);
+            },
+        }
+    }
+
+    fn addWithCwd(self: *SessionManager, rows: u16, cols: u16, cwd: []const u8) !usize {
+        const id = self.next_id;
+        var cwd_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
+        var s: Session = undefined;
+        if (cwd.len > 0 and cwd.len < cwd_buf.len) {
+            @memcpy(cwd_buf[0..cwd.len], cwd);
+            cwd_buf[cwd.len] = 0;
+            const cwd_z: [*:0]const u8 = @ptrCast(cwd_buf[0..cwd.len :0]);
+            s = try Session.initWithCwd(self.alloc, rows, cols, cwd_z);
+        } else {
+            s = try Session.init(self.alloc, rows, cols);
+        }
+        s.id = id;
+        try self.sessions.append(self.alloc, s);
+        self.next_id += 1;
+        return id;
     }
 
     /// Open a new tab with a fresh session, made active.
@@ -105,6 +161,13 @@ pub const SessionManager = struct {
     }
 
     pub fn byId(self: *SessionManager, id: usize) ?*Session {
+        for (self.sessions.items) |*s| {
+            if (s.id == id) return s;
+        }
+        return null;
+    }
+
+    pub fn byIdConst(self: *const SessionManager, id: usize) ?*const Session {
         for (self.sessions.items) |*s| {
             if (s.id == id) return s;
         }

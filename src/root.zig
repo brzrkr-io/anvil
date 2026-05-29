@@ -25,4 +25,5 @@ test {
     _ = @import("config.zig");
     _ = @import("search.zig");
     _ = @import("keys.zig");
+    _ = @import("session_persist.zig");
 }
