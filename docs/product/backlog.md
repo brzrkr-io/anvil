@@ -3,6 +3,8 @@
 Ranked next-work list. Quality bar for the terminal core: Ghostty / Alacritty.
 Tiers run correctness → usability → polish → surfaces. Build tier 1 first.
 
+**Status (2026-05-29): all 23 items complete (tiers 1–5).**
+
 Audited state (2026-05-29):
 
 - **Done:** truecolor + 256 + indexed SGR, bold/underline/reverse attrs (cell),
