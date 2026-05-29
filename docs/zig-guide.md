@@ -25,8 +25,14 @@ zig build test     # run all test blocks
 | [src/vt/grid.zig](../src/vt/grid.zig) | `Grid`: flat `[]Cell` of rows×cols. `at`/`row`/`clear`/`scrollUp`. |
 | [src/vt/terminal.zig](../src/vt/terminal.zig) | `Terminal`: cursor + pen state. print/cursor-move/erase/SGR. The screen model. |
 | [src/vt/parser.zig](../src/vt/parser.zig) | `Parser`: byte-stream state machine (ground/escape/csi). UTF-8 + CSI → `Terminal` calls. |
-| [src/platform/shim.m](../src/platform/shim.m) | Obj-C ceremony only: NSWindow + CAMetalLayer + Metal clear-frame. Exposes C `anvil_run`. |
+| [src/platform/shim.m](../src/platform/shim.m) | Obj-C ceremony only: NSWindow, CAMetalLayer, render pipeline, glyph atlas, keyboard. Calls into Zig each frame. |
 | [src/platform/window.zig](../src/platform/window.zig) | Zig wrapper over the shim's C entry points. |
+| [src/platform/shaders.metal](../src/platform/shaders.metal) | Metal vertex/fragment shaders. Instanced cell quads; samples the glyph atlas. |
+| [src/app.zig](../src/app.zig) | GUI app state: owns `Terminal`/`Parser`/`Pty`/`Renderer`. Exports the C frame hooks (`anvil_frame`, `anvil_poll`, `anvil_input`, …). |
+| [src/render/palette.zig](../src/render/palette.zig) | xterm color resolution: ANSI-16, 256-cube, grayscale, truecolor, defaults. |
+| [src/render/atlas.zig](../src/render/atlas.zig) | Glyph atlas layout: codepoint → normalized UV. |
+| [src/render/renderer.zig](../src/render/renderer.zig) | Layout + per-cell instance generation from the grid; block cursor. |
+| [src/render/instance.zig](../src/render/instance.zig) | `CellInstance` / `FrameData` — the Zig↔Metal data contract. |
 
 Core logic (root.zig) is kept separate from the front-end (main.zig) on
 purpose — M2's window/render will consume the core, same as Ghostty's libghostty.
@@ -61,9 +67,22 @@ Zig 0.16 is moving to a new `std.Io` model. `std.posix.read` exists but
 - **M2 — Window + render** AppKit `NSWindow` + `CAMetalLayer`, draw the grid,
   wire input to the pty. First on-screen native terminal.
   - **M2.1** ✅ window on screen — shim creates NSWindow + Metal layer, clears each frame.
-  - **M2.2** Metal pipeline — draw colored cell-background quads from the grid.
-  - **M2.3** CoreText glyph atlas — rasterize + draw text.
-  - **M2.4** wire PTY → `Parser` → `Terminal` → render, and keyboard → pty.
+  - **M2.2** ✅ Metal pipeline — colored cell-background quads from the grid.
+  - **M2.3** ✅ CoreText glyph atlas — rasterize + draw text.
+  - **M2.4** ✅ wire PTY → `Parser` → `Terminal` → render, keyboard → pty, block cursor.
+
+  M2 complete: a real interactive terminal. The 60 Hz tick drains the pty
+  (non-blocking) → parser → grid, then renders; the view forwards keystrokes
+  to the pty. Single-threaded, no locks.
+
+## Frame loop (how a keypress becomes pixels)
+
+1. `keyDown:` in the shim → `anvil_input(bytes)` → `pty.write` (Zig).
+2. Shell processes input, writes output to the pty.
+3. Next tick: shim calls `anvil_poll` → Zig drains the pty non-blocking,
+   feeds `Parser` → mutates `Terminal` grid.
+4. Shim calls `anvil_frame` → Zig builds `[]CellInstance` (+ cursor) from the grid.
+5. Shim uploads instances, binds the atlas, issues one instanced draw.
 
 ## Obj-C interop: the shim rule
 

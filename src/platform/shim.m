@@ -28,6 +28,8 @@ extern void anvil_resize(float w, float h);
 extern void anvil_frame(FrameData *out);
 extern void anvil_atlas_params(AtlasParams *out);
 extern void anvil_set_metrics(float cell_w, float cell_h);
+extern int anvil_poll(void);
+extern void anvil_input(const char *bytes, size_t len);
 
 #define INSTANCE_STRIDE (12 * sizeof(float))
 #define MAX_INSTANCES 60000
@@ -131,6 +133,11 @@ static void render(void) {
         anvil_resize((float)ds.width, (float)ds.height);
     }
 
+    if (!anvil_poll()) {
+        [NSApp terminate:nil];
+        return;
+    }
+
     FrameData fd = {0};
     anvil_frame(&fd);
 
@@ -184,6 +191,28 @@ static void render(void) {
     CGFloat scale = self.window.backingScaleFactor ?: 2.0;
     gLayer.drawableSize = CGSizeMake(size.width * scale, size.height * scale);
 }
+- (BOOL)acceptsFirstResponder {
+    return YES;
+}
+- (void)keyDown:(NSEvent *)e {
+    NSString *s = e.characters;
+    if (s.length == 1) {
+        unichar ch = [s characterAtIndex:0];
+        const char *seq = NULL;
+        switch (ch) {
+            case NSUpArrowFunctionKey:    seq = "\x1b[A"; break;
+            case NSDownArrowFunctionKey:  seq = "\x1b[B"; break;
+            case NSRightArrowFunctionKey: seq = "\x1b[C"; break;
+            case NSLeftArrowFunctionKey:  seq = "\x1b[D"; break;
+        }
+        if (seq) {
+            anvil_input(seq, 3);
+            return;
+        }
+    }
+    const char *u = s.UTF8String;
+    if (u) anvil_input(u, strlen(u));
+}
 @end
 
 @interface AnvilTick : NSObject
@@ -231,6 +260,7 @@ void anvil_run(void) {
         [win setContentView:view];
         [win center];
         [win makeKeyAndOrderFront:nil];
+        [win makeFirstResponder:view];
         [NSApp activateIgnoringOtherApps:YES];
 
         AnvilTick *tick = [[AnvilTick alloc] init];

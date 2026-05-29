@@ -6,8 +6,15 @@ const c = @cImport({
     @cInclude("stdlib.h");
     @cInclude("signal.h");
     @cInclude("termios.h");
+    @cInclude("fcntl.h");
     @cInclude("sys/ioctl.h");
 });
+
+pub const ReadResult = union(enum) {
+    data: usize,
+    would_block,
+    eof,
+};
 
 pub const Pty = struct {
     master: std.posix.fd_t,
@@ -37,6 +44,27 @@ pub const Pty = struct {
         _ = c.ioctl(self.master, c.TIOCSWINSZ, &ws);
     }
 
+    pub fn setNonblock(self: *Pty) void {
+        const flags = c.fcntl(self.master, c.F_GETFL, @as(c_int, 0));
+        _ = c.fcntl(self.master, c.F_SETFL, flags | c.O_NONBLOCK);
+    }
+
+    pub fn read(self: *Pty, buf: []u8) ReadResult {
+        const n = c.read(self.master, buf.ptr, buf.len);
+        if (n > 0) return .{ .data = @intCast(n) };
+        if (n == 0) return .eof;
+        return .would_block;
+    }
+
+    pub fn write(self: *Pty, bytes: []const u8) void {
+        var off: usize = 0;
+        while (off < bytes.len) {
+            const n = c.write(self.master, bytes.ptr + off, bytes.len - off);
+            if (n <= 0) return;
+            off += @intCast(n);
+        }
+    }
+
     pub fn deinit(self: *Pty) void {
         _ = c.close(self.master);
         _ = c.kill(self.pid, c.SIGHUP);
@@ -46,4 +74,18 @@ pub const Pty = struct {
 test "Pty has master + pid fields" {
     try std.testing.expect(@hasField(Pty, "master"));
     try std.testing.expect(@hasField(Pty, "pid"));
+}
+
+test "Pty round-trips bytes and reports eof on shell exit" {
+    var p = try Pty.spawn(24, 80);
+    defer p.deinit();
+    p.write("exit\n");
+    var buf: [4096]u8 = undefined;
+    var total: usize = 0;
+    while (true) switch (p.read(&buf)) {
+        .data => |n| total += n,
+        .eof => break,
+        .would_block => {},
+    };
+    try std.testing.expect(total > 0);
 }

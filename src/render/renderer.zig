@@ -53,6 +53,23 @@ pub const Renderer = struct {
         }
         return n;
     }
+
+    /// A block cursor at the terminal's cursor cell: the cell's own glyph with
+    /// fg/bg swapped. Append after the cell instances so it draws on top.
+    pub fn cursorInstance(self: Renderer, term: *Terminal) CellInstance {
+        const cx = @min(term.cx, term.grid.cols - 1);
+        const cy = @min(term.cy, term.grid.rows - 1);
+        const cell = term.grid.at(cy, cx);
+        const fg = palette.resolve(cell.fg, true);
+        const bg = palette.resolve(cell.bg, false);
+        return .{
+            .col = @floatFromInt(cx),
+            .row = @floatFromInt(cy),
+            .fg = bg.f32x4(),
+            .bg = fg.f32x4(),
+            .uv = self.atlas.uvOrigin(cell.cp),
+        };
+    }
 };
 
 test "gridSize floors to whole cells minus padding" {
@@ -95,6 +112,28 @@ test "buildInstances carries glyph uv and resolves color" {
     try std.testing.expectEqual(rd.atlas.uvOrigin('A'), buf[0].uv);
     const red = palette.indexed(1).f32x4();
     try std.testing.expectEqual(red, buf[0].fg);
+}
+
+test "cursorInstance swaps colors at the cursor cell" {
+    var t = try Terminal.init(std.testing.allocator, 2, 3);
+    defer t.deinit();
+    t.print('a'); // cursor advances to col 1, row 0
+    const rd = Renderer{ .cell_w = 10, .cell_h = 20, .pad_x = 0, .pad_y = 0 };
+    const ci = rd.cursorInstance(&t);
+    try std.testing.expectEqual(@as(f32, 1), ci.col);
+    try std.testing.expectEqual(@as(f32, 0), ci.row);
+    // blank cell under cursor: fg=default_fg, bg=default_bg, swapped on the cursor
+    try std.testing.expectEqual(palette.default_fg.f32x4(), ci.bg);
+    try std.testing.expectEqual(palette.default_bg.f32x4(), ci.fg);
+}
+
+test "cursorInstance clamps cursor past last column" {
+    var t = try Terminal.init(std.testing.allocator, 1, 2);
+    defer t.deinit();
+    t.cx = 5; // deferred-wrap can leave cx == cols
+    const rd = Renderer{ .cell_w = 10, .cell_h = 20, .pad_x = 0, .pad_y = 0 };
+    const ci = rd.cursorInstance(&t);
+    try std.testing.expectEqual(@as(f32, 1), ci.col);
 }
 
 test "buildInstances swaps fg/bg on reverse" {
