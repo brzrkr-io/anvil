@@ -61,6 +61,7 @@ extern void anvil_close_pane(void);
 extern void anvil_focus_dir(int dir);
 extern void anvil_new_tab(void);
 extern void anvil_cycle_tab(int delta);
+extern void anvil_select_tab(int idx);
 extern void anvil_close_tab(void);
 extern void anvil_jump_prompt(int dir);
 extern void anvil_resize_pane(int dir);
@@ -719,6 +720,7 @@ static void layoutTrafficLights(NSWindow *win) {
             case NSUpArrowFunctionKey:    if (shift) anvil_resize_pane(2); else anvil_jump_prompt(-1); return;
             case NSDownArrowFunctionKey:  if (shift) anvil_resize_pane(3); else anvil_jump_prompt(1); return;
         }
+        if (ch >= '1' && ch <= '9') { anvil_select_tab((int)(ch - '1')); return; }
         if (ch == ']' || ch == '}') { anvil_cycle_tab(1); return; }
         if (ch == '[' || ch == '{') { anvil_cycle_tab(-1); return; }
         if (ch == '\r' || ch == '\n') { if (shift) { anvil_zoom_toggle(); return; } }

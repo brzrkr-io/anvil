@@ -117,6 +117,13 @@ pub const SessionManager = struct {
         self.focused = self.activeTree().?.anyLeaf();
     }
 
+    /// Jump directly to tab `idx`. Out-of-range is a no-op. Focus follows.
+    pub fn selectTab(self: *SessionManager, idx: usize) void {
+        if (idx >= self.tabs.items.len) return;
+        self.active_tab = idx;
+        self.focused = self.activeTree().?.anyLeaf();
+    }
+
     /// Close the active tab, killing its sessions. No-op on the last tab.
     pub fn closeTab(self: *SessionManager) void {
         if (self.tabs.items.len <= 1) return;
@@ -260,6 +267,19 @@ test "cycleTab wraps and follows focus" {
     mgr.cycleTab(1); // wrap back to tab 0
     try std.testing.expectEqual(@as(usize, 0), mgr.active_tab);
     try std.testing.expectEqual(tab0_focus, mgr.focused);
+}
+
+test "selectTab jumps to index and ignores out-of-range" {
+    var mgr = SessionManager{ .alloc = std.testing.allocator };
+    defer mgr.deinit();
+    try mgr.spawnFirst(24, 80);
+    const tab0_focus = mgr.focused;
+    try mgr.newTab(24, 80); // now on tab 1
+    mgr.selectTab(0);
+    try std.testing.expectEqual(@as(usize, 0), mgr.active_tab);
+    try std.testing.expectEqual(tab0_focus, mgr.focused);
+    mgr.selectTab(9); // out of range: no-op
+    try std.testing.expectEqual(@as(usize, 0), mgr.active_tab);
 }
 
 test "closeTab kills its sessions and keeps at least one tab" {

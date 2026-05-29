@@ -487,6 +487,13 @@ export fn anvil_cycle_tab(delta: c_int) callconv(.c) void {
     relayout();
 }
 
+/// idx: zero-based tab index. Out-of-range is a no-op.
+export fn anvil_select_tab(idx: c_int) callconv(.c) void {
+    if (!ready or idx < 0) return;
+    mgr.selectTab(@intCast(idx));
+    relayout();
+}
+
 export fn anvil_close_tab() callconv(.c) void {
     if (!ready) return;
     mgr.closeTab();
