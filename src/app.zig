@@ -10,6 +10,7 @@ const theme = @import("render/theme.zig");
 const cmd = @import("palette.zig");
 const search = @import("search.zig");
 const config = @import("config.zig");
+const keys = @import("keys.zig");
 
 const shader_src = @embedFile("platform/shaders.metal");
 const font_data = @embedFile("font_ttf");
@@ -33,6 +34,7 @@ var win_h: f32 = 0;
 var ready = false;
 var cpal = cmd.Palette{};
 var srch = search.Search{};
+var help_open: bool = false;
 var overlay: [64 * 7]f32 = undefined; // colored rects (x,y,w,h,r,g,b)
 
 var cfg: config.Config = .{};
@@ -487,6 +489,28 @@ export fn anvil_search_key(key: c_int) callconv(.c) void {
     }
 }
 
+export fn anvil_help_toggle() callconv(.c) void {
+    if (help_open) {
+        help_open = false;
+    } else {
+        cpal.hide();
+        srch.hide();
+        help_open = true;
+    }
+}
+
+export fn anvil_help_open() callconv(.c) c_int {
+    return if (help_open) 1 else 0;
+}
+
+/// key: 0 = esc/close.
+export fn anvil_help_key(key: c_int) callconv(.c) void {
+    switch (key) {
+        0 => help_open = false,
+        else => {},
+    }
+}
+
 /// Scroll the focused terminal so `m` is visible and select its span, reusing
 /// the normal selection highlight. Centers the match line when possible.
 fn jumpToMatch(m: search.Match) void {
@@ -616,7 +640,11 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
     out.count = @intCast(n);
     out.divider_count = if (zoomed) 0 else @intCast(tree.dividers(ws, divider_px, &divider_rects));
 
-    if (cpal.open) {
+    if (help_open) {
+        const r = emitHelp(th, n);
+        out.palette_text_count = @intCast(r.text);
+        out.overlay_count = @intCast(r.rects);
+    } else if (cpal.open) {
         const r = emitPalette(th, n);
         out.palette_text_count = @intCast(r.text);
         out.overlay_count = @intCast(r.rects);
@@ -806,5 +834,97 @@ fn emitSearch(th: *const theme.Theme, start: usize) struct { text: usize, rects:
         putGlyph(n, cnt_x + @as(f32, @floatFromInt(i)) * cw, by, th.separator, th.bar, c);
         n += 1;
     }
+    return .{ .text = n - start, .rects = ri };
+}
+
+/// Lay out the keyboard shortcut cheatsheet overlay: a centered panel listing
+/// all key bindings grouped by section.
+fn emitHelp(th: *const theme.Theme, start: usize) struct { text: usize, rects: usize } {
+    const cw = renderer.cell_w;
+    const ch = renderer.cell_h;
+    const pad = renderer.pad_x;
+
+    // Column layout: chord col is 10 cells wide, 2-cell gutter, then action.
+    const chord_cols: usize = 10;
+    const gutter: usize = 2;
+    const action_cols: usize = 22;
+    const inner_cols: usize = chord_cols + gutter + action_cols;
+    const pw = @as(f32, @floatFromInt(inner_cols)) * cw + pad * 2;
+
+    // Count total rows: title + blank + (section header + items) per section.
+    var total_rows: usize = 2; // title row + blank
+    for (keys.sections) |sec| {
+        total_rows += 1 + sec.items.len; // header + bindings
+    }
+    // Clamp height to 85% of the window.
+    const max_rows_f = @floor(win_h * 0.85 / ch);
+    const max_rows: usize = @intFromFloat(max_rows_f);
+    const visible_rows = @min(total_rows, max_rows);
+    const ph = @as(f32, @floatFromInt(visible_rows)) * ch;
+
+    const px = @floor((win_w - pw) / 2);
+    const py = @floor(win_h * 0.12);
+
+    var ri: usize = 0;
+    putRect(ri, px - 1, py - 1, pw + 2, ph + 2, th.separator); // border
+    ri += 1;
+    putRect(ri, px, py, pw, ph, th.bar); // panel
+    ri += 1;
+
+    var n = start;
+    const tx = px + pad;
+    var row: usize = 0;
+
+    // Title row.
+    const title = "Keyboard Shortcuts";
+    for (title, 0..) |c, i| {
+        const ry = py + @as(f32, @floatFromInt(row)) * ch;
+        putGlyph(n, tx + @as(f32, @floatFromInt(i)) * cw, ry, th.sel_fg, th.bar, c);
+        n += 1;
+    }
+    row += 1;
+    row += 1; // blank line
+
+    for (keys.sections) |sec| {
+        if (row >= visible_rows) break;
+        // Section header in cyan.
+        const ry = py + @as(f32, @floatFromInt(row)) * ch;
+        for (sec.title, 0..) |c, i| {
+            putGlyph(n, tx + @as(f32, @floatFromInt(i)) * cw, ry, th.ansi[6], th.bar, c);
+            n += 1;
+        }
+        row += 1;
+
+        for (sec.items) |b| {
+            if (row >= visible_rows) break;
+            const by2 = py + @as(f32, @floatFromInt(row)) * ch;
+
+            // Chord column: iterate codepoints (chord strings contain multi-byte UTF-8).
+            var col: usize = 0;
+            var it = std.unicode.Utf8View.initUnchecked(b.chord).iterator();
+            while (it.nextCodepoint()) |cp| {
+                if (col >= chord_cols) break;
+                instances[n] = .{
+                    .x = tx + @as(f32, @floatFromInt(col)) * cw,
+                    .y = by2,
+                    .fg = th.ansi[14].f32x4(),
+                    .bg = th.bar.f32x4(),
+                    .uv = renderer.atlas.uvOrigin(cp),
+                };
+                n += 1;
+                col += 1;
+            }
+
+            // Action column: plain ASCII, use putGlyph.
+            const ax = tx + @as(f32, @floatFromInt(chord_cols + gutter)) * cw;
+            for (b.action, 0..) |c, i| {
+                if (i >= action_cols) break;
+                putGlyph(n, ax + @as(f32, @floatFromInt(i)) * cw, by2, th.fg, th.bar, c);
+                n += 1;
+            }
+            row += 1;
+        }
+    }
+
     return .{ .text = n - start, .rects = ri };
 }

@@ -24,4 +24,5 @@ test {
     _ = @import("palette.zig");
     _ = @import("config.zig");
     _ = @import("search.zig");
+    _ = @import("keys.zig");
 }

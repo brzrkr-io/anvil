@@ -72,6 +72,9 @@ extern void anvil_search_toggle(void);
 extern int anvil_search_open(void);
 extern void anvil_search_char(unsigned char c);
 extern void anvil_search_key(int key);
+extern void anvil_help_toggle(void);
+extern int anvil_help_open(void);
+extern void anvil_help_key(int key);
 extern const char *anvil_copy(size_t *out_len);
 extern void anvil_set_theme_mode(int mode);
 extern void anvil_set_os_dark(int is_dark);
@@ -559,6 +562,15 @@ static void layoutTrafficLights(NSWindow *win) {
     if (cmd && ilc == 'k') { anvil_palette_toggle(); return; }
     // Cmd+F toggles scrollback search from any state.
     if (cmd && ilc == 'f') { anvil_search_toggle(); return; }
+    // Cmd+/ toggles the keyboard shortcut cheatsheet from any state.
+    if (cmd && ilc == '/') { anvil_help_toggle(); return; }
+
+    // While the cheatsheet is open it captures all keys; the PTY sees nothing.
+    if (anvil_help_open()) {
+        unichar ch = s.length ? [s characterAtIndex:0] : 0;
+        if (ch == 0x1b) { anvil_help_key(0); return; } // esc closes
+        return; // swallow everything else
+    }
 
     // While search is open it captures all keys; the PTY sees nothing.
     if (anvil_search_open()) {
