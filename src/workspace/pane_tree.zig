@@ -116,6 +116,30 @@ pub const PaneTree = struct {
         }
     }
 
+    /// Emit a rect for each split's divider gap. Fills `out` (size >=
+    /// count()-1) and returns the divider count.
+    pub fn dividers(self: *const PaneTree, rect: Rect, thickness: f32, out: []Rect) usize {
+        var n: usize = 0;
+        dividerNode(self.root, rect, thickness, out, &n);
+        return n;
+    }
+
+    fn dividerNode(node: Node, rect: Rect, thickness: f32, out: []Rect, n: *usize) void {
+        switch (node) {
+            .leaf => {},
+            .split => |sp| {
+                const ra, const rb = splitRect(rect, sp.axis, sp.ratio, thickness);
+                out[n.*] = switch (sp.axis) {
+                    .x => .{ .x = ra.x + ra.w, .y = rect.y, .w = thickness, .h = rect.h },
+                    .y => .{ .x = rect.x, .y = ra.y + ra.h, .w = rect.w, .h = thickness },
+                };
+                n.* += 1;
+                dividerNode(sp.a, ra, thickness, out, n);
+                dividerNode(sp.b, rb, thickness, out, n);
+            },
+        }
+    }
+
     /// The leaf nearest to `from` in `dir`, given a layout within `rect`.
     /// Returns null if there is no pane in that direction.
     pub fn neighbor(self: *const PaneTree, rect: Rect, from: usize, dir: Dir, buf: []PaneRect) ?usize {
@@ -280,6 +304,18 @@ test "nested split then close collapses correctly" {
     var buf: [8]PaneRect = undefined;
     const n = tree.layout(.{ .x = 0, .y = 0, .w = 100, .h = 100 }, 0, &buf);
     try t.expectEqual(@as(usize, 2), n);
+}
+
+test "dividers emit one gap rect per split" {
+    var tree = PaneTree.init(t.allocator, 0);
+    defer tree.deinit();
+    try tree.split(0, .x, 1); // one vertical divider
+    var buf: [8]Rect = undefined;
+    const n = tree.dividers(.{ .x = 0, .y = 0, .w = 100, .h = 40 }, 2, &buf);
+    try t.expectEqual(@as(usize, 1), n);
+    try t.expectEqual(@as(f32, 49), buf[0].x); // gap starts after pane a
+    try t.expectEqual(@as(f32, 2), buf[0].w);
+    try t.expectEqual(@as(f32, 40), buf[0].h);
 }
 
 test "neighbor finds the pane to the right" {

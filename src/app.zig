@@ -1,6 +1,7 @@
 const std = @import("std");
 const Session = @import("session.zig").Session;
 const SessionManager = @import("session_manager.zig").SessionManager;
+const pane = @import("workspace/pane_tree.zig");
 const Renderer = @import("render/renderer.zig").Renderer;
 const inst = @import("render/instance.zig");
 const palette = @import("render/palette.zig");
@@ -8,16 +9,40 @@ const theme = @import("render/theme.zig");
 
 const shader_src = @embedFile("platform/shaders.metal");
 const max_instances = 60000;
+const max_panes = 64;
+const divider_px: f32 = 2;
 const font_pt: f32 = 13.0;
 const bar_h: f32 = 40; // compact title bar, device pixels (20pt @2x)
 
 var mgr = SessionManager{ .alloc = std.heap.page_allocator };
 var renderer = Renderer{ .cell_w = 16, .cell_h = 32, .pad_x = 8, .pad_y = bar_h + 6, .pad_bottom = 8 };
 var instances: [max_instances]inst.CellInstance = undefined;
+var pane_buf: [max_panes]pane.PaneRect = undefined;
+var divider_rects: [max_panes]pane.Rect = undefined;
+var win_w: f32 = 0;
+var win_h: f32 = 0;
 var ready = false;
 
 fn focused() *Session {
     return mgr.focusedSession().?;
+}
+
+/// The pane area: the window minus the title bar.
+fn workspaceRect() pane.Rect {
+    return .{ .x = 0, .y = bar_h, .w = win_w, .h = win_h - bar_h };
+}
+
+/// Resize every session's grid + PTY to match its current pane rect.
+fn relayout() void {
+    const tree = &(mgr.tree orelse return);
+    const n = tree.layout(workspaceRect(), divider_px, &pane_buf);
+    for (pane_buf[0..n]) |p| {
+        const s = mgr.byId(p.id) orelse continue;
+        const g = renderer.paneGrid(p.rect.w, p.rect.h);
+        if (g.cols != s.term.grid.cols or g.rows != s.term.grid.rows) {
+            s.resize(g.rows, g.cols) catch {};
+        }
+    }
 }
 
 const ThemeMode = enum(c_int) { system = 0, light = 1, dark = 2 };
@@ -72,22 +97,27 @@ export fn anvil_set_metrics(cell_w: f32, cell_h: f32) callconv(.c) void {
 }
 
 export fn anvil_resize(px_w: f32, px_h: f32) callconv(.c) void {
-    const g = renderer.gridSize(px_w, px_h);
-    if (ready) {
-        const s = focused();
-        if (g.cols == s.term.grid.cols and g.rows == s.term.grid.rows) return;
-        s.resize(g.rows, g.cols) catch return;
-    } else {
-        mgr.spawn(g.rows, g.cols) catch return;
+    win_w = px_w;
+    win_h = px_h;
+    if (!ready) {
+        const ws = workspaceRect();
+        const g = renderer.paneGrid(ws.w, ws.h);
+        mgr.spawnFirst(g.rows, g.cols) catch return;
         ready = true;
+        return;
     }
+    relayout();
 }
 
 /// Drain pending shell output into the terminal. Returns 0 when the shell has
 /// exited (EOF) so the front-end can quit.
 export fn anvil_poll() callconv(.c) c_int {
     if (!ready) return 1;
-    return if (focused().poll()) 1 else 0;
+    var alive: c_int = 1;
+    for (mgr.sessions.items) |*s| {
+        if (!s.poll() and s.id == mgr.focused) alive = 0;
+    }
+    return alive;
 }
 
 export fn anvil_input(ptr: [*]const u8, len: usize) callconv(.c) void {
@@ -116,6 +146,27 @@ export fn anvil_mouse(kind: c_int, x: f32, y: f32) callconv(.c) void {
     }
 }
 
+/// axis: 0 = side by side (vertical divider), 1 = stacked (horizontal divider).
+export fn anvil_split(axis: c_int) callconv(.c) void {
+    if (!ready) return;
+    const s = focused();
+    const a: pane.Axis = if (axis == 0) .x else .y;
+    mgr.splitFocused(a, s.term.grid.rows, s.term.grid.cols) catch return;
+    relayout();
+}
+
+export fn anvil_close_pane() callconv(.c) void {
+    if (!ready) return;
+    mgr.closeFocused();
+    relayout();
+}
+
+/// dir: 0 left, 1 right, 2 up, 3 down.
+export fn anvil_focus_dir(dir: c_int) callconv(.c) void {
+    if (!ready) return;
+    mgr.focusNeighbor(workspaceRect(), @enumFromInt(dir), &pane_buf);
+}
+
 var copy_buf: [1 << 20]u8 = undefined;
 
 export fn anvil_copy(out_len: *usize) callconv(.c) [*]const u8 {
@@ -130,20 +181,9 @@ export fn anvil_copy(out_len: *usize) callconv(.c) [*]const u8 {
 export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
     const th = activeTheme();
     palette.setActive(th);
-    if (!ready) {
-        out.count = 0;
-        out.bg = th.bg.f32x3();
-        return;
-    }
-    const s = focused();
-    var n = renderer.buildInstances(&s.term, instances[0..]);
-    if (s.term.view_offset == 0) {
-        instances[n] = renderer.cursorInstance(&s.term);
-        n += 1;
-    }
     out.* = .{
         .instances = &instances,
-        .count = @intCast(n),
+        .count = 0,
         .cell_w = renderer.cell_w,
         .cell_h = renderer.cell_h,
         .pad_x = renderer.pad_x,
@@ -153,5 +193,25 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
         .bg = th.bg.f32x3(),
         .bar_color = th.bar.f32x3(),
         .sep_color = th.separator.f32x3(),
+        .dividers = @ptrCast(&divider_rects),
+        .divider_count = 0,
     };
+    if (!ready) return;
+
+    const ws = workspaceRect();
+    const tree = &(mgr.tree orelse return);
+    const np = tree.layout(ws, divider_px, &pane_buf);
+    var n: usize = 0;
+    for (pane_buf[0..np]) |p| {
+        const s = mgr.byId(p.id) orelse continue;
+        const ox = p.rect.x + renderer.pad_x;
+        const oy = p.rect.y + renderer.pad_x;
+        n += renderer.buildInstances(&s.term, ox, oy, instances[n..]);
+        if (s.id == mgr.focused and s.term.view_offset == 0) {
+            instances[n] = renderer.cursorInstance(&s.term, ox, oy);
+            n += 1;
+        }
+    }
+    out.count = @intCast(n);
+    out.divider_count = @intCast(tree.dividers(ws, divider_px, &divider_rects));
 }

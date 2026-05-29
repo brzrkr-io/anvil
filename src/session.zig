@@ -5,6 +5,7 @@ const Pty = @import("pty.zig").Pty;
 
 /// One terminal session: a VT emulator, its parser, and the PTY feeding it.
 pub const Session = struct {
+    id: usize = 0,
     term: Terminal,
     parser: Parser = .{},
     pty: Pty,

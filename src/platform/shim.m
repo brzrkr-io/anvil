@@ -16,11 +16,12 @@ typedef struct {
     float bg[3];
     float bar_color[3];
     float sep_color[3];
+    const float *dividers; // flat x,y,w,h per pane divider
+    uint32_t divider_count;
 } FrameData;
 
 typedef struct {
     float cell[2];
-    float pad[2];
     float viewport[2];
     float cell_uv[2];
 } Uniforms;
@@ -217,7 +218,6 @@ static void render(void) {
 
         Uniforms u = {
             .cell = {fd.cell_w, fd.cell_h},
-            .pad = {fd.pad_x, fd.pad_y},
             .viewport = {(float)ds.width, (float)ds.height},
             .cell_uv = {fd.cell_uv[0], fd.cell_uv[1]},
         };
@@ -237,6 +237,13 @@ static void render(void) {
                   fd.bar_color[0], fd.bar_color[1], fd.bar_color[2], 1.0f);
         drawSolid(enc, ds, 0, fd.bar_h - 1, (float)ds.width, 1,
                   fd.sep_color[0], fd.sep_color[1], fd.sep_color[2], 1.0f);
+    }
+    if (gSolidPipeline) {
+        for (uint32_t i = 0; i < fd.divider_count; i++) {
+            const float *d = fd.dividers + i * 4;
+            drawSolid(enc, ds, d[0], d[1], d[2], d[3],
+                      fd.sep_color[0], fd.sep_color[1], fd.sep_color[2], 1.0f);
+        }
     }
 
     [enc endEncoding];
@@ -286,7 +293,6 @@ void anvil_dump(const char *path, uint32_t w, uint32_t h) {
             memcpy(gInstanceBuf.contents, fd.instances, count * INSTANCE_STRIDE);
             Uniforms u = {
                 .cell = {fd.cell_w, fd.cell_h},
-                .pad = {fd.pad_x, fd.pad_y},
                 .viewport = {(float)w, (float)h},
                 .cell_uv = {fd.cell_uv[0], fd.cell_uv[1]},
             };
@@ -302,6 +308,13 @@ void anvil_dump(const char *path, uint32_t w, uint32_t h) {
                       fd.bar_color[0], fd.bar_color[1], fd.bar_color[2], 1.0f);
             drawSolid(enc, CGSizeMake(w, h), 0, fd.bar_h - 1, (float)w, 1,
                       fd.sep_color[0], fd.sep_color[1], fd.sep_color[2], 1.0f);
+        }
+        if (gSolidPipeline) {
+            for (uint32_t i = 0; i < fd.divider_count; i++) {
+                const float *d = fd.dividers + i * 4;
+                drawSolid(enc, CGSizeMake(w, h), d[0], d[1], d[2], d[3],
+                          fd.sep_color[0], fd.sep_color[1], fd.sep_color[2], 1.0f);
+            }
         }
         [enc endEncoding];
 

@@ -3,14 +3,13 @@ using namespace metal;
 
 struct Uniforms {
     float2 cell;
-    float2 pad;
     float2 viewport;
     float2 cell_uv;
 };
 
 struct Instance {
-    float col;
-    float row;
+    float x;
+    float y;
     packed_float4 fg;
     packed_float4 bg;
     packed_float2 uv;
@@ -29,8 +28,7 @@ vertex VOut v_main(uint vid [[vertex_id]],
                    constant Uniforms &u [[buffer(1)]]) {
     float2 corner = float2(vid & 1, (vid >> 1) & 1);
     Instance in = inst[iid];
-    float2 origin = u.pad + float2(in.col, in.row) * u.cell;
-    float2 px = origin + corner * u.cell;
+    float2 px = float2(in.x, in.y) + corner * u.cell;
     float2 ndc = (px / u.viewport) * 2.0 - 1.0;
     ndc.y = -ndc.y;
 

@@ -1,7 +1,8 @@
 /// Per-cell GPU instance. Layout must match `Instance` in shaders.metal.
+/// `x`/`y` are the cell's top-left in device pixels (pane origin baked in).
 pub const CellInstance = extern struct {
-    col: f32,
-    row: f32,
+    x: f32,
+    y: f32,
     fg: [4]f32,
     bg: [4]f32,
     uv: [2]f32,
@@ -20,4 +21,6 @@ pub const FrameData = extern struct {
     bg: [3]f32, // canvas clear color
     bar_color: [3]f32,
     sep_color: [3]f32,
+    dividers: [*]const f32, // flat x,y,w,h per pane divider (device px)
+    divider_count: u32,
 };
