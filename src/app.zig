@@ -349,23 +349,29 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
             n += 1;
         }
     }
-    // Tab labels in the title bar: a digit per tab, active one highlighted.
+    // Tab labels in the title bar: the tab number per tab, active highlighted.
     if (mgr.tabs.items.len > 1) {
         const label_y: f32 = (bar_h - renderer.cell_h) / 2;
+        var x = tab_inset_x;
         var ti: usize = 0;
         while (ti < mgr.tabs.items.len) : (ti += 1) {
             const active = ti == mgr.active_tab;
-            const digit: u21 = '1' + @as(u21, @intCast(@min(ti, 8)));
             const fg4 = if (active) palette.selectionFg().f32x4() else palette.defaultFg().f32x4();
             const bg4 = if (active) palette.selectionBg().f32x4() else th.bar.f32x4();
-            instances[n] = .{
-                .x = tab_inset_x + @as(f32, @floatFromInt(ti)) * renderer.cell_w * 2,
-                .y = label_y,
-                .fg = fg4,
-                .bg = bg4,
-                .uv = renderer.atlas.uvOrigin(digit),
-            };
-            n += 1;
+            var buf: [8]u8 = undefined;
+            const label = std.fmt.bufPrint(&buf, "{d}", .{ti + 1}) catch "?";
+            for (label) |ch| {
+                instances[n] = .{
+                    .x = x,
+                    .y = label_y,
+                    .fg = fg4,
+                    .bg = bg4,
+                    .uv = renderer.atlas.uvOrigin(ch),
+                };
+                n += 1;
+                x += renderer.cell_w;
+            }
+            x += renderer.cell_w; // gap between tabs
         }
     }
 
