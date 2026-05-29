@@ -43,6 +43,11 @@ pub const Renderer = struct {
                     fg = bg;
                     bg = t;
                 }
+                if (term.isSelected(r, c)) {
+                    const t = fg;
+                    fg = bg;
+                    bg = t;
+                }
                 out[n] = .{
                     .col = @floatFromInt(c),
                     .row = @floatFromInt(r),

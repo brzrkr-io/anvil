@@ -76,13 +76,41 @@ export fn anvil_poll() callconv(.c) c_int {
 
 export fn anvil_input(ptr: [*]const u8, len: usize) callconv(.c) void {
     if (!spawned) return;
-    if (ready and term.view_offset != 0) term.view_offset = 0; // typing jumps to live
+    if (ready) {
+        if (term.view_offset != 0) term.view_offset = 0; // typing jumps to live
+        term.clearSelection();
+    }
     pty.write(ptr[0..len]);
 }
 
 export fn anvil_scroll(delta: c_int) callconv(.c) void {
     if (!ready) return;
+    term.clearSelection();
     term.scrollView(@intCast(delta));
+}
+
+/// kind: 0 = press (start), 1 = drag, 2 = release (extend). x/y in device px.
+export fn anvil_mouse(kind: c_int, x: f32, y: f32) callconv(.c) void {
+    if (!ready) return;
+    const cf = (x - renderer.pad_x) / renderer.cell_w;
+    const rf = (y - renderer.pad_y) / renderer.cell_h;
+    const col: u16 = @intFromFloat(std.math.clamp(cf, 0, @as(f32, @floatFromInt(term.grid.cols - 1))));
+    const row: u16 = @intFromFloat(std.math.clamp(rf, 0, @as(f32, @floatFromInt(term.grid.rows - 1))));
+    switch (kind) {
+        0 => term.selectStart(row, col),
+        else => term.selectExtend(row, col),
+    }
+}
+
+var copy_buf: [1 << 20]u8 = undefined;
+
+export fn anvil_copy(out_len: *usize) callconv(.c) [*]const u8 {
+    if (!ready) {
+        out_len.* = 0;
+        return &copy_buf;
+    }
+    out_len.* = term.selectionText(copy_buf[0..]);
+    return &copy_buf;
 }
 
 export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {

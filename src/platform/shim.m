@@ -41,6 +41,8 @@ extern void anvil_set_metrics(float cell_w, float cell_h);
 extern int anvil_poll(void);
 extern void anvil_input(const char *bytes, size_t len);
 extern void anvil_scroll(int delta);
+extern void anvil_mouse(int kind, float x, float y);
+extern const char *anvil_copy(size_t *out_len);
 
 #define INSTANCE_STRIDE (12 * sizeof(float))
 #define MAX_INSTANCES 60000
@@ -346,8 +348,43 @@ static void layoutTrafficLights(NSWindow *win) {
 - (BOOL)acceptsFirstResponder {
     return YES;
 }
+- (void)sendMouse:(NSEvent *)e kind:(int)kind {
+    NSPoint p = [self convertPoint:e.locationInWindow fromView:nil];
+    CGFloat scale = self.window.backingScaleFactor;
+    anvil_mouse(kind, (float)(p.x * scale),
+                (float)((self.bounds.size.height - p.y) * scale));
+}
+- (void)mouseDown:(NSEvent *)e {
+    [self sendMouse:e kind:0];
+}
+- (void)mouseDragged:(NSEvent *)e {
+    [self sendMouse:e kind:1];
+}
+- (void)mouseUp:(NSEvent *)e {
+    [self sendMouse:e kind:2];
+}
+- (void)copySelection {
+    size_t n = 0;
+    const char *txt = anvil_copy(&n);
+    if (n == 0) return;
+    NSString *str = [[NSString alloc] initWithBytes:txt length:n encoding:NSUTF8StringEncoding];
+    NSPasteboard *pb = [NSPasteboard generalPasteboard];
+    [pb clearContents];
+    [pb setString:str forType:NSPasteboardTypeString];
+}
+- (void)pasteClipboard {
+    NSString *str = [[NSPasteboard generalPasteboard] stringForType:NSPasteboardTypeString];
+    const char *u = str.UTF8String;
+    if (u) anvil_input(u, strlen(u));
+}
 - (void)keyDown:(NSEvent *)e {
     NSString *s = e.characters;
+    if (e.modifierFlags & NSEventModifierFlagCommand) {
+        unichar cmd = s.length ? [s characterAtIndex:0] : 0;
+        if (cmd == 'c') [self copySelection];
+        else if (cmd == 'v') [self pasteClipboard];
+        return;
+    }
     if (s.length == 1) {
         unichar ch = [s characterAtIndex:0];
         const char *seq = NULL;

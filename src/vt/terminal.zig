@@ -7,6 +7,21 @@ const Scrollback = @import("scrollback.zig").Scrollback;
 
 const scrollback_cap = 5000;
 
+pub const Pos = struct { row: u16, col: u16 };
+
+/// Linear (text-flow) selection in visible-grid coordinates.
+pub const Selection = struct {
+    anchor: Pos,
+    head: Pos,
+
+    pub fn ordered(self: Selection) struct { start: Pos, end: Pos } {
+        const a = self.anchor;
+        const h = self.head;
+        const a_first = a.row < h.row or (a.row == h.row and a.col <= h.col);
+        return if (a_first) .{ .start = a, .end = h } else .{ .start = h, .end = a };
+    }
+};
+
 pub const Terminal = struct {
     grid: Grid,
     cx: u16 = 0,
@@ -18,6 +33,7 @@ pub const Terminal = struct {
     alt_cy: u16 = 0,
     scrollback: Scrollback,
     view_offset: usize = 0, // lines scrolled up into history; 0 = live bottom
+    selection: ?Selection = null,
     pen: Cell = .{},
 
     pub fn init(alloc: std.mem.Allocator, rows: u16, cols: u16) !Terminal {
@@ -47,6 +63,59 @@ pub const Terminal = struct {
         var off: i64 = @as(i64, @intCast(self.view_offset)) + delta;
         off = std.math.clamp(off, 0, sb);
         self.view_offset = @intCast(off);
+    }
+
+    pub fn selectStart(self: *Terminal, row: u16, col: u16) void {
+        self.selection = .{ .anchor = .{ .row = row, .col = col }, .head = .{ .row = row, .col = col } };
+    }
+
+    pub fn selectExtend(self: *Terminal, row: u16, col: u16) void {
+        if (self.selection) |*s| s.head = .{ .row = row, .col = col };
+    }
+
+    pub fn clearSelection(self: *Terminal) void {
+        self.selection = null;
+    }
+
+    pub fn isSelected(self: *Terminal, row: u16, col: u16) bool {
+        const sel = self.selection orelse return false;
+        const o = sel.ordered();
+        const after = row > o.start.row or (row == o.start.row and col >= o.start.col);
+        const before = row < o.end.row or (row == o.end.row and col <= o.end.col);
+        return after and before;
+    }
+
+    /// Write the selection as UTF-8 into `out`, trimming trailing blanks per
+    /// row and joining rows with '\n'. Returns bytes written (truncated to fit).
+    pub fn selectionText(self: *Terminal, out: []u8) usize {
+        const sel = self.selection orelse return 0;
+        const o = sel.ordered();
+        var n: usize = 0;
+        var r: u16 = o.start.row;
+        while (r <= o.end.row) : (r += 1) {
+            const cells = self.viewRow(r);
+            const c0: u16 = if (r == o.start.row) o.start.col else 0;
+            const c1: u16 = if (r == o.end.row) o.end.col else self.grid.cols - 1;
+            var last: i32 = -1;
+            var c: u16 = c0;
+            while (c <= c1) : (c += 1) if (cells[c].cp != ' ') {
+                last = c;
+            };
+            c = c0;
+            while (c <= c1) : (c += 1) {
+                if (last < 0 or c > @as(u16, @intCast(last))) break;
+                var tmp: [4]u8 = undefined;
+                const ln = std.unicode.utf8Encode(cells[c].cp, &tmp) catch 1;
+                if (n + ln > out.len) return n;
+                @memcpy(out[n .. n + ln], tmp[0..ln]);
+                n += ln;
+            }
+            if (r < o.end.row and n < out.len) {
+                out[n] = '\n';
+                n += 1;
+            }
+        }
+        return n;
     }
 
     /// Resize preserving content, bottom-anchored. On shrink the overflowing
@@ -483,6 +552,34 @@ test "resize grow pulls history back into the new top rows" {
     try std.testing.expectEqual(@as(u21, 'a'), t.viewRow(0)[0].cp);
     try std.testing.expectEqual(@as(u21, 'b'), t.viewRow(1)[0].cp);
     try std.testing.expectEqual(@as(u21, 'c'), t.viewRow(2)[0].cp);
+}
+
+test "selection extracts text, trims trailing blanks, joins rows" {
+    var t = try Terminal.init(std.testing.allocator, 2, 5);
+    defer t.deinit();
+    for ("ab") |ch| t.print(ch); // row0: "ab   "
+    t.carriageReturn();
+    t.lineFeed();
+    for ("cd") |ch| t.print(ch); // row1: "cd   "
+
+    t.selectStart(0, 0);
+    t.selectExtend(1, 4); // through end of row1
+    try std.testing.expect(t.isSelected(0, 0));
+    try std.testing.expect(t.isSelected(1, 4));
+    var buf: [32]u8 = undefined;
+    const n = t.selectionText(&buf);
+    try std.testing.expectEqualStrings("ab\ncd", buf[0..n]);
+}
+
+test "selection ordered regardless of drag direction" {
+    var t = try Terminal.init(std.testing.allocator, 1, 4);
+    defer t.deinit();
+    for ("wxyz") |ch| t.print(ch);
+    t.selectStart(0, 3); // anchor at 'z'
+    t.selectExtend(0, 1); // drag left to 'x'
+    var buf: [16]u8 = undefined;
+    const n = t.selectionText(&buf);
+    try std.testing.expectEqualStrings("xyz", buf[0..n]);
 }
 
 test "sgr sets and resets pen" {
