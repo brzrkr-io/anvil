@@ -1,5 +1,12 @@
 const std = @import("std");
 
+const c = @cImport({
+    @cInclude("sys/socket.h");
+    @cInclude("netinet/in.h");
+    @cInclude("arpa/inet.h");
+    @cInclude("unistd.h");
+});
+
 /// Read-only client for the local Caldera daemon (127.0.0.1:4175). Polls a few
 /// GET endpoints on a background thread and exposes a plain-bytes Snapshot the
 /// render thread copies under a mutex. The app must degrade cleanly when the
@@ -112,9 +119,11 @@ pub fn start(alloc: std.mem.Allocator) void {
     if (g_running) return;
     g_alloc = alloc;
     g_running = true;
-    _ = std.Thread.spawn(.{}, pollLoop, .{}) catch {
+    const t = std.Thread.spawn(.{}, pollLoop, .{}) catch {
         g_running = false;
+        return;
     };
+    t.detach();
 }
 
 fn pollLoop() void {
@@ -131,19 +140,34 @@ fn pollLoop() void {
 /// Issue one GET and return the response body (everything after the header
 /// terminator). Caller owns the returned slice.
 fn fetch(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
-    var stream = try std.net.tcpConnectToHost(alloc, host, port);
-    defer stream.close();
+    const fd = c.socket(c.AF_INET, c.SOCK_STREAM, 0);
+    if (fd < 0) return error.Socket;
+    defer _ = c.close(fd);
+
+    // 200ms send/recv timeout so a missing daemon doesn't stall the poll thread.
+    const tv = c.struct_timeval{ .tv_sec = 0, .tv_usec = 200_000 };
+    _ = c.setsockopt(fd, c.SOL_SOCKET, c.SO_SNDTIMEO, &tv, @sizeOf(c.struct_timeval));
+    _ = c.setsockopt(fd, c.SOL_SOCKET, c.SO_RCVTIMEO, &tv, @sizeOf(c.struct_timeval));
+
+    var addr: c.struct_sockaddr_in = std.mem.zeroes(c.struct_sockaddr_in);
+    addr.sin_family = c.AF_INET;
+    addr.sin_port = c.htons(port);
+    addr.sin_addr.s_addr = c.inet_addr("127.0.0.1");
+
+    if (c.connect(fd, @ptrCast(&addr), @sizeOf(c.struct_sockaddr_in)) != 0)
+        return error.ConnectFailed;
+
     var req: [256]u8 = undefined;
     const r = try std.fmt.bufPrint(&req, "GET {s} HTTP/1.1\r\nHost: {s}\r\nConnection: close\r\n\r\n", .{ path, host });
-    try stream.writeAll(r);
+    if (c.write(fd, r.ptr, r.len) < 0) return error.WriteFailed;
 
     var raw: std.ArrayListUnmanaged(u8) = .empty;
     errdefer raw.deinit(alloc);
     var buf: [4096]u8 = undefined;
     while (true) {
-        const n = try stream.read(&buf);
-        if (n == 0) break;
-        try raw.appendSlice(alloc, buf[0..n]);
+        const n = c.read(fd, &buf, buf.len);
+        if (n <= 0) break;
+        try raw.appendSlice(alloc, buf[0..@intCast(n)]);
     }
     const sep = std.mem.indexOf(u8, raw.items, "\r\n\r\n") orelse return error.BadResponse;
     const body = try alloc.dupe(u8, raw.items[sep + 4 ..]);

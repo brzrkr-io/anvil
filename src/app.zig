@@ -253,6 +253,7 @@ export fn anvil_resize(px_w: f32, px_h: f32) callconv(.c) void {
             restored = mgr.tabs.items.len > 0;
         }
         if (!restored) mgr.spawnFirst(g.rows, g.cols) catch return;
+        caldera.start(std.heap.page_allocator);
         ready = true;
         applyCursorDefault();
         return;
