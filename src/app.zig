@@ -12,6 +12,7 @@ const search = @import("search.zig");
 const config = @import("config.zig");
 const keys = @import("keys.zig");
 const persist = @import("session_persist.zig");
+const chip_mod = @import("context_chip.zig");
 
 const shader_src = @embedFile("platform/shaders.metal");
 const font_data = @embedFile("font_ttf");
@@ -41,6 +42,7 @@ var cpal = cmd.Palette{};
 var srch = search.Search{};
 var help_open: bool = false;
 var overlay: [128 * 7]f32 = undefined; // colored rects (x,y,w,h,r,g,b)
+var ctx_chip: chip_mod.Chip = .{};
 
 var cfg: config.Config = .{};
 var cfg_loaded = false;
@@ -725,6 +727,9 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
         }
     }
 
+    // Context chip: git branch + kube context in the right side of the title bar.
+    n += emitContextChip(th, n);
+
     out.count = @intCast(n);
     out.divider_count = if (zoomed) 0 else @intCast(tree.dividers(ws, divider_px, &divider_rects));
 
@@ -749,6 +754,97 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
     }
 
     out.pending_count = renderer.atlas.pending_n;
+}
+
+// Nerd Font glyph codepoints used in the context chip.
+const glyph_git: u21 = 0xe0a0; // nf-pl-branch
+const glyph_kube: u21 = 0xf10d6; // nf-md-kubernetes
+const chip_max_branch: usize = 20;
+const chip_max_kube: usize = 20;
+
+/// Render the context chip (git branch + kube context) right-aligned in the
+/// title bar. Returns the number of glyph instances written into `instances`.
+fn emitContextChip(th: *const theme.Theme, start: usize) usize {
+    // Update cache from the focused pane's cwd.
+    if (mgr.focusedSession()) |s| {
+        ctx_chip.update(s.term.cwd());
+    }
+    if (ctx_chip.isEmpty()) return 0;
+
+    const cw = renderer.cell_w;
+    const label_y: f32 = (bar_h - renderer.cell_h) / 2;
+    const fg = th.ansi[6]; // mineral/cyan = status.info/trace
+    const bg = th.bar;
+    const pad: f32 = 8;
+
+    var n = start;
+
+    // Build the codepoint list for the chip: git icon + branch, spaces, kube icon + ctx.
+    // Encode: icon + branch, space, icon + kube.
+    // We'll write the text segments; icons go via atlas.uvOrigin for the u21 cp.
+    // Instead of a scratch buf for Unicode glyphs we build a list of codepoints.
+    var cps: [64]u21 = undefined;
+    var cp_n: usize = 0;
+
+    const branch = ctx_chip.branch();
+    if (branch.len > 0) {
+        cps[cp_n] = glyph_git;
+        cp_n += 1;
+        cps[cp_n] = ' ';
+        cp_n += 1;
+        var it = std.unicode.Utf8View.initUnchecked(branch[0..@min(branch.len, chip_max_branch)]).iterator();
+        while (it.nextCodepoint()) |cp| {
+            if (cp_n >= cps.len) break;
+            cps[cp_n] = cp;
+            cp_n += 1;
+        }
+    }
+
+    const kube = ctx_chip.kube();
+    if (kube.len > 0) {
+        if (cp_n > 0) {
+            if (cp_n + 3 < cps.len) {
+                cps[cp_n] = ' ';
+                cp_n += 1;
+                cps[cp_n] = ' ';
+                cp_n += 1;
+            }
+        }
+        if (cp_n + 2 < cps.len) {
+            cps[cp_n] = glyph_kube;
+            cp_n += 1;
+            cps[cp_n] = ':';
+            cp_n += 1;
+        }
+        var it = std.unicode.Utf8View.initUnchecked(kube[0..@min(kube.len, chip_max_kube)]).iterator();
+        while (it.nextCodepoint()) |cp| {
+            if (cp_n >= cps.len) break;
+            cps[cp_n] = cp;
+            cp_n += 1;
+        }
+    }
+
+    if (cp_n == 0) return 0;
+
+    // Right-align: start x so the chip ends at win_w - pad.
+    const total_w = @as(f32, @floatFromInt(cp_n)) * cw;
+    var x = win_w - pad - total_w;
+    if (x < tab_inset_x) x = tab_inset_x; // don't overlap traffic lights
+
+    for (cps[0..cp_n]) |cp| {
+        if (n >= instances.len) break;
+        instances[n] = .{
+            .x = x,
+            .y = label_y,
+            .fg = fg.f32x4(),
+            .bg = bg.f32x4(),
+            .uv = renderer.atlas.uvOrigin(cp),
+        };
+        n += 1;
+        x += cw;
+    }
+
+    return n - start;
 }
 
 fn putRect(ri: usize, x: f32, y: f32, w: f32, h: f32, c: theme.Rgb) void {

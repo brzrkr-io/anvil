@@ -26,4 +26,5 @@ test {
     _ = @import("search.zig");
     _ = @import("keys.zig");
     _ = @import("session_persist.zig");
+    _ = @import("context_chip.zig");
 }
