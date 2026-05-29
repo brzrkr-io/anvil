@@ -292,6 +292,17 @@ test "mouse modes set and clear via DEC private modes" {
     try std.testing.expectEqual(@import("terminal.zig").MouseMode.off, t.mouse);
 }
 
+test "SGR italic/dim/strike/blink set and reset" {
+    var t = try Terminal.init(std.testing.allocator, 1, 4);
+    defer t.deinit();
+    var p = Parser{};
+    p.feed(&t, "\x1b[2;3;5;9mA");
+    const a = t.grid.at(0, 0).attrs;
+    try std.testing.expect(a.dim and a.italic and a.blink and a.strike);
+    p.feed(&t, "\x1b[23;25;29m\x1b[1G\x1b[0mB");
+    try std.testing.expect(!t.pen.attrs.italic and !t.pen.attrs.blink and !t.pen.attrs.strike);
+}
+
 test "bracketed paste mode toggles via 2004" {
     var t = try Terminal.init(std.testing.allocator, 1, 4);
     defer t.deinit();

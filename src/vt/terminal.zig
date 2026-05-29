@@ -492,11 +492,21 @@ pub const Terminal = struct {
             switch (params[i]) {
                 0 => self.pen = .{},
                 1 => self.pen.attrs.bold = true,
+                2 => self.pen.attrs.dim = true,
+                3 => self.pen.attrs.italic = true,
                 4 => self.pen.attrs.underline = true,
+                5, 6 => self.pen.attrs.blink = true,
                 7 => self.pen.attrs.reverse = true,
-                22 => self.pen.attrs.bold = false,
+                9 => self.pen.attrs.strike = true,
+                22 => {
+                    self.pen.attrs.bold = false;
+                    self.pen.attrs.dim = false;
+                },
+                23 => self.pen.attrs.italic = false,
                 24 => self.pen.attrs.underline = false,
+                25 => self.pen.attrs.blink = false,
                 27 => self.pen.attrs.reverse = false,
+                29 => self.pen.attrs.strike = false,
                 30...37 => self.pen.fg = .{ .indexed = @intCast(params[i] - 30) },
                 39 => self.pen.fg = .default,
                 40...47 => self.pen.bg = .{ .indexed = @intCast(params[i] - 40) },

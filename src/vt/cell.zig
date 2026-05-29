@@ -8,6 +8,10 @@ pub const Attrs = packed struct {
     bold: bool = false,
     underline: bool = false,
     reverse: bool = false,
+    italic: bool = false,
+    dim: bool = false,
+    strike: bool = false,
+    blink: bool = false,
 };
 
 pub const Cell = struct {
