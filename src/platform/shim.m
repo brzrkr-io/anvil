@@ -45,6 +45,7 @@ typedef struct {
 
 extern const char *anvil_shader_src(size_t *len);
 extern const uint8_t *anvil_font_data(size_t *len);
+extern const uint8_t *anvil_icon_data(size_t *len);
 extern void anvil_resize(float w, float h);
 extern void anvil_frame(FrameData *out);
 extern void anvil_atlas_params(AtlasParams *out);
@@ -739,6 +740,12 @@ void anvil_run(void) {
     @autoreleasepool {
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+
+        // Dock icon for the bare binary (the .app bundle uses AppIcon.icns).
+        size_t ilen = 0;
+        const uint8_t *idata = anvil_icon_data(&ilen);
+        NSImage *icon = [[NSImage alloc] initWithData:[NSData dataWithBytes:idata length:ilen]];
+        if (icon) NSApp.applicationIconImage = icon;
 
         gDevice = MTLCreateSystemDefaultDevice();
         gQueue = [gDevice newCommandQueue];
