@@ -59,6 +59,9 @@ extern void anvil_new_tab(void);
 extern void anvil_cycle_tab(int delta);
 extern void anvil_close_tab(void);
 extern void anvil_jump_prompt(int dir);
+extern void anvil_resize_pane(int dir);
+extern void anvil_balance_panes(void);
+extern void anvil_zoom_toggle(void);
 extern void anvil_palette_toggle(void);
 extern int anvil_palette_open(void);
 extern void anvil_palette_char(unsigned char c);
@@ -572,10 +575,17 @@ static void layoutTrafficLights(NSWindow *win) {
                 case NSDownArrowFunctionKey:  anvil_focus_dir(3); return;
             }
         }
-        if (ch == NSUpArrowFunctionKey)   { anvil_jump_prompt(-1); return; }
-        if (ch == NSDownArrowFunctionKey) { anvil_jump_prompt(1); return; }
+        // Shift+arrow resizes the focused pane; plain Cmd+up/down jumps prompts.
+        switch (ch) {
+            case NSLeftArrowFunctionKey:  if (shift) { anvil_resize_pane(0); return; } break;
+            case NSRightArrowFunctionKey: if (shift) { anvil_resize_pane(1); return; } break;
+            case NSUpArrowFunctionKey:    if (shift) anvil_resize_pane(2); else anvil_jump_prompt(-1); return;
+            case NSDownArrowFunctionKey:  if (shift) anvil_resize_pane(3); else anvil_jump_prompt(1); return;
+        }
         if (ch == ']' || ch == '}') { anvil_cycle_tab(1); return; }
         if (ch == '[' || ch == '{') { anvil_cycle_tab(-1); return; }
+        if (ch == '\r' || ch == '\n') { if (shift) { anvil_zoom_toggle(); return; } }
+        if (ch == '=' || ch == '+') { anvil_balance_panes(); return; }
         unichar lc = (ch >= 'A' && ch <= 'Z') ? ch + 32 : ch;
         if (lc == 'c') [self copySelection];
         else if (lc == 'v') [self pasteClipboard];

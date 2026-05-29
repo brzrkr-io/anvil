@@ -94,6 +94,51 @@ pub const PaneTree = struct {
         }
     }
 
+    /// Grow the pane carrying `target` toward `dir` by `step` (fraction of the
+    /// relevant extent). Moves the nearest ancestor divider whose axis matches
+    /// the direction; no-op if the pane is already at that edge of the window.
+    pub fn resize(self: *PaneTree, target: usize, dir: Dir, step: f32) void {
+        const axis: Axis = if (dir == .left or dir == .right) .x else .y;
+        const grow_a = (dir == .right or dir == .down); // target in `a` grows by +step
+        var node: *Node = &self.root;
+        var chosen: ?*Split = null;
+        while (true) {
+            switch (node.*) {
+                .leaf => break,
+                .split => |sp| {
+                    const in_a = subtreeHas(sp.a, target);
+                    if (sp.axis == axis) {
+                        // Pick the split where moving the divider grows the target:
+                        // target in `a` needs +dir; target in `b` needs -dir.
+                        if (grow_a and in_a) chosen = sp;
+                        if (!grow_a and !in_a) chosen = sp;
+                    }
+                    node = if (in_a) &sp.a else &sp.b;
+                },
+            }
+        }
+        if (chosen) |sp| {
+            const d: f32 = if (grow_a) step else -step;
+            sp.ratio = std.math.clamp(sp.ratio + d, 0.1, 0.9);
+        }
+    }
+
+    /// Reset every split to an even 50/50, recursively.
+    pub fn balance(self: *PaneTree) void {
+        balanceNode(self.root);
+    }
+
+    fn balanceNode(node: Node) void {
+        switch (node) {
+            .leaf => {},
+            .split => |sp| {
+                sp.ratio = 0.5;
+                balanceNode(sp.a);
+                balanceNode(sp.b);
+            },
+        }
+    }
+
     /// Lay panes out within `rect`, leaving `divider` device pixels between
     /// siblings. Fills `out` (size >= count()) and returns the pane count.
     pub fn layout(self: *const PaneTree, rect: Rect, divider: f32, out: []PaneRect) usize {
@@ -200,6 +245,13 @@ fn leafId(node: Node) ?usize {
     return switch (node) {
         .leaf => |id| id,
         .split => null,
+    };
+}
+
+fn subtreeHas(node: Node, id: usize) bool {
+    return switch (node) {
+        .leaf => |lid| lid == id,
+        .split => |sp| subtreeHas(sp.a, id) or subtreeHas(sp.b, id),
     };
 }
 
@@ -336,6 +388,42 @@ test "dividers emit one gap rect per split" {
     try t.expectEqual(@as(f32, 49), buf[0].x); // gap starts after pane a
     try t.expectEqual(@as(f32, 2), buf[0].w);
     try t.expectEqual(@as(f32, 40), buf[0].h);
+}
+
+test "resize grows the focused pane toward the divider" {
+    var tree = PaneTree.init(t.allocator, 0);
+    defer tree.deinit();
+    try tree.split(0, .x, 1); // 0 | 1, ratio 0.5
+    tree.resize(0, .right, 0.1); // grow left pane rightward
+    var buf: [8]PaneRect = undefined;
+    const n = tree.layout(.{ .x = 0, .y = 0, .w = 100, .h = 40 }, 0, &buf);
+    try t.expectEqual(@as(usize, 2), n);
+    try t.expectApproxEqAbs(@as(f32, 60), buf[0].rect.w, 0.001); // 0.6 * 100
+    // Pane 1 grows leftward (ratio shrinks back toward 0.5).
+    tree.resize(1, .left, 0.1);
+    _ = tree.layout(.{ .x = 0, .y = 0, .w = 100, .h = 40 }, 0, &buf);
+    try t.expectApproxEqAbs(@as(f32, 50), buf[0].rect.w, 0.001);
+}
+
+test "resize is a no-op at the window edge" {
+    var tree = PaneTree.init(t.allocator, 0);
+    defer tree.deinit();
+    try tree.split(0, .x, 1); // only an x-split exists
+    tree.resize(0, .up, 0.1); // no y-split to move
+    var buf: [8]PaneRect = undefined;
+    _ = tree.layout(.{ .x = 0, .y = 0, .w = 100, .h = 40 }, 0, &buf);
+    try t.expectApproxEqAbs(@as(f32, 50), buf[0].rect.w, 0.001);
+}
+
+test "balance resets nested splits to 50/50" {
+    var tree = PaneTree.init(t.allocator, 0);
+    defer tree.deinit();
+    try tree.split(0, .x, 1);
+    tree.resize(0, .right, 0.3); // skew it
+    tree.balance();
+    var buf: [8]PaneRect = undefined;
+    _ = tree.layout(.{ .x = 0, .y = 0, .w = 100, .h = 40 }, 0, &buf);
+    try t.expectApproxEqAbs(@as(f32, 50), buf[0].rect.w, 0.001);
 }
 
 test "neighbor finds the pane to the right" {

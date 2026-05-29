@@ -92,6 +92,18 @@ pub const SessionManager = struct {
         if (tree.neighbor(rect, self.focused, dir, buf)) |id| self.focused = id;
     }
 
+    /// Grow the focused pane toward `dir` within the active tab.
+    pub fn resizeFocused(self: *SessionManager, dir: pane.Dir, step: f32) void {
+        const tree = self.activeTree() orelse return;
+        tree.resize(self.focused, dir, step);
+    }
+
+    /// Reset the active tab's splits to even 50/50.
+    pub fn balanceActive(self: *SessionManager) void {
+        const tree = self.activeTree() orelse return;
+        tree.balance();
+    }
+
     pub fn byId(self: *SessionManager, id: usize) ?*Session {
         for (self.sessions.items) |*s| {
             if (s.id == id) return s;

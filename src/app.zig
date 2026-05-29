@@ -109,10 +109,22 @@ fn workspaceRect() pane.Rect {
     return .{ .x = 0, .y = bar_h, .w = win_w, .h = win_h - bar_h };
 }
 
+var zoomed = false; // focused pane temporarily fills the workspace
+
+/// Lay out the active tab's panes into `out`. When zoomed, the focused pane
+/// alone fills the workspace (one entry); otherwise the normal split layout.
+fn layoutPanes(out: []pane.PaneRect) usize {
+    const tree = mgr.activeTree() orelse return 0;
+    if (zoomed) {
+        out[0] = .{ .id = mgr.focused, .rect = workspaceRect() };
+        return 1;
+    }
+    return tree.layout(workspaceRect(), divider_px, out);
+}
+
 /// Resize every session's grid + PTY to match its current pane rect.
 fn relayout() void {
-    const tree = mgr.activeTree() orelse return;
-    const n = tree.layout(workspaceRect(), divider_px, &pane_buf);
+    const n = layoutPanes(&pane_buf);
     for (pane_buf[0..n]) |p| {
         const s = mgr.byId(p.id) orelse continue;
         const g = renderer.paneGrid(p.rect.w, p.rect.h);
@@ -250,8 +262,7 @@ fn contains(r: pane.Rect, x: f32, y: f32) bool {
 /// stay in the focused pane.
 export fn anvil_mouse(kind: c_int, x: f32, y: f32) callconv(.c) void {
     if (!ready) return;
-    const tree = mgr.activeTree() orelse return;
-    const np = tree.layout(workspaceRect(), divider_px, &pane_buf);
+    const np = layoutPanes(&pane_buf);
     if (kind == 0) {
         for (pane_buf[0..np]) |p| {
             if (contains(p.rect, x, y)) {
@@ -329,6 +340,27 @@ export fn anvil_close_pane() callconv(.c) void {
 export fn anvil_focus_dir(dir: c_int) callconv(.c) void {
     if (!ready) return;
     mgr.focusNeighbor(workspaceRect(), @enumFromInt(dir), &pane_buf);
+}
+
+/// Grow the focused pane toward `dir` (0 left, 1 right, 2 up, 3 down).
+export fn anvil_resize_pane(dir: c_int) callconv(.c) void {
+    if (!ready or zoomed) return;
+    mgr.resizeFocused(@enumFromInt(dir), 0.05);
+    relayout();
+}
+
+/// Reset the active tab's splits to even 50/50.
+export fn anvil_balance_panes() callconv(.c) void {
+    if (!ready or zoomed) return;
+    mgr.balanceActive();
+    relayout();
+}
+
+/// Toggle zoom: the focused pane fills the workspace, hiding its siblings.
+export fn anvil_zoom_toggle() callconv(.c) void {
+    if (!ready) return;
+    zoomed = !zoomed;
+    relayout();
 }
 
 export fn anvil_new_tab() callconv(.c) void {
@@ -504,7 +536,7 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
 
     const ws = workspaceRect();
     const tree = mgr.activeTree() orelse return;
-    const np = tree.layout(ws, divider_px, &pane_buf);
+    const np = layoutPanes(&pane_buf);
     var n: usize = 0;
     const multi = np > 1;
     for (pane_buf[0..np]) |p| {
@@ -551,7 +583,7 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
     }
 
     out.count = @intCast(n);
-    out.divider_count = @intCast(tree.dividers(ws, divider_px, &divider_rects));
+    out.divider_count = if (zoomed) 0 else @intCast(tree.dividers(ws, divider_px, &divider_rects));
 
     if (cpal.open) {
         const r = emitPalette(th, n);
