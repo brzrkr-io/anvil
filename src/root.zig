@@ -9,10 +9,12 @@ pub const Parser = @import("vt/parser.zig").Parser;
 pub const palette = @import("render/palette.zig");
 pub const Renderer = @import("render/renderer.zig").Renderer;
 pub const CellInstance = @import("render/instance.zig").CellInstance;
+pub const Atlas = @import("render/atlas.zig").Atlas;
 
 test {
     const std = @import("std");
     std.testing.refAllDecls(@This());
     _ = @import("render/palette.zig");
     _ = @import("render/renderer.zig");
+    _ = @import("render/atlas.zig");
 }

@@ -27,6 +27,8 @@ pub fn build(b: *std.Build) void {
     exe.root_module.linkFramework("Cocoa", .{});
     exe.root_module.linkFramework("QuartzCore", .{});
     exe.root_module.linkFramework("Metal", .{});
+    exe.root_module.linkFramework("CoreText", .{});
+    exe.root_module.linkFramework("CoreGraphics", .{});
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);

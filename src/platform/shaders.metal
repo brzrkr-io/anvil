@@ -5,6 +5,7 @@ struct Uniforms {
     float2 cell;
     float2 pad;
     float2 viewport;
+    float2 cell_uv;
 };
 
 struct Instance {
@@ -12,12 +13,14 @@ struct Instance {
     float row;
     float4 fg;
     float4 bg;
-    float glyph;
+    float2 uv;
 };
 
 struct VOut {
     float4 pos [[position]];
-    float4 color;
+    float4 fg;
+    float4 bg;
+    float2 uv;
 };
 
 vertex VOut v_main(uint vid [[vertex_id]],
@@ -33,10 +36,16 @@ vertex VOut v_main(uint vid [[vertex_id]],
 
     VOut o;
     o.pos = float4(ndc, 0.0, 1.0);
-    o.color = in.bg;
+    o.fg = in.fg;
+    o.bg = in.bg;
+    o.uv = in.uv + corner * u.cell_uv;
     return o;
 }
 
-fragment float4 f_main(VOut in [[stage_in]]) {
-    return in.color;
+fragment float4 f_main(VOut in [[stage_in]],
+                       texture2d<float> atlas [[texture(0)]]) {
+    constexpr sampler s(coord::normalized, filter::nearest, address::clamp_to_edge);
+    float coverage = atlas.sample(s, in.uv).r;
+    float3 rgb = mix(in.bg.rgb, in.fg.rgb, coverage);
+    return float4(rgb, 1.0);
 }

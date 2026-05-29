@@ -2,6 +2,7 @@ const std = @import("std");
 const Terminal = @import("../vt/terminal.zig").Terminal;
 const palette = @import("palette.zig");
 const CellInstance = @import("instance.zig").CellInstance;
+const Atlas = @import("atlas.zig").Atlas;
 
 pub const GridSize = struct { cols: u16, rows: u16 };
 
@@ -10,6 +11,7 @@ pub const Renderer = struct {
     cell_h: f32,
     pad_x: f32,
     pad_y: f32,
+    atlas: Atlas = .{},
 
     /// Rows/cols that fit a viewport of `px_w` x `px_h` device pixels.
     pub fn gridSize(self: Renderer, px_w: f32, px_h: f32) GridSize {
@@ -26,7 +28,6 @@ pub const Renderer = struct {
     /// Emit one instance per cell into `out`; returns the count written.
     /// `out` must hold at least rows*cols entries.
     pub fn buildInstances(self: Renderer, term: *Terminal, out: []CellInstance) usize {
-        _ = self;
         var n: usize = 0;
         var r: u16 = 0;
         while (r < term.grid.rows) : (r += 1) {
@@ -45,7 +46,7 @@ pub const Renderer = struct {
                     .row = @floatFromInt(r),
                     .fg = fg.f32x4(),
                     .bg = bg.f32x4(),
-                    .glyph = @floatFromInt(cell.cp),
+                    .uv = self.atlas.uvOrigin(cell.cp),
                 };
                 n += 1;
             }
@@ -83,7 +84,7 @@ test "buildInstances emits one per cell with positions" {
     try std.testing.expectEqual(@as(f32, 1), buf[5].row);
 }
 
-test "buildInstances carries codepoint and resolves color" {
+test "buildInstances carries glyph uv and resolves color" {
     var t = try Terminal.init(std.testing.allocator, 1, 1);
     defer t.deinit();
     t.pen.fg = .{ .indexed = 1 };
@@ -91,7 +92,7 @@ test "buildInstances carries codepoint and resolves color" {
     const rd = Renderer{ .cell_w = 10, .cell_h = 20, .pad_x = 0, .pad_y = 0 };
     var buf: [1]CellInstance = undefined;
     _ = rd.buildInstances(&t, &buf);
-    try std.testing.expectEqual(@as(f32, 'A'), buf[0].glyph);
+    try std.testing.expectEqual(rd.atlas.uvOrigin('A'), buf[0].uv);
     const red = palette.indexed(1).f32x4();
     try std.testing.expectEqual(red, buf[0].fg);
 }

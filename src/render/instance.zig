@@ -4,7 +4,7 @@ pub const CellInstance = extern struct {
     row: f32,
     fg: [4]f32,
     bg: [4]f32,
-    glyph: f32,
+    uv: [2]f32,
 };
 
 /// What Zig hands the shim each frame. Matches `FrameData` read in shim.m.
@@ -15,4 +15,5 @@ pub const FrameData = extern struct {
     cell_h: f32,
     pad_x: f32,
     pad_y: f32,
+    cell_uv: [2]f32,
 };
