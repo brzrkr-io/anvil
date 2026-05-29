@@ -7,6 +7,11 @@ docs/superpowers/
 # tool state
 .forge/
 
-# Rust / Cargo
+# Rust / Cargo (archived on tag rust-port-archive)
 /target
+
+# Zig
+.zig-cache/
+zig-out/
+
 .claude/worktrees/
