@@ -86,6 +86,8 @@ fn loadConfig() void {
         .light => .light,
         .dark => .dark,
     };
+    active_variant = theme.byName(cfg.themeVariant()) orelse
+        .{ .dark = theme.mineral_dark, .light = theme.mineral_light };
     renderer.pad_x = cfg.padding_x;
     renderer.pad_y = bar_h + cfg.padding_y;
     cfg_mtime = config.mtime(path);
@@ -163,6 +165,7 @@ fn relayout() void {
 const ThemeMode = enum(c_int) { system = 0, light = 1, dark = 2 };
 var theme_mode: ThemeMode = .system;
 var os_dark: bool = true;
+var active_variant: theme.Variant = .{ .dark = theme.mineral_dark, .light = theme.mineral_light };
 
 fn effectiveDark() bool {
     return switch (theme_mode) {
@@ -173,7 +176,7 @@ fn effectiveDark() bool {
 }
 
 fn activeTheme() *const theme.Theme {
-    return if (effectiveDark()) &theme.mineral_dark else &theme.mineral_light;
+    return if (effectiveDark()) &active_variant.dark else &active_variant.light;
 }
 
 /// Push the active theme's fg/bg/ANSI into every terminal so the parser can

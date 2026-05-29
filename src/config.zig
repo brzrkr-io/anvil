@@ -17,12 +17,24 @@ pub const CursorStyle = enum { block, underline, bar };
 
 pub const Config = struct {
     theme: ThemeMode = .system,
+    theme_variant: [32]u8 = variantDefault(),
+    theme_variant_len: usize = "mineral".len,
     font_size: f32 = 13,
     padding_x: f32 = 8,
     padding_y: f32 = 6,
     cursor_style: CursorStyle = .block,
     cursor_blink: bool = true,
+
+    pub fn themeVariant(self: *const Config) []const u8 {
+        return self.theme_variant[0..self.theme_variant_len];
+    }
 };
+
+fn variantDefault() [32]u8 {
+    var buf = [_]u8{0} ** 32;
+    @memcpy(buf[0.."mineral".len], "mineral");
+    return buf;
+}
 
 pub const ParseResult = struct {
     cfg: Config,
@@ -132,6 +144,10 @@ fn applyKey(cfg: *Config, key: []const u8, val: []const u8, err: ?*[128]u8, err_
             return;
         }
         setErr(err, err_len, "config.toml: invalid cursor_blink '{s}' (line {})", .{ val, line_num });
+    } else if (std.mem.eql(u8, key, "theme_variant")) {
+        const n = @min(val.len, cfg.theme_variant.len);
+        @memcpy(cfg.theme_variant[0..n], val[0..n]);
+        cfg.theme_variant_len = n;
     } else {
         setErr(err, err_len, "config.toml: unknown key '{s}' (line {})", .{ key, line_num });
     }
@@ -249,4 +265,25 @@ test "parseFull: out-of-range font_size yields non-empty error" {
     const r = parseFull("font_size = 999\n");
     try std.testing.expect(r.err_len > 0);
     try std.testing.expect(std.mem.indexOf(u8, r.errMsg(), "font_size") != null);
+}
+
+test "parse reads theme_variant" {
+    const cfg = parse("theme_variant = \"mineral-high\"\n");
+    try std.testing.expectEqualStrings("mineral-high", cfg.themeVariant());
+}
+
+test "parse theme_variant defaults to mineral" {
+    const cfg = parse("theme = dark\n");
+    try std.testing.expectEqualStrings("mineral", cfg.themeVariant());
+}
+
+test "parse theme_variant unknown value is stored verbatim (caller resolves)" {
+    const cfg = parse("theme_variant = \"unknown-variant\"\n");
+    try std.testing.expectEqualStrings("unknown-variant", cfg.themeVariant());
+}
+
+test "parseFull: theme_variant does not yield an error" {
+    const r = parseFull("theme_variant = mineral-high\n");
+    try std.testing.expectEqual(@as(usize, 0), r.err_len);
+    try std.testing.expectEqualStrings("mineral-high", r.cfg.themeVariant());
 }

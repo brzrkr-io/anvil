@@ -106,7 +106,74 @@ pub const mineral_light = Theme{
     },
 };
 
+/// A coordinated dark+light pair for one visual variant.
+pub const Variant = struct {
+    dark: Theme,
+    light: Theme,
+};
+
+// mineral-high: maximum-contrast Mineral pair.
+// Dark: graphite bg (#0b0d0e) + bone fg (#eef1f2) — both are brand endpoints.
+// Light: white bg (#ffffff) + ink fg (#0c0d0e) — pure raised-panel contrast.
+// Status hues are unchanged; only chrome/fg use the outer Mineral extremes.
+pub const mineral_high_dark = Theme{
+    .bg = hex("0b0d0e"), // graphite (same as mineral_dark)
+    .fg = hex("eef1f2"), // bone — raised to max contrast
+    .bar = hex("0c0d0e"), // near-black, darker than charcoal
+    .separator = hex("4a555c"), // bright-black tone, visible on deep bg
+    .sel_bg = hex("2f4a4e"),
+    .sel_fg = hex("eef1f2"),
+    .ansi = mineral_dark.ansi,
+};
+
+pub const mineral_high_light = Theme{
+    .bg = hex("ffffff"), // white — raised-panel maximum
+    .fg = hex("0c0d0e"), // ink
+    .bar = hex("eef1f2"), // bone
+    .separator = hex("86919a"), // alloy
+    .sel_bg = hex("b8d4d6"),
+    .sel_fg = hex("0c0d0e"),
+    .ansi = mineral_light.ansi,
+};
+
+pub const variants = [_]struct { name: []const u8, v: Variant }{
+    .{ .name = "mineral", .v = .{ .dark = mineral_dark, .light = mineral_light } },
+    .{ .name = "mineral-high", .v = .{ .dark = mineral_high_dark, .light = mineral_high_light } },
+};
+
+pub fn byName(name: []const u8) ?Variant {
+    for (variants) |entry| {
+        if (std.mem.eql(u8, entry.name, name)) return entry.v;
+    }
+    return null;
+}
+
 test "hex parses brand tokens" {
     try std.testing.expectEqual(Rgb{ .r = 0x0b, .g = 0x0d, .b = 0x0e }, mineral_dark.bg);
     try std.testing.expectEqual(Rgb{ .r = 0xee, .g = 0xf1, .b = 0xf2 }, mineral_light.bg);
+}
+
+test "byName returns the named variant" {
+    const v = byName("mineral") orelse return error.VariantNotFound;
+    try std.testing.expectEqual(mineral_dark.bg, v.dark.bg);
+    try std.testing.expectEqual(mineral_light.bg, v.light.bg);
+
+    const vh = byName("mineral-high") orelse return error.VariantNotFound;
+    try std.testing.expectEqual(mineral_high_dark.bg, vh.dark.bg);
+}
+
+test "byName returns null for unknown names" {
+    try std.testing.expectEqual(@as(?Variant, null), byName("unknown"));
+    try std.testing.expectEqual(@as(?Variant, null), byName(""));
+}
+
+test "mineral-high dark bg differs from mineral dark bg" {
+    // mineral_dark.bg == mineral_high_dark.bg (both graphite) — that's intentional.
+    // The distinguishing difference is fg and bar.
+    const v = byName("mineral-high") orelse return error.VariantNotFound;
+    const base = byName("mineral") orelse return error.VariantNotFound;
+    // bar color must differ
+    try std.testing.expect(!std.meta.eql(v.dark.bar, base.dark.bar));
+    // light bg must differ
+    try std.testing.expect(!std.meta.eql(v.light.bg, base.light.bg));
 }
