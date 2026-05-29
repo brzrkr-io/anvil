@@ -1,4 +1,4 @@
-//! Anvil terminal core: PTY + VT parser + cell grid.
+//! Anvil terminal core: PTY + VT parser + cell grid + render logic.
 
 pub const Pty = @import("pty.zig").Pty;
 pub const Cell = @import("vt/cell.zig").Cell;
@@ -6,7 +6,13 @@ pub const Color = @import("vt/cell.zig").Color;
 pub const Grid = @import("vt/grid.zig").Grid;
 pub const Terminal = @import("vt/terminal.zig").Terminal;
 pub const Parser = @import("vt/parser.zig").Parser;
+pub const palette = @import("render/palette.zig");
+pub const Renderer = @import("render/renderer.zig").Renderer;
+pub const CellInstance = @import("render/instance.zig").CellInstance;
 
 test {
-    @import("std").testing.refAllDecls(@This());
+    const std = @import("std");
+    std.testing.refAllDecls(@This());
+    _ = @import("render/palette.zig");
+    _ = @import("render/renderer.zig");
 }

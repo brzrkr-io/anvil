@@ -2,11 +2,69 @@
 #import <QuartzCore/CAMetalLayer.h>
 #import <Metal/Metal.h>
 
+typedef struct {
+    const void *instances;
+    uint32_t count;
+    float cell_w, cell_h, pad_x, pad_y;
+} FrameData;
+
+typedef struct {
+    float cell[2];
+    float pad[2];
+    float viewport[2];
+} Uniforms;
+
+extern const char *anvil_shader_src(size_t *len);
+extern void anvil_resize(float w, float h);
+extern void anvil_frame(FrameData *out);
+
+#define INSTANCE_STRIDE (11 * sizeof(float))
+#define MAX_INSTANCES 60000
+
 static id<MTLDevice> gDevice;
 static id<MTLCommandQueue> gQueue;
+static id<MTLRenderPipelineState> gPipeline;
+static id<MTLBuffer> gInstanceBuf;
 static CAMetalLayer *gLayer;
+static double gLastW, gLastH;
+
+static void buildPipeline(void) {
+    size_t len = 0;
+    const char *src = anvil_shader_src(&len);
+    NSString *code = [[NSString alloc] initWithBytes:src length:len encoding:NSUTF8StringEncoding];
+
+    NSError *err = nil;
+    id<MTLLibrary> lib = [gDevice newLibraryWithSource:code options:nil error:&err];
+    if (!lib) {
+        NSLog(@"shader compile failed: %@", err);
+        return;
+    }
+
+    MTLRenderPipelineDescriptor *pd = [[MTLRenderPipelineDescriptor alloc] init];
+    pd.vertexFunction = [lib newFunctionWithName:@"v_main"];
+    pd.fragmentFunction = [lib newFunctionWithName:@"f_main"];
+    pd.colorAttachments[0].pixelFormat = gLayer.pixelFormat;
+
+    gPipeline = [gDevice newRenderPipelineStateWithDescriptor:pd error:&err];
+    if (!gPipeline) NSLog(@"pipeline failed: %@", err);
+
+    gInstanceBuf = [gDevice newBufferWithLength:MAX_INSTANCES * INSTANCE_STRIDE
+                                        options:MTLResourceStorageModeShared];
+}
 
 static void render(void) {
+    CGSize ds = gLayer.drawableSize;
+    if (ds.width <= 0 || ds.height <= 0) return;
+
+    if (ds.width != gLastW || ds.height != gLastH) {
+        gLastW = ds.width;
+        gLastH = ds.height;
+        anvil_resize((float)ds.width, (float)ds.height);
+    }
+
+    FrameData fd = {0};
+    anvil_frame(&fd);
+
     id<CAMetalDrawable> drawable = [gLayer nextDrawable];
     if (!drawable) return;
 
@@ -18,6 +76,26 @@ static void render(void) {
 
     id<MTLCommandBuffer> cb = [gQueue commandBuffer];
     id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
+
+    if (gPipeline && fd.count > 0) {
+        uint32_t count = fd.count > MAX_INSTANCES ? MAX_INSTANCES : fd.count;
+        memcpy(gInstanceBuf.contents, fd.instances, count * INSTANCE_STRIDE);
+
+        Uniforms u = {
+            .cell = {fd.cell_w, fd.cell_h},
+            .pad = {fd.pad_x, fd.pad_y},
+            .viewport = {(float)ds.width, (float)ds.height},
+        };
+
+        [enc setRenderPipelineState:gPipeline];
+        [enc setVertexBuffer:gInstanceBuf offset:0 atIndex:0];
+        [enc setVertexBytes:&u length:sizeof(u) atIndex:1];
+        [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip
+                vertexStart:0
+                vertexCount:4
+              instanceCount:count];
+    }
+
     [enc endEncoding];
     [cb presentDrawable:drawable];
     [cb commit];
@@ -59,6 +137,8 @@ void anvil_run(void) {
         gLayer.device = gDevice;
         gLayer.pixelFormat = MTLPixelFormatBGRA8Unorm;
         gLayer.framebufferOnly = YES;
+
+        buildPipeline();
 
         NSRect frame = NSMakeRect(0, 0, 800, 500);
         NSWindow *win = [[NSWindow alloc]
