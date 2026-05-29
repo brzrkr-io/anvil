@@ -7,6 +7,7 @@ const inst = @import("render/instance.zig");
 const palette = @import("render/palette.zig");
 const theme = @import("render/theme.zig");
 const cmd = @import("palette.zig");
+const config = @import("config.zig");
 
 const shader_src = @embedFile("platform/shaders.metal");
 const max_instances = 60000;
@@ -26,6 +27,42 @@ var win_h: f32 = 0;
 var ready = false;
 var cpal = cmd.Palette{};
 var overlay: [8 * 7]f32 = undefined; // up to 8 colored rects (x,y,w,h,r,g,b)
+
+var cfg_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+var cfg_path: ?[:0]const u8 = null;
+var cfg_mtime: ?i128 = null;
+
+/// `$HOME/.config/anvil/config.toml`, or null if HOME is unset.
+fn configPath() ?[:0]const u8 {
+    if (cfg_path) |p| return p;
+    const home = std.c.getenv("HOME") orelse return null;
+    const h = std.mem.span(home);
+    const p = std.fmt.bufPrintZ(&cfg_path_buf, "{s}/.config/anvil/config.toml", .{h}) catch return null;
+    cfg_path = p;
+    return p;
+}
+
+/// Load config and apply it. Records the file mtime for change detection.
+fn loadConfig() void {
+    const path = configPath() orelse return;
+    const cfg = config.load(path);
+    theme_mode = switch (cfg.theme) {
+        .system => .system,
+        .light => .light,
+        .dark => .dark,
+    };
+    cfg_mtime = config.mtime(path);
+}
+
+/// Reload config if the file changed on disk. Cheap stat, called each poll.
+fn reloadConfigIfChanged() void {
+    const path = configPath() orelse return;
+    const m = config.mtime(path) orelse return;
+    if (cfg_mtime) |prev| {
+        if (m == prev) return;
+    }
+    loadConfig();
+}
 
 fn focused() *Session {
     return mgr.focusedSession().?;
@@ -107,6 +144,7 @@ export fn anvil_resize(px_w: f32, px_h: f32) callconv(.c) void {
         const ws = workspaceRect();
         const g = renderer.paneGrid(ws.w, ws.h);
         mgr.spawnFirst(g.rows, g.cols) catch return;
+        loadConfig();
         ready = true;
         return;
     }
@@ -117,6 +155,7 @@ export fn anvil_resize(px_w: f32, px_h: f32) callconv(.c) void {
 /// exited (EOF) so the front-end can quit.
 export fn anvil_poll() callconv(.c) c_int {
     if (!ready) return 1;
+    reloadConfigIfChanged();
     var alive: c_int = 1;
     for (mgr.sessions.items) |*s| {
         if (!s.poll() and s.id == mgr.focused) alive = 0;
