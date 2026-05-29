@@ -52,6 +52,9 @@ pub const Terminal = struct {
     bracketed_paste: bool = false, // mode 2004
     cursor_style: CursorStyle = .block,
     cursor_blink: bool = true,
+    clip_buf: [2048]u8 = undefined, // pending OSC 52 clipboard write
+    clip_len: usize = 0,
+    clip_pending: bool = false,
 
     /// Window title set via OSC 0/2 (empty until the shell sets one).
     pub fn title(self: *const Terminal) []const u8 {
@@ -79,6 +82,21 @@ pub const Terminal = struct {
         const n = @min(path.len, self.cwd_buf.len);
         @memcpy(self.cwd_buf[0..n], path[0..n]);
         self.cwd_len = n;
+    }
+
+    /// Queue an OSC 52 clipboard write; the host drains it after each poll.
+    pub fn setClipboard(self: *Terminal, data: []const u8) void {
+        const n = @min(data.len, self.clip_buf.len);
+        @memcpy(self.clip_buf[0..n], data[0..n]);
+        self.clip_len = n;
+        self.clip_pending = true;
+    }
+
+    /// Return and clear a pending clipboard write, or null if none.
+    pub fn takeClipboard(self: *Terminal) ?[]const u8 {
+        if (!self.clip_pending) return null;
+        self.clip_pending = false;
+        return self.clip_buf[0..self.clip_len];
     }
 
     /// DECSCUSR: 0/1 blink block, 2 steady block, 3 blink underline,

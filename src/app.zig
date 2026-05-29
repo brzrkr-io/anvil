@@ -12,6 +12,9 @@ const search = @import("search.zig");
 const config = @import("config.zig");
 
 const shader_src = @embedFile("platform/shaders.metal");
+
+/// Write UTF-8 text to the system pasteboard (OSC 52). Implemented in shim.m.
+extern fn anvil_pasteboard_write(ptr: [*]const u8, len: usize) void;
 const max_instances = 60000;
 const max_panes = 64;
 const divider_px: f32 = 2;
@@ -179,6 +182,7 @@ export fn anvil_poll() callconv(.c) c_int {
     var alive: c_int = 1;
     for (mgr.sessions.items) |*s| {
         if (!s.poll() and s.id == mgr.focused) alive = 0;
+        if (s.term.takeClipboard()) |data| anvil_pasteboard_write(data.ptr, data.len);
     }
     return alive;
 }

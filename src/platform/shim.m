@@ -672,6 +672,16 @@ static void buildMenu(void) {
     viewItem.submenu = viewMenu;
 }
 
+// Write UTF-8 text to the system pasteboard. Called by Zig to fulfill OSC 52
+// clipboard-set requests from the running program.
+void anvil_pasteboard_write(const char *p, size_t n) {
+    NSString *str = [[NSString alloc] initWithBytes:p length:n encoding:NSUTF8StringEncoding];
+    if (!str) return;
+    NSPasteboard *pb = [NSPasteboard generalPasteboard];
+    [pb clearContents];
+    [pb setString:str forType:NSPasteboardTypeString];
+}
+
 void anvil_run(void) {
     @autoreleasepool {
         [NSApplication sharedApplication];

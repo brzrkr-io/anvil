@@ -130,6 +130,16 @@ pub const Parser = struct {
         switch (ps) {
             0, 2 => term.setTitle(pt),
             7 => term.setCwd(pt),
+            52 => { // set clipboard: Pc ; <base64>. Query ("?") is ignored.
+                const sc = std.mem.indexOfScalar(u8, pt, ';') orelse return;
+                const data = pt[sc + 1 ..];
+                if (data.len == 0 or (data.len == 1 and data[0] == '?')) return;
+                var dec: [2048]u8 = undefined;
+                const dlen = std.base64.standard.Decoder.calcSizeForSlice(data) catch return;
+                if (dlen > dec.len) return;
+                std.base64.standard.Decoder.decode(dec[0..dlen], data) catch return;
+                term.setClipboard(dec[0..dlen]);
+            },
             else => {},
         }
     }
@@ -315,6 +325,17 @@ test "bracketed paste mode toggles via 2004" {
     try std.testing.expect(t.bracketed_paste);
     p.feed(&t, "\x1b[?2004l");
     try std.testing.expect(!t.bracketed_paste);
+}
+
+test "OSC 52 sets clipboard from base64, ignores query" {
+    var t = try Terminal.init(std.testing.allocator, 1, 4);
+    defer t.deinit();
+    var p = Parser{};
+    p.feed(&t, "\x1b]52;c;aGVsbG8=\x07"); // base64("hello")
+    try std.testing.expectEqualStrings("hello", t.takeClipboard().?);
+    try std.testing.expect(t.takeClipboard() == null); // drained
+    p.feed(&t, "\x1b]52;c;?\x07"); // query: must not set anything
+    try std.testing.expect(t.takeClipboard() == null);
 }
 
 test "DECSCUSR sets cursor shape and blink" {
