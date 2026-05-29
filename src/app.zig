@@ -469,7 +469,8 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
             n += 1;
         }
     }
-    // Tab labels in the title bar: the tab number per tab, active highlighted.
+    // Tab labels in the title bar: program title (or cwd basename, or number),
+    // the active tab highlighted.
     if (mgr.tabs.items.len > 1) {
         const label_y: f32 = (bar_h - renderer.cell_h) / 2;
         var x = tab_inset_x;
@@ -478,15 +479,16 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
             const active = ti == mgr.active_tab;
             const fg4 = if (active) palette.selectionFg().f32x4() else palette.defaultFg().f32x4();
             const bg4 = if (active) palette.selectionBg().f32x4() else th.bar.f32x4();
-            var buf: [8]u8 = undefined;
-            const label = std.fmt.bufPrint(&buf, "{d}", .{ti + 1}) catch "?";
-            for (label) |ch| {
+            var buf: [128]u8 = undefined;
+            const label = tabLabel(ti, &buf);
+            var it = std.unicode.Utf8View.initUnchecked(label).iterator();
+            while (it.nextCodepoint()) |cp| {
                 instances[n] = .{
                     .x = x,
                     .y = label_y,
                     .fg = fg4,
                     .bg = bg4,
-                    .uv = renderer.atlas.uvOrigin(ch),
+                    .uv = renderer.atlas.uvOrigin(cp),
                 };
                 n += 1;
                 x += renderer.cell_w;
@@ -521,6 +523,39 @@ fn putRect(ri: usize, x: f32, y: f32, w: f32, h: f32, c: theme.Rgb) void {
     o[4] = f[0];
     o[5] = f[1];
     o[6] = f[2];
+}
+
+const tab_label_max = 16; // cells
+
+/// Final path component of `p`, or the whole string when there is no slash.
+fn basename(p: []const u8) []const u8 {
+    var i = p.len;
+    while (i > 0) : (i -= 1) {
+        if (p[i - 1] == '/') return p[i..];
+    }
+    return p;
+}
+
+/// Human label for tab `ti`: program title, else cwd basename, else the tab
+/// number. Writes UTF-8 into `buf`, capped to `tab_label_max` codepoints.
+fn tabLabel(ti: usize, buf: []u8) []const u8 {
+    const fallback = std.fmt.bufPrint(buf, "{d}", .{ti + 1}) catch "?";
+    const s = mgr.byId(mgr.tabs.items[ti].anyLeaf()) orelse return fallback;
+    const t = &s.term;
+    var src: []const u8 = t.title();
+    if (src.len == 0) src = basename(t.cwd());
+    if (src.len == 0) return fallback;
+
+    var it = std.unicode.Utf8View.initUnchecked(src).iterator();
+    var n: usize = 0;
+    var cells: usize = 0;
+    while (it.nextCodepointSlice()) |bytes| {
+        if (cells >= tab_label_max or n + bytes.len > buf.len) break;
+        @memcpy(buf[n .. n + bytes.len], bytes);
+        n += bytes.len;
+        cells += 1;
+    }
+    return buf[0..n];
 }
 
 fn putGlyph(idx: usize, x: f32, y: f32, fg: theme.Rgb, bg: theme.Rgb, ch: u8) void {
