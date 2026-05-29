@@ -13,8 +13,9 @@ pub const PendingGlyph = extern struct { cp: u32, slot: u32, wide: u32 = 0 };
 
 /// Dynamic glyph atlas. Maps each codepoint to a slot in the grid texture,
 /// rasterizing on first use (lazy). Slot 0 is the blank cell, shared by space
-/// and control codepoints. When the cache fills, further new codepoints fall
-/// back to blank — no eviction yet (LRU is a later refinement).
+/// and control codepoints. When the cache fills, it is flushed at the next
+/// frame boundary (see resetPending) so the live working set re-rasterizes
+/// instead of new codepoints degrading to blank forever.
 ///
 /// Open-addressing hash, no allocator: the table lives inline so the atlas is a
 /// plain value with comptime-zeroed buckets. `keys[i] == 0` marks an empty
@@ -97,8 +98,15 @@ pub const Atlas = struct {
 
     /// Drop the pending list. Called once at the start of each frame, before
     /// any glyph lookups, so `pending` holds only this frame's new codepoints.
+    /// If the cache is (near) full, flush it here at the frame boundary: this
+    /// frame's lookups then re-assign and re-raster the live working set, so a
+    /// churning glyph set never gets permanently stuck on the blank slot.
     pub fn resetPending(self: *Atlas) void {
         self.pending_n = 0;
+        if (self.next >= capacity - 1) {
+            self.keys = [_]u32{0} ** capacity;
+            self.next = 1;
+        }
     }
 };
 
@@ -146,13 +154,16 @@ test "resetPending clears the queue but keeps the cache" {
     try std.testing.expectEqual(@as(u16, 0), a.pending_n); // no requeue
 }
 
-test "cache full falls back to blank" {
+test "cache full falls back to blank, then flushes at frame boundary" {
     var a = Atlas{};
     // Fill every slot past 0 with distinct codepoints.
     var cp: u21 = '!';
     while (a.next < capacity) : (cp += 1) _ = a.slotFor(cp);
     try std.testing.expectEqual(capacity, a.next);
     try std.testing.expectEqual(@as(u16, 0), a.slotFor(0x10FFFF)); // overflow → blank
+    a.resetPending(); // frame boundary: cache was full, so it flushes
+    try std.testing.expectEqual(@as(u16, 1), a.next);
+    try std.testing.expectEqual(@as(u16, 1), a.slotFor(0x10FFFF)); // now allocatable
 }
 
 test "wideSlot reserves two adjacent slots in one row, cached, wide-flagged" {
