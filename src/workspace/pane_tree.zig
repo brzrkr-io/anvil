@@ -174,6 +174,26 @@ pub const PaneTree = struct {
     pub fn anyLeaf(self: *const PaneTree) usize {
         return firstLeaf(self.root);
     }
+
+    /// Collect every leaf id into `out` (size >= count()); returns the count.
+    pub fn leaves(self: *const PaneTree, out: []usize) usize {
+        var n: usize = 0;
+        leafIds(self.root, out, &n);
+        return n;
+    }
+
+    fn leafIds(node: Node, out: []usize, n: *usize) void {
+        switch (node) {
+            .leaf => |id| {
+                out[n.*] = id;
+                n.* += 1;
+            },
+            .split => |sp| {
+                leafIds(sp.a, out, n);
+                leafIds(sp.b, out, n);
+            },
+        }
+    }
 };
 
 fn leafId(node: Node) ?usize {

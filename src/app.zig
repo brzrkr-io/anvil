@@ -34,7 +34,7 @@ fn workspaceRect() pane.Rect {
 
 /// Resize every session's grid + PTY to match its current pane rect.
 fn relayout() void {
-    const tree = &(mgr.tree orelse return);
+    const tree = mgr.activeTree() orelse return;
     const n = tree.layout(workspaceRect(), divider_px, &pane_buf);
     for (pane_buf[0..n]) |p| {
         const s = mgr.byId(p.id) orelse continue;
@@ -141,7 +141,7 @@ fn contains(r: pane.Rect, x: f32, y: f32) bool {
 /// stay in the focused pane.
 export fn anvil_mouse(kind: c_int, x: f32, y: f32) callconv(.c) void {
     if (!ready) return;
-    const tree = &(mgr.tree orelse return);
+    const tree = mgr.activeTree() orelse return;
     const np = tree.layout(workspaceRect(), divider_px, &pane_buf);
     if (kind == 0) {
         for (pane_buf[0..np]) |p| {
@@ -190,6 +190,27 @@ export fn anvil_focus_dir(dir: c_int) callconv(.c) void {
     mgr.focusNeighbor(workspaceRect(), @enumFromInt(dir), &pane_buf);
 }
 
+export fn anvil_new_tab() callconv(.c) void {
+    if (!ready) return;
+    const ws = workspaceRect();
+    const g = renderer.paneGrid(ws.w, ws.h);
+    mgr.newTab(g.rows, g.cols) catch return;
+    relayout();
+}
+
+/// delta: signed tab offset, wraps.
+export fn anvil_cycle_tab(delta: c_int) callconv(.c) void {
+    if (!ready) return;
+    mgr.cycleTab(@intCast(delta));
+    relayout();
+}
+
+export fn anvil_close_tab() callconv(.c) void {
+    if (!ready) return;
+    mgr.closeTab();
+    relayout();
+}
+
 var copy_buf: [1 << 20]u8 = undefined;
 
 export fn anvil_copy(out_len: *usize) callconv(.c) [*]const u8 {
@@ -222,7 +243,7 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
     if (!ready) return;
 
     const ws = workspaceRect();
-    const tree = &(mgr.tree orelse return);
+    const tree = mgr.activeTree() orelse return;
     const np = tree.layout(ws, divider_px, &pane_buf);
     var n: usize = 0;
     for (pane_buf[0..np]) |p| {
@@ -235,6 +256,26 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
             n += 1;
         }
     }
+    // Tab labels in the title bar: a digit per tab, active one highlighted.
+    if (mgr.tabs.items.len > 1) {
+        const label_y: f32 = (bar_h - renderer.cell_h) / 2;
+        var ti: usize = 0;
+        while (ti < mgr.tabs.items.len) : (ti += 1) {
+            const active = ti == mgr.active_tab;
+            const digit: u21 = '1' + @as(u21, @intCast(@min(ti, 8)));
+            const fg4 = if (active) palette.selectionFg().f32x4() else palette.defaultFg().f32x4();
+            const bg4 = if (active) palette.selectionBg().f32x4() else th.bar.f32x4();
+            instances[n] = .{
+                .x = renderer.pad_x + @as(f32, @floatFromInt(ti)) * renderer.cell_w * 2,
+                .y = label_y,
+                .fg = fg4,
+                .bg = bg4,
+                .uv = renderer.atlas.uvOrigin(digit),
+            };
+            n += 1;
+        }
+    }
+
     out.count = @intCast(n);
     out.divider_count = @intCast(tree.dividers(ws, divider_px, &divider_rects));
 }

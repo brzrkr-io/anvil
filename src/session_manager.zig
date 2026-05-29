@@ -2,40 +2,84 @@ const std = @import("std");
 const Session = @import("session.zig").Session;
 const pane = @import("workspace/pane_tree.zig");
 
-/// Owns the live terminal sessions and their split layout, and tracks which
-/// session has focus. Every C-ABI export routes through the focused session.
+const max_panes = 64;
+
+/// Owns the live terminal sessions and the tab layouts, and tracks the active
+/// tab plus the focused session within it. Every C-ABI export routes through
+/// the focused session.
 pub const SessionManager = struct {
     alloc: std.mem.Allocator,
     sessions: std.ArrayListUnmanaged(Session) = .empty,
-    tree: ?pane.PaneTree = null,
-    focused: usize = 0, // session id
+    tabs: std.ArrayListUnmanaged(pane.PaneTree) = .empty,
+    active_tab: usize = 0,
+    focused: usize = 0, // session id within the active tab
     next_id: usize = 0,
 
     pub fn deinit(self: *SessionManager) void {
         for (self.sessions.items) |*s| s.deinit();
         self.sessions.deinit(self.alloc);
-        if (self.tree) |*t| t.deinit();
+        for (self.tabs.items) |*t| t.deinit();
+        self.tabs.deinit(self.alloc);
     }
 
-    /// Spawn the first session and seed the pane tree.
+    pub fn activeTree(self: *SessionManager) ?*pane.PaneTree {
+        if (self.active_tab >= self.tabs.items.len) return null;
+        return &self.tabs.items[self.active_tab];
+    }
+
+    /// Spawn the first session and seed the first tab.
     pub fn spawnFirst(self: *SessionManager, rows: u16, cols: u16) !void {
         const id = try self.add(rows, cols);
-        self.tree = pane.PaneTree.init(self.alloc, id);
+        try self.tabs.append(self.alloc, pane.PaneTree.init(self.alloc, id));
+        self.active_tab = 0;
         self.focused = id;
+    }
+
+    /// Open a new tab with a fresh session, made active.
+    pub fn newTab(self: *SessionManager, rows: u16, cols: u16) !void {
+        const id = try self.add(rows, cols);
+        try self.tabs.append(self.alloc, pane.PaneTree.init(self.alloc, id));
+        self.active_tab = self.tabs.items.len - 1;
+        self.focused = id;
+    }
+
+    /// Move to another tab by signed offset, wrapping. Focus follows.
+    pub fn cycleTab(self: *SessionManager, delta: i32) void {
+        const n = self.tabs.items.len;
+        if (n == 0) return;
+        const cur: i64 = @intCast(self.active_tab);
+        const nx = @mod(cur + delta, @as(i64, @intCast(n)));
+        self.active_tab = @intCast(nx);
+        self.focused = self.activeTree().?.anyLeaf();
+    }
+
+    /// Close the active tab, killing its sessions. No-op on the last tab.
+    pub fn closeTab(self: *SessionManager) void {
+        if (self.tabs.items.len <= 1) return;
+        var tree = self.tabs.orderedRemove(self.active_tab);
+        var ids: [max_panes]usize = undefined;
+        const n = tree.leaves(&ids);
+        for (ids[0..n]) |id| self.removeSession(id);
+        tree.deinit();
+        if (self.active_tab >= self.tabs.items.len) self.active_tab = self.tabs.items.len - 1;
+        self.focused = self.activeTree().?.anyLeaf();
     }
 
     /// Split the focused pane along `axis`; the new session takes focus.
     pub fn splitFocused(self: *SessionManager, axis: pane.Axis, rows: u16, cols: u16) !void {
-        var tree = &(self.tree orelse return);
+        const tree = self.activeTree() orelse return;
         const id = try self.add(rows, cols);
         try tree.split(self.focused, axis, id);
         self.focused = id;
     }
 
-    /// Close the focused pane, collapsing the layout. No-op on the last pane.
+    /// Close the focused pane. If it is the tab's last pane, close the tab.
     pub fn closeFocused(self: *SessionManager) void {
-        var tree = &(self.tree orelse return);
-        if (tree.count() <= 1) return;
+        const tree = self.activeTree() orelse return;
+        if (tree.count() <= 1) {
+            self.closeTab();
+            return;
+        }
         const dead = self.focused;
         tree.close(dead);
         self.focused = tree.anyLeaf();
@@ -44,7 +88,7 @@ pub const SessionManager = struct {
 
     /// Move focus to the nearest pane in `dir` within `rect` (device px).
     pub fn focusNeighbor(self: *SessionManager, rect: pane.Rect, dir: pane.Dir, buf: []pane.PaneRect) void {
-        const tree = &(self.tree orelse return);
+        const tree = self.activeTree() orelse return;
         if (tree.neighbor(rect, self.focused, dir, buf)) |id| self.focused = id;
     }
 
@@ -83,23 +127,23 @@ pub const SessionManager = struct {
     }
 };
 
-test "spawnFirst seeds one focused session and tree" {
+test "spawnFirst seeds one tab, session, and focus" {
     var mgr = SessionManager{ .alloc = std.testing.allocator };
     defer mgr.deinit();
     try mgr.spawnFirst(24, 80);
     try std.testing.expectEqual(@as(usize, 1), mgr.count());
+    try std.testing.expectEqual(@as(usize, 1), mgr.tabs.items.len);
     try std.testing.expect(mgr.focusedSession() != null);
-    try std.testing.expectEqual(@as(usize, 1), mgr.tree.?.count());
 }
 
-test "splitFocused adds a pane and shifts focus" {
+test "splitFocused adds a pane in the active tab and shifts focus" {
     var mgr = SessionManager{ .alloc = std.testing.allocator };
     defer mgr.deinit();
     try mgr.spawnFirst(24, 80);
     const first = mgr.focused;
     try mgr.splitFocused(.x, 24, 40);
     try std.testing.expectEqual(@as(usize, 2), mgr.count());
-    try std.testing.expectEqual(@as(usize, 2), mgr.tree.?.count());
+    try std.testing.expectEqual(@as(usize, 2), mgr.activeTree().?.count());
     try std.testing.expect(mgr.focused != first);
 }
 
@@ -114,10 +158,37 @@ test "closeFocused removes the pane and re-homes focus" {
     try std.testing.expectEqual(first, mgr.focused);
 }
 
-test "closeFocused is a no-op on the last pane" {
+test "newTab opens and focuses a second tab" {
     var mgr = SessionManager{ .alloc = std.testing.allocator };
     defer mgr.deinit();
     try mgr.spawnFirst(24, 80);
-    mgr.closeFocused();
+    try mgr.newTab(24, 80);
+    try std.testing.expectEqual(@as(usize, 2), mgr.tabs.items.len);
+    try std.testing.expectEqual(@as(usize, 1), mgr.active_tab);
+    try std.testing.expectEqual(@as(usize, 2), mgr.count());
+}
+
+test "cycleTab wraps and follows focus" {
+    var mgr = SessionManager{ .alloc = std.testing.allocator };
+    defer mgr.deinit();
+    try mgr.spawnFirst(24, 80);
+    const tab0_focus = mgr.focused;
+    try mgr.newTab(24, 80);
+    mgr.cycleTab(1); // wrap back to tab 0
+    try std.testing.expectEqual(@as(usize, 0), mgr.active_tab);
+    try std.testing.expectEqual(tab0_focus, mgr.focused);
+}
+
+test "closeTab kills its sessions and keeps at least one tab" {
+    var mgr = SessionManager{ .alloc = std.testing.allocator };
+    defer mgr.deinit();
+    try mgr.spawnFirst(24, 80);
+    try mgr.newTab(24, 80);
+    try mgr.splitFocused(.x, 24, 40); // tab 1 has two panes
+    try std.testing.expectEqual(@as(usize, 3), mgr.count());
+    mgr.closeTab(); // closes active tab 1 (two sessions)
+    try std.testing.expectEqual(@as(usize, 1), mgr.tabs.items.len);
     try std.testing.expectEqual(@as(usize, 1), mgr.count());
+    mgr.closeTab(); // no-op on last tab
+    try std.testing.expectEqual(@as(usize, 1), mgr.tabs.items.len);
 }

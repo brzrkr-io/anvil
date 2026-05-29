@@ -49,6 +49,9 @@ extern void anvil_mouse(int kind, float x, float y);
 extern void anvil_split(int axis);
 extern void anvil_close_pane(void);
 extern void anvil_focus_dir(int dir);
+extern void anvil_new_tab(void);
+extern void anvil_cycle_tab(int delta);
+extern void anvil_close_tab(void);
 extern const char *anvil_copy(size_t *out_len);
 extern void anvil_set_theme_mode(int mode);
 extern void anvil_set_os_dark(int is_dark);
@@ -215,6 +218,14 @@ static void render(void) {
     id<MTLCommandBuffer> cb = [gQueue commandBuffer];
     id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
 
+    // Title bar first, so tab-label cells (which sit inside the bar) overlay it.
+    if (gSolidPipeline && fd.bar_h > 0) {
+        drawSolid(enc, ds, 0, 0, (float)ds.width, fd.bar_h,
+                  fd.bar_color[0], fd.bar_color[1], fd.bar_color[2], 1.0f);
+        drawSolid(enc, ds, 0, fd.bar_h - 1, (float)ds.width, 1,
+                  fd.sep_color[0], fd.sep_color[1], fd.sep_color[2], 1.0f);
+    }
+
     if (gPipeline && fd.count > 0) {
         uint32_t count = fd.count > MAX_INSTANCES ? MAX_INSTANCES : fd.count;
         memcpy(gInstanceBuf.contents, fd.instances, count * INSTANCE_STRIDE);
@@ -235,12 +246,6 @@ static void render(void) {
               instanceCount:count];
     }
 
-    if (gSolidPipeline && fd.bar_h > 0) {
-        drawSolid(enc, ds, 0, 0, (float)ds.width, fd.bar_h,
-                  fd.bar_color[0], fd.bar_color[1], fd.bar_color[2], 1.0f);
-        drawSolid(enc, ds, 0, fd.bar_h - 1, (float)ds.width, 1,
-                  fd.sep_color[0], fd.sep_color[1], fd.sep_color[2], 1.0f);
-    }
     if (gSolidPipeline) {
         for (uint32_t i = 0; i < fd.divider_count; i++) {
             const float *d = fd.dividers + i * 4;
@@ -291,6 +296,12 @@ void anvil_dump(const char *path, uint32_t w, uint32_t h) {
 
         id<MTLCommandBuffer> cb = [gQueue commandBuffer];
         id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
+        if (gSolidPipeline && fd.bar_h > 0) {
+            drawSolid(enc, CGSizeMake(w, h), 0, 0, (float)w, fd.bar_h,
+                      fd.bar_color[0], fd.bar_color[1], fd.bar_color[2], 1.0f);
+            drawSolid(enc, CGSizeMake(w, h), 0, fd.bar_h - 1, (float)w, 1,
+                      fd.sep_color[0], fd.sep_color[1], fd.sep_color[2], 1.0f);
+        }
         if (gPipeline && fd.count > 0) {
             uint32_t count = fd.count > MAX_INSTANCES ? MAX_INSTANCES : fd.count;
             memcpy(gInstanceBuf.contents, fd.instances, count * INSTANCE_STRIDE);
@@ -305,12 +316,6 @@ void anvil_dump(const char *path, uint32_t w, uint32_t h) {
             [enc setFragmentTexture:gAtlas atIndex:0];
             [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip
                     vertexStart:0 vertexCount:4 instanceCount:count];
-        }
-        if (gSolidPipeline && fd.bar_h > 0) {
-            drawSolid(enc, CGSizeMake(w, h), 0, 0, (float)w, fd.bar_h,
-                      fd.bar_color[0], fd.bar_color[1], fd.bar_color[2], 1.0f);
-            drawSolid(enc, CGSizeMake(w, h), 0, fd.bar_h - 1, (float)w, 1,
-                      fd.sep_color[0], fd.sep_color[1], fd.sep_color[2], 1.0f);
         }
         if (gSolidPipeline) {
             for (uint32_t i = 0; i < fd.divider_count; i++) {
@@ -434,11 +439,14 @@ static void layoutTrafficLights(NSWindow *win) {
                 case NSDownArrowFunctionKey:  anvil_focus_dir(3); return;
             }
         }
+        if (ch == ']' || ch == '}') { anvil_cycle_tab(1); return; }
+        if (ch == '[' || ch == '{') { anvil_cycle_tab(-1); return; }
         unichar lc = (ch >= 'A' && ch <= 'Z') ? ch + 32 : ch;
         if (lc == 'c') [self copySelection];
         else if (lc == 'v') [self pasteClipboard];
         else if (lc == 'd') anvil_split(shift ? 1 : 0);
-        else if (lc == 'w') anvil_close_pane();
+        else if (lc == 't') anvil_new_tab();
+        else if (lc == 'w') { if (shift) anvil_close_tab(); else anvil_close_pane(); }
         return;
     }
     if (s.length == 1) {
