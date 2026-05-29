@@ -1,0 +1,56 @@
+# Anvil Zig Guide
+
+Learning index for the ground-up Zig rewrite. Terminal-first, Ghostty-style.
+Zig 0.16.0. Old Rust port is archived on branch `rust-port` + tag
+`rust-port-archive`.
+
+## Build & run
+
+```sh
+zig build          # compile -> zig-out/bin/anvil
+zig build run      # compile + run (live shell in your terminal)
+zig build test     # run all test blocks
+```
+
+## Layout
+
+| File | Job |
+|------|-----|
+| [build.zig](../build.zig) | Build graph: the `anvil` core module, the exe, `run` + `test` steps. |
+| [build.zig.zon](../build.zig.zon) | Package manifest (name, version, deps). |
+| [src/main.zig](../src/main.zig) | Entry point. Raw-mode passthrough loop: keyboard → shell, shell → screen. |
+| [src/root.zig](../src/root.zig) | The reusable terminal-core module (`@import("anvil")`). Re-exports `Pty`. VT parser + grid land here. |
+| [src/pty.zig](../src/pty.zig) | `Pty`: spawn `$SHELL` on a pty via `forkpty`, resize, teardown. The spine. |
+
+Core logic (root.zig) is kept separate from the front-end (main.zig) on
+purpose — M2's window/render will consume the core, same as Ghostty's libghostty.
+
+## Zig concepts so far
+
+- **Modules**: `b.addModule` exposes the core; the exe imports it as `anvil`.
+  A module = source files + compile options (target, `link_libc`).
+- **`@cImport` / `@cInclude`**: pull C headers straight in, no bindings layer.
+  We call `forkpty`, `termios`, `ioctl`, `read`/`write` directly. This is the
+  reason Zig fits a terminal: the OS is one include away.
+- **`link_libc = true`**: required on a module for those C symbols to link.
+- **Error unions (`!T`)** + `try` / `catch`: `spawn` returns `!Pty`; the loop
+  uses `catch break` to bail on I/O errors.
+- **`defer`**: cleanup that runs on scope exit — restoring termios, `pty.deinit()`.
+- **`@intCast` / `@ptrCast`**: explicit conversions between C ints/pointers and
+  Zig types. Zig never converts silently.
+- **`test "..." { ... }`** blocks: live next to the code, run by `zig build test`.
+
+## Gotcha: std.posix is mid-migration
+
+Zig 0.16 is moving to a new `std.Io` model. `std.posix.read` exists but
+`write` / `close` / `getenv` were removed. So raw I/O goes through libc
+(`c.read`, `c.write`, `c.close`, `c.getenv`, `c.kill`) for now. Revert to
+`std.posix` once Zig finishes the migration. `poll` still comes from `std.posix`.
+
+## Roadmap
+
+- **M0 — PTY passthrough** ✅ A real shell runs on the pty; bytes shuttle both ways.
+- **M1 — VT core** parser (escape sequences) + cell grid + scrollback. Pure,
+  unit-tested, no rendering.
+- **M2 — Window + render** AppKit `NSWindow` + `CAMetalLayer`, draw the grid,
+  wire input to the pty. First on-screen native terminal.
