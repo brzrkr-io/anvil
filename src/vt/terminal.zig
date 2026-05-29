@@ -84,6 +84,11 @@ pub const Terminal = struct {
     marks: [256]Mark = undefined,
     marks_start: usize = 0,
     marks_n: usize = 0,
+    // Command timing for completion notifications (OSC 133 C/D).
+    cmd_start_ns: u64 = 0,
+    notify_pending: bool = false,
+    notify_exit: u16 = 0,
+    notify_elapsed_s: u64 = 0,
     // OSC 8 hyperlink table. link id 0 = no link; ids 1..links_n index here.
     // Capped at 256 entries; new URIs past the cap are silently ignored.
     link_uris: [256][256]u8 = undefined,
@@ -166,11 +171,19 @@ pub const Terminal = struct {
         return self.clip_buf[0..self.clip_len];
     }
 
-    /// OSC 133 shell-integration mark. Only the prompt-start mark ('A') is
-    /// recorded; the rest (B/C/D) are accepted and ignored. The mark stores the
-    /// absolute id of the cursor's current line so jumps survive scrollback
-    /// eviction.
+    fn monoNs() u64 {
+        var ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(.MONOTONIC, &ts);
+        return @as(u64, @intCast(ts.sec)) * 1_000_000_000 + @as(u64, @intCast(ts.nsec));
+    }
+
+    /// OSC 133 shell-integration mark. Prompt-start ('A') is recorded for jumps;
+    /// command-start ('C') captures wall-clock time for completion notifications.
     pub fn shellMark(self: *Terminal, kind: u8) void {
+        if (kind == 'C') {
+            self.cmd_start_ns = monoNs();
+            return;
+        }
         if (kind != 'A') return;
         const abs = self.scrollback.pushed + self.cy;
         // Coalesce: a prompt redraw can re-emit 'A' on the same line.
@@ -185,11 +198,42 @@ pub const Terminal = struct {
         }
     }
 
-    /// OSC 133 command-end. Stamp the most recent run with its exit status.
+    /// OSC 133 command-end. Stamp the most recent run with its exit status and,
+    /// when a command-start was seen and elapsed >= notify_threshold_s, set the
+    /// notification pending flag for the host to drain.
     pub fn commandEnd(self: *Terminal, exit_code: u16) void {
         if (self.marks_n == 0) return;
         const i = (self.marks_start + self.marks_n - 1) % self.marks.len;
         self.marks[i].state = if (exit_code == 0) .ok else .fail;
+        if (self.cmd_start_ns != 0) {
+            const now = monoNs();
+            const elapsed_ns = now -% self.cmd_start_ns;
+            const elapsed_s = elapsed_ns / std.time.ns_per_s;
+            if (elapsed_s >= notify_threshold_s) {
+                self.notify_pending = true;
+                self.notify_exit = exit_code;
+                self.notify_elapsed_s = elapsed_s;
+            }
+            self.cmd_start_ns = 0;
+        }
+    }
+
+    /// Threshold (seconds) for command-completion notifications.
+    pub const notify_threshold_s: u64 = 10;
+
+    /// Returns true when `elapsed_s` and `is_active` together warrant a notification.
+    /// Pure function — no system calls; used by unit tests.
+    pub fn shouldNotify(elapsed_s: u64, is_active: bool) bool {
+        return elapsed_s >= notify_threshold_s and !is_active;
+    }
+
+    /// Drain a pending completion notification. Returns the payload when one
+    /// is waiting; clears the flag. Caller must check `shouldNotify` with the
+    /// current app-active state before posting.
+    pub fn takeNotify(self: *Terminal) ?struct { exit: u16, elapsed_s: u64 } {
+        if (!self.notify_pending) return null;
+        self.notify_pending = false;
+        return .{ .exit = self.notify_exit, .elapsed_s = self.notify_elapsed_s };
     }
 
     pub fn markAt(self: *const Terminal, i: usize) Mark {
@@ -325,6 +369,10 @@ pub const Terminal = struct {
         self.clip_pending = false;
         self.marks_start = 0;
         self.marks_n = 0;
+        self.cmd_start_ns = 0;
+        self.notify_pending = false;
+        self.notify_exit = 0;
+        self.notify_elapsed_s = 0;
         self.links_n = 0;
         self.cur_link = 0;
     }
@@ -1238,6 +1286,27 @@ test "insertLines and deleteLines act within the region" {
     try std.testing.expectEqual(@as(u21, 'a'), t.grid.at(2, 0).cp);
     t.deleteLines(1); // remove row 1, pull a back up
     try std.testing.expectEqual(@as(u21, 'a'), t.grid.at(1, 0).cp);
+}
+
+test "shouldNotify: requires elapsed >= threshold and app not active" {
+    try std.testing.expect(!Terminal.shouldNotify(5, false)); // short run
+    try std.testing.expect(!Terminal.shouldNotify(10, true)); // long but app focused
+    try std.testing.expect(Terminal.shouldNotify(10, false)); // long + background
+    try std.testing.expect(Terminal.shouldNotify(42, false)); // long failure case
+}
+
+test "takeNotify: set and drain a pending notification" {
+    var t = try Terminal.init(std.testing.allocator, 2, 10);
+    defer t.deinit();
+    try std.testing.expect(t.takeNotify() == null); // nothing pending
+    t.notify_pending = true;
+    t.notify_exit = 1;
+    t.notify_elapsed_s = 15;
+    const n = t.takeNotify();
+    try std.testing.expect(n != null);
+    try std.testing.expectEqual(@as(u16, 1), n.?.exit);
+    try std.testing.expectEqual(@as(u64, 15), n.?.elapsed_s);
+    try std.testing.expect(t.takeNotify() == null); // cleared after drain
 }
 
 test "commandEnd sets the last mark's run state from the exit code" {

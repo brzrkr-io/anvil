@@ -6,6 +6,7 @@
 #import <CoreGraphics/CoreGraphics.h>
 #import <ImageIO/ImageIO.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import <UserNotifications/UserNotifications.h>
 #import <unistd.h>
 
 typedef struct {
@@ -767,6 +768,47 @@ static void buildMenu(void) {
     themeItem.submenu = themeMenu;
     [viewMenu addItem:themeItem];
     viewItem.submenu = viewMenu;
+}
+
+// Post a macOS user notification when the app is not frontmost. Requires the
+// bundled app (io.brzrkr.anvil); no-op when running unbundled so --dump never
+// crashes. Authorization is requested once per launch; subsequent calls are
+// fire-and-forget.
+static BOOL gNotifyAuthorized = NO;
+static BOOL gNotifyRequested = NO;
+
+void anvil_notify(const char *title, const char *body) {
+    if ([NSApp isActive]) return;
+
+    // Only works in a properly bundled app; bail out if there is no bundle id.
+    NSString *bundleId = [[NSBundle mainBundle] bundleIdentifier];
+    if (!bundleId) return;
+
+    UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
+
+    if (!gNotifyRequested) {
+        gNotifyRequested = YES;
+        [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound)
+                              completionHandler:^(BOOL granted, NSError *err) {
+            (void)err;
+            gNotifyAuthorized = granted;
+        }];
+        // Return now; the authorization callback fires asynchronously. The next
+        // completed-command event (if any) will reach the authorized path.
+        return;
+    }
+
+    if (!gNotifyAuthorized) return;
+
+    UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
+    content.title = [NSString stringWithUTF8String:title];
+    content.body  = [NSString stringWithUTF8String:body];
+
+    NSString *ident = [NSString stringWithFormat:@"anvil.cmd.%f", [NSDate timeIntervalSinceReferenceDate]];
+    UNNotificationRequest *req = [UNNotificationRequest requestWithIdentifier:ident
+                                                                      content:content
+                                                                      trigger:nil];
+    [center addNotificationRequest:req withCompletionHandler:nil];
 }
 
 // Write UTF-8 text to the system pasteboard. Called by Zig to fulfill OSC 52

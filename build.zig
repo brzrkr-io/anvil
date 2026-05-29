@@ -37,6 +37,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.linkFramework("CoreGraphics", .{});
     exe.root_module.linkFramework("ImageIO", .{});
     exe.root_module.linkFramework("UniformTypeIdentifiers", .{});
+    exe.root_module.linkFramework("UserNotifications", .{});
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);

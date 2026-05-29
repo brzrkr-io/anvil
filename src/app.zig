@@ -19,6 +19,9 @@ const icon_data = @embedFile("app_icon_png");
 
 /// Write UTF-8 text to the system pasteboard (OSC 52). Implemented in shim.m.
 extern fn anvil_pasteboard_write(ptr: [*]const u8, len: usize) void;
+/// Post a macOS user notification. Implemented in shim.m; no-op when unbundled
+/// or when the app is frontmost. Title and body are null-terminated UTF-8.
+extern fn anvil_notify(title: [*:0]const u8, body: [*:0]const u8) void;
 const max_instances = 60000;
 const max_panes = 64;
 const divider_px: f32 = 2;
@@ -269,6 +272,16 @@ export fn anvil_poll() callconv(.c) c_int {
             }
         }
         if (s.term.takeClipboard()) |data| anvil_pasteboard_write(data.ptr, data.len);
+        if (s.term.takeNotify()) |n| {
+            var title_buf: [64]u8 = undefined;
+            var body_buf: [64]u8 = undefined;
+            const title_s = std.fmt.bufPrintZ(&title_buf, "Command finished", .{}) catch continue;
+            const body_s = if (n.exit == 0)
+                std.fmt.bufPrintZ(&body_buf, "exit 0 after {d}s", .{n.elapsed_s}) catch continue
+            else
+                std.fmt.bufPrintZ(&body_buf, "exit {d} after {d}s", .{ n.exit, n.elapsed_s }) catch continue;
+            anvil_notify(title_s, body_s);
+        }
     }
     return if (any_alive) 1 else 0;
 }
