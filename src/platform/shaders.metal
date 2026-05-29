@@ -11,9 +11,9 @@ struct Uniforms {
 struct Instance {
     float col;
     float row;
-    float4 fg;
-    float4 bg;
-    float2 uv;
+    packed_float4 fg;
+    packed_float4 bg;
+    packed_float2 uv;
 };
 
 struct VOut {
