@@ -1,53 +1,41 @@
 const std = @import("std");
 const Color = @import("../vt/cell.zig").Color;
+const theme = @import("theme.zig");
 
-pub const Rgb = struct {
-    r: u8,
-    g: u8,
-    b: u8,
+pub const Rgb = theme.Rgb;
 
-    pub fn f32x4(self: Rgb) [4]f32 {
-        return .{
-            @as(f32, @floatFromInt(self.r)) / 255.0,
-            @as(f32, @floatFromInt(self.g)) / 255.0,
-            @as(f32, @floatFromInt(self.b)) / 255.0,
-            1.0,
-        };
-    }
-};
+var active: *const theme.Theme = &theme.mineral_dark;
 
-pub const default_fg = Rgb{ .r = 229, .g = 229, .b = 229 };
-pub const default_bg = Rgb{ .r = 13, .g = 15, .b = 20 };
+pub fn setActive(t: *const theme.Theme) void {
+    active = t;
+}
 
-const ansi16 = [16]Rgb{
-    .{ .r = 0, .g = 0, .b = 0 },
-    .{ .r = 205, .g = 0, .b = 0 },
-    .{ .r = 0, .g = 205, .b = 0 },
-    .{ .r = 205, .g = 205, .b = 0 },
-    .{ .r = 0, .g = 0, .b = 238 },
-    .{ .r = 205, .g = 0, .b = 205 },
-    .{ .r = 0, .g = 205, .b = 205 },
-    .{ .r = 229, .g = 229, .b = 229 },
-    .{ .r = 127, .g = 127, .b = 127 },
-    .{ .r = 255, .g = 0, .b = 0 },
-    .{ .r = 0, .g = 255, .b = 0 },
-    .{ .r = 255, .g = 255, .b = 0 },
-    .{ .r = 92, .g = 92, .b = 255 },
-    .{ .r = 255, .g = 0, .b = 255 },
-    .{ .r = 0, .g = 255, .b = 255 },
-    .{ .r = 255, .g = 255, .b = 255 },
-};
+pub fn defaultFg() Rgb {
+    return active.fg;
+}
+
+pub fn defaultBg() Rgb {
+    return active.bg;
+}
+
+pub fn selectionBg() Rgb {
+    return active.sel_bg;
+}
+
+pub fn selectionFg() Rgb {
+    return active.sel_fg;
+}
 
 pub fn resolve(c: Color, is_fg: bool) Rgb {
     return switch (c) {
-        .default => if (is_fg) default_fg else default_bg,
+        .default => if (is_fg) active.fg else active.bg,
         .indexed => |i| indexed(i),
         .rgb => |v| .{ .r = v.r, .g = v.g, .b = v.b },
     };
 }
 
 pub fn indexed(i: u8) Rgb {
-    if (i < 16) return ansi16[i];
+    if (i < 16) return active.ansi[i];
     if (i < 232) {
         const n = i - 16;
         return .{ .r = cube(n / 36), .g = cube(n / 6 % 6), .b = cube(n % 6) };
@@ -61,13 +49,20 @@ fn cube(n: u8) u8 {
 }
 
 test "default fg/bg differ by role" {
-    try std.testing.expectEqual(default_fg, resolve(.default, true));
-    try std.testing.expectEqual(default_bg, resolve(.default, false));
+    try std.testing.expectEqual(theme.mineral_dark.fg, resolve(.default, true));
+    try std.testing.expectEqual(theme.mineral_dark.bg, resolve(.default, false));
 }
 
-test "indexed 0-15 hit the ansi table" {
-    try std.testing.expectEqual(ansi16[1], resolve(.{ .indexed = 1 }, true));
-    try std.testing.expectEqual(ansi16[15], indexed(15));
+test "indexed 0-15 hit the active ansi table" {
+    try std.testing.expectEqual(theme.mineral_dark.ansi[1], resolve(.{ .indexed = 1 }, true));
+    try std.testing.expectEqual(theme.mineral_dark.ansi[15], indexed(15));
+}
+
+test "setActive switches the resolved palette" {
+    setActive(&theme.mineral_light);
+    defer setActive(&theme.mineral_dark);
+    try std.testing.expectEqual(theme.mineral_light.bg, resolve(.default, false));
+    try std.testing.expectEqual(theme.mineral_light.ansi[2], indexed(2));
 }
 
 test "256 color cube" {

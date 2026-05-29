@@ -17,4 +17,5 @@ test {
     _ = @import("render/palette.zig");
     _ = @import("render/renderer.zig");
     _ = @import("render/atlas.zig");
+    _ = @import("render/theme.zig");
 }

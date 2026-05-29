@@ -44,9 +44,8 @@ pub const Renderer = struct {
                     bg = t;
                 }
                 if (term.isSelected(r, c)) {
-                    const t = fg;
-                    fg = bg;
-                    bg = t;
+                    fg = palette.selectionFg();
+                    bg = palette.selectionBg();
                 }
                 out[n] = .{
                     .col = @floatFromInt(c),
@@ -130,8 +129,8 @@ test "cursorInstance swaps colors at the cursor cell" {
     try std.testing.expectEqual(@as(f32, 1), ci.col);
     try std.testing.expectEqual(@as(f32, 0), ci.row);
     // blank cell under cursor: fg=default_fg, bg=default_bg, swapped on the cursor
-    try std.testing.expectEqual(palette.default_fg.f32x4(), ci.bg);
-    try std.testing.expectEqual(palette.default_bg.f32x4(), ci.fg);
+    try std.testing.expectEqual(palette.defaultFg().f32x4(), ci.bg);
+    try std.testing.expectEqual(palette.defaultBg().f32x4(), ci.fg);
 }
 
 test "cursorInstance clamps cursor past last column" {
@@ -151,6 +150,6 @@ test "buildInstances swaps fg/bg on reverse" {
     const rd = Renderer{ .cell_w = 10, .cell_h = 20, .pad_x = 0, .pad_y = 0 };
     var buf: [1]CellInstance = undefined;
     _ = rd.buildInstances(&t, &buf);
-    try std.testing.expectEqual(palette.default_bg.f32x4(), buf[0].fg);
-    try std.testing.expectEqual(palette.default_fg.f32x4(), buf[0].bg);
+    try std.testing.expectEqual(palette.defaultBg().f32x4(), buf[0].fg);
+    try std.testing.expectEqual(palette.defaultFg().f32x4(), buf[0].bg);
 }

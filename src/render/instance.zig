@@ -17,4 +17,7 @@ pub const FrameData = extern struct {
     pad_y: f32,
     cell_uv: [2]f32,
     bar_h: f32, // title-bar height in device pixels
+    bg: [3]f32, // canvas clear color
+    bar_color: [3]f32,
+    sep_color: [3]f32,
 };

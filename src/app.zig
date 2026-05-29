@@ -4,6 +4,8 @@ const Parser = @import("vt/parser.zig").Parser;
 const Pty = @import("pty.zig").Pty;
 const Renderer = @import("render/renderer.zig").Renderer;
 const inst = @import("render/instance.zig");
+const palette = @import("render/palette.zig");
+const theme = @import("render/theme.zig");
 
 const shader_src = @embedFile("platform/shaders.metal");
 const max_instances = 60000;
@@ -17,6 +19,34 @@ var renderer = Renderer{ .cell_w = 16, .cell_h = 32, .pad_x = 8, .pad_y = bar_h 
 var instances: [max_instances]inst.CellInstance = undefined;
 var ready = false;
 var spawned = false;
+
+const ThemeMode = enum(c_int) { system = 0, light = 1, dark = 2 };
+var theme_mode: ThemeMode = .system;
+var os_dark: bool = true;
+
+fn effectiveDark() bool {
+    return switch (theme_mode) {
+        .system => os_dark,
+        .light => false,
+        .dark => true,
+    };
+}
+
+fn activeTheme() *const theme.Theme {
+    return if (effectiveDark()) &theme.mineral_dark else &theme.mineral_light;
+}
+
+export fn anvil_set_theme_mode(m: c_int) callconv(.c) void {
+    theme_mode = @enumFromInt(m);
+}
+
+export fn anvil_set_os_dark(d: c_int) callconv(.c) void {
+    os_dark = d != 0;
+}
+
+export fn anvil_theme_is_dark() callconv(.c) c_int {
+    return if (effectiveDark()) 1 else 0;
+}
 
 const AtlasParams = extern struct {
     first: u32,
@@ -114,8 +144,11 @@ export fn anvil_copy(out_len: *usize) callconv(.c) [*]const u8 {
 }
 
 export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
+    const th = activeTheme();
+    palette.setActive(th);
     if (!ready) {
         out.count = 0;
+        out.bg = th.bg.f32x3();
         return;
     }
     var n = renderer.buildInstances(&term, instances[0..]);
@@ -132,5 +165,8 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
         .pad_y = renderer.pad_y,
         .cell_uv = renderer.atlas.cellUV(),
         .bar_h = bar_h,
+        .bg = th.bg.f32x3(),
+        .bar_color = th.bar.f32x3(),
+        .sep_color = th.separator.f32x3(),
     };
 }

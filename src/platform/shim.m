@@ -13,6 +13,9 @@ typedef struct {
     float cell_w, cell_h, pad_x, pad_y;
     float cell_uv[2];
     float bar_h;
+    float bg[3];
+    float bar_color[3];
+    float sep_color[3];
 } FrameData;
 
 typedef struct {
@@ -43,6 +46,9 @@ extern void anvil_input(const char *bytes, size_t len);
 extern void anvil_scroll(int delta);
 extern void anvil_mouse(int kind, float x, float y);
 extern const char *anvil_copy(size_t *out_len);
+extern void anvil_set_theme_mode(int mode);
+extern void anvil_set_os_dark(int is_dark);
+extern int anvil_theme_is_dark(void);
 
 #define INSTANCE_STRIDE (12 * sizeof(float))
 #define MAX_INSTANCES 60000
@@ -57,6 +63,22 @@ static id<MTLBuffer> gInstanceBuf;
 static id<MTLTexture> gAtlas;
 static CAMetalLayer *gLayer;
 static double gLastW, gLastH;
+static NSWindow *gWindow;
+static void layoutTrafficLights(NSWindow *win);
+
+static BOOL osIsDark(void) {
+    NSString *style = [[NSUserDefaults standardUserDefaults] stringForKey:@"AppleInterfaceStyle"];
+    return [style isEqualToString:@"Dark"];
+}
+
+// Sync the window's native appearance (traffic lights, vibrancy) to the theme.
+static void applyAppearance(void) {
+    if (!gWindow) return;
+    BOOL dark = anvil_theme_is_dark() != 0;
+    gWindow.appearance = [NSAppearance appearanceNamed:dark ? NSAppearanceNameDarkAqua
+                                                            : NSAppearanceNameAqua];
+    layoutTrafficLights(gWindow);
+}
 
 static void buildPipeline(void) {
     size_t len = 0;
@@ -184,7 +206,7 @@ static void render(void) {
     rp.colorAttachments[0].texture = drawable.texture;
     rp.colorAttachments[0].loadAction = MTLLoadActionClear;
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
-    rp.colorAttachments[0].clearColor = MTLClearColorMake(0.05, 0.06, 0.08, 1.0);
+    rp.colorAttachments[0].clearColor = MTLClearColorMake(fd.bg[0], fd.bg[1], fd.bg[2], 1.0);
 
     id<MTLCommandBuffer> cb = [gQueue commandBuffer];
     id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
@@ -211,8 +233,10 @@ static void render(void) {
     }
 
     if (gSolidPipeline && fd.bar_h > 0) {
-        drawSolid(enc, ds, 0, 0, (float)ds.width, fd.bar_h, 0.09f, 0.10f, 0.13f, 1.0f);
-        drawSolid(enc, ds, 0, fd.bar_h - 1, (float)ds.width, 1, 0.20f, 0.22f, 0.27f, 1.0f);
+        drawSolid(enc, ds, 0, 0, (float)ds.width, fd.bar_h,
+                  fd.bar_color[0], fd.bar_color[1], fd.bar_color[2], 1.0f);
+        drawSolid(enc, ds, 0, fd.bar_h - 1, (float)ds.width, 1,
+                  fd.sep_color[0], fd.sep_color[1], fd.sep_color[2], 1.0f);
     }
 
     [enc endEncoding];
@@ -253,7 +277,7 @@ void anvil_dump(const char *path, uint32_t w, uint32_t h) {
         rp.colorAttachments[0].texture = tex;
         rp.colorAttachments[0].loadAction = MTLLoadActionClear;
         rp.colorAttachments[0].storeAction = MTLStoreActionStore;
-        rp.colorAttachments[0].clearColor = MTLClearColorMake(0.05, 0.06, 0.08, 1.0);
+        rp.colorAttachments[0].clearColor = MTLClearColorMake(fd.bg[0], fd.bg[1], fd.bg[2], 1.0);
 
         id<MTLCommandBuffer> cb = [gQueue commandBuffer];
         id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
@@ -274,8 +298,10 @@ void anvil_dump(const char *path, uint32_t w, uint32_t h) {
                     vertexStart:0 vertexCount:4 instanceCount:count];
         }
         if (gSolidPipeline && fd.bar_h > 0) {
-            drawSolid(enc, CGSizeMake(w, h), 0, 0, (float)w, fd.bar_h, 0.09f, 0.10f, 0.13f, 1.0f);
-            drawSolid(enc, CGSizeMake(w, h), 0, fd.bar_h - 1, (float)w, 1, 0.20f, 0.22f, 0.27f, 1.0f);
+            drawSolid(enc, CGSizeMake(w, h), 0, 0, (float)w, fd.bar_h,
+                      fd.bar_color[0], fd.bar_color[1], fd.bar_color[2], 1.0f);
+            drawSolid(enc, CGSizeMake(w, h), 0, fd.bar_h - 1, (float)w, 1,
+                      fd.sep_color[0], fd.sep_color[1], fd.sep_color[2], 1.0f);
         }
         [enc endEncoding];
 
@@ -421,6 +447,62 @@ static void layoutTrafficLights(NSWindow *win) {
 }
 @end
 
+@interface AnvilController : NSObject
+@end
+
+@implementation AnvilController
+- (void)setTheme:(NSMenuItem *)sender {
+    anvil_set_theme_mode((int)sender.tag);
+    for (NSMenuItem *item in sender.menu.itemArray)
+        item.state = (item == sender) ? NSControlStateValueOn : NSControlStateValueOff;
+    applyAppearance();
+}
+- (void)osAppearanceChanged:(NSNotification *)n {
+    (void)n;
+    anvil_set_os_dark(osIsDark() ? 1 : 0);
+    applyAppearance();
+}
+@end
+
+static AnvilController *gController;
+
+static void buildMenu(void) {
+    NSMenu *bar = [[NSMenu alloc] init];
+    [NSApp setMainMenu:bar];
+
+    NSMenuItem *appItem = [[NSMenuItem alloc] init];
+    [bar addItem:appItem];
+    NSMenu *appMenu = [[NSMenu alloc] init];
+    [appMenu addItemWithTitle:@"Quit Anvil"
+                       action:@selector(terminate:)
+                keyEquivalent:@"q"];
+    appItem.submenu = appMenu;
+
+    NSMenuItem *viewItem = [[NSMenuItem alloc] init];
+    [bar addItem:viewItem];
+    NSMenu *viewMenu = [[NSMenu alloc] initWithTitle:@"View"];
+    NSMenu *themeMenu = [[NSMenu alloc] initWithTitle:@"Theme"];
+    struct {
+        NSString *title;
+        int tag;
+    } modes[3] = {{@"System", 0}, {@"Light", 1}, {@"Dark", 2}};
+    for (int i = 0; i < 3; i++) {
+        NSMenuItem *mi = [[NSMenuItem alloc] initWithTitle:modes[i].title
+                                                    action:@selector(setTheme:)
+                                             keyEquivalent:@""];
+        mi.tag = modes[i].tag;
+        mi.target = gController;
+        mi.state = (modes[i].tag == 0) ? NSControlStateValueOn : NSControlStateValueOff;
+        [themeMenu addItem:mi];
+    }
+    NSMenuItem *themeItem = [[NSMenuItem alloc] initWithTitle:@"Theme"
+                                                       action:nil
+                                                keyEquivalent:@""];
+    themeItem.submenu = themeMenu;
+    [viewMenu addItem:themeItem];
+    viewItem.submenu = viewMenu;
+}
+
 void anvil_run(void) {
     @autoreleasepool {
         [NSApplication sharedApplication];
@@ -448,7 +530,17 @@ void anvil_run(void) {
         [win setTitle:@"Anvil"];
         win.titleVisibility = NSWindowTitleHidden;
         win.titlebarAppearsTransparent = YES;
-        win.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+        gWindow = win;
+
+        gController = [[AnvilController alloc] init];
+        anvil_set_os_dark(osIsDark() ? 1 : 0);
+        buildMenu();
+        applyAppearance();
+        [[NSDistributedNotificationCenter defaultCenter]
+            addObserver:gController
+               selector:@selector(osAppearanceChanged:)
+                   name:@"AppleInterfaceThemeChangedNotification"
+                 object:nil];
 
         AnvilView *view = [[AnvilView alloc] initWithFrame:frame];
         view.wantsLayer = YES;
