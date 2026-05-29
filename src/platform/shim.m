@@ -64,10 +64,13 @@ void anvil_run(void) {
         NSWindow *win = [[NSWindow alloc]
             initWithContentRect:frame
             styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
-                       NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable)
+                       NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable |
+                       NSWindowStyleMaskFullSizeContentView)
             backing:NSBackingStoreBuffered
             defer:NO];
         [win setTitle:@"Anvil"];
+        win.titlebarAppearsTransparent = YES;
+        win.titleVisibility = NSWindowTitleHidden;
 
         AnvilView *view = [[AnvilView alloc] initWithFrame:frame];
         view.wantsLayer = YES;
