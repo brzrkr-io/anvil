@@ -16,4 +16,13 @@ docs/superpowers/
 zig-out/
 zls.json
 
-.claude/worktrees/
+# AI tooling — local only, not tracked
+.claude/
+CLAUDE.md
+AGENTS.md
+context/
+wiki/
+
+# Brand — local only, not tracked
+brand/
+BRAND.md
