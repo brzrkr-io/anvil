@@ -9,6 +9,11 @@ const scrollback_cap = 5000;
 
 pub const Pos = struct { row: u16, col: u16 };
 
+/// Mouse-tracking level requested by the program (DEC private modes).
+/// off = none, normal = 1000 (press/release), button = 1002 (+drag while
+/// pressed), any = 1003 (+all motion).
+pub const MouseMode = enum { off, normal, button, any };
+
 /// Linear (text-flow) selection in visible-grid coordinates.
 pub const Selection = struct {
     anchor: Pos,
@@ -39,6 +44,8 @@ pub const Terminal = struct {
     title_len: usize = 0,
     cwd_buf: [1024]u8 = undefined,
     cwd_len: usize = 0,
+    mouse: MouseMode = .off,
+    mouse_sgr: bool = false, // SGR (1006) extended encoding
 
     /// Window title set via OSC 0/2 (empty until the shell sets one).
     pub fn title(self: *const Terminal) []const u8 {
@@ -397,6 +404,10 @@ pub const Terminal = struct {
     pub fn setMode(self: *Terminal, mode: u16, enable: bool) void {
         switch (mode) {
             47, 1047, 1049 => if (enable) self.enterAlt() else self.exitAlt(),
+            1000 => self.mouse = if (enable) .normal else .off,
+            1002 => self.mouse = if (enable) .button else .off,
+            1003 => self.mouse = if (enable) .any else .off,
+            1006 => self.mouse_sgr = enable,
             else => {},
         }
     }

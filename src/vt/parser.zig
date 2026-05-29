@@ -281,6 +281,17 @@ test "OSC 7 stores path from file URI" {
     try std.testing.expectEqualStrings("/Users/me/proj", t.cwd());
 }
 
+test "mouse modes set and clear via DEC private modes" {
+    var t = try Terminal.init(std.testing.allocator, 1, 4);
+    defer t.deinit();
+    var p = Parser{};
+    p.feed(&t, "\x1b[?1002h\x1b[?1006h");
+    try std.testing.expectEqual(@import("terminal.zig").MouseMode.button, t.mouse);
+    try std.testing.expect(t.mouse_sgr);
+    p.feed(&t, "\x1b[?1002l");
+    try std.testing.expectEqual(@import("terminal.zig").MouseMode.off, t.mouse);
+}
+
 test "UTF-8 multibyte decode" {
     var t = try Terminal.init(std.testing.allocator, 1, 10);
     defer t.deinit();

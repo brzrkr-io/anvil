@@ -169,6 +169,13 @@ export fn anvil_input(ptr: [*]const u8, len: usize) callconv(.c) void {
 export fn anvil_scroll(delta: c_int) callconv(.c) void {
     if (!ready) return;
     const s = focused();
+    // Program tracking the mouse? Wheel becomes button 64 (up) / 65 (down).
+    if (s.term.mouse != .off) {
+        const cb: u8 = if (delta > 0) 64 else 65;
+        var n: c_int = if (delta > 0) delta else -delta;
+        while (n > 0) : (n -= 1) sendMouseReport(s, cb, 0, 0, false);
+        return;
+    }
     s.term.clearSelection();
     s.term.scrollView(@intCast(delta));
 }
@@ -204,9 +211,40 @@ export fn anvil_mouse(kind: c_int, x: f32, y: f32) callconv(.c) void {
     const rf = (y - oy) / renderer.cell_h;
     const col: u16 = @intFromFloat(std.math.clamp(cf, 0, @as(f32, @floatFromInt(s.term.grid.cols - 1))));
     const row: u16 = @intFromFloat(std.math.clamp(rf, 0, @as(f32, @floatFromInt(s.term.grid.rows - 1))));
+
+    // Program tracking the mouse? Forward the event to the PTY instead of
+    // driving local selection.
+    if (s.term.mouse != .off) {
+        // Suppress drag reports the program didn't ask for.
+        if (kind == 1 and s.term.mouse == .normal) return;
+        const motion = kind == 1;
+        // Button code: left = 0, +32 motion bit. Release uses code 3 (legacy)
+        // or the original button (SGR).
+        const cb: u8 = if (motion) 0 + 32 else 0;
+        sendMouseReport(s, cb, col, row, kind == 2);
+        return;
+    }
+
     switch (kind) {
         0 => s.term.selectStart(row, col),
         else => s.term.selectExtend(row, col),
+    }
+}
+
+/// Encode one mouse event for the PTY. SGR (1006) when the program enabled it,
+/// else the legacy X10 byte encoding. `release` picks the report's final byte.
+fn sendMouseReport(s: *Session, cb: u8, col: u16, row: u16, release: bool) void {
+    var buf: [32]u8 = undefined;
+    if (s.term.mouse_sgr) {
+        const final: u8 = if (release) 'm' else 'M';
+        const out = std.fmt.bufPrint(&buf, "\x1b[<{d};{d};{d}{c}", .{ cb, col + 1, row + 1, final }) catch return;
+        s.write(out);
+    } else {
+        // Legacy: ESC [ M  <cb+32> <col+33> <row+33>; release reports button 3.
+        const b: u8 = if (release) 3 + 32 else cb + 32;
+        const cx: u8 = @intCast(@min(@as(u16, 223), col) + 33);
+        const cy: u8 = @intCast(@min(@as(u16, 223), row) + 33);
+        s.write(&[_]u8{ 0x1b, '[', 'M', b, cx, cy });
     }
 }
 
