@@ -8,6 +8,7 @@ const atlasmod = @import("render/atlas.zig");
 const palette = @import("render/palette.zig");
 const theme = @import("render/theme.zig");
 const cmd = @import("palette.zig");
+const search = @import("search.zig");
 const config = @import("config.zig");
 
 const shader_src = @embedFile("platform/shaders.metal");
@@ -27,6 +28,7 @@ var win_w: f32 = 0;
 var win_h: f32 = 0;
 var ready = false;
 var cpal = cmd.Palette{};
+var srch = search.Search{};
 var overlay: [8 * 7]f32 = undefined; // up to 8 colored rects (x,y,w,h,r,g,b)
 
 var cfg_path_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -332,6 +334,72 @@ export fn anvil_palette_key(key: c_int) callconv(.c) void {
     }
 }
 
+export fn anvil_search_toggle() callconv(.c) void {
+    if (!ready) return;
+    if (srch.open) {
+        srch.hide();
+        focused().term.clearSelection();
+    } else {
+        cpal.hide();
+        srch.show();
+    }
+}
+
+export fn anvil_search_open() callconv(.c) c_int {
+    return if (srch.open) 1 else 0;
+}
+
+export fn anvil_search_char(c: u8) callconv(.c) void {
+    if (!ready) return;
+    srch.typeChar(c, &focused().term);
+    if (srch.current()) |m| jumpToMatch(m);
+}
+
+/// key: 0 esc, 1 enter (next match), 2 prev match, 4 backspace.
+export fn anvil_search_key(key: c_int) callconv(.c) void {
+    if (!ready) return;
+    switch (key) {
+        0 => {
+            srch.hide();
+            focused().term.clearSelection();
+        },
+        1 => {
+            if (srch.next()) |m| jumpToMatch(m);
+        },
+        2 => {
+            if (srch.prev()) |m| jumpToMatch(m);
+        },
+        4 => {
+            srch.backspace(&focused().term);
+            if (srch.current()) |m| jumpToMatch(m);
+        },
+        else => {},
+    }
+}
+
+/// Scroll the focused terminal so `m` is visible and select its span, reusing
+/// the normal selection highlight. Centers the match line when possible.
+fn jumpToMatch(m: search.Match) void {
+    const t = &focused().term;
+    const sb: i64 = @intCast(t.scrollback.len());
+    const rows: i64 = @intCast(t.grid.rows);
+    const center = @divTrunc(rows, 2);
+    var off = sb - @as(i64, @intCast(m.line)) + center;
+    off = std.math.clamp(off, 0, sb);
+    t.view_offset = @intCast(off);
+    const top_logical = sb - off; // logical line shown at visible row 0
+    const r = @as(i64, @intCast(m.line)) - top_logical;
+    if (r >= 0 and r < rows) {
+        const rr: u16 = @intCast(r);
+        t.selection = .{
+            .anchor = .{ .row = rr, .col = m.col },
+            .head = .{ .row = rr, .col = m.col + m.len - 1 },
+        };
+    } else {
+        t.selection = null;
+    }
+}
+
 fn runAction(id: cmd.ActionId) void {
     switch (id) {
         .split_side => anvil_split(0),
@@ -434,6 +502,10 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
         const r = emitPalette(th, n);
         out.palette_text_count = @intCast(r.text);
         out.overlay_count = @intCast(r.rects);
+    } else if (srch.open) {
+        const r = emitSearch(th, n);
+        out.palette_text_count = @intCast(r.text);
+        out.overlay_count = @intCast(r.rects);
     }
 
     out.pending_count = renderer.atlas.pending_n;
@@ -512,6 +584,45 @@ fn emitPalette(th: *const theme.Theme, start: usize) struct { text: usize, rects
             putGlyph(n, tx + @as(f32, @floatFromInt(j)) * cw, ry, fg, bg, c);
             n += 1;
         }
+    }
+    return .{ .text = n - start, .rects = ri };
+}
+
+/// Lay out the search bar: a one-line input box at the top-right of the window
+/// showing the query and the current/total match count.
+fn emitSearch(th: *const theme.Theme, start: usize) struct { text: usize, rects: usize } {
+    const cw = renderer.cell_w;
+    const ch = renderer.cell_h;
+    const pad = renderer.pad_x;
+
+    var bw: f32 = 50 * cw;
+    const max_bw = win_w * 0.9;
+    if (bw > max_bw) bw = max_bw;
+    const bx = @floor(win_w - bw - pad);
+    const by = bar_h + pad;
+
+    var ri: usize = 0;
+    putRect(ri, bx - 1, by - 1, bw + 2, ch + 2, th.separator); // border
+    ri += 1;
+    putRect(ri, bx, by, bw, ch, th.bar); // panel
+    ri += 1;
+
+    var n = start;
+    const tx = bx + pad;
+    putGlyph(n, tx, by, th.fg, th.bar, '/'); // prompt prefix
+    n += 1;
+    for (srch.queryStr(), 0..) |c, i| {
+        putGlyph(n, tx + @as(f32, @floatFromInt(i + 1)) * cw, by, th.fg, th.bar, c);
+        n += 1;
+    }
+    // Match count, right-aligned: "cur/total" (1-based, 0/0 when no matches).
+    var cbuf: [24]u8 = undefined;
+    const cur = if (srch.count == 0) 0 else srch.cur + 1;
+    const cnt = std.fmt.bufPrint(&cbuf, "{d}/{d}", .{ cur, srch.count }) catch "";
+    const cnt_x = bx + bw - pad - @as(f32, @floatFromInt(cnt.len)) * cw;
+    for (cnt, 0..) |c, i| {
+        putGlyph(n, cnt_x + @as(f32, @floatFromInt(i)) * cw, by, th.separator, th.bar, c);
+        n += 1;
     }
     return .{ .text = n - start, .rects = ri };
 }

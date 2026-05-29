@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Anvil — Agent Panel (concept)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  /* Mineral palette (BRAND.md / theme.zig) */
+  :root {
+    --graphite: #0b0d0e;
+    --charcoal: #161a1c;
+    --ash: #374046;
+    --alloy: #4a555c;
+    --mist: #d2d8db;
+    --bone: #eef1f2;
+    --dim-mineral: #2f4a4e;
+    /* semantic status */
+    --verified: #57a673;  /* green  */
+    --attention: #cf962b; /* yellow */
+    --failure: #cf5346;   /* red    */
+    --agent: #8377c0;     /* magenta */
+    --mineral: #3f9aa1;   /* cyan / trace */
+    --steel: #5d86a3;     /* blue / info */
+    --muted: #6b757c;
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --sans: "IBM Plex Sans", system-ui, sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    height: 100%;
+    background: #050607;
+    color: var(--mist);
+    font-family: var(--mono);
+    font-size: 13px;
+    -webkit-font-smoothing: antialiased;
+  }
+  body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 32px;
+  }
+
+  /* ---- window shell ---- */
+  .window {
+    width: 1180px;
+    height: 720px;
+    border-radius: 10px;
+    overflow: hidden;
+    background: var(--graphite);
+    box-shadow: 0 24px 80px rgba(0,0,0,.6), 0 0 0 1px #000;
+    display: grid;
+    grid-template-rows: 38px 1fr;
+  }
+
+  /* ---- title bar ---- */
+  .titlebar {
+    background: var(--charcoal);
+    border-bottom: 1px solid var(--ash);
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    padding: 0 14px;
+    user-select: none;
+  }
+  .lights { display: flex; gap: 8px; }
+  .lights i { width: 12px; height: 12px; border-radius: 50%; display: block; }
+  .lights .r { background: #ed6a5e; }
+  .lights .y { background: #f4bf4f; }
+  .lights .g { background: #61c554; }
+
+  .tabs { display: flex; gap: 2px; height: 100%; align-items: stretch; }
+  .tab {
+    display: flex; align-items: center; gap: 7px;
+    padding: 0 14px;
+    font-size: 12px;
+    color: var(--muted);
+    border-bottom: 2px solid transparent;
+  }
+  .tab .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--alloy); }
+  .tab.active { color: var(--bone); border-bottom-color: var(--mineral); background: rgba(63,154,161,.07); }
+  .tab.active .dot { background: var(--mineral); }
+
+  .titlebar .spacer { flex: 1; }
+  .panel-toggle {
+    display: flex; align-items: center; gap: 7px;
+    font-size: 11px; letter-spacing: .04em;
+    color: var(--verified);
+    padding: 3px 9px;
+    border: 1px solid var(--ash);
+    border-radius: 5px;
+  }
+  .panel-toggle .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--verified); box-shadow: 0 0 0 3px rgba(87,166,115,.18); }
+
+  /* ---- body split ---- */
+  .body { display: grid; grid-template-columns: 1fr 360px; min-height: 0; }
+
+  /* terminal */
+  .term { padding: 16px 18px; overflow: hidden; line-height: 1.55; }
+  .term .line { white-space: pre; }
+  .seg-cwd { color: var(--steel); }
+  .seg-git { color: var(--agent); }
+  .seg-tool { color: var(--mineral); }
+  .seg-ok { color: var(--verified); }
+  .prompt-mark { color: var(--verified); }
+  .term .out { color: var(--muted); }
+  .term .cursor { display: inline-block; width: 8px; height: 16px; background: var(--mist); vertical-align: text-bottom; animation: blink 1.1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* ---- agent panel dock ---- */
+  .dock {
+    background: var(--charcoal);
+    border-left: 1px solid var(--ash);
+    display: flex; flex-direction: column;
+    min-height: 0;
+  }
+  .dock-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 14px 10px;
+    border-bottom: 1px solid var(--ash);
+  }
+  .dock-head .title { font-family: var(--sans); font-weight: 600; letter-spacing: .14em; font-size: 12px; color: var(--bone); }
+  .conn { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--verified); }
+  .conn .d { width: 7px; height: 7px; border-radius: 50%; background: var(--verified); }
+
+  .dock-scroll { overflow-y: auto; padding: 4px 0 12px; flex: 1; }
+
+  .section-label {
+    font-family: var(--sans);
+    font-size: 10px; font-weight: 600; letter-spacing: .18em;
+    color: var(--muted);
+    padding: 14px 14px 6px;
+  }
+  .count { color: var(--alloy); font-family: var(--mono); }
+
+  /* run card */
+  .run { padding: 9px 14px; border-bottom: 1px solid rgba(55,64,70,.4); }
+  .run-top { display: flex; align-items: center; gap: 8px; }
+  .run .status { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .s-run { background: var(--mineral); box-shadow: 0 0 0 3px rgba(63,154,161,.15); }
+  .s-review { background: var(--steel); box-shadow: 0 0 0 3px rgba(93,134,163,.15); }
+  .s-pass { background: var(--verified); }
+  .run .agent { color: var(--agent); font-weight: 500; }
+  .run .step { color: var(--mist); }
+  .run .elapsed { margin-left: auto; color: var(--muted); font-size: 11px; }
+  .run .task { color: var(--muted); font-size: 12px; margin: 4px 0 0 16px; }
+  .run .trace { color: var(--alloy); font-size: 10.5px; margin: 5px 0 0 16px; letter-spacing: .02em; }
+
+  .bar { height: 3px; border-radius: 2px; background: rgba(74,85,92,.4); margin: 7px 0 0 16px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; }
+  .bar .fill-run { background: var(--mineral); }
+  .bar .fill-review { background: var(--steel); }
+  .bar .fill-pass { background: var(--verified); }
+
+  /* attention rows */
+  .attn { display: flex; gap: 9px; padding: 8px 14px; align-items: flex-start; border-bottom: 1px solid rgba(55,64,70,.4); }
+  .attn .mark { font-size: 13px; line-height: 1.3; flex: none; }
+  .attn.warn .mark { color: var(--attention); }
+  .attn.err .mark { color: var(--failure); }
+  .attn .msg { color: var(--mist); font-size: 12px; }
+  .attn .sub { color: var(--muted); font-size: 11px; margin-top: 2px; }
+
+  /* footer / next action */
+  .dock-foot {
+    border-top: 1px solid var(--ash);
+    padding: 10px 14px;
+    display: flex; align-items: center; gap: 9px;
+    background: rgba(47,74,78,.18);
+  }
+  .dock-foot .next { color: var(--bone); font-size: 12px; }
+  .dock-foot .approve {
+    margin-left: auto; font-size: 11px; color: var(--attention);
+    border: 1px solid var(--ash); border-radius: 5px; padding: 3px 9px;
+  }
+  .caption {
+    position: fixed; bottom: 14px; left: 0; right: 0;
+    text-align: center; color: #465056; font-family: var(--sans); font-size: 12px;
+  }
+</style>
+</head>
+<body>
+  <div class="window">
+    <!-- title bar -->
+    <div class="titlebar">
+      <div class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+      <div class="tabs">
+        <div class="tab active"><span class="dot"></span>anvil</div>
+        <div class="tab"><span class="dot"></span>caldera-os</div>
+        <div class="tab"><span class="dot"></span>infra</div>
+      </div>
+      <div class="spacer"></div>
+      <div class="panel-toggle"><span class="pulse"></span>AGENTS</div>
+    </div>
+
+    <!-- body -->
+    <div class="body">
+      <!-- terminal -->
+      <div class="term">
+        <div class="line"><span class="seg-cwd">~/projects/caldera/anvil</span>  <span class="seg-git">⎇ zig</span>  <span class="seg-tool">zig 0.16</span>  <span class="seg-ok">✓</span></div>
+        <div class="line"><span class="prompt-mark">❯</span> zig build test</div>
+        <div class="line out">All 74 tests passed.</div>
+        <div class="line">&nbsp;</div>
+        <div class="line"><span class="seg-cwd">~/projects/caldera/anvil</span>  <span class="seg-git">⎇ zig</span>  <span class="seg-tool">zig 0.16</span>  <span class="seg-ok">✓</span></div>
+        <div class="line"><span class="prompt-mark">❯</span> <span class="cursor"></span></div>
+      </div>
+
+      <!-- agent panel -->
+      <div class="dock">
+        <div class="dock-head">
+          <span class="title">AGENTS</span>
+          <span class="conn"><span class="d"></span>live</span>
+        </div>
+
+        <div class="dock-scroll">
+          <div class="section-label">RUNS <span class="count">3</span></div>
+
+          <div class="run">
+            <div class="run-top">
+              <span class="status s-run"></span>
+              <span class="agent">terry</span>
+              <span class="step">▸ implementing</span>
+              <span class="elapsed">4m12s</span>
+            </div>
+            <div class="task">refactor VT parser state machine</div>
+            <div class="bar"><i class="fill-run" style="width:62%"></i></div>
+            <div class="trace">run 7f3a·c91 · step 6/9</div>
+          </div>
+
+          <div class="run">
+            <div class="run-top">
+              <span class="status s-review"></span>
+              <span class="agent">pi</span>
+              <span class="step">▸ reviewing</span>
+              <span class="elapsed">1m02s</span>
+            </div>
+            <div class="task">auth middleware token expiry</div>
+            <div class="bar"><i class="fill-review" style="width:38%"></i></div>
+            <div class="trace">run 2b8e·44d · step 2/5</div>
+          </div>
+
+          <div class="run">
+            <div class="run-top">
+              <span class="status s-pass"></span>
+              <span class="agent">hermes</span>
+              <span class="step">✓ closed out</span>
+              <span class="elapsed">just now</span>
+            </div>
+            <div class="task">ship config + live reload slice</div>
+            <div class="bar"><i class="fill-pass" style="width:100%"></i></div>
+            <div class="trace">run 9d10·a07 · 12 steps · merged</div>
+          </div>
+
+          <div class="section-label">ATTENTION <span class="count">2</span></div>
+
+          <div class="attn warn">
+            <span class="mark">⚠</span>
+            <div>
+              <div class="msg">unused import in app.zig</div>
+              <div class="sub">clippy · non-blocking</div>
+            </div>
+          </div>
+
+          <div class="attn err">
+            <span class="mark">✕</span>
+            <div>
+              <div class="msg">grid_resize test failed</div>
+              <div class="sub">anvil-term · blocks merge</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="dock-foot">
+          <span class="next">pi awaiting your review</span>
+          <span class="approve">1 approval</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="caption">Anvil — decoupled agent panel concept · mineral-dark · source-agnostic (caldera or own runner)</div>
+</body>
+</html>

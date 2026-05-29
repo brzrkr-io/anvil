@@ -58,3 +58,13 @@ Recommended order: 1 → 3 → 2 → 4, then the rest.
     call. Decision gate for browser/editor/agents.
 20. **Agent surface, reframed.** Ambient terminal-native (inline run blocks), not
     a docked dashboard.
+
+## Tier 5 — user-reported polish (do at the end)
+
+21. **Smooth window resize/drag.** Live-resize is glitchy; redo for smooth reflow
+    of grid + PTY with better visuals.
+22. **Nerd-font icons.** Bundled `BlexMonoNerdFontMono-Regular.ttf` is unused — the
+    shim hardcodes Menlo. Switch the atlas to the Nerd Font so PUA icon glyphs
+    render (lazyvim/devicons).
+23. **Solid vim/nvim/lazyvim support.** End-to-end: truecolor, mouse, alt-screen,
+    icons, cursor shapes, undercurl, fast resize redraw.

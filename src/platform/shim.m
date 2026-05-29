@@ -62,6 +62,10 @@ extern void anvil_palette_toggle(void);
 extern int anvil_palette_open(void);
 extern void anvil_palette_char(unsigned char c);
 extern void anvil_palette_key(int key);
+extern void anvil_search_toggle(void);
+extern int anvil_search_open(void);
+extern void anvil_search_char(unsigned char c);
+extern void anvil_search_key(int key);
 extern const char *anvil_copy(size_t *out_len);
 extern void anvil_set_theme_mode(int mode);
 extern void anvil_set_os_dark(int is_dark);
@@ -521,6 +525,24 @@ static void layoutTrafficLights(NSWindow *win) {
 
     // Cmd+K toggles the command palette from any state.
     if (cmd && ilc == 'k') { anvil_palette_toggle(); return; }
+    // Cmd+F toggles scrollback search from any state.
+    if (cmd && ilc == 'f') { anvil_search_toggle(); return; }
+
+    // While search is open it captures all keys; the PTY sees nothing.
+    if (anvil_search_open()) {
+        BOOL shift = (f & NSEventModifierFlagShift) != 0;
+        if (cmd) return; // swallow other shortcuts while open
+        unichar ch = s.length ? [s characterAtIndex:0] : 0;
+        switch (ch) {
+            case 0x1b: anvil_search_key(0); return; // esc
+            case '\r': case '\n': anvil_search_key(shift ? 2 : 1); return; // enter = next, shift+enter = prev
+            case NSUpArrowFunctionKey:   anvil_search_key(2); return; // prev
+            case NSDownArrowFunctionKey: anvil_search_key(1); return; // next
+            case 0x7f: case 0x08: anvil_search_key(4); return; // backspace
+        }
+        if (ch >= 0x20 && ch < 0x7f) { anvil_search_char((unsigned char)ch); return; }
+        return;
+    }
 
     // While the palette is open it captures all keys; the PTY sees nothing.
     if (anvil_palette_open()) {

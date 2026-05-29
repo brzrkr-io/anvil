@@ -23,4 +23,5 @@ test {
     _ = @import("workspace/pane_tree.zig");
     _ = @import("palette.zig");
     _ = @import("config.zig");
+    _ = @import("search.zig");
 }

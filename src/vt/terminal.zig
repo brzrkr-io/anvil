@@ -89,6 +89,17 @@ pub const Terminal = struct {
         self.scrollback.deinit();
     }
 
+    /// Total logical lines = scrollback history + the live grid.
+    pub fn totalLines(self: *const Terminal) usize {
+        return self.scrollback.len() + self.grid.rows;
+    }
+
+    /// Cells for logical line `i` (0 = oldest scrollback line).
+    pub fn logicalRow(self: *Terminal, i: usize) []Cell {
+        const sb = self.scrollback.len();
+        return if (i < sb) self.scrollback.at(i) else self.grid.row(@intCast(i - sb));
+    }
+
     /// Cells for visible row `r`, drawn from scrollback when scrolled up.
     pub fn viewRow(self: *Terminal, r: u16) []Cell {
         const sb = self.scrollback.len();
