@@ -65,6 +65,18 @@ fn loadConfig() void {
     cfg_mtime = config.mtime(path);
 }
 
+/// Whether the cursor is in its visible blink phase. Steady (non-blink)
+/// cursors are always visible. ~530 ms half-period, free-running off the
+/// wall clock since the render loop ticks at 60 fps.
+fn cursorVisible(t: *const @import("vt/terminal.zig").Terminal) bool {
+    if (!t.cursor_blink) return true;
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(.MONOTONIC, &ts);
+    const ms = @as(i64, ts.sec) * 1000 + @divTrunc(ts.nsec, std.time.ns_per_ms);
+    const period_ms = 530;
+    return @mod(ms, period_ms * 2) < period_ms;
+}
+
 /// Stamp the configured default cursor onto the focused session. Programs may
 /// still override it at runtime via DECSCUSR.
 fn applyCursorDefault() void {
@@ -485,12 +497,18 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
     const tree = mgr.activeTree() orelse return;
     const np = tree.layout(ws, divider_px, &pane_buf);
     var n: usize = 0;
+    const multi = np > 1;
     for (pane_buf[0..np]) |p| {
         const s = mgr.byId(p.id) orelse continue;
         const ox = p.rect.x + renderer.pad_x;
         const oy = p.rect.y + renderer.pad_x;
+        const start = n;
         n += renderer.buildInstances(&s.term, ox, oy, instances[n..]);
-        if (s.id == mgr.focused and s.term.view_offset == 0) {
+        // Dim unfocused panes (only meaningful when split).
+        if (multi and s.id != mgr.focused) {
+            for (instances[start..n]) |*ci| ci.flags |= inst.flag_dim;
+        }
+        if (s.id == mgr.focused and s.term.view_offset == 0 and cursorVisible(&s.term)) {
             instances[n] = renderer.cursorInstance(&s.term, ox, oy);
             n += 1;
         }
