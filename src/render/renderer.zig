@@ -95,12 +95,15 @@ pub const Renderer = struct {
         const cell = term.grid.at(cy, cx);
         const fg = palette.resolve(cell.fg, true);
         const bg = palette.resolve(cell.bg, false);
-        return .{
-            .x = ox + @as(f32, @floatFromInt(cx)) * self.cell_w,
-            .y = oy + @as(f32, @floatFromInt(cy)) * self.cell_h,
-            .fg = bg.f32x4(),
-            .bg = fg.f32x4(),
-            .uv = self.atlas.uvOrigin(cell.cp),
+        const x = ox + @as(f32, @floatFromInt(cx)) * self.cell_w;
+        const y = oy + @as(f32, @floatFromInt(cy)) * self.cell_h;
+        return switch (term.cursor_style) {
+            // Block: the cell glyph with fg/bg swapped (drawn over the cell).
+            .block => .{ .x = x, .y = y, .fg = bg.f32x4(), .bg = fg.f32x4(), .uv = self.atlas.uvOrigin(cell.cp) },
+            // Bar / underline: a colored band; the shader discards the rest so the
+            // already-rendered glyph stays visible. fg carries the cursor color.
+            .bar => .{ .x = x, .y = y, .fg = fg.f32x4(), .bg = bg.f32x4(), .uv = self.atlas.uvOrigin(' '), .flags = inst.flag_cursor_bar },
+            .underline => .{ .x = x, .y = y, .fg = fg.f32x4(), .bg = bg.f32x4(), .uv = self.atlas.uvOrigin(' '), .flags = inst.flag_cursor_underline },
         };
     }
 };

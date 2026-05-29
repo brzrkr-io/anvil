@@ -10,6 +10,7 @@ pub const Parser = struct {
     cur: u16 = 0,
     has_param: bool = false,
     private: bool = false,
+    intermediate: u8 = 0, // CSI intermediate byte (0x20–0x2f), e.g. SP for DECSCUSR
 
     // OSC accumulator (terminated by BEL or ST = ESC \)
     osc_buf: [2048]u8 = undefined,
@@ -76,6 +77,7 @@ pub const Parser = struct {
                 self.cur = 0;
                 self.has_param = false;
                 self.private = false;
+                self.intermediate = 0;
                 self.state = .csi;
             },
             '7' => {
@@ -142,6 +144,7 @@ pub const Parser = struct {
                 self.pushParam();
             },
             '?' => self.private = true,
+            0x20...0x2f => self.intermediate = b,
             0x40...0x7e => {
                 self.pushParam();
                 self.dispatch(term, b);
@@ -184,6 +187,7 @@ pub const Parser = struct {
             'h' => if (self.private) term.setMode(self.arg(0, 0), true),
             'l' => if (self.private) term.setMode(self.arg(0, 0), false),
             'm' => term.sgr(self.params[0..self.nparams]),
+            'q' => if (self.intermediate == ' ') term.setCursorStyle(self.arg(0, 1)),
             else => {},
         }
     }
@@ -311,6 +315,20 @@ test "bracketed paste mode toggles via 2004" {
     try std.testing.expect(t.bracketed_paste);
     p.feed(&t, "\x1b[?2004l");
     try std.testing.expect(!t.bracketed_paste);
+}
+
+test "DECSCUSR sets cursor shape and blink" {
+    var t = try Terminal.init(std.testing.allocator, 1, 4);
+    defer t.deinit();
+    var p = Parser{};
+    p.feed(&t, "\x1b[5 q"); // blinking bar
+    try std.testing.expectEqual(@import("terminal.zig").CursorStyle.bar, t.cursor_style);
+    try std.testing.expect(t.cursor_blink);
+    p.feed(&t, "\x1b[4 q"); // steady underline
+    try std.testing.expectEqual(@import("terminal.zig").CursorStyle.underline, t.cursor_style);
+    try std.testing.expect(!t.cursor_blink);
+    p.feed(&t, "\x1b[0 q"); // back to default block
+    try std.testing.expectEqual(@import("terminal.zig").CursorStyle.block, t.cursor_style);
 }
 
 test "UTF-8 multibyte decode" {

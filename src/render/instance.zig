@@ -13,6 +13,8 @@ pub const CellInstance = extern struct {
 pub const flag_underline: u32 = 1;
 pub const flag_strike: u32 = 2;
 pub const flag_dim: u32 = 4;
+pub const flag_cursor_bar: u32 = 8; // vertical bar cursor; fill left edge, discard rest
+pub const flag_cursor_underline: u32 = 16; // underline cursor; fill bottom, discard rest
 
 /// What Zig hands the shim each frame. Matches `FrameData` read in shim.m.
 pub const FrameData = extern struct {

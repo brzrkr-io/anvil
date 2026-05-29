@@ -48,6 +48,16 @@ vertex VOut v_main(uint vid [[vertex_id]],
 fragment float4 f_main(VOut in [[stage_in]],
                        texture2d<float> atlas [[texture(0)]]) {
     constexpr sampler s(coord::normalized, filter::nearest, address::clamp_to_edge);
+    // Bar / underline cursors: fill a thin band in the cursor color, discard the
+    // rest so the glyph drawn underneath shows through.
+    if (in.flags & 8u) { // bar cursor (left edge)
+        if (in.loc.x < 0.12) return float4(in.fg.rgb, 1.0);
+        discard_fragment();
+    }
+    if (in.flags & 16u) { // underline cursor (bottom band)
+        if (in.loc.y > 0.85) return float4(in.fg.rgb, 1.0);
+        discard_fragment();
+    }
     float coverage = atlas.sample(s, in.uv).r;
     float3 fg = in.fg.rgb;
     if (in.flags & 4u) fg = mix(in.bg.rgb, fg, 0.55); // dim toward background

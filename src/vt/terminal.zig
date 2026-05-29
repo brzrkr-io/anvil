@@ -14,6 +14,9 @@ pub const Pos = struct { row: u16, col: u16 };
 /// pressed), any = 1003 (+all motion).
 pub const MouseMode = enum { off, normal, button, any };
 
+/// Cursor shape requested via DECSCUSR (CSI Ps SP q).
+pub const CursorStyle = enum { block, underline, bar };
+
 /// Linear (text-flow) selection in visible-grid coordinates.
 pub const Selection = struct {
     anchor: Pos,
@@ -47,6 +50,8 @@ pub const Terminal = struct {
     mouse: MouseMode = .off,
     mouse_sgr: bool = false, // SGR (1006) extended encoding
     bracketed_paste: bool = false, // mode 2004
+    cursor_style: CursorStyle = .block,
+    cursor_blink: bool = true,
 
     /// Window title set via OSC 0/2 (empty until the shell sets one).
     pub fn title(self: *const Terminal) []const u8 {
@@ -74,6 +79,38 @@ pub const Terminal = struct {
         const n = @min(path.len, self.cwd_buf.len);
         @memcpy(self.cwd_buf[0..n], path[0..n]);
         self.cwd_len = n;
+    }
+
+    /// DECSCUSR: 0/1 blink block, 2 steady block, 3 blink underline,
+    /// 4 steady underline, 5 blink bar, 6 steady bar.
+    pub fn setCursorStyle(self: *Terminal, ps: u16) void {
+        switch (ps) {
+            0, 1 => {
+                self.cursor_style = .block;
+                self.cursor_blink = true;
+            },
+            2 => {
+                self.cursor_style = .block;
+                self.cursor_blink = false;
+            },
+            3 => {
+                self.cursor_style = .underline;
+                self.cursor_blink = true;
+            },
+            4 => {
+                self.cursor_style = .underline;
+                self.cursor_blink = false;
+            },
+            5 => {
+                self.cursor_style = .bar;
+                self.cursor_blink = true;
+            },
+            6 => {
+                self.cursor_style = .bar;
+                self.cursor_blink = false;
+            },
+            else => {},
+        }
     }
 
     pub fn init(alloc: std.mem.Allocator, rows: u16, cols: u16) !Terminal {
