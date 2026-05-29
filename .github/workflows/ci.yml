@@ -29,7 +29,7 @@ jobs:
       - name: Test
         run: .zig/zig build test
 
-      - name: Headless render smoke check
+      - name: Headless render golden check
         run: |
           ./zig-out/bin/anvil --dump /tmp/anvil-ci.png
-          test -s /tmp/anvil-ci.png
+          python3 tools/check-render.py /tmp/anvil-ci.png
