@@ -12,6 +12,7 @@ const search = @import("search.zig");
 const config = @import("config.zig");
 
 const shader_src = @embedFile("platform/shaders.metal");
+const font_data = @embedFile("font_ttf");
 
 /// Write UTF-8 text to the system pasteboard (OSC 52). Implemented in shim.m.
 extern fn anvil_pasteboard_write(ptr: [*]const u8, len: usize) void;
@@ -171,6 +172,11 @@ const AtlasParams = extern struct {
 export fn anvil_shader_src(out_len: *usize) callconv(.c) [*]const u8 {
     out_len.* = shader_src.len;
     return shader_src.ptr;
+}
+
+export fn anvil_font_data(out_len: *usize) callconv(.c) [*]const u8 {
+    out_len.* = font_data.len;
+    return font_data.ptr;
 }
 
 export fn anvil_atlas_params(out: *AtlasParams) callconv(.c) void {

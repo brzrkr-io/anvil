@@ -20,6 +20,9 @@ pub fn build(b: *std.Build) void {
             .imports = &.{.{ .name = "anvil", .module = mod }},
         }),
     });
+    exe.root_module.addAnonymousImport("font_ttf", .{
+        .root_source_file = b.path("assets/BlexMonoNerdFontMono-Regular.ttf"),
+    });
     exe.root_module.addCSourceFile(.{
         .file = b.path("src/platform/shim.m"),
         .flags = &.{"-fobjc-arc"},

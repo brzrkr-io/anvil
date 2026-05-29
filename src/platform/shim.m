@@ -44,6 +44,7 @@ typedef struct {
 } AtlasParams;
 
 extern const char *anvil_shader_src(size_t *len);
+extern const uint8_t *anvil_font_data(size_t *len);
 extern void anvil_resize(float w, float h);
 extern void anvil_frame(FrameData *out);
 extern void anvil_atlas_params(AtlasParams *out);
@@ -151,7 +152,23 @@ static void buildAtlas(void) {
     gRows = ap.rows;
 
     CGFloat sz = ap.pt_size * ATLAS_SCALE;
-    gFont = CTFontCreateWithName(CFSTR("Menlo"), sz, NULL);
+    // Primary font is the bundled Blex Mono Nerd Font (embedded by Zig), so
+    // icon/powerline glyphs render directly. System cascade still fills gaps.
+    gFont = NULL;
+    size_t flen = 0;
+    const uint8_t *fdata = anvil_font_data(&flen);
+    if (fdata && flen > 0) {
+        CFDataRef cfd = CFDataCreateWithBytesNoCopy(NULL, fdata, flen, kCFAllocatorNull);
+        CGDataProviderRef prov = CGDataProviderCreateWithCFData(cfd);
+        CGFontRef cgf = prov ? CGFontCreateWithDataProvider(prov) : NULL;
+        if (cgf) {
+            gFont = CTFontCreateWithGraphicsFont(cgf, sz, NULL, NULL);
+            CGFontRelease(cgf);
+        }
+        if (prov) CGDataProviderRelease(prov);
+        if (cfd) CFRelease(cfd);
+    }
+    if (!gFont) gFont = CTFontCreateWithName(CFSTR("Menlo"), sz, NULL);
     CGFloat ascent = CTFontGetAscent(gFont);
     CGFloat descent = CTFontGetDescent(gFont);
     CGFloat leading = CTFontGetLeading(gFont);
