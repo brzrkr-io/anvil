@@ -19,8 +19,12 @@ zig build test     # run all test blocks
 | [build.zig](../build.zig) | Build graph: the `anvil` core module, the exe, `run` + `test` steps. |
 | [build.zig.zon](../build.zig.zon) | Package manifest (name, version, deps). |
 | [src/main.zig](../src/main.zig) | Entry point. Raw-mode passthrough loop: keyboard → shell, shell → screen. |
-| [src/root.zig](../src/root.zig) | The reusable terminal-core module (`@import("anvil")`). Re-exports `Pty`. VT parser + grid land here. |
+| [src/root.zig](../src/root.zig) | The reusable terminal-core module (`@import("anvil")`). Re-exports `Pty`, `Terminal`, `Grid`, `Cell`, `Parser`. |
 | [src/pty.zig](../src/pty.zig) | `Pty`: spawn `$SHELL` on a pty via `forkpty`, resize, teardown. The spine. |
+| [src/vt/cell.zig](../src/vt/cell.zig) | `Cell` (codepoint + fg/bg `Color` + `Attrs`). The atom of the grid. |
+| [src/vt/grid.zig](../src/vt/grid.zig) | `Grid`: flat `[]Cell` of rows×cols. `at`/`row`/`clear`/`scrollUp`. |
+| [src/vt/terminal.zig](../src/vt/terminal.zig) | `Terminal`: cursor + pen state. print/cursor-move/erase/SGR. The screen model. |
+| [src/vt/parser.zig](../src/vt/parser.zig) | `Parser`: byte-stream state machine (ground/escape/csi). UTF-8 + CSI → `Terminal` calls. |
 
 Core logic (root.zig) is kept separate from the front-end (main.zig) on
 purpose — M2's window/render will consume the core, same as Ghostty's libghostty.
@@ -50,7 +54,7 @@ Zig 0.16 is moving to a new `std.Io` model. `std.posix.read` exists but
 ## Roadmap
 
 - **M0 — PTY passthrough** ✅ A real shell runs on the pty; bytes shuttle both ways.
-- **M1 — VT core** parser (escape sequences) + cell grid + scrollback. Pure,
-  unit-tested, no rendering.
+- **M1 — VT core** ✅ parser (escape sequences) + cell grid. Pure, unit-tested,
+  no rendering. 12 tests green.
 - **M2 — Window + render** AppKit `NSWindow` + `CAMetalLayer`, draw the grid,
   wire input to the pty. First on-screen native terminal.
