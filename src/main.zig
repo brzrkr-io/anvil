@@ -1,20 +1,64 @@
 const std = @import("std");
 const window = @import("platform/window.zig");
+const cli = @import("cli.zig");
+const app = @import("app.zig");
 
 comptime {
-    _ = @import("app.zig");
+    _ = app;
 }
 
 pub fn main(init: std.process.Init.Minimal) void {
     var it = std.process.Args.Iterator.init(init.args);
-    _ = it.skip();
-    while (it.next()) |a| {
-        if (std.mem.eql(u8, a, "--dump")) {
-            if (it.next()) |path| {
-                window.dump(path.ptr, 1600, 1000);
-                return;
-            }
-        }
+    _ = it.skip(); // skip argv[0]
+
+    var buf: [512][*:0]const u8 = undefined;
+    var argc: usize = 0;
+    while (it.next()) |a| : (argc += 1) {
+        if (argc >= buf.len) break;
+        buf[argc] = a.ptr;
     }
-    window.run();
+
+    const args = cli.parse(buf[0..argc]);
+
+    switch (args.mode) {
+        .help => {
+            _ = std.c.write(1, cli.help_text.ptr, cli.help_text.len);
+            return;
+        },
+        .version => {
+            const msg = "anvil " ++ cli.version_string ++ "\n";
+            _ = std.c.write(1, msg.ptr, msg.len);
+            return;
+        },
+        .dump => {
+            if (args.dump_path) |p| {
+                var path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
+                @memcpy(path_buf[0..p.len], p);
+                path_buf[p.len] = 0;
+                window.dump(@ptrCast(path_buf[0..p.len :0]), 1600, 1000);
+            }
+            return;
+        },
+        .run => {
+            if (args.start_dir) |dir| {
+                var z_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
+                @memcpy(z_buf[0..dir.len], dir);
+                z_buf[dir.len] = 0;
+                const z: [*:0]const u8 = @ptrCast(z_buf[0..dir.len :0]);
+                if (std.c.access(z, 0) == 0) {
+                    app.start_cwd = dir;
+                } else {
+                    const msg = "anvil: path not found: ";
+                    _ = std.c.write(2, msg.ptr, msg.len);
+                    _ = std.c.write(2, dir.ptr, dir.len);
+                    _ = std.c.write(2, ", using default\n", 16);
+                }
+            }
+            window.run();
+        },
+    }
+}
+
+test {
+    _ = @import("cli.zig");
 }

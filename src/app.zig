@@ -51,6 +51,9 @@ var caldera_snap: caldera.Snapshot = .{};
 var caldera_sel: usize = 0;
 var caldera_drawer: bool = false;
 
+/// Set by main() before window.run() to open the first shell in a chosen dir.
+pub var start_cwd: []const u8 = "";
+
 var cfg: config.Config = .{};
 var cfg_loaded = false;
 var cfg_path_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -253,7 +256,7 @@ export fn anvil_resize(px_w: f32, px_h: f32) callconv(.c) void {
             mgr.spawnFromState(state, g.rows, g.cols) catch {};
             restored = mgr.tabs.items.len > 0;
         }
-        if (!restored) mgr.spawnFirst(g.rows, g.cols) catch return;
+        if (!restored) mgr.spawnFirstWithCwd(g.rows, g.cols, start_cwd) catch return;
         caldera.start(std.heap.page_allocator);
         ready = true;
         applyCursorDefault();

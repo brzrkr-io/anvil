@@ -36,6 +36,14 @@ pub const SessionManager = struct {
         self.focused = id;
     }
 
+    /// Like spawnFirst but starts the shell in `cwd` (empty string → default).
+    pub fn spawnFirstWithCwd(self: *SessionManager, rows: u16, cols: u16, cwd: []const u8) !void {
+        const id = try self.addWithCwd(rows, cols, cwd);
+        try self.tabs.append(self.alloc, pane.PaneTree.init(self.alloc, id));
+        self.active_tab = 0;
+        self.focused = id;
+    }
+
     /// Restore tabs and pane splits from a persisted state. Each leaf spawns a
     /// shell in its saved cwd. Falls back to nothing on allocation failure so
     /// the caller can fall back to spawnFirst.
