@@ -335,13 +335,13 @@ void anvil_run(void) {
         NSWindow *win = [[NSWindow alloc]
             initWithContentRect:frame
             styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
-                       NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable |
-                       NSWindowStyleMaskFullSizeContentView)
+                       NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable)
             backing:NSBackingStoreBuffered
             defer:NO];
         [win setTitle:@"Anvil"];
-        win.titlebarAppearsTransparent = YES;
         win.titleVisibility = NSWindowTitleHidden;
+        win.titlebarSeparatorStyle = NSTitlebarSeparatorStyleLine;
+        win.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
 
         AnvilView *view = [[AnvilView alloc] initWithFrame:frame];
         view.wantsLayer = YES;

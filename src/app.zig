@@ -12,7 +12,7 @@ const font_pt: f32 = 13.0;
 var term: Terminal = undefined;
 var parser: Parser = .{};
 var pty: Pty = undefined;
-var renderer = Renderer{ .cell_w = 16, .cell_h = 32, .pad_x = 8, .pad_y = 52 };
+var renderer = Renderer{ .cell_w = 16, .cell_h = 32, .pad_x = 8, .pad_y = 8 };
 var instances: [max_instances]inst.CellInstance = undefined;
 var ready = false;
 var spawned = false;
