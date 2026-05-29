@@ -76,6 +76,7 @@ extern void anvil_search_key(int key);
 extern void anvil_help_toggle(void);
 extern int anvil_help_open(void);
 extern void anvil_help_key(int key);
+extern void anvil_respawn(void);
 extern const char *anvil_copy(size_t *out_len);
 extern void anvil_set_theme_mode(int mode);
 extern void anvil_set_os_dark(int is_dark);
@@ -632,6 +633,7 @@ static void layoutTrafficLights(NSWindow *win) {
         else if (lc == 'd') anvil_split(shift ? 1 : 0);
         else if (lc == 't') anvil_new_tab();
         else if (lc == 'w') { if (shift) anvil_close_tab(); else anvil_close_pane(); }
+        else if (lc == 'r' && !shift) anvil_respawn();
         return;
     }
     if (s.length == 1) {

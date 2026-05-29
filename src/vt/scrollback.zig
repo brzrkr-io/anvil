@@ -22,6 +22,14 @@ pub const Scrollback = struct {
         self.alloc.free(self.buf);
     }
 
+    pub fn clear(self: *Scrollback) void {
+        var i: usize = 0;
+        while (i < self.count) : (i += 1) self.alloc.free(self.at(i));
+        self.count = 0;
+        self.start = 0;
+        self.pushed = 0;
+    }
+
     pub fn push(self: *Scrollback, src: []const Cell) void {
         const line = self.alloc.dupe(Cell, src) catch return;
         self.pushed += 1;

@@ -259,6 +259,36 @@ pub const Terminal = struct {
         self.scrollback.deinit();
     }
 
+    /// Clear the grid and scrollback; reset cursor and mode state. Preserves
+    /// the existing grid/scrollback allocations and theme query colors.
+    pub fn reset(self: *Terminal) void {
+        self.grid.clear();
+        if (self.stash) |*g| g.deinit();
+        self.stash = null;
+        self.scrollback.clear();
+        self.cx = 0;
+        self.cy = 0;
+        self.saved_cx = 0;
+        self.saved_cy = 0;
+        self.alt_cx = 0;
+        self.alt_cy = 0;
+        self.scroll_top = 0;
+        self.scroll_bot = self.grid.rows - 1;
+        self.reply_len = 0;
+        self.view_offset = 0;
+        self.selection = null;
+        self.pen = .{};
+        self.title_len = 0;
+        self.cwd_len = 0;
+        self.mouse = .off;
+        self.mouse_sgr = false;
+        self.bracketed_paste = false;
+        self.clip_len = 0;
+        self.clip_pending = false;
+        self.marks_start = 0;
+        self.marks_n = 0;
+    }
+
     /// Total logical lines = scrollback history + the live grid.
     pub fn totalLines(self: *const Terminal) usize {
         return self.scrollback.len() + self.grid.rows;

@@ -40,6 +40,7 @@ const tabs = [_]Binding{
 const terminal = [_]Binding{
     .{ .chord = "\u{2318}\u{2191}", .action = "Jump to Prev Prompt" },
     .{ .chord = "\u{2318}\u{2193}", .action = "Jump to Next Prompt" },
+    .{ .chord = "\u{2318}R", .action = "Restart Shell" },
 };
 
 pub const sections = [_]Section{
@@ -65,5 +66,5 @@ test "all bindings have non-empty chord and action" {
 }
 
 test "total binding count" {
-    try std.testing.expectEqual(@as(usize, 24), total_bindings);
+    try std.testing.expectEqual(@as(usize, 25), total_bindings);
 }

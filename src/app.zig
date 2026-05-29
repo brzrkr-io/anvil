@@ -36,7 +36,7 @@ var ready = false;
 var cpal = cmd.Palette{};
 var srch = search.Search{};
 var help_open: bool = false;
-var overlay: [64 * 7]f32 = undefined; // colored rects (x,y,w,h,r,g,b)
+var overlay: [128 * 7]f32 = undefined; // colored rects (x,y,w,h,r,g,b)
 
 var cfg: config.Config = .{};
 var cfg_loaded = false;
@@ -236,18 +236,32 @@ export fn anvil_resize(px_w: f32, px_h: f32) callconv(.c) void {
     relayout();
 }
 
-/// Drain pending shell output into the terminal. Returns 0 when the shell has
-/// exited (EOF) so the front-end can quit.
+/// Drain pending shell output into the terminal. Returns 0 only when every
+/// session has exited; individual dead panes show an in-pane indicator.
 export fn anvil_poll() callconv(.c) c_int {
     if (!ready) return 1;
     reloadConfigIfChanged();
     pushThemeColors();
-    var alive: c_int = 1;
+    var any_alive: bool = false;
     for (mgr.sessions.items) |*s| {
-        if (!s.poll() and s.id == mgr.focused) alive = 0;
+        if (!s.exited) {
+            if (!s.poll()) {
+                s.exited = true;
+            } else {
+                any_alive = true;
+            }
+        }
         if (s.term.takeClipboard()) |data| anvil_pasteboard_write(data.ptr, data.len);
     }
-    return alive;
+    return if (any_alive) 1 else 0;
+}
+
+/// Respawn the shell in the focused pane if it has exited. No-op if still alive.
+export fn anvil_respawn() callconv(.c) void {
+    if (!ready) return;
+    const s = focused();
+    if (!s.exited) return;
+    s.respawn() catch {};
 }
 
 export fn anvil_input(ptr: [*]const u8, len: usize) callconv(.c) void {
@@ -659,7 +673,10 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
         out.palette_text_count = @intCast(r.text);
         out.overlay_count = @intCast(r.rects);
     } else {
-        out.overlay_count = @intCast(emitRunRails(th));
+        const rails = emitRunRails(th);
+        const ex = emitExitedPanes(th, rails, n);
+        out.overlay_count = @intCast(rails + ex.rects);
+        out.palette_text_count = @intCast(ex.text);
     }
 
     out.pending_count = renderer.atlas.pending_n;
@@ -704,6 +721,44 @@ fn emitRunRails(th: *const theme.Theme) usize {
         }
     }
     return ri;
+}
+
+const exited_msg = "[process exited — Cmd+R to restart]";
+
+/// Render a "process exited" status bar at the bottom of each exited pane.
+/// `ri_start` is the first free slot in `overlay`; `inst_start` is the first
+/// free slot in `instances` beyond the already-written terminal cells.
+/// Returns counts of new rects and text instances written.
+fn emitExitedPanes(th: *const theme.Theme, ri_start: usize, inst_start: usize) struct { rects: usize, text: usize } {
+    const max_rect = overlay.len / 7;
+    var ri = ri_start;
+    var ni = inst_start;
+    const np = layoutPanes(&pane_buf);
+    for (pane_buf[0..np]) |p| {
+        const s = mgr.byId(p.id) orelse continue;
+        if (!s.exited) continue;
+        if (ri >= max_rect) break;
+        const cw = renderer.cell_w;
+        const ch = renderer.cell_h;
+        const bar_y = p.rect.y + p.rect.h - ch;
+        putRect(ri, p.rect.x, bar_y, p.rect.w, ch, th.ansi[1]);
+        ri += 1;
+        const tx = p.rect.x + renderer.pad_x;
+        for (exited_msg, 0..) |c, i| {
+            const gx = tx + @as(f32, @floatFromInt(i)) * cw;
+            if (gx + cw > p.rect.x + p.rect.w) break;
+            if (ni >= instances.len) break;
+            instances[ni] = .{
+                .x = gx,
+                .y = bar_y,
+                .fg = th.bg.f32x4(),
+                .bg = th.ansi[1].f32x4(),
+                .uv = renderer.atlas.uvOrigin(@intCast(c)),
+            };
+            ni += 1;
+        }
+    }
+    return .{ .rects = ri - ri_start, .text = ni - inst_start };
 }
 
 const tab_label_max = 16; // cells

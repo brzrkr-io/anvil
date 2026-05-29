@@ -9,6 +9,7 @@ pub const Session = struct {
     term: Terminal,
     parser: Parser = .{},
     pty: Pty,
+    exited: bool = false,
 
     pub fn init(alloc: std.mem.Allocator, rows: u16, cols: u16) !Session {
         var term = try Terminal.init(alloc, rows, cols);
@@ -45,6 +46,16 @@ pub const Session = struct {
                 .eof => return false,
             }
         }
+    }
+
+    /// Re-fork the PTY and reset the terminal. Called after the shell exits.
+    pub fn respawn(self: *Session) !void {
+        self.pty.deinit();
+        self.pty = try Pty.spawn(self.term.grid.rows, self.term.grid.cols);
+        self.pty.setNonblock();
+        self.term.reset();
+        self.parser = .{};
+        self.exited = false;
     }
 
     /// Send input to the shell; typing jumps to the live view and clears selection.
