@@ -45,6 +45,13 @@ vertex VOut v_main(uint vid [[vertex_id]],
     return o;
 }
 
+static inline float3 srgb_to_linear(float3 c) {
+    return select(c / 12.92, pow((c + 0.055) / 1.055, 2.4), c > 0.04045);
+}
+static inline float3 linear_to_srgb(float3 c) {
+    return select(c * 12.92, 1.055 * pow(c, 1.0 / 2.4) - 0.055, c > 0.0031308);
+}
+
 fragment float4 f_main(VOut in [[stage_in]],
                        texture2d<float> atlas [[texture(0)]]) {
     constexpr sampler s(coord::normalized, filter::nearest, address::clamp_to_edge);
@@ -59,12 +66,15 @@ fragment float4 f_main(VOut in [[stage_in]],
         discard_fragment();
     }
     float coverage = atlas.sample(s, in.uv).r;
-    float3 fg = in.fg.rgb;
-    if (in.flags & 4u) fg = mix(in.bg.rgb, fg, 0.55); // dim toward background
-    float3 rgb = mix(in.bg.rgb, fg, coverage);
-    if ((in.flags & 1u) && in.loc.y > 0.90 && in.loc.y < 0.96) rgb = fg; // underline
-    if ((in.flags & 2u) && in.loc.y > 0.48 && in.loc.y < 0.54) rgb = fg; // strike
-    return float4(rgb, 1.0);
+    // Blend glyph coverage in linear light, then re-encode: anti-aliased edges
+    // stay the right weight instead of the muddy/thin look of an sRGB-space mix.
+    float3 bg_lin = srgb_to_linear(in.bg.rgb);
+    float3 fg_lin = srgb_to_linear(in.fg.rgb);
+    if (in.flags & 4u) fg_lin = mix(bg_lin, fg_lin, 0.55); // dim toward background
+    float3 lin = mix(bg_lin, fg_lin, coverage);
+    if ((in.flags & 1u) && in.loc.y > 0.90 && in.loc.y < 0.96) lin = fg_lin; // underline
+    if ((in.flags & 2u) && in.loc.y > 0.48 && in.loc.y < 0.54) lin = fg_lin; // strike
+    return float4(linear_to_srgb(lin), 1.0);
 }
 
 // Solid-color pixel-space quad, used for chrome (title bar, separator).
