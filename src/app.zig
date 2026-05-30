@@ -717,9 +717,11 @@ export fn anvil_hover(x: f32, y: f32) callconv(.c) void {
     if (!ready) return;
     if (x == hover_x and y == hover_y) return;
     const was_row = hoverSidebarRow(hover_x, hover_y);
+    const was_rail = hoverRailSlot(hover_x, hover_y);
     hover_x = x;
     hover_y = y;
-    if (!sameHoverRow(hoverSidebarRow(x, y), was_row)) markDirty();
+    if (!sameHoverRow(hoverSidebarRow(x, y), was_row) or
+        !sameSlot(hoverRailSlot(x, y), was_rail)) markDirty();
 }
 
 fn sameHoverRow(a: ?HoverRow, b: ?HoverRow) bool {
@@ -728,11 +730,18 @@ fn sameHoverRow(a: ?HoverRow, b: ?HoverRow) bool {
     return a.?.kind == b.?.kind and a.?.idx == b.?.idx;
 }
 
+fn sameSlot(a: ?usize, b: ?usize) bool {
+    if (a == null and b == null) return true;
+    if (a == null or b == null) return false;
+    return a.? == b.?;
+}
+
 /// Clear hover state when the cursor leaves the view.
 export fn anvil_hover_exit() callconv(.c) void {
     if (!ready) return;
     if (hover_x < 0 and hover_y < 0) return;
-    const had = hoverSidebarRow(hover_x, hover_y) != null;
+    const had = hoverSidebarRow(hover_x, hover_y) != null or
+        hoverRailSlot(hover_x, hover_y) != null;
     hover_x = -1;
     hover_y = -1;
     if (had) markDirty();
@@ -1776,6 +1785,15 @@ fn emitShellRects(th: *const theme.Theme, np: usize) usize {
         putRect(ri, 0, cell_y, 2, chrome.rail_w, chrome.mineral); // mineral tick
         ri += 1;
     }
+    // Hover affordance: tint the rail cell under the cursor so the clickable
+    // tools read as live. Skip the active cell (already reads as selected).
+    if (hoverRailSlot(hover_x, hover_y)) |hi| {
+        if (hi != rail_active) {
+            const hy = body_top + 18 + @as(f32, @floatFromInt(hi)) * chrome.rail_w;
+            putRect(ri, 0, hy, chrome.rail_w, chrome.rail_w, chrome.hover);
+            ri += 1;
+        }
+    }
     if (sidebar_open) {
         putRect(ri, chrome.rail_w, body_top, sidebar_w, body_h, chrome.charcoal); // sidebar bg
         ri += 1;
@@ -2008,6 +2026,17 @@ const rail_glyphs = [_]u21{
 };
 const rail_active: usize = 0; // highlighted rail entry (terminal, for now)
 
+/// The activity-rail icon index under (x, y), or null. Mirrors railClick's
+/// hit-test exactly so hover feedback and click dispatch always agree.
+fn hoverRailSlot(x: f32, y: f32) ?usize {
+    if (zen or x < 0 or x >= chrome.rail_w) return null;
+    const top = bar_h + 18;
+    if (y < top) return null;
+    const idx: usize = @intFromFloat((y - top) / chrome.rail_w);
+    if (idx >= rail_glyphs.len) return null;
+    return idx;
+}
+
 /// Dispatch a click on the activity rail. Maps device-y to a rail icon and runs
 /// its action: terminal→zen, explorer→sidebar, search→find, runs→drawer.
 fn railClick(y: f32) void {
@@ -2036,11 +2065,15 @@ fn emitRail(start: usize) usize {
     // Center each glyph in its 56px slot (slots start at bar_h+18, matching the
     // active-cell rect and railClick hit-testing).
     var y: f32 = bar_h + 18 + (chrome.rail_w - chromeH()) / 2;
+    const hov = hoverRailSlot(hover_x, hover_y);
     for (rail_glyphs, 0..) |g, i| {
         const active = i == rail_active;
-        const c = if (active) chrome.mineral else chrome.alloy;
-        // Active glyph sits on the charcoal active cell; the rest on graphite.
-        const gbg = if (active) chrome.charcoal else chrome.graphite;
+        const hovered = !active and hov != null and hov.? == i;
+        // Hovered tool brightens toward mist; active stays mineral; rest alloy.
+        const c = if (active) chrome.mineral else if (hovered) chrome.mist else chrome.alloy;
+        // Glyph bg is opaque, so it must match the cell beneath: charcoal active
+        // cell, hover tint when hovered, else the graphite rail.
+        const gbg = if (active) chrome.charcoal else if (hovered) chrome.hover else chrome.graphite;
         _ = putChromeIcon(&n, cx, y, c, gbg, g);
         y += chrome.rail_w;
     }
@@ -2883,4 +2916,23 @@ test "scroll offset floor/frac split" {
     const cell_h: f32 = 32;
     const y_shift: f32 = -frac * cell_h;
     try std.testing.expect(@abs(y_shift - (-22.4)) < 1e-3);
+}
+
+test "hoverRailSlot: hit-tests rail icons, rejects outside the rail" {
+    zen = false;
+    const top = bar_h + 18; // first slot top
+    const w = chrome.rail_w;
+    // Each 56px slot maps to its icon index.
+    try std.testing.expectEqual(@as(?usize, 0), hoverRailSlot(20, top));
+    try std.testing.expectEqual(@as(?usize, 1), hoverRailSlot(20, top + w));
+    try std.testing.expectEqual(@as(?usize, rail_glyphs.len - 1), hoverRailSlot(20, top + w * (rail_glyphs.len - 1)));
+    // Below the last icon, above the first, right of the rail, and left of 0 miss.
+    try std.testing.expectEqual(@as(?usize, null), hoverRailSlot(20, top + w * rail_glyphs.len));
+    try std.testing.expectEqual(@as(?usize, null), hoverRailSlot(20, top - 1));
+    try std.testing.expectEqual(@as(?usize, null), hoverRailSlot(chrome.rail_w, top));
+    try std.testing.expectEqual(@as(?usize, null), hoverRailSlot(-1, top));
+    // Zen mode hides the rail entirely.
+    zen = true;
+    try std.testing.expectEqual(@as(?usize, null), hoverRailSlot(20, top));
+    zen = false;
 }
