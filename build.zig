@@ -23,6 +23,9 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addAnonymousImport("font_ttf", .{
         .root_source_file = b.path("assets/BlexMonoNerdFontMono-Regular.ttf"),
     });
+    exe.root_module.addAnonymousImport("font_ttf_bold", .{
+        .root_source_file = b.path("assets/BlexMonoNerdFontMono-Bold.ttf"),
+    });
     exe.root_module.addAnonymousImport("app_icon_png", .{
         .root_source_file = b.path("assets/app-icon.png"),
     });

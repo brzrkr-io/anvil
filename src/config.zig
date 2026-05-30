@@ -27,7 +27,7 @@ pub const Config = struct {
     cursor_smooth: bool = true,
     scroll_smooth: bool = true,
     background_opacity: f32 = 1.0,
-    font_weight: f32 = 0,
+    font_weight: f32 = 0, // > 0 selects the bold Nerd Font face; 0 = regular
 
     pub fn themeVariant(self: *const Config) []const u8 {
         return self.theme_variant[0..self.theme_variant_len];

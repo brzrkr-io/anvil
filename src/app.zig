@@ -19,6 +19,7 @@ const ipc = @import("ipc.zig");
 
 const shader_src = @embedFile("platform/shaders.metal");
 const font_data = @embedFile("font_ttf");
+const font_bold_data = @embedFile("font_ttf_bold");
 const icon_data = @embedFile("app_icon_png");
 
 /// Write UTF-8 text to the system pasteboard (OSC 52). Implemented in shim.m.
@@ -399,6 +400,11 @@ export fn anvil_shader_src(out_len: *usize) callconv(.c) [*]const u8 {
 export fn anvil_font_data(out_len: *usize) callconv(.c) [*]const u8 {
     out_len.* = font_data.len;
     return font_data.ptr;
+}
+
+export fn anvil_font_bold_data(out_len: *usize) callconv(.c) [*]const u8 {
+    out_len.* = font_bold_data.len;
+    return font_bold_data.ptr;
 }
 
 export fn anvil_icon_data(out_len: *usize) callconv(.c) [*]const u8 {
