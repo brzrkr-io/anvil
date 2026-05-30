@@ -316,9 +316,13 @@ fn focused() *Session {
 /// Cmd+Return or the rail's terminal icon.
 var zen: bool = false;
 
-/// Top command-bar height, collapsed to zero in zen mode.
+/// Top command-bar height. Kept in zen mode too: zen hides the side chrome,
+/// status bar, and panel inset for a focused terminal, but retains the compact
+/// title bar so the window has a drag handle and the traffic lights sit on a
+/// painted strip instead of bleeding the desktop through the transparent
+/// titlebar.
 fn barH() f32 {
-    return if (zen) 0 else bar_h;
+    return bar_h;
 }
 
 /// True when the SESSIONS/EXPLORER sidebar is shown (Option A chrome).
@@ -352,7 +356,7 @@ fn rightChromeW() f32 {
 /// (rail + sidebar), panel inset, and the per-pane header strip. Panes lay
 /// out inside the inset panel body.
 fn workspaceRect() pane.Rect {
-    if (zen) return .{ .x = 0, .y = 0, .w = win_w, .h = win_h };
+    if (zen) return .{ .x = 0, .y = bar_h, .w = win_w, .h = win_h - bar_h };
     const pp = chrome.panel_pad;
     const hs = chrome.header_strip_h;
     const sb = chrome.status_bar_h;
@@ -1414,7 +1418,7 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
     // Base shell overlay rects (panel frame + header strip + status-bar bg),
     // emitted every frame before any modal rects. These draw in the overlay
     // pass (over terminal cells, under palette text).
-    const base_ri = if (zen) 0 else emitShellRects(th, np);
+    const base_ri = if (zen) emitZenBar(0) else emitShellRects(th, np);
 
     out.count = @intCast(n); // terminal cells only; chrome glyphs are palette text
     out.pane_range_count = @intCast(pr_n);
@@ -1426,8 +1430,8 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
     // contiguous starting at out.count: chrome first, then any modal/extra text.
     // Zen mode suppresses all persistent chrome; modal overlays still emit below.
     var pt = n;
+    pt += emitCommandBar(th, pt, np); // compact title bar: kept in zen too
     if (!zen) {
-        pt += emitCommandBar(th, pt, np);
         pt += emitPanelHeaders(th, pt, np);
         pt += emitStatusBar(th, pt);
         pt += emitRail(pt);
@@ -1764,6 +1768,32 @@ fn crumbBox(buf: []u8) ?Crumb {
 /// empty section still draws one "none" row.
 fn drawerSectionRows(count: usize) f32 {
     return @floatFromInt(@max(count, 1));
+}
+
+/// Compact title bar for zen mode: just the command-bar underline and the
+/// recessed breadcrumb pill plate. The strip fill + traffic-light backing are
+/// painted by the shim from bar_color/sep_color (barH stays non-zero in zen);
+/// here we add the hairline and crumb plate so the bar reads as a boxed console
+/// strip. Side chrome, status bar, and panel frame stay hidden.
+fn emitZenBar(start: usize) usize {
+    const cs = chromeSurface();
+    var ri = start;
+    putRect(ri, 0, bar_h - 1, win_w, 1, cs.line); // command-bar underline
+    ri += 1;
+    var cbuf: [192]u8 = undefined;
+    if (crumbBox(&cbuf)) |c| {
+        putRect(ri, c.px, c.py, c.pw, c.ph, cs.graphite); // recessed fill
+        ri += 1;
+        putRect(ri, c.px, c.py, c.pw, 1, cs.line); // top
+        ri += 1;
+        putRect(ri, c.px, c.py + c.ph - 1, c.pw, 1, cs.line); // bottom
+        ri += 1;
+        putRect(ri, c.px, c.py, 1, c.ph, cs.line); // left
+        ri += 1;
+        putRect(ri, c.px + c.pw - 1, c.py, 1, c.ph, cs.line); // right
+        ri += 1;
+    }
+    return ri - start;
 }
 
 fn emitShellRects(th: *const theme.Theme, np: usize) usize {
