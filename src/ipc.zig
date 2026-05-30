@@ -1,12 +1,13 @@
-// IPC server for the running Anvil window.  A Unix domain socket at
-// $TMPDIR/anvil-<uid>.sock lets `anvil split h|v` and `anvil tab [path]`
-// drive an ALREADY-RUNNING window from the shell.
+// IPC server for a running Anvil window.  Each window process binds its own
+// Unix domain socket at $TMPDIR/anvil-<uid>-<pid>.sock, so `anvil split|tab|
+// run|pipe` can drive an ALREADY-RUNNING window from the shell.
 //
-// Single-binder / first-window contract: whichever Anvil process wins the
-// bind() owns the socket.  A second launched window detects a live server
-// (connect succeeds) and skips starting its own IPC server — so verb commands
-// always target the first window.  This is intentional; multi-window routing
-// is deferred to a later slice.
+// Per-window routing: every window runs its own listener (one socket per pid),
+// preserving the process-per-window crash isolation.  The client scans the
+// directory and targets the newest-by-mtime socket — the front window — or an
+// explicit `--window <pid>`.  A window bumps its socket mtime on becoming
+// active (touchFocus), so "front window" follows focus.  Sockets whose owner
+// has died are reaped on the failed connect and the scan retried.
 //
 // Threading: the listener runs on its own thread.  It MUST NOT call any
 // app.zig exports directly — those assume the AppKit main thread and touch
