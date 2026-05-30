@@ -137,6 +137,78 @@ fn pollBlink() void {
     }
 }
 
+// Cursor animation state. cur_anim_init=false causes the next call to snap
+// instead of glide, which is the right behavior on first use and after
+// cursor_smooth is toggled off then on.
+var cur_anim_x: f32 = 0;
+var cur_anim_y: f32 = 0;
+var cur_anim_id: usize = 0;
+var cur_anim_init: bool = false;
+var cur_anim_last_ms: i64 = 0;
+
+/// Read the MONOTONIC clock and return milliseconds.
+fn nowMs() i64 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(.MONOTONIC, &ts);
+    return @as(i64, ts.sec) * 1000 + @divTrunc(ts.nsec, std.time.ns_per_ms);
+}
+
+/// Exponential-decay animation for the live cursor. Takes the snapped target
+/// position (from cursorInstance), the focused session id, and returns the
+/// current animated position. Calls markDirty() while the cursor is in motion;
+/// does NOT call markDirty() once settled (distance < 0.5px), which lets the
+/// terminal go idle.
+///
+/// Snap conditions (immediate teleport, no glide):
+///   - first call (cur_anim_init == false)
+///   - session id changed (tab/pane switch)
+///   - large jump (> 6 cells) — avoids long cross-screen swooshes in editors
+fn animateCursor(target_x: f32, target_y: f32, id: usize) struct { x: f32, y: f32 } {
+    const tau: f32 = 0.028; // seconds; tunes glide speed
+    const snap_cells: f32 = 6;
+    const settle_px: f32 = 0.5;
+    const max_dt_ms: i64 = 64; // clamp stalled frame delta
+
+    const now = nowMs();
+    const snap_threshold_x = snap_cells * renderer.cell_w;
+    const snap_threshold_y = snap_cells * renderer.cell_h;
+
+    const should_snap = !cur_anim_init or
+        id != cur_anim_id or
+        @abs(target_x - cur_anim_x) > snap_threshold_x or
+        @abs(target_y - cur_anim_y) > snap_threshold_y;
+
+    if (should_snap) {
+        cur_anim_x = target_x;
+        cur_anim_y = target_y;
+        cur_anim_id = id;
+        cur_anim_init = true;
+        cur_anim_last_ms = now;
+        return .{ .x = target_x, .y = target_y };
+    }
+
+    const raw_dt = now - cur_anim_last_ms;
+    const dt_ms = if (raw_dt > max_dt_ms) max_dt_ms else raw_dt;
+    cur_anim_last_ms = now;
+
+    const dt_s: f32 = @as(f32, @floatFromInt(dt_ms)) / 1000.0;
+    const alpha = 1.0 - std.math.exp(-dt_s / tau);
+
+    cur_anim_x += (target_x - cur_anim_x) * alpha;
+    cur_anim_y += (target_y - cur_anim_y) * alpha;
+
+    const dx = @abs(target_x - cur_anim_x);
+    const dy = @abs(target_y - cur_anim_y);
+    if (dx < settle_px and dy < settle_px) {
+        cur_anim_x = target_x;
+        cur_anim_y = target_y;
+        return .{ .x = target_x, .y = target_y };
+    }
+
+    markDirty();
+    return .{ .x = cur_anim_x, .y = cur_anim_y };
+}
+
 /// Stamp the configured default cursor onto the focused session. Programs may
 /// still override it at runtime via DECSCUSR.
 fn applyCursorDefault() void {
@@ -994,7 +1066,15 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
         const show_live_cursor = s.id == mgr.focused and !copy_mode.open and
             s.term.view_offset == 0 and cursorVisible(&s.term);
         if (show_live_cursor) {
-            instances[n] = renderer.cursorInstance(&s.term, ox, oy);
+            var ci = renderer.cursorInstance(&s.term, ox, oy);
+            if (cfg.cursor_smooth) {
+                const anim = animateCursor(ci.x, ci.y, s.id);
+                ci.x = anim.x;
+                ci.y = anim.y;
+            } else {
+                cur_anim_init = false;
+            }
+            instances[n] = ci;
             n += 1;
         }
         if (s.id == mgr.focused and copy_mode.open) {
@@ -1612,4 +1692,47 @@ fn emitHelp(th: *const theme.Theme, start: usize) struct { text: usize, rects: u
     }
 
     return .{ .text = n - start, .rects = ri };
+}
+
+test "animateCursor: snaps on first call (cur_anim_init=false)" {
+    cur_anim_init = false;
+    const r = animateCursor(100, 200, 1);
+    try std.testing.expectEqual(@as(f32, 100), r.x);
+    try std.testing.expectEqual(@as(f32, 200), r.y);
+    try std.testing.expect(cur_anim_init);
+    try std.testing.expectEqual(@as(f32, 100), cur_anim_x);
+    try std.testing.expectEqual(@as(f32, 200), cur_anim_y);
+}
+
+test "animateCursor: snaps on id change" {
+    cur_anim_init = true;
+    cur_anim_id = 1;
+    cur_anim_x = 50;
+    cur_anim_y = 50;
+    const r = animateCursor(200, 300, 2);
+    try std.testing.expectEqual(@as(f32, 200), r.x);
+    try std.testing.expectEqual(@as(f32, 300), r.y);
+    try std.testing.expectEqual(@as(usize, 2), cur_anim_id);
+}
+
+test "animateCursor: snaps on large jump" {
+    cur_anim_init = true;
+    cur_anim_id = 5;
+    cur_anim_x = 0;
+    cur_anim_y = 0;
+    // renderer.cell_w = 16 at init; 6 cells = 96px. Jump to 500px is > 96px.
+    const r = animateCursor(500, 500, 5);
+    try std.testing.expectEqual(@as(f32, 500), r.x);
+    try std.testing.expectEqual(@as(f32, 500), r.y);
+}
+
+test "animateCursor: already at target returns target without moving" {
+    cur_anim_init = true;
+    cur_anim_id = 3;
+    cur_anim_x = 80;
+    cur_anim_y = 64;
+    cur_anim_last_ms = nowMs();
+    const r = animateCursor(80, 64, 3);
+    try std.testing.expectEqual(@as(f32, 80), r.x);
+    try std.testing.expectEqual(@as(f32, 64), r.y);
 }

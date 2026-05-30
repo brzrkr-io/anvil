@@ -24,6 +24,7 @@ pub const Config = struct {
     padding_y: f32 = 6,
     cursor_style: CursorStyle = .block,
     cursor_blink: bool = true,
+    cursor_smooth: bool = true,
 
     pub fn themeVariant(self: *const Config) []const u8 {
         return self.theme_variant[0..self.theme_variant_len];
@@ -144,6 +145,16 @@ fn applyKey(cfg: *Config, key: []const u8, val: []const u8, err: ?*[128]u8, err_
             return;
         }
         setErr(err, err_len, "config.toml: invalid cursor_blink '{s}' (line {})", .{ val, line_num });
+    } else if (std.mem.eql(u8, key, "cursor_smooth")) {
+        if (std.mem.eql(u8, val, "true")) {
+            cfg.cursor_smooth = true;
+            return;
+        }
+        if (std.mem.eql(u8, val, "false")) {
+            cfg.cursor_smooth = false;
+            return;
+        }
+        setErr(err, err_len, "config.toml: invalid cursor_smooth '{s}' (line {})", .{ val, line_num });
     } else if (std.mem.eql(u8, key, "theme_variant")) {
         const n = @min(val.len, cfg.theme_variant.len);
         @memcpy(cfg.theme_variant[0..n], val[0..n]);
@@ -227,6 +238,15 @@ test "parse reads font size, padding, and cursor options" {
     try std.testing.expectEqual(@as(f32, 4), cfg.padding_y);
     try std.testing.expectEqual(CursorStyle.bar, cfg.cursor_style);
     try std.testing.expect(!cfg.cursor_blink);
+}
+
+test "parse reads cursor_smooth; defaults true" {
+    const cfg_default = parse("theme = dark\n");
+    try std.testing.expect(cfg_default.cursor_smooth);
+    const cfg_off = parse("cursor_smooth = false\n");
+    try std.testing.expect(!cfg_off.cursor_smooth);
+    const cfg_on = parse("cursor_smooth = true\n");
+    try std.testing.expect(cfg_on.cursor_smooth);
 }
 
 test "parse rejects out-of-range font size" {
