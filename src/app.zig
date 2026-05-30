@@ -304,6 +304,16 @@ fn focused() *Session {
     return mgr.focusedSession().?;
 }
 
+/// Zen / terminal-only mode: hides all chrome (top bar, status bar, rail,
+/// sidebar, drawer, panel inset) so the terminal fills the window. Toggled by
+/// Cmd+Return or the rail's terminal icon.
+var zen: bool = false;
+
+/// Top command-bar height, collapsed to zero in zen mode.
+fn barH() f32 {
+    return if (zen) 0 else bar_h;
+}
+
 /// True when the SESSIONS/EXPLORER sidebar is shown (Option A chrome).
 var sidebar_open: bool = true;
 
@@ -317,23 +327,25 @@ const sidebar_w_max: f32 = 520;
 var hover_x: f32 = -1;
 var hover_y: f32 = -1;
 
-/// Left chrome width: activity rail plus the sidebar when open.
+/// Left chrome width: activity rail plus the sidebar when open. Zero in zen.
 fn leftChromeW() f32 {
+    if (zen) return 0;
     return chrome.rail_w + (if (sidebar_open) sidebar_w else 0);
 }
 
 /// True when the right context drawer (RUNS / TRACE / AGENT) is shown (Option C).
 var drawer_open: bool = true;
 
-/// Right chrome width: the context drawer when open, else zero.
+/// Right chrome width: the context drawer when open, else zero. Zero in zen.
 fn rightChromeW() f32 {
-    return if (drawer_open) chrome.drawer_w else 0;
+    return if (drawer_open and !zen) chrome.drawer_w else 0;
 }
 
 /// The pane area: the window minus command bar, status bar, left chrome
 /// (rail + sidebar), panel inset, and the per-pane header strip. Panes lay
 /// out inside the inset panel body.
 fn workspaceRect() pane.Rect {
+    if (zen) return .{ .x = 0, .y = 0, .w = win_w, .h = win_h };
     const pp = chrome.panel_pad;
     const hs = chrome.header_strip_h;
     const sb = chrome.status_bar_h;
@@ -749,7 +761,7 @@ export fn anvil_mouse(kind: c_int, x: f32, y: f32) callconv(.c) void {
     if (!ready) return;
     // Sidebar resize: grab the right edge and drag. A 6px band around the edge
     // starts the drag; subsequent motion sets the width; release ends it.
-    if (sidebar_open) {
+    if (sidebar_open and !zen) {
         const edge = leftChromeW();
         const in_body = y > bar_h and y < win_h - chrome.status_bar_h;
         if (kind == 0 and in_body and @abs(x - edge) <= 6) {
@@ -772,8 +784,10 @@ export fn anvil_mouse(kind: c_int, x: f32, y: f32) callconv(.c) void {
     // selection underneath (which would start a phantom selection at the
     // clamped cell). A SESSIONS row switches to that tab; an EXPLORER row
     // inserts the entry name at the focused prompt (the "open" action).
-    if (kind == 0 and x < leftChromeW()) {
-        if (sidebar_open and x >= chrome.rail_w) {
+    if (kind == 0 and !zen and x < leftChromeW()) {
+        if (x < chrome.rail_w) {
+            railClick(y);
+        } else if (sidebar_open) {
             if (hoverSidebarRow(x, y)) |hr| switch (hr.kind) {
                 0 => {
                     mgr.selectTab(hr.idx);
@@ -1165,6 +1179,16 @@ export fn anvil_drawer_toggle() callconv(.c) void {
     markDirty();
 }
 
+/// Zen / terminal-only mode: hide all chrome (top bar, rail, sidebar, drawer,
+/// status bar, panel inset) and let the terminal fill the window. Toggled from
+/// the rail's terminal icon or Cmd+Return.
+export fn anvil_zen_toggle() callconv(.c) void {
+    if (!ready) return;
+    zen = !zen;
+    relayout();
+    markDirty();
+}
+
 /// key: 0 esc/close, 1 up, 2 down.
 export fn anvil_caldera_drawer_key(key: c_int) callconv(.c) void {
     switch (key) {
@@ -1275,7 +1299,7 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
         .pad_x = renderer.pad_x,
         .pad_y = renderer.pad_y,
         .cell_uv = renderer.atlas.cellUV(),
-        .bar_h = bar_h,
+        .bar_h = barH(),
         .bg = th.bg.f32x3(),
         .bg_alpha = effectiveBackgroundOpacity(),
         .bar_color = th.bar.f32x3(),
@@ -1348,7 +1372,7 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
         if (pr_n < max_panes) {
             const sx: f32 = p.rect.x;
             const sy_raw: f32 = p.rect.y;
-            const sy: f32 = @max(sy_raw, bar_h);
+            const sy: f32 = @max(sy_raw, barH());
             const sw: f32 = p.rect.w;
             const sh: f32 = @max(0, p.rect.h - (sy - sy_raw));
             pane_range_buf[pr_n] = .{
@@ -1365,7 +1389,7 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
     // Base shell overlay rects (panel frame + header strip + status-bar bg),
     // emitted every frame before any modal rects. These draw in the overlay
     // pass (over terminal cells, under palette text).
-    const base_ri = emitShellRects(th, np);
+    const base_ri = if (zen) 0 else emitShellRects(th, np);
 
     out.count = @intCast(n); // terminal cells only; chrome glyphs are palette text
     out.pane_range_count = @intCast(pr_n);
@@ -1375,13 +1399,16 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
     // palette-text pass — after the overlay rects — so the header and status
     // backgrounds do not paint over their own labels. All palette text is
     // contiguous starting at out.count: chrome first, then any modal/extra text.
+    // Zen mode suppresses all persistent chrome; modal overlays still emit below.
     var pt = n;
-    pt += emitCommandBar(th, pt, np);
-    pt += emitPanelHeaders(th, pt, np);
-    pt += emitStatusBar(th, pt);
-    pt += emitRail(pt);
-    pt += emitSidebar(pt);
-    pt += emitDrawer(pt);
+    if (!zen) {
+        pt += emitCommandBar(th, pt, np);
+        pt += emitPanelHeaders(th, pt, np);
+        pt += emitStatusBar(th, pt);
+        pt += emitRail(pt);
+        pt += emitSidebar(pt);
+        pt += emitDrawer(pt);
+    }
     const chrome_text: usize = pt - n;
 
     // Modal overlays append after the base shell rects (base_ri slots used).
@@ -1911,6 +1938,26 @@ const rail_glyphs = [_]u21{
     0xf013, // gear / settings
 };
 const rail_active: usize = 0; // highlighted rail entry (terminal, for now)
+
+/// Dispatch a click on the activity rail. Maps device-y to a rail icon and runs
+/// its action: terminal→zen, explorer→sidebar, search→find, runs→drawer.
+fn railClick(y: f32) void {
+    const top = bar_h + 18;
+    if (y < top) return;
+    const idx: usize = @intFromFloat((y - top) / chrome.rail_w);
+    if (idx >= rail_glyphs.len) return;
+    switch (idx) {
+        0 => anvil_zen_toggle(), // terminal: zen toggle
+        1 => { // explorer: toggle sidebar
+            sidebar_open = !sidebar_open;
+            relayout();
+            markDirty();
+        },
+        2 => anvil_search_toggle(), // search
+        3 => anvil_drawer_toggle(), // runs
+        else => {}, // settings: no-op for now
+    }
+}
 
 /// Left activity rail: a vertical stack of Nerd Font icons. The active entry
 /// is mineral; the rest are alloy. Drawn as palette text over the rail bg.

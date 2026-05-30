@@ -105,6 +105,7 @@ extern void anvil_respawn(void);
 extern const char *anvil_copy(size_t *out_len);
 extern void anvil_caldera_drawer_toggle(void);
 extern void anvil_drawer_toggle(void);
+extern void anvil_zen_toggle(void);
 extern int anvil_caldera_drawer_open(void);
 extern void anvil_caldera_drawer_key(int key);
 extern void anvil_set_theme_mode(int mode);
@@ -970,7 +971,7 @@ static void layoutTrafficLights(NSWindow *win) {
         if (ch >= '1' && ch <= '9') { anvil_select_tab((int)(ch - '1')); return; }
         if (ch == ']' || ch == '}') { anvil_cycle_tab(1); return; }
         if (ch == '[' || ch == '{') { anvil_cycle_tab(-1); return; }
-        if (ch == '\r' || ch == '\n') { if (shift) { anvil_zoom_toggle(); return; } }
+        if (ch == '\r' || ch == '\n') { if (shift) anvil_zoom_toggle(); else anvil_zen_toggle(); return; }
         if (ch == '=' || ch == '+') { anvil_balance_panes(); return; }
         unichar lc = (ch >= 'A' && ch <= 'Z') ? ch + 32 : ch;
         if (lc == 'c') [self copySelection];
