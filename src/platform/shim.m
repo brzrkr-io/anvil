@@ -50,6 +50,7 @@ extern const uint8_t *anvil_icon_data(size_t *len);
 extern void anvil_resize(float w, float h);
 extern void anvil_frame(FrameData *out);
 extern void anvil_atlas_params(AtlasParams *out);
+extern void anvil_prewarm_atlas(const void **out_ptr, uint32_t *out_count);
 extern void anvil_set_metrics(float cell_w, float cell_h);
 extern int anvil_poll(void);
 extern void anvil_input(const char *bytes, size_t len);
@@ -96,6 +97,8 @@ extern int anvil_theme_is_dark(void);
 extern void anvil_save_session(void);
 extern void anvil_ipc_focus(void);
 extern int anvil_link_at(float x, float y, const char **out_ptr, size_t *out_len);
+extern bool anvil_needs_render(void);
+extern void anvil_force_render(void);
 
 #define INSTANCE_STRIDE (13 * sizeof(float))
 #define MAX_INSTANCES 60000
@@ -309,6 +312,8 @@ static void render(void) {
         NSString *title = [[NSString alloc] initWithBytes:tbuf length:tn encoding:NSUTF8StringEncoding];
         if (title && ![gWindow.title isEqualToString:title]) gWindow.title = title;
     }
+
+    if (!anvil_needs_render()) return;
 
     FrameData fd = {0};
     anvil_frame(&fd);
@@ -820,6 +825,7 @@ static void layoutTrafficLights(NSWindow *win) {
 - (void)applicationDidBecomeActive:(NSNotification *)n {
     (void)n;
     anvil_ipc_focus();
+    anvil_force_render();
 }
 @end
 
@@ -934,6 +940,18 @@ void anvil_run(void) {
 
         buildPipeline();
         buildAtlas();
+
+        // Rasterize common TUI glyphs before the first frame to avoid
+        // per-glyph stall during initial paint (vim, lazygit, btop).
+        {
+            const void *pw_ptr = NULL;
+            uint32_t pw_count = 0;
+            anvil_prewarm_atlas(&pw_ptr, &pw_count);
+            const uint32_t *pg = (const uint32_t *)pw_ptr;
+            for (uint32_t i = 0; i < pw_count; i++) {
+                rasterizeGlyph(pg[i * 3], pg[i * 3 + 1], pg[i * 3 + 2]);
+            }
+        }
 
         NSRect frame = NSMakeRect(0, 0, 800, 500);
         NSWindow *win = [[NSWindow alloc]

@@ -52,6 +52,11 @@ var caldera_snap: caldera.Snapshot = .{};
 var caldera_sel: usize = 0;
 var caldera_drawer: bool = false;
 
+var frame_dirty: bool = true;
+inline fn markDirty() void {
+    frame_dirty = true;
+}
+
 /// Set by main() before window.run() to open the first shell in a chosen dir.
 pub var start_cwd: []const u8 = "";
 
@@ -98,16 +103,38 @@ fn loadConfig() void {
     cfg_mtime = config.mtime(path);
 }
 
-/// Whether the cursor is in its visible blink phase. Steady (non-blink)
-/// cursors are always visible. ~530 ms half-period, free-running off the
-/// wall clock since the render loop ticks at 60 fps.
-fn cursorVisible(t: *const @import("vt/terminal.zig").Terminal) bool {
-    if (!t.cursor_blink) return true;
+const blink_period_ms = 530;
+
+fn currentBlinkPhase() bool {
     var ts: std.c.timespec = undefined;
     _ = std.c.clock_gettime(.MONOTONIC, &ts);
     const ms = @as(i64, ts.sec) * 1000 + @divTrunc(ts.nsec, std.time.ns_per_ms);
-    const period_ms = 530;
-    return @mod(ms, period_ms * 2) < period_ms;
+    return @mod(ms, blink_period_ms * 2) < blink_period_ms;
+}
+
+fn cursorVisible(t: *const @import("vt/terminal.zig").Terminal) bool {
+    if (!t.cursor_blink) return true;
+    return currentBlinkPhase();
+}
+
+var last_blink_phase: bool = false;
+
+fn blinkActive() bool {
+    if (cpal.open or srch.open or help_open or copy_mode.open or caldera_drawer) return false;
+    const s = focused();
+    return s.id == mgr.focused and !s.exited and s.term.cursor_blink and s.term.view_offset == 0;
+}
+
+fn pollBlink() void {
+    if (!blinkActive()) {
+        last_blink_phase = false;
+        return;
+    }
+    const phase = currentBlinkPhase();
+    if (phase != last_blink_phase) {
+        last_blink_phase = phase;
+        markDirty();
+    }
 }
 
 /// Stamp the configured default cursor onto the focused session. Programs may
@@ -130,7 +157,8 @@ fn reloadConfigIfChanged() void {
         if (m == prev) return;
     }
     loadConfig();
-    if (ready) relayout(); // padding may have changed the usable grid
+    markDirty();
+    if (ready) relayout();
 }
 
 fn focused() *Session {
@@ -211,10 +239,12 @@ fn updateThemeEnv() void {
 export fn anvil_set_theme_mode(m: c_int) callconv(.c) void {
     if (m < 0 or m > 2) return;
     theme_mode = @enumFromInt(m);
+    markDirty();
 }
 
 export fn anvil_set_os_dark(d: c_int) callconv(.c) void {
     os_dark = d != 0;
+    markDirty();
 }
 
 export fn anvil_theme_is_dark() callconv(.c) c_int {
@@ -247,6 +277,18 @@ export fn anvil_atlas_params(out: *AtlasParams) callconv(.c) void {
     out.* = .{ .cols = atlasmod.cols, .rows = atlasmod.rows_n, .pt_size = cfg.font_size };
 }
 
+/// Queue the common TUI glyph set into the atlas so drainPending can upload
+/// them before the first frame. out_ptr receives a pointer to the pending
+/// PendingGlyph array; out_count receives the number of entries queued.
+export fn anvil_prewarm_atlas(out_ptr: **const anyopaque, out_count: *u32) callconv(.c) void {
+    var cp: u21 = 0x21;
+    while (cp <= 0x7e) : (cp += 1) _ = renderer.atlas.slotFor(cp);
+    cp = 0x2500;
+    while (cp <= 0x259f) : (cp += 1) _ = renderer.atlas.slotFor(cp);
+    out_ptr.* = &renderer.atlas.pending;
+    out_count.* = renderer.atlas.pending_n;
+}
+
 export fn anvil_set_metrics(cell_w: f32, cell_h: f32) callconv(.c) void {
     renderer.cell_w = cell_w;
     renderer.cell_h = cell_h;
@@ -271,8 +313,10 @@ export fn anvil_resize(px_w: f32, px_h: f32) callconv(.c) void {
         ipc.start();
         ready = true;
         applyCursorDefault();
+        markDirty();
         return;
     }
+    markDirty();
     relayout();
 }
 
@@ -287,11 +331,10 @@ export fn anvil_ipc_focus() callconv(.c) void {
     ipc.touchFocus();
 }
 
-/// Drain pending shell output into the terminal. Returns 0 only when every
-/// session has exited; individual dead panes show an in-pane indicator.
 fn drainIpc() void {
     var cmds: [32]ipc.Command = undefined;
     const n = ipc.takeCommands(&cmds);
+    if (n > 0) markDirty();
     for (cmds[0..n]) |icmd| {
         switch (icmd) {
             .split => |axis| {
@@ -324,22 +367,40 @@ fn drainIpc() void {
     }
 }
 
+var last_forced_ms: i64 = 0;
+const force_interval_ms: i64 = 2000;
+
+export fn anvil_needs_render() callconv(.c) bool {
+    const d = frame_dirty;
+    frame_dirty = false;
+    return d;
+}
+
+export fn anvil_force_render() callconv(.c) void {
+    markDirty();
+}
+
 export fn anvil_poll() callconv(.c) c_int {
     if (!ready) return 1;
     drainIpc();
     reloadConfigIfChanged();
     pushThemeColors();
+    if (caldera_drawer) markDirty();
     var any_alive: bool = false;
     for (mgr.sessions.items) |*s| {
         if (!s.exited) {
-            if (!s.poll()) {
+            const r = s.poll();
+            if (!r.alive) {
                 s.exited = true;
+                markDirty();
             } else {
                 any_alive = true;
+                if (r.consumed) markDirty();
             }
         }
         if (s.term.takeClipboard()) |data| anvil_pasteboard_write(data.ptr, data.len);
         if (s.term.takeNotify()) |n| {
+            markDirty();
             var title_buf: [64]u8 = undefined;
             var body_buf: [64]u8 = undefined;
             const title_s = std.fmt.bufPrintZ(&title_buf, "Command finished", .{}) catch continue;
@@ -350,6 +411,17 @@ export fn anvil_poll() callconv(.c) c_int {
             anvil_notify(title_s, body_s);
         }
     }
+    // Periodic safety net: force a full redraw at most every ~2s.
+    {
+        var ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(.MONOTONIC, &ts);
+        const now_ms = @as(i64, ts.sec) * 1000 + @divTrunc(ts.nsec, std.time.ns_per_ms);
+        if (now_ms - last_forced_ms >= force_interval_ms) {
+            last_forced_ms = now_ms;
+            markDirty();
+        }
+    }
+    pollBlink();
     return if (any_alive) 1 else 0;
 }
 
@@ -359,11 +431,13 @@ export fn anvil_respawn() callconv(.c) void {
     const s = focused();
     if (!s.exited) return;
     s.respawn() catch {};
+    markDirty();
 }
 
 export fn anvil_input(ptr: [*]const u8, len: usize) callconv(.c) void {
     if (!ready) return;
     focused().write(ptr[0..len]);
+    markDirty();
 }
 
 /// Paste clipboard text. Wraps in bracketed-paste markers when the program
@@ -378,6 +452,7 @@ export fn anvil_paste(ptr: [*]const u8, len: usize) callconv(.c) void {
     } else {
         s.write(ptr[0..len]);
     }
+    markDirty();
 }
 
 export fn anvil_scroll(delta: c_int) callconv(.c) void {
@@ -388,10 +463,12 @@ export fn anvil_scroll(delta: c_int) callconv(.c) void {
         const cb: u8 = if (delta > 0) 64 else 65;
         var n: c_int = if (delta > 0) delta else -delta;
         while (n > 0) : (n -= 1) sendMouseReport(s, cb, 0, 0, false);
+        markDirty();
         return;
     }
     s.term.clearSelection();
     s.term.scrollView(@intCast(delta));
+    markDirty();
 }
 
 /// Jump the focused pane's view to the previous (dir < 0) or next (dir > 0)
@@ -401,6 +478,7 @@ export fn anvil_jump_prompt(dir: c_int) callconv(.c) void {
     const s = focused();
     s.term.clearSelection();
     s.term.jumpPrompt(@intCast(dir));
+    markDirty();
 }
 
 fn contains(r: pane.Rect, x: f32, y: f32) bool {
@@ -451,6 +529,7 @@ export fn anvil_mouse(kind: c_int, x: f32, y: f32) callconv(.c) void {
         0 => s.term.selectStart(row, col),
         else => s.term.selectExtend(row, col),
     }
+    markDirty();
 }
 
 /// Encode one mouse event for the PTY. SGR (1006) when the program enabled it,
@@ -478,12 +557,14 @@ export fn anvil_split(axis: c_int) callconv(.c) void {
     mgr.splitFocused(a, s.term.grid.rows, s.term.grid.cols) catch return;
     applyCursorDefault();
     relayout();
+    markDirty();
 }
 
 export fn anvil_close_pane() callconv(.c) void {
     if (!ready) return;
     mgr.closeFocused();
     relayout();
+    markDirty();
 }
 
 /// dir: 0 left, 1 right, 2 up, 3 down.
@@ -491,6 +572,7 @@ export fn anvil_focus_dir(dir: c_int) callconv(.c) void {
     if (!ready) return;
     if (dir < 0 or dir > 3) return;
     mgr.focusNeighbor(workspaceRect(), @enumFromInt(dir), &pane_buf);
+    markDirty();
 }
 
 /// Grow the focused pane toward `dir` (0 left, 1 right, 2 up, 3 down).
@@ -499,6 +581,7 @@ export fn anvil_resize_pane(dir: c_int) callconv(.c) void {
     if (dir < 0 or dir > 3) return;
     mgr.resizeFocused(@enumFromInt(dir), 0.05);
     relayout();
+    markDirty();
 }
 
 /// Reset the active tab's splits to even 50/50.
@@ -506,6 +589,7 @@ export fn anvil_balance_panes() callconv(.c) void {
     if (!ready or zoomed) return;
     mgr.balanceActive();
     relayout();
+    markDirty();
 }
 
 /// Toggle zoom: the focused pane fills the workspace, hiding its siblings.
@@ -513,6 +597,7 @@ export fn anvil_zoom_toggle() callconv(.c) void {
     if (!ready) return;
     zoomed = !zoomed;
     relayout();
+    markDirty();
 }
 
 export fn anvil_new_tab() callconv(.c) void {
@@ -530,6 +615,7 @@ export fn anvil_new_tab() callconv(.c) void {
     mgr.newTabCwd(g.rows, g.cols, cwd) catch return;
     applyCursorDefault();
     relayout();
+    markDirty();
 }
 
 /// Copy the focused pane's cwd into `buf`, returning its length (0 if none).
@@ -559,6 +645,7 @@ export fn anvil_cycle_tab(delta: c_int) callconv(.c) void {
     if (!ready) return;
     mgr.cycleTab(@intCast(delta));
     relayout();
+    markDirty();
 }
 
 /// idx: zero-based tab index. Out-of-range is a no-op.
@@ -566,17 +653,20 @@ export fn anvil_select_tab(idx: c_int) callconv(.c) void {
     if (!ready or idx < 0) return;
     mgr.selectTab(@intCast(idx));
     relayout();
+    markDirty();
 }
 
 export fn anvil_close_tab() callconv(.c) void {
     if (!ready) return;
     mgr.closeTab();
     relayout();
+    markDirty();
 }
 
 export fn anvil_palette_toggle() callconv(.c) void {
     if (!ready) return;
     if (cpal.open) cpal.hide() else cpal.show();
+    markDirty();
 }
 
 export fn anvil_palette_open() callconv(.c) c_int {
@@ -585,6 +675,7 @@ export fn anvil_palette_open() callconv(.c) c_int {
 
 export fn anvil_palette_char(c: u8) callconv(.c) void {
     cpal.typeChar(c);
+    markDirty();
 }
 
 /// key: 0 esc, 1 enter, 2 up, 3 down, 4 backspace.
@@ -600,6 +691,7 @@ export fn anvil_palette_key(key: c_int) callconv(.c) void {
         4 => cpal.backspace(),
         else => {},
     }
+    markDirty();
 }
 
 export fn anvil_search_toggle() callconv(.c) void {
@@ -611,6 +703,7 @@ export fn anvil_search_toggle() callconv(.c) void {
         cpal.hide();
         srch.show();
     }
+    markDirty();
 }
 
 export fn anvil_search_open() callconv(.c) c_int {
@@ -621,6 +714,7 @@ export fn anvil_search_char(c: u8) callconv(.c) void {
     if (!ready) return;
     srch.typeChar(c, &focused().term);
     if (srch.current()) |m| jumpToMatch(m);
+    markDirty();
 }
 
 /// key: 0 esc, 1 enter (next match), 2 prev match, 4 backspace, 5 toggle regex.
@@ -647,6 +741,7 @@ export fn anvil_search_key(key: c_int) callconv(.c) void {
         },
         else => {},
     }
+    markDirty();
 }
 
 export fn anvil_help_toggle() callconv(.c) void {
@@ -657,6 +752,7 @@ export fn anvil_help_toggle() callconv(.c) void {
         srch.hide();
         help_open = true;
     }
+    markDirty();
 }
 
 export fn anvil_help_open() callconv(.c) c_int {
@@ -669,6 +765,7 @@ export fn anvil_help_key(key: c_int) callconv(.c) void {
         0 => help_open = false,
         else => {},
     }
+    markDirty();
 }
 
 export fn anvil_copy_mode_toggle() callconv(.c) void {
@@ -682,6 +779,7 @@ export fn anvil_copy_mode_toggle() callconv(.c) void {
         help_open = false;
         copy_mode.enter(&focused().term);
     }
+    markDirty();
 }
 
 export fn anvil_copy_mode_open() callconv(.c) c_int {
@@ -721,6 +819,7 @@ export fn anvil_copy_mode_key(key: c_int) callconv(.c) void {
         12 => copy_mode.wordBack(t), // b
         else => {},
     }
+    markDirty();
 }
 
 export fn anvil_cfg_error_open() callconv(.c) c_int {
@@ -729,6 +828,7 @@ export fn anvil_cfg_error_open() callconv(.c) c_int {
 
 export fn anvil_cfg_error_dismiss() callconv(.c) void {
     cfg_error_len = 0;
+    markDirty();
 }
 
 export fn anvil_caldera_drawer_toggle() callconv(.c) void {
@@ -736,6 +836,7 @@ export fn anvil_caldera_drawer_toggle() callconv(.c) void {
     caldera.get(&caldera_snap);
     if (caldera_drawer) {
         caldera_drawer = false;
+        markDirty();
     } else {
         if (caldera_snap.runs == 0) return;
         if (caldera_sel >= caldera_snap.runs) caldera_sel = 0;
@@ -743,6 +844,7 @@ export fn anvil_caldera_drawer_toggle() callconv(.c) void {
         srch.hide();
         help_open = false;
         caldera_drawer = true;
+        markDirty();
     }
 }
 
@@ -763,6 +865,7 @@ export fn anvil_caldera_drawer_key(key: c_int) callconv(.c) void {
         },
         else => {},
     }
+    markDirty();
 }
 
 /// Scroll the focused terminal so `m` is visible and select its span, reusing
