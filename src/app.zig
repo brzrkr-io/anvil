@@ -309,6 +309,10 @@ var sidebar_dragging: bool = false;
 const sidebar_w_min: f32 = 180;
 const sidebar_w_max: f32 = 520;
 
+/// Last hover position in device px (-1 = outside the window / unknown).
+var hover_x: f32 = -1;
+var hover_y: f32 = -1;
+
 /// Left chrome width: activity rail plus the sidebar when open.
 fn leftChromeW() f32 {
     return chrome.rail_w + (if (sidebar_open) sidebar_w else 0);
@@ -679,6 +683,59 @@ fn contains(r: pane.Rect, x: f32, y: f32) bool {
 /// kind: 0 = press (start), 1 = drag, 2 = release (extend). x/y in device px.
 /// Press hit-tests the pane under the cursor and focuses it; drag/release
 /// stay in the focused pane.
+/// Passive mouse-move: record the hover position and repaint if it moved into
+/// a different sidebar row (so the hover highlight can follow the cursor).
+export fn anvil_hover(x: f32, y: f32) callconv(.c) void {
+    if (!ready) return;
+    if (x == hover_x and y == hover_y) return;
+    const was_row = hoverSidebarRow(hover_x, hover_y);
+    hover_x = x;
+    hover_y = y;
+    if (!sameHoverRow(hoverSidebarRow(x, y), was_row)) markDirty();
+}
+
+fn sameHoverRow(a: ?HoverRow, b: ?HoverRow) bool {
+    if (a == null and b == null) return true;
+    if (a == null or b == null) return false;
+    return a.?.kind == b.?.kind and a.?.idx == b.?.idx;
+}
+
+/// Clear hover state when the cursor leaves the view.
+export fn anvil_hover_exit() callconv(.c) void {
+    if (!ready) return;
+    if (hover_x < 0 and hover_y < 0) return;
+    const had = hoverSidebarRow(hover_x, hover_y) != null;
+    hover_x = -1;
+    hover_y = -1;
+    if (had) markDirty();
+}
+
+/// The (kind, index) of the sidebar row under (x,y), or null. kind: 0 = session
+/// row, 1 = explorer row. Geometry mirrors emitSidebar; exp_row_y0 is the
+/// explorer list top recorded on the previous frame.
+const HoverRow = struct { kind: u8, idx: usize };
+
+fn hoverSidebarRow(x: f32, y: f32) ?HoverRow {
+    if (!sidebar_open) return null;
+    if (x < chrome.rail_w or x >= leftChromeW()) return null;
+    const sess_y0 = bar_h + chrome.sidebar_header_h + 8;
+    if (y >= sess_y0 and mgr.tabs.items.len > 0) {
+        const i_f = (y - sess_y0) / chrome.row_h;
+        if (i_f >= 0) {
+            const i: usize = @intFromFloat(i_f);
+            if (i < mgr.tabs.items.len) return .{ .kind = 0, .idx = i };
+        }
+    }
+    if (exp_row_y0 > 0 and y >= exp_row_y0) {
+        const i_f = (y - exp_row_y0) / chrome.row_h;
+        if (i_f >= 0) {
+            const i: usize = @intFromFloat(i_f);
+            if (i < exp_n) return .{ .kind = 1, .idx = i };
+        }
+    }
+    return null;
+}
+
 export fn anvil_mouse(kind: c_int, x: f32, y: f32) callconv(.c) void {
     if (!ready) return;
     // Sidebar resize: grab the right edge and drag. A 6px band around the edge
@@ -1507,6 +1564,18 @@ fn emitShellRects(th: *const theme.Theme, np: usize) usize {
                 @as(f32, @floatFromInt(mgr.active_tab)) * chrome.row_h;
             putRect(ri, chrome.rail_w + 4, ry, sidebar_w - 8, chrome.row_h, chrome.ash_soft);
             ri += 1;
+        }
+        // Hover highlight on the row under the cursor (skip the active session).
+        if (hoverSidebarRow(hover_x, hover_y)) |h| {
+            const hov_y = if (h.kind == 0)
+                body_top + chrome.sidebar_header_h + 8 + @as(f32, @floatFromInt(h.idx)) * chrome.row_h
+            else
+                exp_row_y0 + @as(f32, @floatFromInt(h.idx)) * chrome.row_h;
+            const skip = h.kind == 0 and h.idx == mgr.active_tab;
+            if (!skip and hov_y > 0) {
+                putRect(ri, chrome.rail_w + 4, hov_y, sidebar_w - 8, chrome.row_h, chrome.hover);
+                ri += 1;
+            }
         }
     }
     putRect(ri, lc - 1, body_top, 1, body_h, border); // left-chrome right edge

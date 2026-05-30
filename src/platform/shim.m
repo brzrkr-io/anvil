@@ -69,6 +69,8 @@ extern void anvil_input(const char *bytes, size_t len);
 extern void anvil_paste(const char *bytes, size_t len);
 extern void anvil_scroll(int delta);
 extern void anvil_mouse(int kind, float x, float y);
+extern void anvil_hover(float x, float y);
+extern void anvil_hover_exit(void);
 extern void anvil_split(int axis);
 extern void anvil_close_pane(void);
 extern void anvil_focus_dir(int dir);
@@ -680,6 +682,26 @@ static void layoutTrafficLights(NSWindow *win) {
 }
 - (void)mouseUp:(NSEvent *)e {
     [self sendMouse:e kind:2];
+}
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    for (NSTrackingArea *ta in [self.trackingAreas copy]) [self removeTrackingArea:ta];
+    NSTrackingArea *ta = [[NSTrackingArea alloc]
+        initWithRect:self.bounds
+             options:(NSTrackingMouseMoved | NSTrackingMouseEnteredAndExited |
+                      NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect)
+               owner:self
+            userInfo:nil];
+    [self addTrackingArea:ta];
+}
+- (void)mouseMoved:(NSEvent *)e {
+    NSPoint p = [self convertPoint:e.locationInWindow fromView:nil];
+    CGFloat scale = self.window.backingScaleFactor ?: 2.0;
+    anvil_hover((float)(p.x * scale),
+                (float)((self.bounds.size.height - p.y) * scale));
+}
+- (void)mouseExited:(NSEvent *)e {
+    anvil_hover_exit();
 }
 - (void)copySelection {
     size_t n = 0;

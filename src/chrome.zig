@@ -17,6 +17,9 @@ pub const agent = Rgb{ .r = 0x6a, .g = 0x5f, .b = 0xa3 };
 // Snug-recess panel border: a touch lighter than charcoal, darker than ash.
 pub const ash_soft = Rgb{ .r = 0x20, .g = 0x28, .b = 0x2b };
 
+// Row hover tint: between charcoal and ash_soft — a subtle pointer affordance.
+pub const hover = Rgb{ .r = 0x1b, .g = 0x21, .b = 0x24 };
+
 // Spacing tokens (px).
 pub const sp4: f32 = 4;
 pub const sp8: f32 = 8;
