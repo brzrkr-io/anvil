@@ -18,6 +18,13 @@ const caldera = @import("caldera.zig");
 const ipc = @import("ipc.zig");
 const chrome = @import("chrome.zig");
 
+// libc directory listing for the EXPLORER sidebar (std.fs is mid-migration to
+// the Io interface in this Zig; libc @cImport matches the pty/socket pattern).
+const cdir = @cImport({
+    @cInclude("dirent.h");
+    @cInclude("unistd.h");
+});
+
 const shader_src = @embedFile("platform/shaders.metal");
 const font_data = @embedFile("font_ttf");
 const font_bold_data = @embedFile("font_ttf_bold");
@@ -668,6 +675,22 @@ fn contains(r: pane.Rect, x: f32, y: f32) bool {
 /// stay in the focused pane.
 export fn anvil_mouse(kind: c_int, x: f32, y: f32) callconv(.c) void {
     if (!ready) return;
+    // EXPLORER click: a press inside the sidebar's file list inserts the
+    // entry's name at the focused pane's prompt (the "open" action).
+    if (kind == 0 and sidebar_open and x >= chrome.rail_w and x < leftChromeW() and y >= exp_row_y0) {
+        const idx_f = (y - exp_row_y0) / chrome.row_h;
+        if (idx_f >= 0) {
+            const idx: usize = @intFromFloat(idx_f);
+            if (idx < exp_n) {
+                if (mgr.byId(mgr.focused)) |s| {
+                    const ent = &exp_entries[idx];
+                    s.write(ent.name[0..ent.len]);
+                    markDirty();
+                }
+                return;
+            }
+        }
+    }
     const np = layoutPanes(&pane_buf);
     if (kind == 0) {
         for (pane_buf[0..np]) |p| {
@@ -1686,6 +1709,64 @@ fn emitRail(start: usize) usize {
     return n - start;
 }
 
+/// One EXPLORER entry: a file or directory name in the focused pane's cwd.
+const ExpEntry = struct { name: [128]u8 = undefined, len: usize = 0, is_dir: bool = false };
+var exp_entries: [64]ExpEntry = undefined;
+var exp_n: usize = 0;
+var exp_cwd: [512]u8 = undefined;
+var exp_cwd_len: usize = 0;
+/// Device-y of the first EXPLORER entry row and its row count, for hit-testing.
+var exp_row_y0: f32 = 0;
+
+/// Scan `path` into `exp_entries` (dirs first, hidden files skipped). Cheap
+/// no-op when `path` matches the last scan, so it is safe to call per frame.
+fn scanExplorer(path: []const u8) void {
+    if (path.len == exp_cwd_len and std.mem.eql(u8, path, exp_cwd[0..exp_cwd_len])) return;
+    exp_n = 0;
+    const m = @min(path.len, exp_cwd.len);
+    @memcpy(exp_cwd[0..m], path[0..m]);
+    exp_cwd_len = m;
+    if (path.len == 0 or path.len >= 512) return;
+
+    var pbuf: [512:0]u8 = undefined;
+    @memcpy(pbuf[0..path.len], path);
+    pbuf[path.len] = 0;
+    const dp = cdir.opendir(@ptrCast(&pbuf)) orelse return;
+    defer _ = cdir.closedir(dp);
+    while (cdir.readdir(dp)) |raw| {
+        if (exp_n >= exp_entries.len) break;
+        const name_ptr: [*:0]const u8 = @ptrCast(&raw.*.d_name);
+        const name = std.mem.span(name_ptr);
+        if (name.len == 0 or name[0] == '.') continue; // skip hidden
+        var ent = &exp_entries[exp_n];
+        const n = @min(name.len, ent.name.len);
+        @memcpy(ent.name[0..n], name[0..n]);
+        ent.len = n;
+        ent.is_dir = raw.*.d_type == cdir.DT_DIR;
+        exp_n += 1;
+    }
+    // Directories first, then files; alphabetical within each group.
+    std.mem.sort(ExpEntry, exp_entries[0..exp_n], {}, expLess);
+}
+
+fn expLess(_: void, a: ExpEntry, b: ExpEntry) bool {
+    if (a.is_dir != b.is_dir) return a.is_dir;
+    return std.mem.lessThan(u8, a.name[0..a.len], b.name[0..b.len]);
+}
+
+/// The directory the EXPLORER lists: the focused pane's OSC-7 cwd, or the
+/// process working directory until the shell reports one.
+var exp_pwd_buf: [512]u8 = undefined;
+fn explorerPath() []const u8 {
+    if (mgr.focusedSession()) |s| {
+        const c = s.term.cwd();
+        if (c.len > 0) return c;
+    }
+    const r = cdir.getcwd(&exp_pwd_buf, exp_pwd_buf.len);
+    if (r == null) return "";
+    return std.mem.span(@as([*:0]const u8, @ptrCast(&exp_pwd_buf)));
+}
+
 /// SESSIONS sidebar: a section header plus one row per tab (session). The
 /// active session is bone with a verified dot; the rest are mist with an
 /// alloy dot. The active-row highlight rect is drawn in emitShellRects.
@@ -1722,6 +1803,40 @@ fn emitSidebar(start: usize) usize {
         x += cw * 1.5;
         const label = tabLabel(ti, &tb);
         var it = std.unicode.Utf8View.initUnchecked(label).iterator();
+        while (it.nextCodepoint()) |cp| {
+            if (x + cw > right) break;
+            putCp(n, x, ry, fg, bg, cp);
+            n += 1;
+            x += cw;
+        }
+        y += chrome.row_h;
+    }
+
+    // EXPLORER: flat listing of the focused pane's cwd. Dirs (alloy folder
+    // glyph) sort first; files (ash file glyph) follow. Click opens (see mouse).
+    y += 8;
+    const ehy = y + (chrome.sidebar_header_h - ch) / 2;
+    var ehx = x0;
+    for ("EXPLORER") |c| {
+        putGlyph(n, ehx, ehy, chrome.alloy, bg, c);
+        n += 1;
+        ehx += cw;
+    }
+    y += chrome.sidebar_header_h + 4;
+
+    scanExplorer(explorerPath());
+    exp_row_y0 = y;
+    for (exp_entries[0..exp_n]) |*ent| {
+        if (y + chrome.row_h > win_h - chrome.status_bar_h) break;
+        const ry = y + (chrome.row_h - ch) / 2;
+        const icon: u21 = if (ent.is_dir) 0xf07b else 0xf016; // folder / file
+        const ic = if (ent.is_dir) chrome.alloy else chrome.ash;
+        const fg = if (ent.is_dir) chrome.mist else chrome.alloy;
+        var x = x0;
+        putCp(n, x, ry, ic, bg, icon);
+        n += 1;
+        x += cw * 1.5;
+        var it = std.unicode.Utf8View.initUnchecked(ent.name[0..ent.len]).iterator();
         while (it.nextCodepoint()) |cp| {
             if (x + cw > right) break;
             putCp(n, x, ry, fg, bg, cp);
