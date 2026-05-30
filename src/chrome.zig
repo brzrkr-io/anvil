@@ -17,6 +17,12 @@ pub const agent = Rgb{ .r = 0x6a, .g = 0x5f, .b = 0xa3 };
 // Snug-recess panel border: a touch lighter than charcoal, darker than ash.
 pub const ash_soft = Rgb{ .r = 0x20, .g = 0x28, .b = 0x2b };
 
+// Structural frame line: crisp enough to read as a boxed operator-console
+// panel edge against charcoal/graphite — the Hermes/Honcho "every module is a
+// box" look — without the harshness of full ash. Used for region frames,
+// section-header rules, and panel edges.
+pub const line = Rgb{ .r = 0x2d, .g = 0x36, .b = 0x3c };
+
 // Row hover tint: between charcoal and ash_soft — a subtle pointer affordance.
 pub const hover = Rgb{ .r = 0x1b, .g = 0x21, .b = 0x24 };
 

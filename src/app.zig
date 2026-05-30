@@ -1726,6 +1726,12 @@ fn crumbBox(buf: []u8) ?Crumb {
 /// Base shell rects (drawn every frame, before any modal rects): the snug
 /// terminal panel frame + slim header strip + bottom status bar background.
 /// Returns the number of rects written, which becomes the modal base offset.
+/// Number of rows a drawer section shows, mirroring emitDrawer's fallback: an
+/// empty section still draws one "none" row.
+fn drawerSectionRows(count: usize) f32 {
+    return @floatFromInt(@max(count, 1));
+}
+
 fn emitShellRects(th: *const theme.Theme, np: usize) usize {
     _ = th;
     _ = np;
@@ -1737,7 +1743,7 @@ fn emitShellRects(th: *const theme.Theme, np: usize) usize {
     const pbot = win_h - chrome.status_bar_h - chrome.panel_pad_bottom;
     const ph = pbot - ptop;
     const hdr_div_y = ptop + chrome.header_strip_h;
-    const border = chrome.ash_soft;
+    const border = chrome.line;
     const body_top = bar_h;
     const body_h = win_h - bar_h - chrome.status_bar_h;
 
@@ -1745,8 +1751,30 @@ fn emitShellRects(th: *const theme.Theme, np: usize) usize {
     // Left chrome fills: activity rail + (optional) sidebar.
     putRect(ri, 0, body_top, chrome.rail_w, body_h, chrome.graphite); // rail bg
     ri += 1;
+    // Active rail tool: a recessed charcoal cell with a mineral left-edge tick —
+    // the operator-console "selected tool" marker.
+    {
+        const cell_y = body_top + 18 + @as(f32, @floatFromInt(rail_active)) * chrome.rail_w;
+        putRect(ri, 0, cell_y, chrome.rail_w, chrome.rail_w, chrome.charcoal); // active cell
+        ri += 1;
+        putRect(ri, 0, cell_y, 2, chrome.rail_w, chrome.mineral); // mineral tick
+        ri += 1;
+    }
     if (sidebar_open) {
         putRect(ri, chrome.rail_w, body_top, sidebar_w, body_h, chrome.charcoal); // sidebar bg
+        ri += 1;
+        putRect(ri, chrome.rail_w, body_top, 1, body_h, border); // rail│sidebar divider
+        ri += 1;
+        // Boxed section-header rules (Hermes/Honcho operator-console look): a
+        // hairline under SESSIONS and EXPLORER turns each label into a header
+        // band. Positions mirror emitSidebar's y math exactly.
+        const sx = chrome.rail_w;
+        const sess_rule_y = body_top + chrome.sidebar_header_h - 1;
+        putRect(ri, sx, sess_rule_y, sidebar_w, 1, border);
+        ri += 1;
+        const n_sess: f32 = @floatFromInt(mgr.tabs.items.len);
+        const exp_top = body_top + chrome.sidebar_header_h + 16 + n_sess * chrome.row_h;
+        putRect(ri, sx, exp_top + chrome.sidebar_header_h - 1, sidebar_w, 1, border);
         ri += 1;
         // Active SESSIONS row highlight.
         if (mgr.tabs.items.len > 0) {
@@ -1776,6 +1804,23 @@ fn emitShellRects(th: *const theme.Theme, np: usize) usize {
         putRect(ri, dx, body_top, chrome.drawer_w, body_h, chrome.charcoal); // drawer bg
         ri += 1;
         putRect(ri, dx, body_top, 1, body_h, border); // drawer left edge
+        ri += 1;
+        // Boxed section-header rules (RUNS / TRACE / AGENT). Positions mirror
+        // emitDrawer's y math; refresh the snapshot here so the row counts that
+        // drive section heights match the same frame's drawer text.
+        caldera.get(&drawer_snap);
+        const sh = chrome.sidebar_header_h;
+        const runs_n = drawerSectionRows(drawer_snap.runs);
+        const trace_ev: usize = if (drawer_snap.runs > 0) drawer_snap.details[0].event_count else 0;
+        const trace_n = drawerSectionRows(trace_ev);
+        var dy: f32 = body_top + 8; // emitDrawer starts ctx.y here
+        putRect(ri, dx, dy + sh - 1, chrome.drawer_w, 1, border); // RUNS rule
+        ri += 1;
+        dy += sh + 4 + runs_n * chrome.row_h + 8;
+        putRect(ri, dx, dy + sh - 1, chrome.drawer_w, 1, border); // TRACE rule
+        ri += 1;
+        dy += sh + 4 + trace_n * chrome.row_h + 8;
+        putRect(ri, dx, dy + sh - 1, chrome.drawer_w, 1, border); // AGENT rule
         ri += 1;
     }
     // Fills first (painter order), hairlines on top.
@@ -1964,10 +2009,15 @@ fn railClick(y: f32) void {
 fn emitRail(start: usize) usize {
     const cx = (chrome.rail_w - chromeIconW()) / 2;
     var n = start;
-    var y: f32 = bar_h + 18;
+    // Center each glyph in its 56px slot (slots start at bar_h+18, matching the
+    // active-cell rect and railClick hit-testing).
+    var y: f32 = bar_h + 18 + (chrome.rail_w - chromeH()) / 2;
     for (rail_glyphs, 0..) |g, i| {
-        const c = if (i == rail_active) chrome.mineral else chrome.alloy;
-        _ = putChromeIcon(&n, cx, y, c, chrome.graphite, g);
+        const active = i == rail_active;
+        const c = if (active) chrome.mineral else chrome.alloy;
+        // Active glyph sits on the charcoal active cell; the rest on graphite.
+        const gbg = if (active) chrome.charcoal else chrome.graphite;
+        _ = putChromeIcon(&n, cx, y, c, gbg, g);
         y += chrome.rail_w;
     }
     return n - start;
