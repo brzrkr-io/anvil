@@ -1606,16 +1606,86 @@ fn putChromeIcon(n: *usize, x: f32, y: f32, fg: theme.Rgb, bg: theme.Rgb, cp: u2
     return chromeIconW();
 }
 
-/// Replace a leading $HOME with `~` for a compact breadcrumb path.
-fn contractHome(path: []const u8, buf: []u8) []const u8 {
-    const home_c = std.c.getenv("HOME") orelse return path;
-    const home = std.mem.span(home_c);
-    if (home.len == 0 or !std.mem.startsWith(u8, path, home)) return path;
-    const rest = path[home.len..];
-    if (1 + rest.len > buf.len) return path;
-    buf[0] = '~';
-    @memcpy(buf[1 .. 1 + rest.len], rest);
-    return buf[0 .. 1 + rest.len];
+/// The breadcrumb path for the focused pane, $HOME-contracted to `~`, always
+/// written into (and returned as a slice of) `buf` so the result outlives any
+/// transient source. Prefers the shell-reported cwd (OSC 7); before the shell
+/// reports, falls back to the process cwd so the breadcrumb is never blank.
+fn breadcrumbText(buf: []u8) []const u8 {
+    const raw = explorerPath(); // focused cwd (OSC 7), else process cwd
+    if (raw.len == 0) return "";
+    // Contract a leading $HOME to `~`, copying into buf either way.
+    if (std.c.getenv("HOME")) |hc| {
+        const home = std.mem.span(hc);
+        if (home.len > 0 and std.mem.startsWith(u8, raw, home)) {
+            const rest = raw[home.len..];
+            if (1 + rest.len <= buf.len) {
+                buf[0] = '~';
+                @memcpy(buf[1 .. 1 + rest.len], rest);
+                return buf[0 .. 1 + rest.len];
+            }
+        }
+    }
+    const n = @min(raw.len, buf.len);
+    @memcpy(buf[0..n], raw[0..n]);
+    return buf[0..n];
+}
+
+/// Total width (device px) of the right-aligned tab strip, including the one
+/// Sans space of lead/trail padding each label carries. `tb` is scratch for the
+/// label formatter.
+fn tabsWidth(tb: []u8, pad: f32) f32 {
+    var w: f32 = 0;
+    var ti: usize = 0;
+    while (ti < mgr.tabs.items.len) : (ti += 1) w += sansWidth(tabLabel(ti, tb)) + 2 * pad;
+    return w;
+}
+
+/// Centered breadcrumb pill: the focused pane's cwd ($HOME-contracted), centered
+/// in the band between the "Anvil" wordmark and the right-aligned tab strip, in
+/// a recessed pill. The geometry is shared by emitShellRects (which paints the
+/// pill background) and emitCommandBar (which draws the text), so they always
+/// agree. Returns null when there is no session or the band is too tight.
+const Crumb = struct {
+    text: []const u8,
+    last: usize, // byte offset of the final path segment (drawn brighter)
+    px: f32,
+    py: f32,
+    pw: f32,
+    ph: f32,
+    tx: f32, // text origin x (inside the left pad)
+    ty: f32, // text origin y
+    maxx: f32, // right clip bound for the text
+};
+
+fn crumbBox(buf: []u8) ?Crumb {
+    if (mgr.focusedSession() == null) return null;
+    const path = breadcrumbText(buf);
+    if (path.len == 0) return null;
+    const pad = anvil_sans_advance(' ');
+    var tb: [128]u8 = undefined;
+    const left = tab_inset_x + sansWidth("Anvil") + 2 * pad;
+    const right = win_w - 8 - tabsWidth(&tb, pad) - 2 * pad;
+    const band = right - left;
+    if (band < 80) return null; // too cramped to read: skip the pill
+    const padx = pad * 1.25;
+    const tw = sansWidth(path);
+    const ph = chromeH() + 8;
+    const pw = @min(tw + 2 * padx, band);
+    const px = left + (band - pw) / 2;
+    const py = (bar_h - ph) / 2;
+    var last: usize = 0;
+    if (std.mem.lastIndexOfScalar(u8, path, '/')) |i| last = i + 1;
+    return .{
+        .text = path,
+        .last = last,
+        .px = px,
+        .py = py,
+        .pw = pw,
+        .ph = ph,
+        .tx = px + padx,
+        .ty = (bar_h - chromeH()) / 2,
+        .maxx = px + pw - padx,
+    };
 }
 
 /// Base shell rects (drawn every frame, before any modal rects): the snug
@@ -1692,6 +1762,22 @@ fn emitShellRects(th: *const theme.Theme, np: usize) usize {
     ri += 1;
     putRect(ri, px + pw - 1, ptop, 1, ph, border); // panel right edge
     ri += 1;
+    // Centered breadcrumb pill: a recessed graphite plate with a hairline
+    // border, painted behind the command-bar text (which draws in the later
+    // palette-text pass).
+    var cbuf: [192]u8 = undefined;
+    if (crumbBox(&cbuf)) |c| {
+        putRect(ri, c.px, c.py, c.pw, c.ph, chrome.graphite); // recessed fill
+        ri += 1;
+        putRect(ri, c.px, c.py, c.pw, 1, border); // top
+        ri += 1;
+        putRect(ri, c.px, c.py + c.ph - 1, c.pw, 1, border); // bottom
+        ri += 1;
+        putRect(ri, c.px, c.py, 1, c.ph, border); // left
+        ri += 1;
+        putRect(ri, c.px + c.pw - 1, c.py, 1, c.ph, border); // right
+        ri += 1;
+    }
     return ri;
 }
 
@@ -1707,38 +1793,31 @@ fn emitCommandBar(th: *const theme.Theme, start: usize, np: usize) usize {
     // Wordmark: accent initial + bone tail, in IBM Plex Sans.
     x += putSans(&n, x, ly, chrome.mineral, th.bar, 'A');
     x += putSansRun(&n, x, ly, chrome.bone, th.bar, "nvil");
-    x += 2 * pad;
 
-    // Measure right-aligned tab labels so the breadcrumb stops clear of them.
-    var tabs_w: f32 = 0;
+    // Tab strip, right-aligned, always shown. The active tab carries a leading
+    // mineral status dot and reads in bone; the rest are alloy.
     var tb: [128]u8 = undefined;
-    if (mgr.tabs.items.len > 1) {
-        var ti: usize = 0;
-        while (ti < mgr.tabs.items.len) : (ti += 1) {
-            const label = tabLabel(ti, &tb);
-            tabs_w += sansWidth(label) + 2 * pad;
+    var tx = win_w - 8 - tabsWidth(&tb, pad);
+    var ti: usize = 0;
+    while (ti < mgr.tabs.items.len) : (ti += 1) {
+        const active = ti == mgr.active_tab;
+        tx += pad;
+        if (active) {
+            _ = putChromeIcon(&n, tx, ly, chrome.mineral, th.bar, 0x25CF); // ●
+            tx += chromeIconW() * 0.6;
         }
+        const fg = if (active) chrome.bone else chrome.alloy;
+        tx += putSansRun(&n, tx, ly, fg, th.bar, tabLabel(ti, &tb));
+        tx += pad;
     }
 
-    // Breadcrumb: focused pane cwd, $HOME contracted, in alloy.
-    if (mgr.focusedSession()) |s| {
-        var pbuf: [192]u8 = undefined;
-        const path = contractHome(s.term.cwd(), &pbuf);
-        _ = putSansClip(&n, x, ly, chrome.alloy, th.bar, path, win_w - 8 - tabs_w);
-    }
-
-    // Tab labels, right-aligned. Active in bone, others in ash.
-    if (mgr.tabs.items.len > 1) {
-        var tx = win_w - 8 - tabs_w;
-        var ti: usize = 0;
-        while (ti < mgr.tabs.items.len) : (ti += 1) {
-            const active = ti == mgr.active_tab;
-            const fg = if (active) chrome.bone else chrome.ash;
-            const label = tabLabel(ti, &tb);
-            tx += pad; // leading pad
-            tx += putSansRun(&n, tx, ly, fg, th.bar, label);
-            tx += pad; // trailing pad
-        }
+    // Centered breadcrumb pill: prefix in alloy, final segment in bone. The
+    // pill plate itself is painted in emitShellRects; here we draw its text.
+    var cbuf: [192]u8 = undefined;
+    if (crumbBox(&cbuf)) |c| {
+        var pen = c.tx;
+        pen += putSansClip(&n, pen, c.ty, chrome.alloy, chrome.graphite, c.text[0..c.last], c.maxx);
+        _ = putSansClip(&n, pen, c.ty, chrome.bone, chrome.graphite, c.text[c.last..], c.maxx);
     }
     return n - start;
 }
