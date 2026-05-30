@@ -27,6 +27,7 @@ const c = @cImport({
     @cInclude("dirent.h");
     @cInclude("sys/stat.h");
     @cInclude("sys/time.h");
+    @cInclude("signal.h");
 });
 
 // ---------------------------------------------------------------------------
@@ -90,6 +91,14 @@ const sock_max = 108; // sun_path limit
 
 var sock_path_buf: [sock_max]u8 = undefined; // this process's server socket
 var sock_path_len: usize = 0;
+var sock_path_z: [sock_max + 1]u8 = undefined; // null-terminated copy for the signal handler
+
+/// SIGTERM/SIGINT handler: unlink our socket so it doesn't linger, then exit.
+/// unlink + _exit are async-signal-safe.
+fn onTerm(_: c_int) callconv(.c) void {
+    if (sock_path_len > 0) _ = c.unlink(&sock_path_z);
+    std.c._exit(0);
+}
 
 fn tmpDir() [*:0]const u8 {
     return std.c.getenv("TMPDIR") orelse "/tmp/";
@@ -199,6 +208,13 @@ pub fn start() void {
         _ = c.close(fd);
         return;
     }
+
+    // Keep a null-terminated copy and unlink the socket on SIGTERM/SIGINT so it
+    // doesn't linger for the client to reap.
+    @memcpy(sock_path_z[0..copy_n], path[0..copy_n]);
+    sock_path_z[copy_n] = 0;
+    _ = c.signal(c.SIGTERM, onTerm);
+    _ = c.signal(c.SIGINT, onTerm);
 
     server_fd = fd;
     const t = std.Thread.spawn(.{}, listenLoop, .{}) catch {
@@ -336,6 +352,84 @@ pub fn tryClient(verb: []const u8, arg: ?[]const u8, target_pid: ?u32) bool {
         return false;
     }
     return false;
+}
+
+/// Print running windows to stdout, newest-focused first.  Liveness is probed
+/// by connecting; sockets whose owner has died are reaped.
+pub fn listWindows() void {
+    var pfx_buf: [64]u8 = undefined;
+    const prefix = sockPrefix(&pfx_buf);
+    const tmp = std.mem.span(tmpDir());
+
+    const Win = struct { pid: u32, mtime: i128 };
+    var wins: [64]Win = undefined;
+    var nw: usize = 0;
+
+    const dirp = c.opendir(tmpDir()) orelse {
+        const m = "no running Anvil windows\n";
+        _ = std.c.write(1, m.ptr, m.len);
+        return;
+    };
+    defer _ = c.closedir(dirp);
+
+    while (c.readdir(dirp)) |ent| {
+        if (nw >= wins.len) break;
+        const name = std.mem.sliceTo(@as([*:0]const u8, @ptrCast(&ent.*.d_name)), 0);
+        const pid = pidFromName(name, prefix) orelse continue;
+
+        var path_buf: [sock_max]u8 = undefined;
+        const path = std.fmt.bufPrint(&path_buf, "{s}{s}", .{ tmp, name }) catch continue;
+        var pz: [sock_max + 1]u8 = undefined;
+        @memcpy(pz[0..path.len], path);
+        pz[path.len] = 0;
+
+        // Probe liveness; reap dead sockets.
+        const fd = c.socket(c.AF_UNIX, c.SOCK_STREAM, 0);
+        if (fd < 0) continue;
+        var addr: c.struct_sockaddr_un = std.mem.zeroes(c.struct_sockaddr_un);
+        addr.sun_family = c.AF_UNIX;
+        const cn = @min(path.len, addr.sun_path.len - 1);
+        @memcpy(addr.sun_path[0..cn], path[0..cn]);
+        addr.sun_path[cn] = 0;
+        if (c.connect(fd, @ptrCast(&addr), @sizeOf(c.struct_sockaddr_un)) != 0) {
+            _ = c.close(fd);
+            _ = c.unlink(&pz);
+            continue;
+        }
+        _ = c.close(fd);
+
+        var st: c.struct_stat = undefined;
+        const mt: i128 = if (c.stat(&pz, &st) == 0)
+            @as(i128, st.st_mtimespec.tv_sec) * std.time.ns_per_s + st.st_mtimespec.tv_nsec
+        else
+            0;
+        wins[nw] = .{ .pid = pid, .mtime = mt };
+        nw += 1;
+    }
+
+    if (nw == 0) {
+        const m = "no running Anvil windows\n";
+        _ = std.c.write(1, m.ptr, m.len);
+        return;
+    }
+
+    // Insertion sort by mtime descending (newest focus first).
+    var i: usize = 1;
+    while (i < nw) : (i += 1) {
+        var j = i;
+        while (j > 0 and wins[j].mtime > wins[j - 1].mtime) : (j -= 1) {
+            const t = wins[j];
+            wins[j] = wins[j - 1];
+            wins[j - 1] = t;
+        }
+    }
+
+    var out: [64]u8 = undefined;
+    for (wins[0..nw], 0..) |w, idx| {
+        const tag = if (idx == 0) " (front)" else "";
+        const line = std.fmt.bufPrint(&out, "{d}{s}\n", .{ w.pid, tag }) catch continue;
+        _ = std.c.write(1, line.ptr, line.len);
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const Mode = enum { run, dump, help, version, client };
+pub const Mode = enum { run, dump, help, version, client, list };
 
 pub const CliArgs = struct {
     mode: Mode = .run,
@@ -77,6 +77,17 @@ pub fn parse(args: []const [*:0]const u8) CliArgs {
             result.verb = "pipe";
             return result;
         }
+        if (std.mem.eql(u8, a, "open")) {
+            result.mode = .client;
+            result.verb = "open";
+            i += 1;
+            if (i < args.len) result.verb_arg = std.mem.span(args[i]);
+            return result;
+        }
+        if (std.mem.eql(u8, a, "list")) {
+            result.mode = .list;
+            return result;
+        }
         if (!std.mem.startsWith(u8, a, "-")) {
             result.start_dir = a;
         }
@@ -102,6 +113,8 @@ pub const help_text =
     \\  tab [path]        Open a new tab (optionally in path)
     \\  run <cmd...>      Open a new tab and run the command in it
     \\  pipe              Page stdin in a new tab (e.g. `cmd | anvil pipe`)
+    \\  open <file>       Open a file in a new tab ($EDITOR, default vi)
+    \\  list              List running Anvil windows (pid, front first)
     \\  --window <pid>    Target a specific window (default: the front window)
     \\
 ;
@@ -206,6 +219,18 @@ test "parse: pipe → client mode, verb pipe" {
     const a = parse(&.{"pipe"});
     try std.testing.expectEqual(Mode.client, a.mode);
     try std.testing.expectEqualStrings("pipe", a.verb);
+}
+
+test "parse: open <file> → client mode, verb open, arg file" {
+    const a = parse(&.{ "open", "/x/y.zig" });
+    try std.testing.expectEqual(Mode.client, a.mode);
+    try std.testing.expectEqualStrings("open", a.verb);
+    try std.testing.expectEqualStrings("/x/y.zig", a.verb_arg.?);
+}
+
+test "parse: list → list mode" {
+    const a = parse(&.{"list"});
+    try std.testing.expectEqual(Mode.list, a.mode);
 }
 
 test "parse: --window before verb sets window_pid" {

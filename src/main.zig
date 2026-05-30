@@ -31,9 +31,21 @@ pub fn main(init: std.process.Init.Minimal) void {
             _ = std.c.write(1, msg.ptr, msg.len);
             return;
         },
+        .list => {
+            ipc.listWindows();
+            return;
+        },
         .client => {
             if (std.mem.eql(u8, args.verb, "pipe")) {
                 _ = ipc.runPipe(args.window_pid);
+            } else if (std.mem.eql(u8, args.verb, "open")) {
+                if (args.verb_arg) |file| {
+                    const editor_c = std.c.getenv("EDITOR") orelse "vi";
+                    const editor = std.mem.span(editor_c);
+                    var obuf: [1024]u8 = undefined;
+                    const ocmd = std.fmt.bufPrint(&obuf, "{s} '{s}'", .{ editor, file }) catch return;
+                    _ = ipc.tryClient("run", ocmd, args.window_pid);
+                }
             } else if (std.mem.eql(u8, args.verb, "run")) {
                 var jbuf: [1024]u8 = undefined;
                 var jlen: usize = 0;
