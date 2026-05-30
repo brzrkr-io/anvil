@@ -12,6 +12,12 @@ pub const capacity: u16 = cols * rows_n; // 1024 slots
 /// glyph of the same codepoint in the shared atlas grid.
 pub const sans_tag: u32 = 0x0020_0000; // bit 21 (above the 0x10FFFF cp range)
 
+/// Key bit that tags a slot as a small chrome glyph rasterized at the reduced
+/// chrome scale (mono face, top-left aligned in the cell). Keeps the small
+/// chrome icon/dot from colliding with the full-size terminal glyph of the same
+/// codepoint. Stripped by the shim before rasterizing.
+pub const chrome_tag: u32 = 0x0040_0000; // bit 22
+
 /// One glyph the shim must rasterize this frame: `cp` into grid `slot`.
 /// `wide` = 1 means a double-width glyph spanning `slot` and `slot`+1.
 /// Layout matches the C `PendingGlyph` read in shim.m (three u32s).

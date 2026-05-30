@@ -39,8 +39,8 @@ pub const header_strip_h: f32 = 34; // slim charcoal strip atop the panel (fits 
 // Option A chrome (left side): activity rail + collapsible sidebar (device px).
 pub const rail_w: f32 = 56; // vertical activity rail
 pub const sidebar_w: f32 = 300; // SESSIONS / EXPLORER sidebar
-pub const sidebar_header_h: f32 = 30; // section header row height
-pub const row_h: f32 = 34; // list row height (sessions, explorer entries)
+pub const sidebar_header_h: f32 = 26; // section header row height
+pub const row_h: f32 = 28; // list row height (sessions, explorer entries)
 
 // Option C chrome (right side): context drawer — RUNS / TRACE / AGENT.
 pub const drawer_w: f32 = 312;

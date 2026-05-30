@@ -116,8 +116,10 @@ extern int anvil_link_at(float x, float y, const char **out_ptr, size_t *out_len
 extern bool anvil_needs_render(void);
 extern void anvil_force_render(void);
 
-#define INSTANCE_STRIDE (14 * sizeof(float))
+#define INSTANCE_STRIDE (15 * sizeof(float))
 #define SANS_TAG 0x00200000u // atlas-key bit: glyph belongs to the Plex Sans face
+#define CHROME_TAG 0x00400000u // atlas-key bit: small chrome mono glyph (scaled, top-left)
+#define CHROME_SCALE 0.6f // chrome text/icon size relative to the terminal cell
 #define MAX_INSTANCES 60000
 #define ATLAS_SCALE 2.0
 #define BAR_H_PT 20.0 // compact title-bar height, logical points
@@ -129,7 +131,8 @@ static id<MTLRenderPipelineState> gSolidPipeline;
 static id<MTLBuffer> gInstanceBuf;
 static id<MTLTexture> gAtlas;
 static CTFontRef gFont;   // kept alive for lazy glyph rasterization
-static CTFontRef gFontSans; // IBM Plex Sans face for chrome nav/heading labels
+static CTFontRef gFontSans; // IBM Plex Sans face for chrome nav/heading labels (scaled)
+static CTFontRef gFontMonoSm; // mono face at chrome scale, for small chrome icons
 static CGFloat gPtSize;   // atlas point size (device px) shared by both faces
 static int gGW, gGH;      // glyph cell size in pixels
 static uint32_t gCols, gRows; // atlas grid dimensions (cells)
@@ -259,6 +262,7 @@ static void ensureSansFont(void) {
         anvil_atlas_params(&ap);
         sz = ap.pt_size * ATLAS_SCALE;
     }
+    sz *= CHROME_SCALE; // chrome labels render smaller than the terminal cell
     size_t flen = 0;
     const uint8_t *fdata = anvil_sans_data(&flen);
     if (fdata && flen > 0) {
@@ -273,6 +277,34 @@ static void ensureSansFont(void) {
         if (cfd) CFRelease(cfd);
     }
     if (!gFontSans) gFontSans = CTFontCreateWithName(CFSTR("Helvetica"), sz, NULL);
+}
+
+// Lazily create the mono face at chrome scale, for small chrome icons/dots that
+// need Nerd Font / box-drawing coverage the Sans face lacks. Derived from the
+// embedded mono TTF at CHROME_SCALE of the atlas point size.
+static void ensureMonoSm(void) {
+    if (gFontMonoSm) return;
+    CGFloat sz = gPtSize;
+    if (sz <= 0.0) {
+        AtlasParams ap = {0};
+        anvil_atlas_params(&ap);
+        sz = ap.pt_size * ATLAS_SCALE;
+    }
+    sz *= CHROME_SCALE;
+    size_t flen = 0;
+    const uint8_t *fdata = anvil_font_data(&flen);
+    if (fdata && flen > 0) {
+        CFDataRef cfd = CFDataCreateWithBytesNoCopy(NULL, fdata, flen, kCFAllocatorNull);
+        CGDataProviderRef prov = CGDataProviderCreateWithCFData(cfd);
+        CGFontRef cgf = prov ? CGFontCreateWithDataProvider(prov) : NULL;
+        if (cgf) {
+            gFontMonoSm = CTFontCreateWithGraphicsFont(cgf, sz, NULL, NULL);
+            CGFontRelease(cgf);
+        }
+        if (prov) CGDataProviderRelease(prov);
+        if (cfd) CFRelease(cfd);
+    }
+    if (!gFontMonoSm) gFontMonoSm = CTFontCreateWithName(CFSTR("Menlo"), sz, NULL);
 }
 
 // Horizontal advance (device px) of one codepoint in the Plex Sans face.
@@ -303,10 +335,17 @@ float anvil_sans_advance(uint32_t cp) {
 // bits — chrome labels share the atlas grid under a distinct keyspace.
 static void rasterizeGlyph(uint32_t cp, uint32_t slot, uint32_t wide) {
     CTFontRef font = gFont;
+    int chrome = 0; // small chrome glyph: top-left aligned in the cell
     if (cp & SANS_TAG) {
         ensureSansFont();
         font = gFontSans;
         cp &= ~SANS_TAG;
+        chrome = 1;
+    } else if (cp & CHROME_TAG) {
+        ensureMonoSm();
+        font = gFontMonoSm;
+        cp &= ~CHROME_TAG;
+        chrome = 1;
     }
     if (!gAtlas || !font) return;
     int col = (int)(slot % gCols);
@@ -329,7 +368,11 @@ static void rasterizeGlyph(uint32_t cp, uint32_t slot, uint32_t wide) {
                                                    &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
         CFAttributedStringRef as = CFAttributedStringCreate(NULL, s, attrs);
         CTLineRef line = CTLineCreateWithAttributedString(as);
-        CGContextSetTextPosition(ctx, 0, gDescent);
+        // Full-size mono sits on the shared baseline; small chrome glyphs are
+        // pushed to the top of the cell so the quad sampling its top sub-slice
+        // (see the `h` field) captures the whole glyph.
+        CGFloat baseline = chrome ? (gGH - CTFontGetAscent(font) - 1.0) : gDescent;
+        CGContextSetTextPosition(ctx, 0, baseline);
         CTLineDraw(line, ctx);
         CFRelease(line);
         CFRelease(as);

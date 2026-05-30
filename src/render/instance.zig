@@ -12,6 +12,11 @@ pub const CellInstance = extern struct {
     /// (the mono default). > 0 draws a narrower quad and samples a matching
     /// sub-slice of the glyph cell — used for IBM Plex Sans chrome labels.
     w: f32 = 0,
+    /// Proportional quad height in device px. 0 = use the uniform cell height
+    /// (the mono default). > 0 draws a shorter quad and samples the top
+    /// sub-slice of the glyph cell — used for small chrome text/icons, which
+    /// the shim rasterizes top-left aligned at a reduced point size.
+    h: f32 = 0,
 };
 
 pub const flag_underline: u32 = 1;

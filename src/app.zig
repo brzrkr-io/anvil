@@ -1510,22 +1510,24 @@ fn putRect(ri: usize, x: f32, y: f32, w: f32, h: f32, c: theme.Rgb) void {
     o[6] = f[2];
 }
 
-/// Write a single codepoint glyph into `instances[idx]`.
-fn putCp(idx: usize, x: f32, y: f32, fg: theme.Rgb, bg: theme.Rgb, cp: u21) void {
-    if (idx >= instances.len) return;
-    instances[idx] = .{
-        .x = x,
-        .y = y,
-        .fg = fg.f32x4(),
-        .bg = bg.f32x4(),
-        .uv = renderer.atlas.uvOrigin(cp),
-    };
-}
-
 /// Emit one IBM Plex Sans glyph at (x, y), returning its proportional advance
 /// in device px. Sans glyphs live in the shared atlas under `sans_tag`; the
 /// shim rasterizes + measures them. A blank space advances the pen but writes
 /// no instance. Used for chrome nav/heading labels (BRAND: UI text = Plex Sans).
+/// Chrome text/icon size relative to the terminal cell. Must match CHROME_SCALE
+/// in shim.m: glyphs are rasterized smaller and top-left aligned in their cell.
+const chrome_scale: f32 = 0.6;
+
+/// Height (device px) of a small chrome glyph quad.
+fn chromeH() f32 {
+    return renderer.cell_h * chrome_scale;
+}
+
+/// Width (device px) of a small chrome mono icon cell.
+fn chromeIconW() f32 {
+    return renderer.cell_w * chrome_scale;
+}
+
 fn putSans(n: *usize, x: f32, y: f32, fg: theme.Rgb, bg: theme.Rgb, cp: u21) f32 {
     const adv = anvil_sans_advance(@as(u32, cp));
     if (cp == ' ') return adv;
@@ -1538,6 +1540,7 @@ fn putSans(n: *usize, x: f32, y: f32, fg: theme.Rgb, bg: theme.Rgb, cp: u21) f32
         .bg = bg.f32x4(),
         .uv = atlasmod.Atlas.slotUV(slot),
         .w = adv,
+        .h = chromeH(),
     };
     n.* += 1;
     return adv;
@@ -1553,12 +1556,42 @@ fn putSansRun(n: *usize, x: f32, y: f32, fg: theme.Rgb, bg: theme.Rgb, text: []c
     return pen - x;
 }
 
-/// Codepoint count (display cells) of a UTF-8 slice.
-fn utf8Cells(s: []const u8) usize {
-    var it = std.unicode.Utf8View.initUnchecked(s).iterator();
-    var k: usize = 0;
-    while (it.nextCodepoint()) |_| k += 1;
-    return k;
+/// Lay out a Sans run, clipping glyphs that would cross `max_x`. Returns width.
+fn putSansClip(n: *usize, x: f32, y: f32, fg: theme.Rgb, bg: theme.Rgb, text: []const u8, max_x: f32) f32 {
+    var pen = x;
+    var it = std.unicode.Utf8View.initUnchecked(text).iterator();
+    while (it.nextCodepoint()) |cp| {
+        const adv = anvil_sans_advance(@as(u32, cp));
+        if (pen + adv > max_x) break;
+        pen += putSans(n, pen, y, fg, bg, @intCast(cp));
+    }
+    return pen - x;
+}
+
+/// Total Sans advance (device px) of a UTF-8 run, for right-aligned layout.
+fn sansWidth(text: []const u8) f32 {
+    var w: f32 = 0;
+    var it = std.unicode.Utf8View.initUnchecked(text).iterator();
+    while (it.nextCodepoint()) |cp| w += anvil_sans_advance(@as(u32, cp));
+    return w;
+}
+
+/// Emit one small chrome mono icon (Nerd Font / box-drawing) at (x, y), scaled
+/// and top-left aligned via the chrome keyspace. Returns the icon cell width.
+fn putChromeIcon(n: *usize, x: f32, y: f32, fg: theme.Rgb, bg: theme.Rgb, cp: u21) f32 {
+    if (n.* >= instances.len) return chromeIconW();
+    const slot = renderer.atlas.slotForKey(atlasmod.chrome_tag | @as(u32, cp));
+    instances[n.*] = .{
+        .x = x,
+        .y = y,
+        .fg = fg.f32x4(),
+        .bg = bg.f32x4(),
+        .uv = atlasmod.Atlas.slotUV(slot),
+        .w = chromeIconW(),
+        .h = chromeH(),
+    };
+    n.* += 1;
+    return chromeIconW();
 }
 
 /// Replace a leading $HOME with `~` for a compact breadcrumb path.
@@ -1654,16 +1687,15 @@ fn emitShellRects(th: *const theme.Theme, np: usize) usize {
 /// labels. The bar background is drawn by the renderer from `bar_color`.
 fn emitCommandBar(th: *const theme.Theme, start: usize, np: usize) usize {
     _ = np;
-    const cw = renderer.cell_w;
-    const ch = renderer.cell_h;
-    const ly: f32 = (bar_h - ch) / 2;
+    const ly: f32 = (bar_h - chromeH()) / 2;
+    const pad = anvil_sans_advance(' '); // one Sans space as the spacing unit
     var n = start;
     var x: f32 = tab_inset_x;
 
     // Wordmark: accent initial + bone tail, in IBM Plex Sans.
     x += putSans(&n, x, ly, chrome.mineral, th.bar, 'A');
     x += putSansRun(&n, x, ly, chrome.bone, th.bar, "nvil");
-    x += 2 * cw;
+    x += 2 * pad;
 
     // Measure right-aligned tab labels so the breadcrumb stops clear of them.
     var tabs_w: f32 = 0;
@@ -1672,7 +1704,7 @@ fn emitCommandBar(th: *const theme.Theme, start: usize, np: usize) usize {
         var ti: usize = 0;
         while (ti < mgr.tabs.items.len) : (ti += 1) {
             const label = tabLabel(ti, &tb);
-            tabs_w += @as(f32, @floatFromInt(utf8Cells(label) + 2)) * cw;
+            tabs_w += sansWidth(label) + 2 * pad;
         }
     }
 
@@ -1680,17 +1712,7 @@ fn emitCommandBar(th: *const theme.Theme, start: usize, np: usize) usize {
     if (mgr.focusedSession()) |s| {
         var pbuf: [192]u8 = undefined;
         const path = contractHome(s.term.cwd(), &pbuf);
-        const budget_px = win_w - 8 - tabs_w - x;
-        const budget_cells: usize = if (budget_px > cw) @intFromFloat(budget_px / cw) else 0;
-        var i: usize = 0;
-        var it = std.unicode.Utf8View.initUnchecked(path).iterator();
-        while (it.nextCodepoint()) |cp| {
-            if (i >= budget_cells) break;
-            putCp(n, x, ly, chrome.alloy, th.bar, cp);
-            n += 1;
-            x += cw;
-            i += 1;
-        }
+        _ = putSansClip(&n, x, ly, chrome.alloy, th.bar, path, win_w - 8 - tabs_w);
     }
 
     // Tab labels, right-aligned. Active in bone, others in ash.
@@ -1701,14 +1723,9 @@ fn emitCommandBar(th: *const theme.Theme, start: usize, np: usize) usize {
             const active = ti == mgr.active_tab;
             const fg = if (active) chrome.bone else chrome.ash;
             const label = tabLabel(ti, &tb);
-            tx += cw; // leading pad
-            var it = std.unicode.Utf8View.initUnchecked(label).iterator();
-            while (it.nextCodepoint()) |cp| {
-                putCp(n, tx, ly, fg, th.bar, cp);
-                n += 1;
-                tx += cw;
-            }
-            tx += cw; // trailing pad
+            tx += pad; // leading pad
+            tx += putSansRun(&n, tx, ly, fg, th.bar, label);
+            tx += pad; // trailing pad
         }
     }
     return n - start;
@@ -1718,46 +1735,20 @@ fn emitCommandBar(th: *const theme.Theme, start: usize, np: usize) usize {
 fn emitPanelHeaders(th: *const theme.Theme, start: usize, np: usize) usize {
     _ = th;
     _ = np;
-    const cw = renderer.cell_w;
-    const ch = renderer.cell_h;
     const ptop = bar_h + chrome.panel_pad;
-    const ly: f32 = ptop + (chrome.header_strip_h - ch) / 2;
+    const ly: f32 = ptop + (chrome.header_strip_h - chromeH()) / 2;
     const bg = chrome.charcoal;
     var n = start;
     var x: f32 = leftChromeW() + chrome.panel_pad + renderer.pad_x;
+    const max_x = win_w - rightChromeW() - chrome.panel_pad - renderer.pad_x;
 
     const s = mgr.focusedSession() orelse return 0;
     var prog = s.term.title();
     if (prog.len == 0) prog = "zsh";
-    var it = std.unicode.Utf8View.initUnchecked(prog).iterator();
-    var pc: usize = 0;
-    while (it.nextCodepoint()) |cp| {
-        if (pc >= 24) break;
-        putCp(n, x, ly, chrome.mist, bg, cp);
-        n += 1;
-        x += cw;
-        pc += 1;
-    }
+    x += putSansClip(&n, x, ly, chrome.mist, bg, prog, max_x);
     // Separator (em-dash) + cwd basename in alloy.
-    putGlyph(n, x, ly, chrome.ash, bg, ' ');
-    n += 1;
-    x += cw;
-    putCp(n, x, ly, chrome.ash, bg, 0x2014);
-    n += 1;
-    x += cw;
-    putGlyph(n, x, ly, chrome.ash, bg, ' ');
-    n += 1;
-    x += cw;
-    const base = basename(s.term.cwd());
-    var bit = std.unicode.Utf8View.initUnchecked(base).iterator();
-    var bc: usize = 0;
-    while (bit.nextCodepoint()) |cp| {
-        if (bc >= 40) break;
-        putCp(n, x, ly, chrome.alloy, bg, cp);
-        n += 1;
-        x += cw;
-        bc += 1;
-    }
+    x += putSansRun(&n, x, ly, chrome.ash, bg, " — ");
+    x += putSansClip(&n, x, ly, chrome.alloy, bg, basename(s.term.cwd()), max_x);
     return n - start;
 }
 
@@ -1765,9 +1756,9 @@ fn emitPanelHeaders(th: *const theme.Theme, start: usize, np: usize) usize {
 /// kube context on the left, a semantic ready label on the right.
 fn emitStatusBar(th: *const theme.Theme, start: usize) usize {
     _ = th;
-    const cw = renderer.cell_w;
-    const ch = renderer.cell_h;
-    const ly: f32 = win_h - chrome.status_bar_h + (chrome.status_bar_h - ch) / 2;
+    const iw = chromeIconW();
+    const ly: f32 = win_h - chrome.status_bar_h + (chrome.status_bar_h - chromeH()) / 2;
+    const gap = anvil_sans_advance(' ');
     const bg = chrome.charcoal;
     var n = start;
     var x: f32 = chrome.panel_pad + renderer.pad_x;
@@ -1776,39 +1767,23 @@ fn emitStatusBar(th: *const theme.Theme, start: usize) usize {
 
     const branch = ctx_chip.branch();
     if (branch.len > 0) {
-        putCp(n, x, ly, chrome.mineral, bg, glyph_git);
-        n += 1;
-        x += cw * 1.5;
-        var it = std.unicode.Utf8View.initUnchecked(branch[0..@min(branch.len, chip_max_branch)]).iterator();
-        while (it.nextCodepoint()) |cp| {
-            putCp(n, x, ly, chrome.mist, bg, cp);
-            n += 1;
-            x += cw;
-        }
-        x += cw * 2;
+        x += putChromeIcon(&n, x, ly, chrome.mineral, bg, glyph_git);
+        x += gap * 0.5;
+        x += putSansRun(&n, x, ly, chrome.mist, bg, branch[0..@min(branch.len, chip_max_branch)]);
+        x += iw + gap;
     }
 
     const kube = ctx_chip.kube();
     if (kube.len > 0) {
-        putCp(n, x, ly, chrome.agent, bg, glyph_kube);
-        n += 1;
-        x += cw * 1.5;
-        var it = std.unicode.Utf8View.initUnchecked(kube[0..@min(kube.len, chip_max_kube)]).iterator();
-        while (it.nextCodepoint()) |cp| {
-            putCp(n, x, ly, chrome.mist, bg, cp);
-            n += 1;
-            x += cw;
-        }
+        x += putChromeIcon(&n, x, ly, chrome.agent, bg, glyph_kube);
+        x += gap * 0.5;
+        x += putSansRun(&n, x, ly, chrome.mist, bg, kube[0..@min(kube.len, chip_max_kube)]);
     }
 
     // Right: semantic ready label.
     const label = "READY";
-    var rx = win_w - chrome.panel_pad - renderer.pad_x - @as(f32, @floatFromInt(label.len)) * cw;
-    for (label) |c| {
-        putGlyph(n, rx, ly, chrome.verified, bg, c);
-        n += 1;
-        rx += cw;
-    }
+    const rx = win_w - chrome.panel_pad - renderer.pad_x - sansWidth(label);
+    _ = putSansRun(&n, rx, ly, chrome.verified, bg, label);
     return n - start;
 }
 
@@ -1825,14 +1800,12 @@ const rail_active: usize = 0; // highlighted rail entry (terminal, for now)
 /// Left activity rail: a vertical stack of Nerd Font icons. The active entry
 /// is mineral; the rest are alloy. Drawn as palette text over the rail bg.
 fn emitRail(start: usize) usize {
-    const cw = renderer.cell_w;
-    const cx = (chrome.rail_w - cw) / 2;
+    const cx = (chrome.rail_w - chromeIconW()) / 2;
     var n = start;
     var y: f32 = bar_h + 18;
     for (rail_glyphs, 0..) |g, i| {
         const c = if (i == rail_active) chrome.mineral else chrome.alloy;
-        putCp(n, cx, y, c, chrome.graphite, g);
-        n += 1;
+        _ = putChromeIcon(&n, cx, y, c, chrome.graphite, g);
         y += chrome.rail_w;
     }
     return n - start;
@@ -1901,14 +1874,13 @@ fn explorerPath() []const u8 {
 /// alloy dot. The active-row highlight rect is drawn in emitShellRects.
 fn emitSidebar(start: usize) usize {
     if (!sidebar_open) return 0;
-    const cw = renderer.cell_w;
-    const ch = renderer.cell_h;
+    const iw = chromeIconW();
     const bg = chrome.charcoal;
     const x0 = chrome.rail_w + renderer.pad_x + 6;
     var n = start;
 
     // Section header (Plex Sans).
-    const hy = bar_h + (chrome.sidebar_header_h - ch) / 2;
+    const hy = bar_h + (chrome.sidebar_header_h - chromeH()) / 2;
     _ = putSansRun(&n, x0, hy, chrome.alloy, bg, "SESSIONS");
 
     // Session rows.
@@ -1920,26 +1892,18 @@ fn emitSidebar(start: usize) usize {
         const active = ti == mgr.active_tab;
         const dot = if (active) chrome.verified else chrome.alloy;
         const fg = if (active) chrome.bone else chrome.mist;
-        const ry = y + (chrome.row_h - ch) / 2;
+        const ry = y + (chrome.row_h - chromeH()) / 2;
         var x = x0;
-        putCp(n, x, ry, dot, bg, 0x25CF);
-        n += 1;
-        x += cw * 1.5;
-        const label = tabLabel(ti, &tb);
-        var it = std.unicode.Utf8View.initUnchecked(label).iterator();
-        while (it.nextCodepoint()) |cp| {
-            if (x + cw > right) break;
-            putCp(n, x, ry, fg, bg, cp);
-            n += 1;
-            x += cw;
-        }
+        x += putChromeIcon(&n, x, ry, dot, bg, 0x25CF);
+        x += iw * 0.5;
+        _ = putSansClip(&n, x, ry, fg, bg, tabLabel(ti, &tb), right);
         y += chrome.row_h;
     }
 
     // EXPLORER: flat listing of the focused pane's cwd. Dirs (alloy folder
     // glyph) sort first; files (ash file glyph) follow. Click opens (see mouse).
     y += 8;
-    const ehy = y + (chrome.sidebar_header_h - ch) / 2;
+    const ehy = y + (chrome.sidebar_header_h - chromeH()) / 2;
     _ = putSansRun(&n, x0, ehy, chrome.alloy, bg, "EXPLORER");
     y += chrome.sidebar_header_h + 4;
 
@@ -1947,21 +1911,14 @@ fn emitSidebar(start: usize) usize {
     exp_row_y0 = y;
     for (exp_entries[0..exp_n]) |*ent| {
         if (y + chrome.row_h > win_h - chrome.status_bar_h) break;
-        const ry = y + (chrome.row_h - ch) / 2;
+        const ry = y + (chrome.row_h - chromeH()) / 2;
         const icon: u21 = if (ent.is_dir) 0xf07b else 0xf016; // folder / file
         const ic = if (ent.is_dir) chrome.alloy else chrome.ash;
         const fg = if (ent.is_dir) chrome.mist else chrome.alloy;
         var x = x0;
-        putCp(n, x, ry, ic, bg, icon);
-        n += 1;
-        x += cw * 1.5;
-        var it = std.unicode.Utf8View.initUnchecked(ent.name[0..ent.len]).iterator();
-        while (it.nextCodepoint()) |cp| {
-            if (x + cw > right) break;
-            putCp(n, x, ry, fg, bg, cp);
-            n += 1;
-            x += cw;
-        }
+        x += putChromeIcon(&n, x, ry, ic, bg, icon);
+        x += iw * 0.5;
+        _ = putSansClip(&n, x, ry, fg, bg, ent.name[0..ent.len], right);
         y += chrome.row_h;
     }
     return n - start;
@@ -1989,29 +1946,19 @@ fn rowKindColor(kind: caldera.RowKind) theme.Rgb {
 
 /// Render a section header ("RUNS") into the drawer and advance the cursor.
 fn drawerHeader(n: *usize, ctx: *DrawerCtx, label: []const u8) void {
-    const ch = renderer.cell_h;
-    const hy = ctx.y + (chrome.sidebar_header_h - ch) / 2;
+    const hy = ctx.y + (chrome.sidebar_header_h - chromeH()) / 2;
     _ = putSansRun(n, ctx.x0, hy, chrome.alloy, chrome.charcoal, label);
     ctx.y += chrome.sidebar_header_h + 4;
 }
 
 /// Render one drawer row: a status dot then a clipped label. Advances the cursor.
 fn drawerRow(n: *usize, ctx: *DrawerCtx, dot: theme.Rgb, fg: theme.Rgb, label: []const u8) void {
-    const cw = renderer.cell_w;
-    const ch = renderer.cell_h;
     const bg = chrome.charcoal;
-    const ry = ctx.y + (chrome.row_h - ch) / 2;
+    const ry = ctx.y + (chrome.row_h - chromeH()) / 2;
     var x = ctx.x0;
-    putCp(n.*, x, ry, dot, bg, 0x25CF);
-    n.* += 1;
-    x += cw * 2;
-    var it = std.unicode.Utf8View.initUnchecked(label).iterator();
-    while (it.nextCodepoint()) |cp| {
-        if (x + cw > ctx.right) break;
-        putCp(n.*, x, ry, fg, bg, cp);
-        n.* += 1;
-        x += cw;
-    }
+    x += putChromeIcon(n, x, ry, dot, bg, 0x25CF);
+    x += chromeIconW();
+    _ = putSansClip(n, x, ry, fg, bg, label, ctx.right);
     ctx.y += chrome.row_h;
 }
 
