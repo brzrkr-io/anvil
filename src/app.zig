@@ -46,6 +46,13 @@ const divider_draw_px: f32 = 2; // drawn hairline width (1 logical pt @2x)
 const font_pt: f32 = 13.0;
 const bar_h: f32 = chrome.top_bar_h; // command bar, device pixels (22pt @2x)
 const tab_inset_x: f32 = 152; // clear the macOS traffic-light buttons (device px)
+// Advance from an active tab's status dot to its label, as a fraction of the
+// chrome icon cell: the ● ink is centred in a full cell, so a snug-but-clear
+// fraction pulls the label close without the numeral clipping the dot. Shared
+// by emitCommandBar (drawing) and tabsWidth (right-alignment) so the strip
+// stays aligned to its right margin.
+const tab_dot_adv: f32 = 0.9;
+const tab_strip_margin: f32 = chrome.sp16; // right margin of the tab strip
 
 var mgr = SessionManager{ .alloc = std.heap.page_allocator };
 var renderer = Renderer{ .cell_w = 16, .cell_h = 32, .pad_x = 8, .pad_y = bar_h + 6, .pad_bottom = 8 };
@@ -1677,7 +1684,10 @@ fn breadcrumbText(buf: []u8) []const u8 {
 fn tabsWidth(tb: []u8, pad: f32) f32 {
     var w: f32 = 0;
     var ti: usize = 0;
-    while (ti < mgr.tabs.items.len) : (ti += 1) w += sansWidth(tabLabel(ti, tb)) + 2 * pad;
+    while (ti < mgr.tabs.items.len) : (ti += 1) {
+        w += sansWidth(tabLabel(ti, tb)) + 2 * pad;
+        if (ti == mgr.active_tab) w += chromeIconW() * tab_dot_adv; // status dot
+    }
     return w;
 }
 
@@ -1705,7 +1715,7 @@ fn crumbBox(buf: []u8) ?Crumb {
     const pad = anvil_sans_advance(' ');
     var tb: [128]u8 = undefined;
     const left = tab_inset_x + sansWidth("Anvil") + 2 * pad;
-    const right = win_w - 8 - tabsWidth(&tb, pad) - 2 * pad;
+    const right = win_w - tab_strip_margin - tabsWidth(&tb, pad) - 2 * pad;
     const band = right - left;
     if (band < 80) return null; // too cramped to read: skip the pill
     const padx = pad * 1.25;
@@ -1889,14 +1899,14 @@ fn emitCommandBar(th: *const theme.Theme, start: usize, np: usize) usize {
     // Tab strip, right-aligned, always shown. The active tab carries a leading
     // mineral status dot and reads in bone; the rest are alloy.
     var tb: [128]u8 = undefined;
-    var tx = win_w - 8 - tabsWidth(&tb, pad);
+    var tx = win_w - tab_strip_margin - tabsWidth(&tb, pad);
     var ti: usize = 0;
     while (ti < mgr.tabs.items.len) : (ti += 1) {
         const active = ti == mgr.active_tab;
         tx += pad;
         if (active) {
             _ = putChromeIcon(&n, tx, ly, chrome.mineral, th.bar, 0x25CF); // ●
-            tx += chromeIconW() * 0.6;
+            tx += chromeIconW() * tab_dot_adv;
         }
         const fg = if (active) chrome.bone else chrome.alloy;
         tx += putSansRun(&n, tx, ly, fg, th.bar, tabLabel(ti, &tb));
