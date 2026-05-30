@@ -1733,44 +1733,99 @@ fn emitSidebar(start: usize) usize {
     return n - start;
 }
 
-/// Right context drawer (Option C): RUNS / TRACE / AGENT section headers with
-/// empty-state placeholders. Live data is wired in #78/#79; this is the shell.
-fn emitDrawer(start: usize) usize {
-    if (!drawer_open) return 0;
+/// Latest Caldera snapshot for the persistent drawer (refreshed per frame).
+var drawer_snap: caldera.Snapshot = .{};
+
+/// Drawer layout cursor: x origin, right clip edge, and running y position.
+const DrawerCtx = struct {
+    x0: f32,
+    right: f32,
+    y: f32,
+};
+
+/// Map a Caldera row kind to its semantic status color.
+fn rowKindColor(kind: caldera.RowKind) theme.Rgb {
+    return switch (kind) {
+        .run_passed => chrome.verified,
+        .run_open => chrome.mineral,
+        .attn_warning => chrome.attention,
+        .attn_error => chrome.ember,
+    };
+}
+
+/// Render a section header ("RUNS") into the drawer and advance the cursor.
+fn drawerHeader(n: *usize, ctx: *DrawerCtx, label: []const u8) void {
+    const cw = renderer.cell_w;
+    const ch = renderer.cell_h;
+    const hy = ctx.y + (chrome.sidebar_header_h - ch) / 2;
+    var hx = ctx.x0;
+    for (label) |c| {
+        putGlyph(n.*, hx, hy, chrome.alloy, chrome.charcoal, c);
+        n.* += 1;
+        hx += cw;
+    }
+    ctx.y += chrome.sidebar_header_h + 4;
+}
+
+/// Render one drawer row: a status dot then a clipped label. Advances the cursor.
+fn drawerRow(n: *usize, ctx: *DrawerCtx, dot: theme.Rgb, fg: theme.Rgb, label: []const u8) void {
     const cw = renderer.cell_w;
     const ch = renderer.cell_h;
     const bg = chrome.charcoal;
-    const x0 = win_w - chrome.drawer_w + renderer.pad_x + 6;
-    const right = win_w - renderer.pad_x;
-    var n = start;
-    var y: f32 = bar_h + 8;
-
-    const sections = [_][]const u8{ "RUNS", "TRACE", "AGENT" };
-    for (sections) |sec| {
-        // Section header.
-        const hy = y + (chrome.sidebar_header_h - ch) / 2;
-        var hx = x0;
-        for (sec) |c| {
-            putGlyph(n, hx, hy, chrome.alloy, bg, c);
-            n += 1;
-            hx += cw;
-        }
-        y += chrome.sidebar_header_h + 4;
-
-        // Empty-state placeholder row (dim em-dash).
-        const ry = y + (chrome.row_h - ch) / 2;
-        var x = x0;
-        putCp(n, x, ry, chrome.ash, bg, 0x2014);
-        n += 1;
-        x += cw * 2;
-        for ("none") |c| {
-            if (x + cw > right) break;
-            putGlyph(n, x, ry, chrome.ash, bg, c);
-            n += 1;
-            x += cw;
-        }
-        y += chrome.row_h + 8;
+    const ry = ctx.y + (chrome.row_h - ch) / 2;
+    var x = ctx.x0;
+    putCp(n.*, x, ry, dot, bg, 0x25CF);
+    n.* += 1;
+    x += cw * 2;
+    var it = std.unicode.Utf8View.initUnchecked(label).iterator();
+    while (it.nextCodepoint()) |cp| {
+        if (x + cw > ctx.right) break;
+        putCp(n.*, x, ry, fg, bg, cp);
+        n.* += 1;
+        x += cw;
     }
+    ctx.y += chrome.row_h;
+}
+
+/// Right context drawer (Option C): RUNS and TRACE from the Caldera snapshot,
+/// AGENT placeholder (wired in #79). Each section falls back to a dim "none".
+fn emitDrawer(start: usize) usize {
+    if (!drawer_open) return 0;
+    caldera.get(&drawer_snap);
+    var n = start;
+    var ctx = DrawerCtx{
+        .x0 = win_w - chrome.drawer_w + renderer.pad_x + 6,
+        .right = win_w - renderer.pad_x,
+        .y = bar_h + 8,
+    };
+
+    // RUNS: one row per Caldera run row, colored by status.
+    drawerHeader(&n, &ctx, "RUNS");
+    if (drawer_snap.runs == 0) {
+        drawerRow(&n, &ctx, chrome.ash, chrome.ash, "none");
+    } else {
+        for (drawer_snap.rows[0..drawer_snap.runs]) |*r| {
+            drawerRow(&n, &ctx, rowKindColor(r.kind), chrome.mist, r.slice());
+        }
+    }
+    ctx.y += 8;
+
+    // TRACE: events of the most recent run.
+    drawerHeader(&n, &ctx, "TRACE");
+    const trace_events: usize = if (drawer_snap.runs > 0) drawer_snap.details[0].event_count else 0;
+    if (trace_events == 0) {
+        drawerRow(&n, &ctx, chrome.ash, chrome.ash, "none");
+    } else {
+        for (drawer_snap.details[0].events[0..trace_events]) |*ev| {
+            drawerRow(&n, &ctx, chrome.mineral, chrome.mist, ev.slice());
+        }
+    }
+    ctx.y += 8;
+
+    // AGENT: wired in #79.
+    drawerHeader(&n, &ctx, "AGENT");
+    drawerRow(&n, &ctx, chrome.ash, chrome.ash, "none");
+
     return n - start;
 }
 
