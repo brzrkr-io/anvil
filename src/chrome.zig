@@ -33,6 +33,12 @@ pub const panel_pad: f32 = 8; // inset gutter: left/right/top of body
 pub const panel_pad_bottom: f32 = 8; // inset gutter: bottom (before status bar)
 pub const header_strip_h: f32 = 34; // slim charcoal strip atop the panel (fits one Mono line)
 
+// Option A chrome (left side): activity rail + collapsible sidebar (device px).
+pub const rail_w: f32 = 56; // vertical activity rail
+pub const sidebar_w: f32 = 300; // SESSIONS / EXPLORER sidebar
+pub const sidebar_header_h: f32 = 30; // section header row height
+pub const row_h: f32 = 34; // list row height (sessions, explorer entries)
+
 /// Geometry regions for one window frame (device pixels).
 /// Left rail, sidebar, and right drawer are zero-width for now (Option B).
 pub const LayoutRegions = struct {

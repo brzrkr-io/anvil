@@ -293,17 +293,27 @@ fn focused() *Session {
     return mgr.focusedSession().?;
 }
 
-/// The pane area: the window minus command bar, status bar, panel inset, and
-/// per-pane header strip. Panes lay out inside the inset panel body.
+/// True when the SESSIONS/EXPLORER sidebar is shown (Option A chrome).
+var sidebar_open: bool = true;
+
+/// Left chrome width: activity rail plus the sidebar when open.
+fn leftChromeW() f32 {
+    return chrome.rail_w + (if (sidebar_open) chrome.sidebar_w else 0);
+}
+
+/// The pane area: the window minus command bar, status bar, left chrome
+/// (rail + sidebar), panel inset, and the per-pane header strip. Panes lay
+/// out inside the inset panel body.
 fn workspaceRect() pane.Rect {
     const pp = chrome.panel_pad;
     const hs = chrome.header_strip_h;
     const sb = chrome.status_bar_h;
     const pb = chrome.panel_pad_bottom;
+    const lc = leftChromeW();
     return .{
-        .x = pp,
+        .x = lc + pp,
         .y = bar_h + pp + hs,
-        .w = win_w - 2 * pp,
+        .w = win_w - lc - 2 * pp,
         .h = win_h - bar_h - pp - hs - sb - pb,
     };
 }
@@ -1225,6 +1235,8 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
     pt += emitCommandBar(th, pt, np);
     pt += emitPanelHeaders(th, pt, np);
     pt += emitStatusBar(th, pt);
+    pt += emitRail(pt);
+    pt += emitSidebar(pt);
     const chrome_text: usize = pt - n;
 
     // Modal overlays append after the base shell rects (base_ri slots used).
@@ -1403,15 +1415,34 @@ fn contractHome(path: []const u8, buf: []u8) []const u8 {
 fn emitShellRects(th: *const theme.Theme, np: usize) usize {
     _ = th;
     _ = np;
-    const px = chrome.panel_pad;
+    const lc = leftChromeW();
+    const px = lc + chrome.panel_pad;
     const ptop = bar_h + chrome.panel_pad;
-    const pw = win_w - 2 * chrome.panel_pad;
+    const pw = win_w - lc - 2 * chrome.panel_pad;
     const pbot = win_h - chrome.status_bar_h - chrome.panel_pad_bottom;
     const ph = pbot - ptop;
     const hdr_div_y = ptop + chrome.header_strip_h;
     const border = chrome.ash_soft;
+    const body_top = bar_h;
+    const body_h = win_h - bar_h - chrome.status_bar_h;
 
     var ri: usize = 0;
+    // Left chrome fills: activity rail + (optional) sidebar.
+    putRect(ri, 0, body_top, chrome.rail_w, body_h, chrome.graphite); // rail bg
+    ri += 1;
+    if (sidebar_open) {
+        putRect(ri, chrome.rail_w, body_top, chrome.sidebar_w, body_h, chrome.charcoal); // sidebar bg
+        ri += 1;
+        // Active SESSIONS row highlight.
+        if (mgr.tabs.items.len > 0) {
+            const ry = body_top + chrome.sidebar_header_h + 8 +
+                @as(f32, @floatFromInt(mgr.active_tab)) * chrome.row_h;
+            putRect(ri, chrome.rail_w + 4, ry, chrome.sidebar_w - 8, chrome.row_h, chrome.ash_soft);
+            ri += 1;
+        }
+    }
+    putRect(ri, lc - 1, body_top, 1, body_h, border); // left-chrome right edge
+    ri += 1;
     // Fills first (painter order), hairlines on top.
     putRect(ri, 0, win_h - chrome.status_bar_h, win_w, chrome.status_bar_h, chrome.charcoal); // status bg
     ri += 1;
@@ -1514,7 +1545,7 @@ fn emitPanelHeaders(th: *const theme.Theme, start: usize, np: usize) usize {
     const ly: f32 = ptop + (chrome.header_strip_h - ch) / 2;
     const bg = chrome.charcoal;
     var n = start;
-    var x: f32 = chrome.panel_pad + renderer.pad_x;
+    var x: f32 = leftChromeW() + chrome.panel_pad + renderer.pad_x;
 
     const s = mgr.focusedSession() orelse return 0;
     var prog = s.term.title();
@@ -1598,6 +1629,79 @@ fn emitStatusBar(th: *const theme.Theme, start: usize) usize {
         putGlyph(n, rx, ly, chrome.verified, bg, c);
         n += 1;
         rx += cw;
+    }
+    return n - start;
+}
+
+// Nerd Font glyphs for the left activity rail.
+const rail_glyphs = [_]u21{
+    0xf120, // terminal
+    0xf07b, // folder / explorer
+    0xf002, // search
+    0xf0e7, // bolt / runs
+    0xf013, // gear / settings
+};
+const rail_active: usize = 0; // highlighted rail entry (terminal, for now)
+
+/// Left activity rail: a vertical stack of Nerd Font icons. The active entry
+/// is mineral; the rest are alloy. Drawn as palette text over the rail bg.
+fn emitRail(start: usize) usize {
+    const cw = renderer.cell_w;
+    const cx = (chrome.rail_w - cw) / 2;
+    var n = start;
+    var y: f32 = bar_h + 18;
+    for (rail_glyphs, 0..) |g, i| {
+        const c = if (i == rail_active) chrome.mineral else chrome.alloy;
+        putCp(n, cx, y, c, chrome.graphite, g);
+        n += 1;
+        y += chrome.rail_w;
+    }
+    return n - start;
+}
+
+/// SESSIONS sidebar: a section header plus one row per tab (session). The
+/// active session is bone with a verified dot; the rest are mist with an
+/// alloy dot. The active-row highlight rect is drawn in emitShellRects.
+fn emitSidebar(start: usize) usize {
+    if (!sidebar_open) return 0;
+    const cw = renderer.cell_w;
+    const ch = renderer.cell_h;
+    const bg = chrome.charcoal;
+    const x0 = chrome.rail_w + renderer.pad_x + 6;
+    var n = start;
+
+    // Section header.
+    const hy = bar_h + (chrome.sidebar_header_h - ch) / 2;
+    var hx = x0;
+    for ("SESSIONS") |c| {
+        putGlyph(n, hx, hy, chrome.alloy, bg, c);
+        n += 1;
+        hx += cw;
+    }
+
+    // Session rows.
+    const right = chrome.rail_w + chrome.sidebar_w - renderer.pad_x;
+    var y: f32 = bar_h + chrome.sidebar_header_h + 8;
+    var tb: [128]u8 = undefined;
+    var ti: usize = 0;
+    while (ti < mgr.tabs.items.len) : (ti += 1) {
+        const active = ti == mgr.active_tab;
+        const dot = if (active) chrome.verified else chrome.alloy;
+        const fg = if (active) chrome.bone else chrome.mist;
+        const ry = y + (chrome.row_h - ch) / 2;
+        var x = x0;
+        putCp(n, x, ry, dot, bg, 0x25CF);
+        n += 1;
+        x += cw * 1.5;
+        const label = tabLabel(ti, &tb);
+        var it = std.unicode.Utf8View.initUnchecked(label).iterator();
+        while (it.nextCodepoint()) |cp| {
+            if (x + cw > right) break;
+            putCp(n, x, ry, fg, bg, cp);
+            n += 1;
+            x += cw;
+        }
+        y += chrome.row_h;
     }
     return n - start;
 }
