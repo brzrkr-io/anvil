@@ -1782,6 +1782,8 @@ fn emitShellRects(th: *const theme.Theme, np: usize) usize {
                 @as(f32, @floatFromInt(mgr.active_tab)) * chrome.row_h;
             putRect(ri, chrome.rail_w + 4, ry, sidebar_w - 8, chrome.row_h, chrome.ash_soft);
             ri += 1;
+            putRect(ri, chrome.rail_w, ry, 2, chrome.row_h, chrome.mineral); // active tick
+            ri += 1;
         }
         // Hover highlight on the row under the cursor (skip the active session).
         if (hoverSidebarRow(hover_x, hover_y)) |h| {
