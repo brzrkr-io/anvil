@@ -27,6 +27,7 @@ pub const FrameData = extern struct {
     cell_uv: [2]f32,
     bar_h: f32, // title-bar height in device pixels
     bg: [3]f32, // canvas clear color
+    bg_alpha: f32, // clear-color alpha; < 1.0 enables translucency
     bar_color: [3]f32,
     sep_color: [3]f32,
     dividers: [*]const f32, // flat x,y,w,h per pane divider (device px)

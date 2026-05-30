@@ -28,7 +28,8 @@ extern fn anvil_pasteboard_write(ptr: [*]const u8, len: usize) void;
 extern fn anvil_notify(title: [*:0]const u8, body: [*:0]const u8) void;
 const max_instances = 60000;
 const max_panes = 64;
-const divider_px: f32 = 2;
+const divider_px: f32 = 2; // layout gap + mouse hit zone (device px)
+const divider_draw_px: f32 = 2; // drawn hairline width (1 logical pt @2x)
 const font_pt: f32 = 13.0;
 const bar_h: f32 = 40; // compact title bar, device pixels (20pt @2x)
 const tab_inset_x: f32 = 152; // clear the macOS traffic-light buttons (device px)
@@ -282,6 +283,13 @@ fn effectiveDark() bool {
 
 fn activeTheme() *const theme.Theme {
     return if (effectiveDark()) &active_variant.dark else &active_variant.light;
+}
+
+fn effectiveBackgroundOpacity() f32 {
+    if (!effectiveDark()) return 1.0; // legibility floor: light variants always opaque
+    const v = cfg.background_opacity;
+    if (v >= 1.0) return 1.0;
+    return @max(v, 0.75); // floor at 0.75
 }
 
 /// Push the active theme's fg/bg/ANSI into every terminal so the parser can
@@ -1036,6 +1044,7 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
         .cell_uv = renderer.atlas.cellUV(),
         .bar_h = bar_h,
         .bg = th.bg.f32x3(),
+        .bg_alpha = effectiveBackgroundOpacity(),
         .bar_color = th.bar.f32x3(),
         .sep_color = th.separator.f32x3(),
         .dividers = @ptrCast(&divider_rects),

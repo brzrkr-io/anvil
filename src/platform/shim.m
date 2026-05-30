@@ -17,6 +17,7 @@ typedef struct {
     float cell_uv[2];
     float bar_h;
     float bg[3];
+    float bg_alpha; // clear-color alpha; < 1.0 enables translucency
     float bar_color[3];
     float sep_color[3];
     const float *dividers; // flat x,y,w,h per pane divider
@@ -327,7 +328,7 @@ static void render(void) {
     rp.colorAttachments[0].texture = drawable.texture;
     rp.colorAttachments[0].loadAction = MTLLoadActionClear;
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
-    rp.colorAttachments[0].clearColor = MTLClearColorMake(fd.bg[0], fd.bg[1], fd.bg[2], 1.0);
+    rp.colorAttachments[0].clearColor = MTLClearColorMake(fd.bg[0], fd.bg[1], fd.bg[2], fd.bg_alpha);
 
     id<MTLCommandBuffer> cb = [gQueue commandBuffer];
     id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
@@ -363,9 +364,20 @@ static void render(void) {
     }
 
     if (gSolidPipeline) {
+        // Draw hairline dividers (1 logical pt = 2 device px) centered in the gap.
+        // The gap rect (d[0..3]) is the hit/layout zone; the drawn line is narrower.
         for (uint32_t i = 0; i < fd.divider_count; i++) {
             const float *d = fd.dividers + i * 4;
-            drawSolid(enc, ds, d[0], d[1], d[2], d[3],
+            const float kDrawPx = 2.0f; // 1 logical pt @ 2x Retina
+            float x = d[0], y = d[1], w = d[2], h = d[3];
+            if (w <= h) { // vertical divider: center the hairline horizontally
+                x += (w - kDrawPx) * 0.5f;
+                w = kDrawPx;
+            } else { // horizontal divider: center the hairline vertically
+                y += (h - kDrawPx) * 0.5f;
+                h = kDrawPx;
+            }
+            drawSolid(enc, ds, x, y, w, h,
                       fd.sep_color[0], fd.sep_color[1], fd.sep_color[2], 1.0f);
         }
         // Command-palette panel/highlight rects, over the terminal.
@@ -455,9 +467,13 @@ void anvil_dump(const char *path, uint32_t w, uint32_t h) {
             }
         }
         if (gSolidPipeline) {
+            const float kDrawPx = 2.0f;
             for (uint32_t i = 0; i < fd.divider_count; i++) {
                 const float *d = fd.dividers + i * 4;
-                drawSolid(enc, CGSizeMake(w, h), d[0], d[1], d[2], d[3],
+                float dx = d[0], dy = d[1], dw = d[2], dh = d[3];
+                if (dw <= dh) { dx += (dw - kDrawPx) * 0.5f; dw = kDrawPx; }
+                else          { dy += (dh - kDrawPx) * 0.5f; dh = kDrawPx; }
+                drawSolid(enc, CGSizeMake(w, h), dx, dy, dw, dh,
                           fd.sep_color[0], fd.sep_color[1], fd.sep_color[2], 1.0f);
             }
             for (uint32_t i = 0; i < fd.overlay_count; i++) {
@@ -982,11 +998,31 @@ void anvil_run(void) {
                    name:@"AppleInterfaceThemeChangedNotification"
                  object:nil];
 
+        // Translucency setup: window and layer stay non-opaque so that when
+        // bg_alpha < 1.0 the vibrancy blur shows through. At alpha 1.0 the
+        // opaque-colored clear fully covers the blur, so the default look is
+        // unchanged and no restart is needed when background_opacity changes.
+        win.opaque = NO;
+        win.backgroundColor = [NSColor clearColor];
+        gLayer.opaque = NO;
+
+        NSView *contentHost = [[NSView alloc] initWithFrame:frame];
+        contentHost.autoresizesSubviews = YES;
+        [win setContentView:contentHost];
+
+        NSVisualEffectView *vev = [[NSVisualEffectView alloc] initWithFrame:frame];
+        vev.material = NSVisualEffectMaterialUnderWindowBackground;
+        vev.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+        vev.state = NSVisualEffectStateActive;
+        vev.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        [contentHost addSubview:vev];
+
         AnvilView *view = [[AnvilView alloc] initWithFrame:frame];
         view.wantsLayer = YES;
+        view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
         gLayer.frame = view.bounds;
         gLayer.drawableSize = CGSizeMake(frame.size.width * 2, frame.size.height * 2);
-        [win setContentView:view];
+        [contentHost addSubview:view];
         // Restore the last window position/size; center only on first launch.
         win.frameAutosaveName = @"AnvilMainWindow";
         if (![win setFrameUsingName:@"AnvilMainWindow"]) [win center];

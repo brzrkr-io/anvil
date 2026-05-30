@@ -25,6 +25,7 @@ pub const Config = struct {
     cursor_style: CursorStyle = .block,
     cursor_blink: bool = true,
     cursor_smooth: bool = true,
+    background_opacity: f32 = 1.0,
 
     pub fn themeVariant(self: *const Config) []const u8 {
         return self.theme_variant[0..self.theme_variant_len];
@@ -155,6 +156,16 @@ fn applyKey(cfg: *Config, key: []const u8, val: []const u8, err: ?*[128]u8, err_
             return;
         }
         setErr(err, err_len, "config.toml: invalid cursor_smooth '{s}' (line {})", .{ val, line_num });
+    } else if (std.mem.eql(u8, key, "background_opacity")) {
+        if (std.fmt.parseFloat(f32, val)) |v| {
+            if (v >= 0.0 and v <= 1.0) {
+                cfg.background_opacity = v;
+                return;
+            }
+            setErr(err, err_len, "config.toml: background_opacity {s} out of range 0.0-1.0 (line {})", .{ val, line_num });
+        } else |_| {
+            setErr(err, err_len, "config.toml: invalid background_opacity '{s}' (line {})", .{ val, line_num });
+        }
     } else if (std.mem.eql(u8, key, "theme_variant")) {
         const n = @min(val.len, cfg.theme_variant.len);
         @memcpy(cfg.theme_variant[0..n], val[0..n]);
@@ -306,4 +317,17 @@ test "parseFull: theme_variant does not yield an error" {
     const r = parseFull("theme_variant = mineral-high\n");
     try std.testing.expectEqual(@as(usize, 0), r.err_len);
     try std.testing.expectEqualStrings("mineral-high", r.cfg.themeVariant());
+}
+
+test "parse reads background_opacity; defaults 1.0" {
+    const def = parse("theme = dark\n");
+    try std.testing.expectEqual(@as(f32, 1.0), def.background_opacity);
+    const cfg = parse("background_opacity = 0.85\n");
+    try std.testing.expectEqual(@as(f32, 0.85), cfg.background_opacity);
+}
+
+test "parseFull: background_opacity out of range yields error" {
+    const r = parseFull("background_opacity = 1.5\n");
+    try std.testing.expect(r.err_len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, r.errMsg(), "background_opacity") != null);
 }
