@@ -26,6 +26,54 @@ pub const line = Rgb{ .r = 0x2d, .g = 0x36, .b = 0x3c };
 // Row hover tint: between charcoal and ash_soft — a subtle pointer affordance.
 pub const hover = Rgb{ .r = 0x1b, .g = 0x21, .b = 0x24 };
 
+// Chrome surface palette — the window-furniture tones, selected by the active
+// light/dark mode (see app.zig effectiveDark). Dark keeps the deep
+// graphite/charcoal operator console; light maps each ROLE onto the BRAND.md
+// light tokens: bone canvas, white raised panels, ink/slate text, mist borders.
+// Semantic accents (mineral, ember, verified, attention, agent) communicate
+// state, not surface, so they are mode-independent and stay as the consts above.
+//
+// Field names match the dark tokens for continuity. In `surface_light` each
+// field carries the light-mode value for that role, not the literal hue of the
+// same name (e.g. `graphite` = bone on light).
+pub const Surface = struct {
+    graphite: Rgb, // primary canvas: window + activity-rail fill
+    charcoal: Rgb, // raised panel: sidebar, drawer, status bar, header strip
+    ash: Rgb, // dim glyphs: separators, file icons, "none" placeholders
+    ash_soft: Rgb, // recessed selected-row fill
+    alloy: Rgb, // muted label text: section headers, metadata, inactive tabs
+    mist: Rgb, // primary chrome text
+    bone: Rgb, // emphasis chrome text
+    line: Rgb, // structural frame edges, rules, dividers
+    hover: Rgb, // pointer hover tint
+};
+
+pub const surface_dark = Surface{
+    .graphite = graphite,
+    .charcoal = charcoal,
+    .ash = ash,
+    .ash_soft = ash_soft,
+    .alloy = alloy,
+    .mist = mist,
+    .bone = bone,
+    .line = line,
+    .hover = hover,
+};
+
+// Light mode: BRAND.md light surfaces. bone canvas, white raised panels, ink
+// emphasis + slate primary text, alloy-darkened muted text, soft mist borders.
+pub const surface_light = Surface{
+    .graphite = bone, // #eef1f2 primary light canvas
+    .charcoal = Rgb{ .r = 0xff, .g = 0xff, .b = 0xff }, // white raised panels
+    .ash = Rgb{ .r = 0xa8, .g = 0xb0, .b = 0xb6 }, // dim muted gray
+    .ash_soft = Rgb{ .r = 0xd8, .g = 0xde, .b = 0xe1 }, // recessed row inset
+    .alloy = Rgb{ .r = 0x5b, .g = 0x65, .b = 0x6c }, // muted text, legible on light
+    .mist = Rgb{ .r = 0x2b, .g = 0x33, .b = 0x38 }, // primary text (slate)
+    .bone = Rgb{ .r = 0x0c, .g = 0x0d, .b = 0x0e }, // ink emphasis text
+    .line = Rgb{ .r = 0xbc, .g = 0xc4, .b = 0xc8 }, // soft hairline on bone/white/mist
+    .hover = Rgb{ .r = 0xdf, .g = 0xe4, .b = 0xe7 }, // hover tint
+};
+
 // Spacing tokens (px).
 pub const sp4: f32 = 4;
 pub const sp8: f32 = 8;

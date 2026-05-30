@@ -144,8 +144,14 @@ static NSWindow *gWindow;
 static void layoutTrafficLights(NSWindow *win);
 
 static BOOL osIsDark(void) {
-    NSString *style = [[NSUserDefaults standardUserDefaults] stringForKey:@"AppleInterfaceStyle"];
-    return [style isEqualToString:@"Dark"];
+    // NSApp.effectiveAppearance is the reliable system-appearance signal, correct
+    // at launch. The old AppleInterfaceStyle default is unset in Light mode and
+    // races app startup, which made System mode resolve dark on a light Mac.
+    NSAppearance *ap = NSApp.effectiveAppearance ?: [NSAppearance currentAppearance];
+    NSAppearanceName n = [ap bestMatchFromAppearancesWithNames:@[
+        NSAppearanceNameAqua, NSAppearanceNameDarkAqua
+    ]];
+    return [n isEqualToString:NSAppearanceNameDarkAqua];
 }
 
 // Sync the window's native appearance (traffic lights, vibrancy) to the theme.

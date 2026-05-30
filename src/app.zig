@@ -409,6 +409,15 @@ fn activeTheme() *const theme.Theme {
     return if (effectiveDark()) &active_variant.dark else &active_variant.light;
 }
 
+/// Active chrome surface palette (window furniture), selected by the same
+/// light/dark resolution as the terminal theme. Dark keeps the deep operator
+/// console; light maps each role onto BRAND.md light tokens. Semantic accents
+/// (mineral/ember/verified/attention/agent) are mode-independent — use the
+/// `chrome.*` consts directly for those.
+fn chromeSurface() chrome.Surface {
+    return if (effectiveDark()) chrome.surface_dark else chrome.surface_light;
+}
+
 fn effectiveBackgroundOpacity() f32 {
     if (!effectiveDark()) return 1.0; // legibility floor: light variants always opaque
     const v = cfg.background_opacity;
@@ -1760,6 +1769,7 @@ fn drawerSectionRows(count: usize) f32 {
 fn emitShellRects(th: *const theme.Theme, np: usize) usize {
     _ = th;
     _ = np;
+    const cs = chromeSurface();
     const lc = leftChromeW();
     const rc = rightChromeW();
     const px = lc + chrome.panel_pad;
@@ -1768,19 +1778,19 @@ fn emitShellRects(th: *const theme.Theme, np: usize) usize {
     const pbot = win_h - chrome.status_bar_h - chrome.panel_pad_bottom;
     const ph = pbot - ptop;
     const hdr_div_y = ptop + chrome.header_strip_h;
-    const border = chrome.line;
+    const border = cs.line;
     const body_top = bar_h;
     const body_h = win_h - bar_h - chrome.status_bar_h;
 
     var ri: usize = 0;
     // Left chrome fills: activity rail + (optional) sidebar.
-    putRect(ri, 0, body_top, chrome.rail_w, body_h, chrome.graphite); // rail bg
+    putRect(ri, 0, body_top, chrome.rail_w, body_h, cs.graphite); // rail bg
     ri += 1;
     // Active rail tool: a recessed charcoal cell with a mineral left-edge tick —
     // the operator-console "selected tool" marker.
     {
         const cell_y = body_top + 18 + @as(f32, @floatFromInt(rail_active)) * chrome.rail_w;
-        putRect(ri, 0, cell_y, chrome.rail_w, chrome.rail_w, chrome.charcoal); // active cell
+        putRect(ri, 0, cell_y, chrome.rail_w, chrome.rail_w, cs.charcoal); // active cell
         ri += 1;
         putRect(ri, 0, cell_y, 2, chrome.rail_w, chrome.mineral); // mineral tick
         ri += 1;
@@ -1790,12 +1800,12 @@ fn emitShellRects(th: *const theme.Theme, np: usize) usize {
     if (hoverRailSlot(hover_x, hover_y)) |hi| {
         if (hi != rail_active) {
             const hy = body_top + 18 + @as(f32, @floatFromInt(hi)) * chrome.rail_w;
-            putRect(ri, 0, hy, chrome.rail_w, chrome.rail_w, chrome.hover);
+            putRect(ri, 0, hy, chrome.rail_w, chrome.rail_w, cs.hover);
             ri += 1;
         }
     }
     if (sidebar_open) {
-        putRect(ri, chrome.rail_w, body_top, sidebar_w, body_h, chrome.charcoal); // sidebar bg
+        putRect(ri, chrome.rail_w, body_top, sidebar_w, body_h, cs.charcoal); // sidebar bg
         ri += 1;
         putRect(ri, chrome.rail_w, body_top, 1, body_h, border); // rail│sidebar divider
         ri += 1;
@@ -1814,7 +1824,7 @@ fn emitShellRects(th: *const theme.Theme, np: usize) usize {
         if (mgr.tabs.items.len > 0) {
             const ry = body_top + chrome.sidebar_header_h + 8 +
                 @as(f32, @floatFromInt(mgr.active_tab)) * chrome.row_h;
-            putRect(ri, chrome.rail_w + 4, ry, sidebar_w - 8, chrome.row_h, chrome.ash_soft);
+            putRect(ri, chrome.rail_w + 4, ry, sidebar_w - 8, chrome.row_h, cs.ash_soft);
             ri += 1;
             putRect(ri, chrome.rail_w, ry, 2, chrome.row_h, chrome.mineral); // active tick
             ri += 1;
@@ -1827,7 +1837,7 @@ fn emitShellRects(th: *const theme.Theme, np: usize) usize {
                 exp_row_y0 + @as(f32, @floatFromInt(h.idx)) * chrome.row_h;
             const skip = h.kind == 0 and h.idx == mgr.active_tab;
             if (!skip and hov_y > 0) {
-                putRect(ri, chrome.rail_w + 4, hov_y, sidebar_w - 8, chrome.row_h, chrome.hover);
+                putRect(ri, chrome.rail_w + 4, hov_y, sidebar_w - 8, chrome.row_h, cs.hover);
                 ri += 1;
             }
         }
@@ -1837,7 +1847,7 @@ fn emitShellRects(th: *const theme.Theme, np: usize) usize {
     // Right context drawer: charcoal fill + left separator hairline.
     if (drawer_open) {
         const dx = win_w - chrome.drawer_w;
-        putRect(ri, dx, body_top, chrome.drawer_w, body_h, chrome.charcoal); // drawer bg
+        putRect(ri, dx, body_top, chrome.drawer_w, body_h, cs.charcoal); // drawer bg
         ri += 1;
         putRect(ri, dx, body_top, 1, body_h, border); // drawer left edge
         ri += 1;
@@ -1860,9 +1870,9 @@ fn emitShellRects(th: *const theme.Theme, np: usize) usize {
         ri += 1;
     }
     // Fills first (painter order), hairlines on top.
-    putRect(ri, 0, win_h - chrome.status_bar_h, win_w, chrome.status_bar_h, chrome.charcoal); // status bg
+    putRect(ri, 0, win_h - chrome.status_bar_h, win_w, chrome.status_bar_h, cs.charcoal); // status bg
     ri += 1;
-    putRect(ri, px, ptop, pw, chrome.header_strip_h, chrome.charcoal); // panel header strip
+    putRect(ri, px, ptop, pw, chrome.header_strip_h, cs.charcoal); // panel header strip
     ri += 1;
     putRect(ri, 0, bar_h - 1, win_w, 1, border); // command-bar underline
     ri += 1;
@@ -1883,7 +1893,7 @@ fn emitShellRects(th: *const theme.Theme, np: usize) usize {
     // palette-text pass).
     var cbuf: [192]u8 = undefined;
     if (crumbBox(&cbuf)) |c| {
-        putRect(ri, c.px, c.py, c.pw, c.ph, chrome.graphite); // recessed fill
+        putRect(ri, c.px, c.py, c.pw, c.ph, cs.graphite); // recessed fill
         ri += 1;
         putRect(ri, c.px, c.py, c.pw, 1, border); // top
         ri += 1;
@@ -1901,6 +1911,7 @@ fn emitShellRects(th: *const theme.Theme, np: usize) usize {
 /// labels. The bar background is drawn by the renderer from `bar_color`.
 fn emitCommandBar(th: *const theme.Theme, start: usize, np: usize) usize {
     _ = np;
+    const cs = chromeSurface();
     const ly: f32 = (bar_h - chromeH()) / 2;
     const pad = anvil_sans_advance(' '); // one Sans space as the spacing unit
     var n = start;
@@ -1912,7 +1923,7 @@ fn emitCommandBar(th: *const theme.Theme, start: usize, np: usize) usize {
     x += putChromeIcon(&n, x, ly, chrome.mineral, th.bar, 0x25D2); // ◒ Basin
     x += chromeIconW() * 0.45;
     x += putSans(&n, x, ly, chrome.mineral, th.bar, 'A');
-    x += putSansRun(&n, x, ly, chrome.bone, th.bar, "nvil");
+    x += putSansRun(&n, x, ly, cs.bone, th.bar, "nvil");
 
     // Tab strip, right-aligned, always shown. The active tab carries a leading
     // mineral status dot and reads in bone; the rest are alloy.
@@ -1926,7 +1937,7 @@ fn emitCommandBar(th: *const theme.Theme, start: usize, np: usize) usize {
             _ = putChromeIcon(&n, tx, ly, chrome.mineral, th.bar, 0x25CF); // ●
             tx += chromeIconW() * tab_dot_adv;
         }
-        const fg = if (active) chrome.bone else chrome.alloy;
+        const fg = if (active) cs.bone else cs.alloy;
         tx += putSansRun(&n, tx, ly, fg, th.bar, tabLabel(ti, &tb));
         tx += pad;
     }
@@ -1936,8 +1947,8 @@ fn emitCommandBar(th: *const theme.Theme, start: usize, np: usize) usize {
     var cbuf: [192]u8 = undefined;
     if (crumbBox(&cbuf)) |c| {
         var pen = c.tx;
-        pen += putSansClip(&n, pen, c.ty, chrome.alloy, chrome.graphite, c.text[0..c.last], c.maxx);
-        _ = putSansClip(&n, pen, c.ty, chrome.bone, chrome.graphite, c.text[c.last..], c.maxx);
+        pen += putSansClip(&n, pen, c.ty, cs.alloy, cs.graphite, c.text[0..c.last], c.maxx);
+        _ = putSansClip(&n, pen, c.ty, cs.bone, cs.graphite, c.text[c.last..], c.maxx);
     }
     return n - start;
 }
@@ -1946,9 +1957,10 @@ fn emitCommandBar(th: *const theme.Theme, start: usize, np: usize) usize {
 fn emitPanelHeaders(th: *const theme.Theme, start: usize, np: usize) usize {
     _ = th;
     _ = np;
+    const cs = chromeSurface();
     const ptop = bar_h + chrome.panel_pad;
     const ly: f32 = ptop + (chrome.header_strip_h - chromeH()) / 2;
-    const bg = chrome.charcoal;
+    const bg = cs.charcoal;
     var n = start;
     var x: f32 = leftChromeW() + chrome.panel_pad + renderer.pad_x;
     const max_x = win_w - rightChromeW() - chrome.panel_pad - renderer.pad_x;
@@ -1956,13 +1968,13 @@ fn emitPanelHeaders(th: *const theme.Theme, start: usize, np: usize) usize {
     const s = mgr.focusedSession() orelse return 0;
     var prog = s.term.title();
     if (prog.len == 0) prog = "zsh";
-    x += putSansClip(&n, x, ly, chrome.mist, bg, prog, max_x);
+    x += putSansClip(&n, x, ly, cs.mist, bg, prog, max_x);
     // Separator (em-dash) + cwd basename in alloy. Use explorerPath so the
     // basename is present before the shell reports a cwd via OSC 7.
     const base = basename(explorerPath());
     if (base.len > 0) {
-        x += putSansRun(&n, x, ly, chrome.ash, bg, " — ");
-        x += putSansClip(&n, x, ly, chrome.alloy, bg, base, max_x);
+        x += putSansRun(&n, x, ly, cs.ash, bg, " — ");
+        x += putSansClip(&n, x, ly, cs.alloy, bg, base, max_x);
     }
     return n - start;
 }
@@ -1971,10 +1983,11 @@ fn emitPanelHeaders(th: *const theme.Theme, start: usize, np: usize) usize {
 /// kube context on the left, a semantic ready label on the right.
 fn emitStatusBar(th: *const theme.Theme, start: usize) usize {
     _ = th;
+    const cs = chromeSurface();
     const iw = chromeIconW();
     const ly: f32 = win_h - chrome.status_bar_h + (chrome.status_bar_h - chromeH()) / 2;
     const gap = anvil_sans_advance(' ');
-    const bg = chrome.charcoal;
+    const bg = cs.charcoal;
     var n = start;
     var x: f32 = chrome.panel_pad + renderer.pad_x;
 
@@ -1984,7 +1997,7 @@ fn emitStatusBar(th: *const theme.Theme, start: usize) usize {
     if (branch.len > 0) {
         x += putChromeIcon(&n, x, ly, chrome.mineral, bg, glyph_git);
         x += gap * 0.5;
-        x += putSansRun(&n, x, ly, chrome.mist, bg, branch[0..@min(branch.len, chip_max_branch)]);
+        x += putSansRun(&n, x, ly, cs.mist, bg, branch[0..@min(branch.len, chip_max_branch)]);
         x += iw + gap;
     }
 
@@ -1992,7 +2005,7 @@ fn emitStatusBar(th: *const theme.Theme, start: usize) usize {
     if (kube.len > 0) {
         x += putChromeIcon(&n, x, ly, chrome.agent, bg, glyph_kube);
         x += gap * 0.5;
-        x += putSansRun(&n, x, ly, chrome.mist, bg, kube[0..@min(kube.len, chip_max_kube)]);
+        x += putSansRun(&n, x, ly, cs.mist, bg, kube[0..@min(kube.len, chip_max_kube)]);
     }
 
     // Right: a muted info cluster — cursor position, encoding, app version —
@@ -2012,7 +2025,7 @@ fn emitStatusBar(th: *const theme.Theme, start: usize) usize {
     const rx = win_w - chrome.panel_pad - renderer.pad_x - sansWidth(ready_lbl);
     _ = putSansRun(&n, rx, ly, chrome.verified, bg, ready_lbl);
     const ix = rx - sansWidth(info);
-    _ = putSansRun(&n, ix, ly, chrome.alloy, bg, info);
+    _ = putSansRun(&n, ix, ly, cs.alloy, bg, info);
     return n - start;
 }
 
@@ -2060,6 +2073,7 @@ fn railClick(y: f32) void {
 /// Left activity rail: a vertical stack of Nerd Font icons. The active entry
 /// is mineral; the rest are alloy. Drawn as palette text over the rail bg.
 fn emitRail(start: usize) usize {
+    const cs = chromeSurface();
     const cx = (chrome.rail_w - chromeIconW()) / 2;
     var n = start;
     // Center each glyph in its 56px slot (slots start at bar_h+18, matching the
@@ -2070,10 +2084,10 @@ fn emitRail(start: usize) usize {
         const active = i == rail_active;
         const hovered = !active and hov != null and hov.? == i;
         // Hovered tool brightens toward mist; active stays mineral; rest alloy.
-        const c = if (active) chrome.mineral else if (hovered) chrome.mist else chrome.alloy;
+        const c = if (active) chrome.mineral else if (hovered) cs.mist else cs.alloy;
         // Glyph bg is opaque, so it must match the cell beneath: charcoal active
         // cell, hover tint when hovered, else the graphite rail.
-        const gbg = if (active) chrome.charcoal else if (hovered) chrome.hover else chrome.graphite;
+        const gbg = if (active) cs.charcoal else if (hovered) cs.hover else cs.graphite;
         _ = putChromeIcon(&n, cx, y, c, gbg, g);
         y += chrome.rail_w;
     }
@@ -2240,14 +2254,15 @@ fn explorerPath() []const u8 {
 /// alloy dot. The active-row highlight rect is drawn in emitShellRects.
 fn emitSidebar(start: usize) usize {
     if (!sidebar_open) return 0;
+    const cs = chromeSurface();
     const iw = chromeIconW();
-    const bg = chrome.charcoal;
+    const bg = cs.charcoal;
     const x0 = chrome.rail_w + renderer.pad_x + 6;
     var n = start;
 
     // Section header (Plex Sans).
     const hy = bar_h + (chrome.sidebar_header_h - chromeH()) / 2;
-    _ = putSansRun(&n, x0, hy, chrome.alloy, bg, "SESSIONS");
+    _ = putSansRun(&n, x0, hy, cs.alloy, bg, "SESSIONS");
 
     // Session rows.
     const right = chrome.rail_w + sidebar_w - renderer.pad_x;
@@ -2256,8 +2271,8 @@ fn emitSidebar(start: usize) usize {
     var ti: usize = 0;
     while (ti < mgr.tabs.items.len) : (ti += 1) {
         const active = ti == mgr.active_tab;
-        const dot = if (active) chrome.verified else chrome.alloy;
-        const fg = if (active) chrome.bone else chrome.mist;
+        const dot = if (active) chrome.verified else cs.alloy;
+        const fg = if (active) cs.bone else cs.mist;
         const ry = y + (chrome.row_h - chromeH()) / 2;
         var x = x0;
         x += putChromeIcon(&n, x, ry, dot, bg, 0x25CF);
@@ -2270,7 +2285,7 @@ fn emitSidebar(start: usize) usize {
     // glyph) sort first; files (ash file glyph) follow. Click opens (see mouse).
     y += 8;
     const ehy = y + (chrome.sidebar_header_h - chromeH()) / 2;
-    _ = putSansRun(&n, x0, ehy, chrome.alloy, bg, "EXPLORER");
+    _ = putSansRun(&n, x0, ehy, cs.alloy, bg, "EXPLORER");
     y += chrome.sidebar_header_h + 4;
 
     scanExplorer(explorerPath());
@@ -2279,14 +2294,14 @@ fn emitSidebar(start: usize) usize {
         if (y + chrome.row_h > win_h - chrome.status_bar_h) break;
         const ry = y + (chrome.row_h - chromeH()) / 2;
         const icon: u21 = if (ent.is_dir) 0xf07b else 0xf016; // folder / file
-        const ic = if (ent.is_dir) chrome.alloy else chrome.ash;
-        const fg = if (ent.is_dir) chrome.mist else chrome.alloy;
+        const ic = if (ent.is_dir) cs.alloy else cs.ash;
+        const fg = if (ent.is_dir) cs.mist else cs.alloy;
         const indent = @as(f32, @floatFromInt(ent.depth)) * (iw * 1.1);
         var x = x0 + indent;
         // Disclosure chevron for dirs; files reserve the slot so names align.
         if (ent.is_dir) {
             const chev: u21 = if (ent.expanded) 0x25BE else 0x25B8; // ▾ / ▸
-            _ = putChromeIcon(&n, x, ry, chrome.alloy, bg, chev);
+            _ = putChromeIcon(&n, x, ry, cs.alloy, bg, chev);
         }
         x += iw * 0.9;
         x += putChromeIcon(&n, x, ry, ic, bg, icon);
@@ -2319,14 +2334,15 @@ fn rowKindColor(kind: caldera.RowKind) theme.Rgb {
 
 /// Render a section header ("RUNS") into the drawer and advance the cursor.
 fn drawerHeader(n: *usize, ctx: *DrawerCtx, label: []const u8) void {
+    const cs = chromeSurface();
     const hy = ctx.y + (chrome.sidebar_header_h - chromeH()) / 2;
-    _ = putSansRun(n, ctx.x0, hy, chrome.alloy, chrome.charcoal, label);
+    _ = putSansRun(n, ctx.x0, hy, cs.alloy, cs.charcoal, label);
     ctx.y += chrome.sidebar_header_h + 4;
 }
 
 /// Render one drawer row: a status dot then a clipped label. Advances the cursor.
 fn drawerRow(n: *usize, ctx: *DrawerCtx, dot: theme.Rgb, fg: theme.Rgb, label: []const u8) void {
-    const bg = chrome.charcoal;
+    const bg = chromeSurface().charcoal;
     const ry = ctx.y + (chrome.row_h - chromeH()) / 2;
     var x = ctx.x0;
     x += putChromeIcon(n, x, ry, dot, bg, 0x25CF);
@@ -2339,6 +2355,7 @@ fn drawerRow(n: *usize, ctx: *DrawerCtx, dot: theme.Rgb, fg: theme.Rgb, label: [
 /// AGENT placeholder (wired in #79). Each section falls back to a dim "none".
 fn emitDrawer(start: usize) usize {
     if (!drawer_open) return 0;
+    const cs = chromeSurface();
     caldera.get(&drawer_snap);
     var n = start;
     var ctx = DrawerCtx{
@@ -2350,10 +2367,10 @@ fn emitDrawer(start: usize) usize {
     // RUNS: one row per Caldera run row, colored by status.
     drawerHeader(&n, &ctx, "RUNS");
     if (drawer_snap.runs == 0) {
-        drawerRow(&n, &ctx, chrome.ash, chrome.ash, "none");
+        drawerRow(&n, &ctx, cs.ash, cs.ash, "none");
     } else {
         for (drawer_snap.rows[0..drawer_snap.runs]) |*r| {
-            drawerRow(&n, &ctx, rowKindColor(r.kind), chrome.mist, r.slice());
+            drawerRow(&n, &ctx, rowKindColor(r.kind), cs.mist, r.slice());
         }
     }
     ctx.y += 8;
@@ -2362,10 +2379,10 @@ fn emitDrawer(start: usize) usize {
     drawerHeader(&n, &ctx, "TRACE");
     const trace_events: usize = if (drawer_snap.runs > 0) drawer_snap.details[0].event_count else 0;
     if (trace_events == 0) {
-        drawerRow(&n, &ctx, chrome.ash, chrome.ash, "none");
+        drawerRow(&n, &ctx, cs.ash, cs.ash, "none");
     } else {
         for (drawer_snap.details[0].events[0..trace_events]) |*ev| {
-            drawerRow(&n, &ctx, chrome.mineral, chrome.mist, ev.slice());
+            drawerRow(&n, &ctx, chrome.mineral, cs.mist, ev.slice());
         }
     }
     ctx.y += 8;
@@ -2373,14 +2390,14 @@ fn emitDrawer(start: usize) usize {
     // AGENT: one row per run — "agent · step", dot colored by status.
     drawerHeader(&n, &ctx, "AGENT");
     if (drawer_snap.runs == 0) {
-        drawerRow(&n, &ctx, chrome.ash, chrome.ash, "none");
+        drawerRow(&n, &ctx, cs.ash, cs.ash, "none");
     } else {
         for (drawer_snap.details[0..drawer_snap.runs]) |*d| {
             const passed = std.mem.eql(u8, d.statusSlice(), "passed");
             const dot = if (passed) chrome.verified else chrome.agent;
             var lbuf: [96]u8 = undefined;
             const label = std.fmt.bufPrint(&lbuf, "{s} · {s}", .{ d.agentSlice(), d.stepSlice() }) catch d.agentSlice();
-            drawerRow(&n, &ctx, dot, chrome.mist, label);
+            drawerRow(&n, &ctx, dot, cs.mist, label);
         }
     }
 
