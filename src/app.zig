@@ -456,6 +456,16 @@ fn updateThemeEnv() void {
 export fn anvil_set_theme_mode(m: c_int) callconv(.c) void {
     if (m < 0 or m > 2) return;
     theme_mode = @enumFromInt(m);
+    // Persist the choice so it survives relaunch — otherwise loadConfig re-reads
+    // the file's `theme` on next launch and the menu selection is lost.
+    if (configPath()) |path| {
+        config.persistTheme(path, switch (theme_mode) {
+            .system => .system,
+            .light => .light,
+            .dark => .dark,
+        });
+        cfg_mtime = config.mtime(path); // don't trip reloadConfigIfChanged on our own write
+    }
     markDirty();
 }
 

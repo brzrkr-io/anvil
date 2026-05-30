@@ -242,6 +242,60 @@ pub fn mtime(path: [:0]const u8) ?i128 {
     return @as(i128, ts.tv_sec) * std.time.ns_per_s + ts.tv_nsec;
 }
 
+/// Rewrite the `theme = "..."` line in the config file so a menu theme change
+/// survives relaunch. Preserves every other line, comment, and key; replaces
+/// the first `theme` assignment in place, or appends one if absent. Best-effort:
+/// any I/O failure is swallowed (a write error must not crash the app or block
+/// the menu). The directory must already exist — we never create it.
+pub fn persistTheme(path: [:0]const u8, mode: ThemeMode) void {
+    const name = switch (mode) {
+        .system => "system",
+        .light => "light",
+        .dark => "dark",
+    };
+    var in: [1 << 16]u8 = undefined;
+    var in_len: usize = 0;
+    if (c.fopen(path.ptr, "rb")) |f| {
+        in_len = c.fread(&in, 1, in.len, f);
+        _ = c.fclose(f);
+    }
+    var out: [1 << 16]u8 = undefined;
+    var w: usize = 0;
+    var replaced = false;
+    var first = true;
+    var lines = std.mem.splitScalar(u8, in[0..in_len], '\n');
+    while (lines.next()) |raw| {
+        if (!first) {
+            if (w >= out.len) return;
+            out[w] = '\n';
+            w += 1;
+        }
+        first = false;
+        const kl = trim(stripComment(raw));
+        const is_theme = if (std.mem.indexOfScalar(u8, kl, '=')) |eq|
+            std.mem.eql(u8, trim(kl[0..eq]), "theme")
+        else
+            false;
+        if (is_theme and !replaced) {
+            const s = std.fmt.bufPrint(out[w..], "theme = \"{s}\"", .{name}) catch return;
+            w += s.len;
+            replaced = true;
+        } else {
+            if (w + raw.len > out.len) return;
+            @memcpy(out[w..][0..raw.len], raw);
+            w += raw.len;
+        }
+    }
+    if (!replaced) {
+        const sep = if (w == 0 or out[w - 1] == '\n') "" else "\n";
+        const s = std.fmt.bufPrint(out[w..], "{s}theme = \"{s}\"\n", .{ sep, name }) catch return;
+        w += s.len;
+    }
+    const f = c.fopen(path.ptr, "wb") orelse return;
+    defer _ = c.fclose(f);
+    _ = c.fwrite(&out, 1, w, f);
+}
+
 test "parse reads theme, ignoring comments and unknown keys" {
     const cfg = parse(
         \\# Anvil config
@@ -374,4 +428,37 @@ test "parseFull: font_weight out of range yields error" {
     const r = parseFull("font_weight = 5\n");
     try std.testing.expect(r.err_len > 0);
     try std.testing.expect(std.mem.indexOf(u8, r.errMsg(), "font_weight") != null);
+}
+
+fn writeFile(path: [:0]const u8, text: []const u8) void {
+    const f = c.fopen(path.ptr, "wb").?;
+    defer _ = c.fclose(f);
+    _ = c.fwrite(text.ptr, 1, text.len, f);
+}
+
+test "persistTheme rewrites theme in place, preserving other keys" {
+    const path: [:0]const u8 = "/tmp/anvil-persist-test-1.toml";
+    writeFile(path,
+        \\# my config
+        \\theme = "dark"
+        \\theme_variant = "tokyo-night"
+        \\font_weight = 1.0
+        \\
+    );
+    persistTheme(path, .system);
+    const cfg = load(path);
+    try std.testing.expectEqual(ThemeMode.system, cfg.theme);
+    try std.testing.expectEqualStrings("tokyo-night", cfg.themeVariant());
+    try std.testing.expectEqual(@as(f32, 1.0), cfg.font_weight);
+    _ = c.remove(path.ptr);
+}
+
+test "persistTheme appends theme when key absent" {
+    const path: [:0]const u8 = "/tmp/anvil-persist-test-2.toml";
+    writeFile(path, "font_weight = 1.0\n");
+    persistTheme(path, .light);
+    const cfg = load(path);
+    try std.testing.expectEqual(ThemeMode.light, cfg.theme);
+    try std.testing.expectEqual(@as(f32, 1.0), cfg.font_weight);
+    _ = c.remove(path.ptr);
 }
