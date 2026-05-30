@@ -1822,9 +1822,19 @@ fn emitDrawer(start: usize) usize {
     }
     ctx.y += 8;
 
-    // AGENT: wired in #79.
+    // AGENT: one row per run — "agent · step", dot colored by status.
     drawerHeader(&n, &ctx, "AGENT");
-    drawerRow(&n, &ctx, chrome.ash, chrome.ash, "none");
+    if (drawer_snap.runs == 0) {
+        drawerRow(&n, &ctx, chrome.ash, chrome.ash, "none");
+    } else {
+        for (drawer_snap.details[0..drawer_snap.runs]) |*d| {
+            const passed = std.mem.eql(u8, d.statusSlice(), "passed");
+            const dot = if (passed) chrome.verified else chrome.agent;
+            var lbuf: [96]u8 = undefined;
+            const label = std.fmt.bufPrint(&lbuf, "{s} · {s}", .{ d.agentSlice(), d.stepSlice() }) catch d.agentSlice();
+            drawerRow(&n, &ctx, dot, chrome.mist, label);
+        }
+    }
 
     return n - start;
 }
