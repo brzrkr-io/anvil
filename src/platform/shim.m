@@ -1,6 +1,7 @@
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <QuartzCore/CATransaction.h>
+#import <QuartzCore/CADisplayLink.h>
 #import <Metal/Metal.h>
 #import <CoreText/CoreText.h>
 #import <CoreGraphics/CoreGraphics.h>
@@ -600,6 +601,7 @@ static void layoutTrafficLights(NSWindow *win) {
     NSString *str = [[NSPasteboard generalPasteboard] stringForType:NSPasteboardTypeString];
     const char *u = str.UTF8String;
     if (u) anvil_paste(u, strlen(u));
+    render();
 }
 - (void)keyDown:(NSEvent *)e {
     NSString *s = e.characters;
@@ -770,11 +772,13 @@ static void layoutTrafficLights(NSWindow *win) {
         }
         if (seq) {
             anvil_input(seq, 3);
+            render();
             return;
         }
     }
     const char *u = s.UTF8String;
     if (u) anvil_input(u, strlen(u));
+    render();
 }
 - (void)scrollWheel:(NSEvent *)e {
     // Accumulate fractional scroll so small trackpad swipes are not truncated to
@@ -790,6 +794,7 @@ static void layoutTrafficLights(NSWindow *win) {
     if (lines == 0) return;
     acc -= (CGFloat)lines;
     anvil_scroll(lines);
+    render();
 }
 @end
 
@@ -797,8 +802,8 @@ static void layoutTrafficLights(NSWindow *win) {
 @end
 
 @implementation AnvilTick
-- (void)tick:(NSTimer *)t {
-    (void)t;
+- (void)tick:(id)sender {
+    (void)sender;
     render();
 }
 @end
@@ -991,14 +996,20 @@ void anvil_run(void) {
         layoutTrafficLights(win);
 
         AnvilTick *tick = [[AnvilTick alloc] init];
-        NSTimer *timer = [NSTimer timerWithTimeInterval:1.0 / 60.0
-                                                 target:tick
-                                               selector:@selector(tick:)
-                                               userInfo:nil
-                                                repeats:YES];
-        // Common modes so the 60Hz loop keeps firing during live resize and
-        // window drags (event-tracking mode), not just in the default mode.
-        [[NSRunLoop currentRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
+        // macOS 14+: use CADisplayLink via NSView for ProMotion-aware vsync.
+        // macOS 13: fall back to 60Hz NSTimer (CommonModes keeps it firing
+        // during live resize and window drags).
+        if (@available(macOS 14.0, *)) {
+            CADisplayLink *dl = [view displayLinkWithTarget:tick selector:@selector(tick:)];
+            [dl addToRunLoop:[NSRunLoop currentRunLoop] forMode:NSRunLoopCommonModes];
+        } else {
+            NSTimer *timer = [NSTimer timerWithTimeInterval:1.0 / 60.0
+                                                     target:tick
+                                                   selector:@selector(tick:)
+                                                   userInfo:nil
+                                                    repeats:YES];
+            [[NSRunLoop currentRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
+        }
 
         [NSApp run];
     }
