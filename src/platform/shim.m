@@ -119,7 +119,7 @@ extern void anvil_force_render(void);
 #define INSTANCE_STRIDE (15 * sizeof(float))
 #define SANS_TAG 0x00200000u // atlas-key bit: glyph belongs to the Plex Sans face
 #define CHROME_TAG 0x00400000u // atlas-key bit: small chrome mono glyph (scaled, top-left)
-#define CHROME_SCALE 0.6f // chrome text/icon size relative to the terminal cell
+#define CHROME_SCALE 0.8f // chrome text/icon size relative to the terminal cell
 #define MAX_INSTANCES 60000
 #define ATLAS_SCALE 2.0
 #define BAR_H_PT 20.0 // compact title-bar height, logical points

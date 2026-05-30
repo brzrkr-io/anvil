@@ -767,21 +767,30 @@ export fn anvil_mouse(kind: c_int, x: f32, y: f32) callconv(.c) void {
             return;
         }
     }
-    // EXPLORER click: a press inside the sidebar's file list inserts the
-    // entry's name at the focused pane's prompt (the "open" action).
-    if (kind == 0 and sidebar_open and x >= chrome.rail_w and x < leftChromeW() and y >= exp_row_y0) {
-        const idx_f = (y - exp_row_y0) / chrome.row_h;
-        if (idx_f >= 0) {
-            const idx: usize = @intFromFloat(idx_f);
-            if (idx < exp_n) {
-                if (mgr.byId(mgr.focused)) |s| {
-                    const ent = &exp_entries[idx];
-                    s.write(ent.name[0..ent.len]);
+    // Left chrome (activity rail + sidebar): a press here drives sidebar
+    // actions and is then consumed, so it can never leak into terminal
+    // selection underneath (which would start a phantom selection at the
+    // clamped cell). A SESSIONS row switches to that tab; an EXPLORER row
+    // inserts the entry name at the focused prompt (the "open" action).
+    if (kind == 0 and x < leftChromeW()) {
+        if (sidebar_open and x >= chrome.rail_w) {
+            if (hoverSidebarRow(x, y)) |hr| switch (hr.kind) {
+                0 => {
+                    mgr.selectTab(hr.idx);
+                    relayout();
                     markDirty();
-                }
-                return;
-            }
+                },
+                1 => {
+                    if (mgr.byId(mgr.focused)) |s| {
+                        const ent = &exp_entries[hr.idx];
+                        s.write(ent.name[0..ent.len]);
+                        markDirty();
+                    }
+                },
+                else => {},
+            };
         }
+        return;
     }
     const np = layoutPanes(&pane_buf);
     if (kind == 0) {
@@ -1516,16 +1525,17 @@ fn putRect(ri: usize, x: f32, y: f32, w: f32, h: f32, c: theme.Rgb) void {
 /// no instance. Used for chrome nav/heading labels (BRAND: UI text = Plex Sans).
 /// Chrome text/icon size relative to the terminal cell. Must match CHROME_SCALE
 /// in shim.m: glyphs are rasterized smaller and top-left aligned in their cell.
-const chrome_scale: f32 = 0.6;
+const chrome_scale: f32 = 0.8;
 
-/// Height (device px) of a small chrome glyph quad.
+/// Height (device px) of a small chrome glyph quad, snapped to whole pixels so
+/// the top-of-cell raster maps 1:1 to the drawable (no subpixel softening).
 fn chromeH() f32 {
-    return renderer.cell_h * chrome_scale;
+    return @round(renderer.cell_h * chrome_scale);
 }
 
 /// Width (device px) of a small chrome mono icon cell.
 fn chromeIconW() f32 {
-    return renderer.cell_w * chrome_scale;
+    return @round(renderer.cell_w * chrome_scale);
 }
 
 fn putSans(n: *usize, x: f32, y: f32, fg: theme.Rgb, bg: theme.Rgb, cp: u21) f32 {
@@ -1533,9 +1543,11 @@ fn putSans(n: *usize, x: f32, y: f32, fg: theme.Rgb, bg: theme.Rgb, cp: u21) f32
     if (cp == ' ') return adv;
     if (n.* >= instances.len) return adv;
     const slot = renderer.atlas.slotForKey(atlasmod.sans_tag | @as(u32, cp));
+    // Snap glyph origin to whole device pixels: fractional positions make the
+    // nearest-sampled atlas glyph straddle pixel boundaries and look blurry.
     instances[n.*] = .{
-        .x = x,
-        .y = y,
+        .x = @round(x),
+        .y = @round(y),
         .fg = fg.f32x4(),
         .bg = bg.f32x4(),
         .uv = atlasmod.Atlas.slotUV(slot),
@@ -1582,8 +1594,8 @@ fn putChromeIcon(n: *usize, x: f32, y: f32, fg: theme.Rgb, bg: theme.Rgb, cp: u2
     if (n.* >= instances.len) return chromeIconW();
     const slot = renderer.atlas.slotForKey(atlasmod.chrome_tag | @as(u32, cp));
     instances[n.*] = .{
-        .x = x,
-        .y = y,
+        .x = @round(x),
+        .y = @round(y),
         .fg = fg.f32x4(),
         .bg = bg.f32x4(),
         .uv = atlasmod.Atlas.slotUV(slot),
