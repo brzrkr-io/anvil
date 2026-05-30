@@ -2313,11 +2313,14 @@ fn emitSidebar(start: usize) usize {
         const active = ti == mgr.active_tab;
         const dot = if (active) chrome.verified else cs.alloy;
         const fg = if (active) cs.bone else cs.mist;
+        // Active rows carry an ash_soft highlight rect; glyph cells must paint the
+        // same tint or their charcoal backgrounds punch dark bands through it.
+        const row_bg = if (active) cs.ash_soft else bg;
         const ry = y + (chrome.row_h - chromeH()) / 2;
         var x = x0;
-        x += putChromeIcon(&n, x, ry, dot, bg, 0x25CF);
+        x += putChromeIcon(&n, x, ry, dot, row_bg, 0x25CF);
         x += iw * 0.5;
-        _ = putSansClip(&n, x, ry, fg, bg, tabLabel(ti, &tb), right);
+        _ = putSansClip(&n, x, ry, fg, row_bg, tabLabel(ti, &tb), right);
         y += chrome.row_h;
     }
 
