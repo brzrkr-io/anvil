@@ -411,6 +411,14 @@ export fn anvil_atlas_params(out: *AtlasParams) callconv(.c) void {
     out.* = .{ .cols = atlasmod.cols, .rows = atlasmod.rows_n, .pt_size = cfg.font_size, .weight = cfg.font_weight };
 }
 
+/// True only when the user actually opted into a translucent background. The
+/// window setup uses this to keep the window/layer fully opaque (and skip the
+/// vibrancy view) by default, so the standard look is a solid, crisp surface.
+export fn anvil_translucent() callconv(.c) bool {
+    if (!cfg_loaded) loadConfig();
+    return effectiveBackgroundOpacity() < 1.0;
+}
+
 /// Queue the common TUI glyph set into the atlas so drainPending can upload
 /// them before the first frame. out_ptr receives a pointer to the pending
 /// PendingGlyph array; out_count receives the number of entries queued.

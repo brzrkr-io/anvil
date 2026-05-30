@@ -60,6 +60,7 @@ extern const uint8_t *anvil_icon_data(size_t *len);
 extern void anvil_resize(float w, float h);
 extern void anvil_frame(FrameData *out);
 extern void anvil_atlas_params(AtlasParams *out);
+extern bool anvil_translucent(void);
 extern void anvil_prewarm_atlas(const void **out_ptr, uint32_t *out_count);
 extern void anvil_set_metrics(float cell_w, float cell_h);
 extern int anvil_poll(void);
@@ -1084,24 +1085,30 @@ void anvil_run(void) {
                    name:@"AppleInterfaceThemeChangedNotification"
                  object:nil];
 
-        // Translucency setup: window and layer stay non-opaque so that when
-        // bg_alpha < 1.0 the vibrancy blur shows through. At alpha 1.0 the
-        // opaque-colored clear fully covers the blur, so the default look is
-        // unchanged and no restart is needed when background_opacity changes.
-        win.opaque = NO;
-        win.backgroundColor = [NSColor clearColor];
-        gLayer.opaque = NO;
+        // Translucency is opt-in. Only when background_opacity < 1.0 do we make
+        // the window/layer non-opaque and slip a vibrancy view behind the Metal
+        // view. The default is a fully opaque, solid surface — a non-opaque
+        // CAMetalLayer composited over vibrancy desaturates the whole UI even at
+        // clear-alpha 1.0, which read as washed-out. Opacity changes need a
+        // restart, which is fine for a rarely-touched setting.
+        bool translucent = anvil_translucent();
 
         NSView *contentHost = [[NSView alloc] initWithFrame:frame];
         contentHost.autoresizesSubviews = YES;
         [win setContentView:contentHost];
 
-        NSVisualEffectView *vev = [[NSVisualEffectView alloc] initWithFrame:frame];
-        vev.material = NSVisualEffectMaterialUnderWindowBackground;
-        vev.blendingMode = NSVisualEffectBlendingModeBehindWindow;
-        vev.state = NSVisualEffectStateActive;
-        vev.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-        [contentHost addSubview:vev];
+        if (translucent) {
+            win.opaque = NO;
+            win.backgroundColor = [NSColor clearColor];
+            gLayer.opaque = NO;
+
+            NSVisualEffectView *vev = [[NSVisualEffectView alloc] initWithFrame:frame];
+            vev.material = NSVisualEffectMaterialUnderWindowBackground;
+            vev.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+            vev.state = NSVisualEffectStateActive;
+            vev.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+            [contentHost addSubview:vev];
+        }
 
         AnvilView *view = [[AnvilView alloc] initWithFrame:frame];
         view.wantsLayer = YES;
