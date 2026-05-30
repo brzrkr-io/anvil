@@ -36,9 +36,15 @@ pub const TabArg = struct {
     has_path: bool = false,
 };
 
+pub const RunArg = struct {
+    cmd: [path_max]u8 = undefined,
+    len: usize = 0,
+};
+
 pub const Command = union(enum) {
     split: pane.Axis,
     tab: TabArg,
+    run: RunArg,
 };
 
 var q_mutex: std.c.pthread_mutex_t = std.c.PTHREAD_MUTEX_INITIALIZER;
@@ -96,6 +102,15 @@ fn parseRequest(line: []const u8) ?Command {
         @memcpy(arg.path[0..n], path[0..n]);
         arg.len = n;
         return Command{ .tab = arg };
+    }
+    if (std.mem.startsWith(u8, trimmed, "run ")) {
+        const cmd = trimmed[4..];
+        if (cmd.len == 0) return null;
+        var arg = RunArg{};
+        const n = @min(cmd.len, path_max);
+        @memcpy(arg.cmd[0..n], cmd[0..n]);
+        arg.len = n;
+        return Command{ .run = arg };
     }
     return null;
 }
@@ -268,8 +283,18 @@ test "parseRequest: tab with and without path" {
     try std.testing.expectEqualStrings("/my/dir", with_path.tab.path[0..with_path.tab.len]);
 }
 
+test "parseRequest: run with command" {
+    const r = parseRequest("run echo hi\n").?;
+    try std.testing.expectEqualStrings("echo hi", r.run.cmd[0..r.run.len]);
+}
+
+test "parseRequest: bare run returns null" {
+    try std.testing.expect(parseRequest("run\n") == null);
+    try std.testing.expect(parseRequest("run \n") == null);
+}
+
 test "parseRequest: unknown verb returns null" {
-    try std.testing.expect(parseRequest("run /x\n") == null);
+    try std.testing.expect(parseRequest("frob /x\n") == null);
     try std.testing.expect(parseRequest("\n") == null);
 }
 

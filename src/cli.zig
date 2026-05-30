@@ -10,10 +10,12 @@ pub const CliArgs = struct {
     start_dir: ?[]const u8 = null,
     /// True when --new was passed: skip session restore and save.
     fresh: bool = false,
-    /// IPC verb for client mode ("split" or "tab").
+    /// IPC verb for client mode ("split", "tab", or "run").
     verb: []const u8 = "",
     /// Optional argument for the IPC verb (axis "h"/"v" or path).
     verb_arg: ?[]const u8 = null,
+    /// For "run": every argv token after the verb (the command + its args).
+    run_args: []const [*:0]const u8 = &.{},
 };
 
 /// Parse process argv (after skipping argv[0]).
@@ -57,6 +59,12 @@ pub fn parse(args: []const [*:0]const u8) CliArgs {
             if (i < args.len) result.verb_arg = std.mem.span(args[i]);
             return result;
         }
+        if (std.mem.eql(u8, a, "run")) {
+            result.mode = .client;
+            result.verb = "run";
+            result.run_args = args[i + 1 ..];
+            return result;
+        }
         if (!std.mem.startsWith(u8, a, "-")) {
             result.start_dir = a;
         }
@@ -76,6 +84,11 @@ pub const help_text =
     \\  --version, -v     Print version and exit
     \\  --dump <path>     Headless render to PNG and exit
     \\  --new             Open a fresh window (skip session restore/save)
+    \\
+    \\Verbs (drive a running window):
+    \\  split h|v         Split the focused pane horizontally or vertically
+    \\  tab [path]        Open a new tab (optionally in path)
+    \\  run <cmd...>      Open a new tab and run the command in it
     \\
 ;
 
@@ -164,4 +177,13 @@ test "parse: bare tab → client mode, verb tab, no arg" {
     try std.testing.expectEqual(Mode.client, a.mode);
     try std.testing.expectEqualStrings("tab", a.verb);
     try std.testing.expect(a.verb_arg == null);
+}
+
+test "parse: run echo hi → client mode, verb run, run_args captured" {
+    const a = parse(&.{ "run", "echo", "hi" });
+    try std.testing.expectEqual(Mode.client, a.mode);
+    try std.testing.expectEqualStrings("run", a.verb);
+    try std.testing.expectEqual(@as(usize, 2), a.run_args.len);
+    try std.testing.expectEqualStrings("echo", std.mem.span(a.run_args[0]));
+    try std.testing.expectEqualStrings("hi", std.mem.span(a.run_args[1]));
 }

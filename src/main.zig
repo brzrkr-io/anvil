@@ -32,7 +32,23 @@ pub fn main(init: std.process.Init.Minimal) void {
             return;
         },
         .client => {
-            _ = ipc.tryClient(args.verb, args.verb_arg);
+            if (std.mem.eql(u8, args.verb, "run")) {
+                var jbuf: [1024]u8 = undefined;
+                var jlen: usize = 0;
+                for (args.run_args, 0..) |tok, ti| {
+                    const t = std.mem.span(tok);
+                    if (ti > 0 and jlen < jbuf.len) {
+                        jbuf[jlen] = ' ';
+                        jlen += 1;
+                    }
+                    const n = @min(t.len, jbuf.len - jlen);
+                    @memcpy(jbuf[jlen..][0..n], t[0..n]);
+                    jlen += n;
+                }
+                _ = ipc.tryClient("run", if (jlen > 0) jbuf[0..jlen] else null);
+            } else {
+                _ = ipc.tryClient(args.verb, args.verb_arg);
+            }
             return;
         },
         .dump => {

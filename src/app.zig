@@ -303,6 +303,17 @@ fn drainIpc() void {
                 applyCursorDefault();
                 relayout();
             },
+            .run => |rarg| {
+                const ws = workspaceRect();
+                const g = renderer.paneGrid(ws.w, ws.h);
+                mgr.newTabCwd(g.rows, g.cols, "") catch {};
+                applyCursorDefault();
+                relayout();
+                if (mgr.focusedSession()) |s| {
+                    s.write(rarg.cmd[0..rarg.len]);
+                    s.write("\n");
+                }
+            },
         }
     }
 }
