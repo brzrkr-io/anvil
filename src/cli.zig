@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const Mode = enum { run, dump, help, version };
+pub const Mode = enum { run, dump, help, version, client };
 
 pub const CliArgs = struct {
     mode: Mode = .run,
@@ -10,6 +10,10 @@ pub const CliArgs = struct {
     start_dir: ?[]const u8 = null,
     /// True when --new was passed: skip session restore and save.
     fresh: bool = false,
+    /// IPC verb for client mode ("split" or "tab").
+    verb: []const u8 = "",
+    /// Optional argument for the IPC verb (axis "h"/"v" or path).
+    verb_arg: ?[]const u8 = null,
 };
 
 /// Parse process argv (after skipping argv[0]).
@@ -38,6 +42,20 @@ pub fn parse(args: []const [*:0]const u8) CliArgs {
         if (std.mem.eql(u8, a, "--new")) {
             result.fresh = true;
             continue;
+        }
+        if (std.mem.eql(u8, a, "split")) {
+            result.mode = .client;
+            result.verb = "split";
+            i += 1;
+            if (i < args.len) result.verb_arg = std.mem.span(args[i]);
+            return result;
+        }
+        if (std.mem.eql(u8, a, "tab")) {
+            result.mode = .client;
+            result.verb = "tab";
+            i += 1;
+            if (i < args.len) result.verb_arg = std.mem.span(args[i]);
+            return result;
         }
         if (!std.mem.startsWith(u8, a, "-")) {
             result.start_dir = a;
@@ -118,4 +136,32 @@ test "parse: --new with path sets fresh and start_dir" {
     try std.testing.expectEqual(Mode.run, a.mode);
     try std.testing.expect(a.fresh);
     try std.testing.expectEqualStrings("/my/dir", a.start_dir.?);
+}
+
+test "parse: split h → client mode, verb split, arg h" {
+    const a = parse(&.{ "split", "h" });
+    try std.testing.expectEqual(Mode.client, a.mode);
+    try std.testing.expectEqualStrings("split", a.verb);
+    try std.testing.expectEqualStrings("h", a.verb_arg.?);
+}
+
+test "parse: split v → client mode, verb split, arg v" {
+    const a = parse(&.{ "split", "v" });
+    try std.testing.expectEqual(Mode.client, a.mode);
+    try std.testing.expectEqualStrings("split", a.verb);
+    try std.testing.expectEqualStrings("v", a.verb_arg.?);
+}
+
+test "parse: tab /x → client mode, verb tab, arg /x" {
+    const a = parse(&.{ "tab", "/x" });
+    try std.testing.expectEqual(Mode.client, a.mode);
+    try std.testing.expectEqualStrings("tab", a.verb);
+    try std.testing.expectEqualStrings("/x", a.verb_arg.?);
+}
+
+test "parse: bare tab → client mode, verb tab, no arg" {
+    const a = parse(&.{"tab"});
+    try std.testing.expectEqual(Mode.client, a.mode);
+    try std.testing.expectEqualStrings("tab", a.verb);
+    try std.testing.expect(a.verb_arg == null);
 }

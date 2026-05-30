@@ -15,6 +15,7 @@ const persist = @import("session_persist.zig");
 const chip_mod = @import("context_chip.zig");
 const copy_mode_mod = @import("copy_mode.zig");
 const caldera = @import("caldera.zig");
+const ipc = @import("ipc.zig");
 
 const shader_src = @embedFile("platform/shaders.metal");
 const font_data = @embedFile("font_ttf");
@@ -267,6 +268,7 @@ export fn anvil_resize(px_w: f32, px_h: f32) callconv(.c) void {
         }
         if (!restored) mgr.spawnFirstWithCwd(g.rows, g.cols, start_cwd) catch return;
         caldera.start(std.heap.page_allocator);
+        ipc.start();
         ready = true;
         applyCursorDefault();
         return;
@@ -281,8 +283,33 @@ export fn anvil_save_session() callconv(.c) void {
 
 /// Drain pending shell output into the terminal. Returns 0 only when every
 /// session has exited; individual dead panes show an in-pane indicator.
+fn drainIpc() void {
+    var cmds: [32]ipc.Command = undefined;
+    const n = ipc.takeCommands(&cmds);
+    for (cmds[0..n]) |icmd| {
+        switch (icmd) {
+            .split => |axis| {
+                const ws = workspaceRect();
+                const g = renderer.paneGrid(ws.w, ws.h);
+                mgr.splitFocused(axis, g.rows, g.cols) catch {};
+                applyCursorDefault();
+                relayout();
+            },
+            .tab => |iarg| {
+                const ws = workspaceRect();
+                const g = renderer.paneGrid(ws.w, ws.h);
+                const path: []const u8 = if (iarg.has_path) iarg.path[0..iarg.len] else "";
+                mgr.newTabCwd(g.rows, g.cols, path) catch {};
+                applyCursorDefault();
+                relayout();
+            },
+        }
+    }
+}
+
 export fn anvil_poll() callconv(.c) c_int {
     if (!ready) return 1;
+    drainIpc();
     reloadConfigIfChanged();
     pushThemeColors();
     var any_alive: bool = false;

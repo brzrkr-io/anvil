@@ -1,0 +1,287 @@
+// IPC server for the running Anvil window.  A Unix domain socket at
+// $TMPDIR/anvil-<uid>.sock lets `anvil split h|v` and `anvil tab [path]`
+// drive an ALREADY-RUNNING window from the shell.
+//
+// Single-binder / first-window contract: whichever Anvil process wins the
+// bind() owns the socket.  A second launched window detects a live server
+// (connect succeeds) and skips starting its own IPC server — so verb commands
+// always target the first window.  This is intentional; multi-window routing
+// is deferred to a later slice.
+//
+// Threading: the listener runs on its own thread.  It MUST NOT call any
+// app.zig exports directly — those assume the AppKit main thread and touch
+// render state.  Instead the listener pushes Command values onto a bounded
+// queue; app.zig drains the queue at the top of anvil_poll() on the main
+// thread.
+
+const std = @import("std");
+const pane = @import("workspace/pane_tree.zig");
+
+const c = @cImport({
+    @cInclude("sys/socket.h");
+    @cInclude("sys/un.h");
+    @cInclude("unistd.h");
+    @cInclude("errno.h");
+});
+
+// ---------------------------------------------------------------------------
+// Command queue — crossed from listener thread to main thread.
+// ---------------------------------------------------------------------------
+
+const path_max = 1024;
+
+pub const TabArg = struct {
+    path: [path_max]u8 = undefined,
+    len: usize = 0,
+    has_path: bool = false,
+};
+
+pub const Command = union(enum) {
+    split: pane.Axis,
+    tab: TabArg,
+};
+
+var q_mutex: std.c.pthread_mutex_t = std.c.PTHREAD_MUTEX_INITIALIZER;
+var queue: [32]Command = undefined;
+var q_len: usize = 0;
+
+fn push(cmd: Command) void {
+    _ = std.c.pthread_mutex_lock(&q_mutex);
+    defer _ = std.c.pthread_mutex_unlock(&q_mutex);
+    if (q_len < queue.len) {
+        queue[q_len] = cmd;
+        q_len += 1;
+    }
+}
+
+/// Drain all pending commands into `out`.  Returns the count copied.
+/// Safe to call from the AppKit main thread only.
+pub fn takeCommands(out: []Command) usize {
+    _ = std.c.pthread_mutex_lock(&q_mutex);
+    defer _ = std.c.pthread_mutex_unlock(&q_mutex);
+    const n = @min(q_len, out.len);
+    @memcpy(out[0..n], queue[0..n]);
+    q_len = 0;
+    return n;
+}
+
+// ---------------------------------------------------------------------------
+// Socket path
+// ---------------------------------------------------------------------------
+
+var sock_path_buf: [108]u8 = undefined; // sun_path limit
+var sock_path_len: usize = 0;
+
+fn buildSockPath(buf: []u8) []const u8 {
+    const tmpdir_c = std.c.getenv("TMPDIR") orelse "/tmp/";
+    const tmpdir = std.mem.span(tmpdir_c);
+    const uid = std.c.getuid();
+    const s = std.fmt.bufPrint(buf, "{s}anvil-{d}.sock", .{ tmpdir, uid }) catch buf[0..0];
+    return s;
+}
+
+// ---------------------------------------------------------------------------
+// Request parsing
+// ---------------------------------------------------------------------------
+
+fn parseRequest(line: []const u8) ?Command {
+    const trimmed = std.mem.trimEnd(u8, line, "\n\r");
+    if (std.mem.eql(u8, trimmed, "split h")) return Command{ .split = .x };
+    if (std.mem.eql(u8, trimmed, "split v")) return Command{ .split = .y };
+    if (std.mem.eql(u8, trimmed, "tab")) return Command{ .tab = .{} };
+    if (std.mem.startsWith(u8, trimmed, "tab ")) {
+        const path = trimmed[4..];
+        var arg = TabArg{ .has_path = true };
+        const n = @min(path.len, path_max);
+        @memcpy(arg.path[0..n], path[0..n]);
+        arg.len = n;
+        return Command{ .tab = arg };
+    }
+    return null;
+}
+
+// ---------------------------------------------------------------------------
+// Listener loop
+// ---------------------------------------------------------------------------
+
+var server_fd: c_int = -1;
+
+fn listenLoop() void {
+    while (true) {
+        const client = c.accept(server_fd, null, null);
+        if (client < 0) break;
+        var req_buf: [1024]u8 = undefined;
+        var req_len: usize = 0;
+        // Read until newline or buffer full.
+        while (req_len < req_buf.len) {
+            const n = c.read(client, req_buf[req_len..].ptr, 1);
+            if (n <= 0) break;
+            req_len += 1;
+            if (req_buf[req_len - 1] == '\n') break;
+        }
+        const line = req_buf[0..req_len];
+        if (parseRequest(line)) |cmd| {
+            push(cmd);
+            _ = c.write(client, "ok\n", 3);
+        } else {
+            const msg = "err unknown verb\n";
+            _ = c.write(client, msg.ptr, msg.len);
+        }
+        _ = c.close(client);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Server start  (called once from app.zig after GUI is ready)
+// ---------------------------------------------------------------------------
+
+pub fn start() void {
+    const path = buildSockPath(&sock_path_buf);
+    sock_path_len = path.len;
+
+    const fd = c.socket(c.AF_UNIX, c.SOCK_STREAM, 0);
+    if (fd < 0) return;
+
+    var addr: c.struct_sockaddr_un = std.mem.zeroes(c.struct_sockaddr_un);
+    addr.sun_family = c.AF_UNIX;
+    const copy_n = @min(path.len, addr.sun_path.len - 1);
+    @memcpy(addr.sun_path[0..copy_n], path[0..copy_n]);
+    addr.sun_path[copy_n] = 0;
+
+    // Attempt bind.  On EADDRINUSE probe with connect: if connect succeeds
+    // another live server owns the socket — skip starting our own server.
+    // If connect fails the socket is stale — unlink and retry bind once.
+    if (c.bind(fd, @ptrCast(&addr), @sizeOf(c.struct_sockaddr_un)) != 0) {
+        if (c.__error().* == c.EADDRINUSE) {
+            const probe = c.socket(c.AF_UNIX, c.SOCK_STREAM, 0);
+            if (probe >= 0) {
+                if (c.connect(probe, @ptrCast(&addr), @sizeOf(c.struct_sockaddr_un)) == 0) {
+                    _ = c.close(probe);
+                    _ = c.close(fd);
+                    return; // live server exists
+                }
+                _ = c.close(probe);
+            }
+            // Stale socket: remove and retry.
+            var z: [109]u8 = undefined;
+            @memcpy(z[0..copy_n], path[0..copy_n]);
+            z[copy_n] = 0;
+            _ = c.unlink(&z);
+            if (c.bind(fd, @ptrCast(&addr), @sizeOf(c.struct_sockaddr_un)) != 0) {
+                _ = c.close(fd);
+                return;
+            }
+        } else {
+            _ = c.close(fd);
+            return;
+        }
+    }
+
+    if (c.listen(fd, 8) != 0) {
+        _ = c.close(fd);
+        return;
+    }
+
+    server_fd = fd;
+    const t = std.Thread.spawn(.{}, listenLoop, .{}) catch {
+        _ = c.close(fd);
+        server_fd = -1;
+        return;
+    };
+    t.detach();
+}
+
+// ---------------------------------------------------------------------------
+// Client mode  (called from main.zig before opening a window)
+// ---------------------------------------------------------------------------
+
+/// Connect to a running Anvil server, send `"<verb> <arg>\n"`, and return the
+/// reply.  Returns true on `ok`, false on `err ...`.  Returns an error if no
+/// server is reachable.
+pub fn tryClient(verb: []const u8, arg: ?[]const u8) bool {
+    var path_buf: [108]u8 = undefined;
+    const path = buildSockPath(&path_buf);
+
+    const fd = c.socket(c.AF_UNIX, c.SOCK_STREAM, 0);
+    if (fd < 0) return false;
+    defer _ = c.close(fd);
+
+    var addr: c.struct_sockaddr_un = std.mem.zeroes(c.struct_sockaddr_un);
+    addr.sun_family = c.AF_UNIX;
+    const n = @min(path.len, addr.sun_path.len - 1);
+    @memcpy(addr.sun_path[0..n], path[0..n]);
+    addr.sun_path[n] = 0;
+
+    if (c.connect(fd, @ptrCast(&addr), @sizeOf(c.struct_sockaddr_un)) != 0) {
+        const no_server = "anvil: no running Anvil window\n";
+        _ = std.c.write(2, no_server.ptr, no_server.len);
+        return false;
+    }
+
+    // Build request line: "verb arg\n" or "verb\n".
+    var req_buf: [1024 + 16]u8 = undefined;
+    const req = if (arg) |a|
+        std.fmt.bufPrint(&req_buf, "{s} {s}\n", .{ verb, a }) catch return false
+    else
+        std.fmt.bufPrint(&req_buf, "{s}\n", .{verb}) catch return false;
+    _ = c.write(fd, req.ptr, req.len);
+
+    // Read reply.
+    var rep: [64]u8 = undefined;
+    const nr = c.read(fd, &rep, rep.len);
+    if (nr <= 0) return false;
+    const reply = rep[0..@intCast(nr)];
+    if (std.mem.startsWith(u8, reply, "ok")) return true;
+    // Print error to stderr.
+    _ = std.c.write(2, reply.ptr, reply.len);
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+test "buildSockPath includes uid" {
+    var buf: [108]u8 = undefined;
+    const path = buildSockPath(&buf);
+    try std.testing.expect(path.len > 0);
+    try std.testing.expect(std.mem.endsWith(u8, path, ".sock"));
+    // Must contain the uid as a decimal number somewhere after the last slash.
+    const uid = std.c.getuid();
+    var uid_buf: [32]u8 = undefined;
+    const uid_str = std.fmt.bufPrint(&uid_buf, "{d}", .{uid}) catch unreachable;
+    try std.testing.expect(std.mem.indexOf(u8, path, uid_str) != null);
+}
+
+test "parseRequest: split h and v" {
+    const h = parseRequest("split h\n").?;
+    try std.testing.expectEqual(pane.Axis.x, h.split);
+    const v = parseRequest("split v\n").?;
+    try std.testing.expectEqual(pane.Axis.y, v.split);
+}
+
+test "parseRequest: tab with and without path" {
+    const bare = parseRequest("tab\n").?;
+    try std.testing.expect(!bare.tab.has_path);
+    const with_path = parseRequest("tab /my/dir\n").?;
+    try std.testing.expect(with_path.tab.has_path);
+    try std.testing.expectEqualStrings("/my/dir", with_path.tab.path[0..with_path.tab.len]);
+}
+
+test "parseRequest: unknown verb returns null" {
+    try std.testing.expect(parseRequest("run /x\n") == null);
+    try std.testing.expect(parseRequest("\n") == null);
+}
+
+test "takeCommands drains queue" {
+    _ = std.c.pthread_mutex_lock(&q_mutex);
+    queue[0] = Command{ .split = .x };
+    q_len = 1;
+    _ = std.c.pthread_mutex_unlock(&q_mutex);
+
+    var out: [32]Command = undefined;
+    const n = takeCommands(&out);
+    try std.testing.expectEqual(@as(usize, 1), n);
+    try std.testing.expectEqual(pane.Axis.x, out[0].split);
+    try std.testing.expectEqual(@as(usize, 0), q_len);
+}

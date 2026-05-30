@@ -2,6 +2,7 @@ const std = @import("std");
 const window = @import("platform/window.zig");
 const cli = @import("cli.zig");
 const app = @import("app.zig");
+const ipc = @import("ipc.zig");
 
 comptime {
     _ = app;
@@ -28,6 +29,10 @@ pub fn main(init: std.process.Init.Minimal) void {
         .version => {
             const msg = "anvil " ++ cli.version_string ++ "\n";
             _ = std.c.write(1, msg.ptr, msg.len);
+            return;
+        },
+        .client => {
+            _ = ipc.tryClient(args.verb, args.verb_arg);
             return;
         },
         .dump => {
