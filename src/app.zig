@@ -1870,7 +1870,11 @@ fn emitCommandBar(th: *const theme.Theme, start: usize, np: usize) usize {
     var n = start;
     var x: f32 = tab_inset_x;
 
-    // Wordmark: accent initial + bone tail, in IBM Plex Sans.
+    // Basin mark: a circle with a filled lower hemisphere (BRAND.md), drawn in
+    // the mono chrome face which carries the geometric-shapes glyph, then the
+    // wordmark — accent initial + bone tail — in IBM Plex Sans.
+    x += putChromeIcon(&n, x, ly, chrome.mineral, th.bar, 0x25D2); // ◒ Basin
+    x += chromeIconW() * 0.45;
     x += putSans(&n, x, ly, chrome.mineral, th.bar, 'A');
     x += putSansRun(&n, x, ly, chrome.bone, th.bar, "nvil");
 
@@ -1964,12 +1968,14 @@ fn emitStatusBar(th: *const theme.Theme, start: usize) usize {
         rrow = s.term.cy + 1;
         rcol = s.term.cx + 1;
     }
-    var rbuf: [80]u8 = undefined;
-    const info = std.fmt.bufPrint(&rbuf, "Ln {d}, Col {d}    UTF-8    anvil 0.1.0", .{ rrow, rcol }) catch "anvil 0.1.0";
+    // Segmented operator-console status line: thin pipe separators between the
+    // cursor position, encoding, version, and the trailing READY pip.
+    var rbuf: [96]u8 = undefined;
+    const info = std.fmt.bufPrint(&rbuf, "Ln {d}, Col {d}  |  UTF-8  |  anvil 0.1.0  |  ", .{ rrow, rcol }) catch "anvil 0.1.0  |  ";
     const ready_lbl = "READY";
     const rx = win_w - chrome.panel_pad - renderer.pad_x - sansWidth(ready_lbl);
     _ = putSansRun(&n, rx, ly, chrome.verified, bg, ready_lbl);
-    const ix = rx - sansWidth("    ") - sansWidth(info);
+    const ix = rx - sansWidth(info);
     _ = putSansRun(&n, ix, ly, chrome.alloy, bg, info);
     return n - start;
 }
