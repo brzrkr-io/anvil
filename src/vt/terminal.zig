@@ -344,7 +344,7 @@ pub const Terminal = struct {
     /// Clear the grid and scrollback; reset cursor and mode state. Preserves
     /// the existing grid/scrollback allocations and theme query colors.
     pub fn reset(self: *Terminal) void {
-        self.grid.clear();
+        self.grid.clear(Cell.blank);
         if (self.stash) |*g| g.deinit();
         self.stash = null;
         self.scrollback.clear();
@@ -637,7 +637,7 @@ pub const Terminal = struct {
                 if (self.view_offset > 0 and self.view_offset < self.scrollback.len())
                     self.view_offset += 1; // stay anchored to history while scrolled
             }
-            self.grid.scrollRegionUp(self.scroll_top, self.scroll_bot, 1);
+            self.grid.scrollRegionUp(self.scroll_top, self.scroll_bot, 1, self.bgCell());
         } else if (self.cy + 1 < self.grid.rows) {
             self.cy += 1;
         }
@@ -651,7 +651,7 @@ pub const Terminal = struct {
     /// RI (ESC M): reverse line feed. Scrolls the region down at the top.
     pub fn reverseIndex(self: *Terminal) void {
         if (self.cy == self.scroll_top) {
-            self.grid.scrollRegionDown(self.scroll_top, self.scroll_bot, 1);
+            self.grid.scrollRegionDown(self.scroll_top, self.scroll_bot, 1, self.bgCell());
         } else if (self.cy > 0) {
             self.cy -= 1;
         }
@@ -713,25 +713,25 @@ pub const Terminal = struct {
     /// IL (CSI L): insert n blank lines at the cursor row, within the region.
     pub fn insertLines(self: *Terminal, n: u16) void {
         if (self.cy < self.scroll_top or self.cy > self.scroll_bot) return;
-        self.grid.scrollRegionDown(self.cy, self.scroll_bot, n);
+        self.grid.scrollRegionDown(self.cy, self.scroll_bot, n, self.bgCell());
         self.cx = 0;
     }
 
     /// DL (CSI M): delete n lines at the cursor row, within the region.
     pub fn deleteLines(self: *Terminal, n: u16) void {
         if (self.cy < self.scroll_top or self.cy > self.scroll_bot) return;
-        self.grid.scrollRegionUp(self.cy, self.scroll_bot, n);
+        self.grid.scrollRegionUp(self.cy, self.scroll_bot, n, self.bgCell());
         self.cx = 0;
     }
 
     /// SU (CSI S): scroll the region up by n lines.
     pub fn scrollUp(self: *Terminal, n: u16) void {
-        self.grid.scrollRegionUp(self.scroll_top, self.scroll_bot, n);
+        self.grid.scrollRegionUp(self.scroll_top, self.scroll_bot, n, self.bgCell());
     }
 
     /// SD (CSI T): scroll the region down by n lines.
     pub fn scrollDown(self: *Terminal, n: u16) void {
-        self.grid.scrollRegionDown(self.scroll_top, self.scroll_bot, n);
+        self.grid.scrollRegionDown(self.scroll_top, self.scroll_bot, n, self.bgCell());
     }
 
     pub fn carriageReturn(self: *Terminal) void {
@@ -790,24 +790,31 @@ pub const Terminal = struct {
         self.cy = @min(self.saved_cy, self.grid.rows - 1);
     }
 
+    /// Background-Color-Erase template: a blank cell carrying the current pen
+    /// background so erases/scrolls fill with the active SGR bg (e.g. nvim's
+    /// light theme), not the terminal default.
+    fn bgCell(self: *const Terminal) Cell {
+        return .{ .bg = self.pen.bg };
+    }
+
     pub fn deleteChars(self: *Terminal, n: u16) void {
         const r = self.grid.row(self.cy);
         const cnt = @min(n, self.grid.cols - self.cx);
         std.mem.copyForwards(Cell, r[self.cx .. self.grid.cols - cnt], r[self.cx + cnt ..]);
-        @memset(r[self.grid.cols - cnt ..], Cell.blank);
+        @memset(r[self.grid.cols - cnt ..], self.bgCell());
     }
 
     pub fn insertChars(self: *Terminal, n: u16) void {
         const r = self.grid.row(self.cy);
         const cnt = @min(n, self.grid.cols - self.cx);
         std.mem.copyBackwards(Cell, r[self.cx + cnt ..], r[self.cx .. self.grid.cols - cnt]);
-        @memset(r[self.cx .. self.cx + cnt], Cell.blank);
+        @memset(r[self.cx .. self.cx + cnt], self.bgCell());
     }
 
     pub fn eraseChars(self: *Terminal, n: u16) void {
         const r = self.grid.row(self.cy);
         const end = @min(self.cx + n, self.grid.cols);
-        @memset(r[self.cx..end], Cell.blank);
+        @memset(r[self.cx..end], self.bgCell());
     }
 
     pub fn setMode(self: *Terminal, mode: u16, enable: bool) void {
@@ -869,27 +876,29 @@ pub const Terminal = struct {
 
     pub fn eraseInLine(self: *Terminal, mode: u16) void {
         const r = self.grid.row(self.cy);
+        const blank = self.bgCell();
         switch (mode) {
-            0 => @memset(r[self.cx..], Cell.blank),
-            1 => @memset(r[0 .. self.cx + 1], Cell.blank),
-            2 => @memset(r, Cell.blank),
+            0 => @memset(r[self.cx..], blank),
+            1 => @memset(r[0 .. self.cx + 1], blank),
+            2 => @memset(r, blank),
             else => {},
         }
     }
 
     pub fn eraseInDisplay(self: *Terminal, mode: u16) void {
+        const blank = self.bgCell();
         switch (mode) {
             0 => {
                 self.eraseInLine(0);
                 var r = self.cy + 1;
-                while (r < self.grid.rows) : (r += 1) self.grid.clearRow(r);
+                while (r < self.grid.rows) : (r += 1) self.grid.clearRow(r, blank);
             },
             1 => {
                 var r: u16 = 0;
-                while (r < self.cy) : (r += 1) self.grid.clearRow(r);
+                while (r < self.cy) : (r += 1) self.grid.clearRow(r, blank);
                 self.eraseInLine(1);
             },
-            2 => self.grid.clear(),
+            2 => self.grid.clear(blank),
             else => {},
         }
     }
@@ -1298,6 +1307,22 @@ test "insertLines and deleteLines act within the region" {
     try std.testing.expectEqual(@as(u21, 'a'), t.grid.at(2, 0).cp);
     t.deleteLines(1); // remove row 1, pull a back up
     try std.testing.expectEqual(@as(u21, 'a'), t.grid.at(1, 0).cp);
+}
+
+test "BCE: erase fills cells with the active pen background" {
+    var t = try Terminal.init(std.testing.allocator, 3, 4);
+    defer t.deinit();
+    // nvim-style: set a non-default background, then erase the line/screen.
+    t.pen.bg = .{ .indexed = 4 };
+    t.eraseInLine(2);
+    try std.testing.expectEqual(Color{ .indexed = 4 }, t.grid.at(0, 0).bg);
+    // Scrolled-in blank rows also carry the pen background.
+    t.eraseInDisplay(0);
+    try std.testing.expectEqual(Color{ .indexed = 4 }, t.grid.at(2, 3).bg);
+    // After SGR reset (pen bg default), erase returns to default bg.
+    t.pen = .{};
+    t.eraseInLine(2);
+    try std.testing.expectEqual(Color.default, t.grid.at(0, 0).bg);
 }
 
 test "shouldNotify: requires elapsed >= threshold and app not active" {

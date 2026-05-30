@@ -30,17 +30,17 @@ pub const Grid = struct {
         return self.cells[start .. start + self.cols];
     }
 
-    pub fn clear(self: *Grid) void {
-        @memset(self.cells, Cell.blank);
+    pub fn clear(self: *Grid, blank: Cell) void {
+        @memset(self.cells, blank);
         @memset(self.wrapped, false);
     }
 
-    pub fn clearRow(self: *Grid, r: u16) void {
-        @memset(self.row(r), Cell.blank);
+    pub fn clearRow(self: *Grid, r: u16, blank: Cell) void {
+        @memset(self.row(r), blank);
         self.wrapped[r] = false;
     }
 
-    pub fn scrollUp(self: *Grid, n: u16) void {
+    pub fn scrollUp(self: *Grid, n: u16, blank: Cell) void {
         const lines = @min(n, self.rows);
         const moved = (self.rows - lines);
         if (moved > 0) {
@@ -49,13 +49,13 @@ pub const Grid = struct {
             std.mem.copyForwards(Cell, dst, src);
             std.mem.copyForwards(bool, self.wrapped[0..moved], self.wrapped[lines..][0..moved]);
         }
-        @memset(self.cells[@as(usize, moved) * self.cols ..], Cell.blank);
+        @memset(self.cells[@as(usize, moved) * self.cols ..], blank);
         @memset(self.wrapped[moved..], false);
     }
 
     /// Scroll rows in the inclusive region [top, bot] up by n; bottom n rows
     /// of the region are blanked. top/bot are 0-based row indices.
-    pub fn scrollRegionUp(self: *Grid, top: u16, bot: u16, n: u16) void {
+    pub fn scrollRegionUp(self: *Grid, top: u16, bot: u16, n: u16, blank: Cell) void {
         if (bot < top or bot >= self.rows) return;
         const height = bot - top + 1;
         const lines = @min(n, height);
@@ -68,12 +68,12 @@ pub const Grid = struct {
             self.wrapped[d] = self.wrapped[s];
         }
         i = 0;
-        while (i < lines) : (i += 1) self.clearRow(bot - i);
+        while (i < lines) : (i += 1) self.clearRow(bot - i, blank);
     }
 
     /// Scroll rows in the inclusive region [top, bot] down by n; top n rows
     /// of the region are blanked.
-    pub fn scrollRegionDown(self: *Grid, top: u16, bot: u16, n: u16) void {
+    pub fn scrollRegionDown(self: *Grid, top: u16, bot: u16, n: u16, blank: Cell) void {
         if (bot < top or bot >= self.rows) return;
         const height = bot - top + 1;
         const lines = @min(n, height);
@@ -86,7 +86,7 @@ pub const Grid = struct {
             self.wrapped[d] = self.wrapped[s];
         }
         i = 0;
-        while (i < lines) : (i += 1) self.clearRow(top + i);
+        while (i < lines) : (i += 1) self.clearRow(top + i, blank);
     }
 };
 
@@ -103,7 +103,7 @@ test "scrollUp shifts rows and blanks the bottom" {
     g.at(0, 0).cp = 'a';
     g.at(1, 0).cp = 'b';
     g.at(2, 0).cp = 'c';
-    g.scrollUp(1);
+    g.scrollUp(1, Cell.blank);
     try std.testing.expectEqual(@as(u21, 'b'), g.at(0, 0).cp);
     try std.testing.expectEqual(@as(u21, 'c'), g.at(1, 0).cp);
     try std.testing.expectEqual(@as(u21, ' '), g.at(2, 0).cp);
