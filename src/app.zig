@@ -1871,10 +1871,22 @@ fn emitStatusBar(th: *const theme.Theme, start: usize) usize {
         x += putSansRun(&n, x, ly, chrome.mist, bg, kube[0..@min(kube.len, chip_max_kube)]);
     }
 
-    // Right: semantic ready label.
-    const label = "READY";
-    const rx = win_w - chrome.panel_pad - renderer.pad_x - sansWidth(label);
-    _ = putSansRun(&n, rx, ly, chrome.verified, bg, label);
+    // Right: a muted info cluster — cursor position, encoding, app version —
+    // mirroring the operator-console status line. The trailing READY pip keeps
+    // a semantic-color accent at the far edge.
+    var rrow: u16 = 1;
+    var rcol: u16 = 1;
+    if (mgr.focusedSession()) |s| {
+        rrow = s.term.cy + 1;
+        rcol = s.term.cx + 1;
+    }
+    var rbuf: [80]u8 = undefined;
+    const info = std.fmt.bufPrint(&rbuf, "Ln {d}, Col {d}    UTF-8    anvil 0.1.0", .{ rrow, rcol }) catch "anvil 0.1.0";
+    const ready_lbl = "READY";
+    const rx = win_w - chrome.panel_pad - renderer.pad_x - sansWidth(ready_lbl);
+    _ = putSansRun(&n, rx, ly, chrome.verified, bg, ready_lbl);
+    const ix = rx - sansWidth("    ") - sansWidth(info);
+    _ = putSansRun(&n, ix, ly, chrome.alloy, bg, info);
     return n - start;
 }
 
