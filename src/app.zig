@@ -227,7 +227,7 @@ var scr_anim_last_ms: i64 = 0;
 ///   - session id changed (tab/pane switch)
 ///   - large jump (> grid.rows lines)
 fn animateScroll(target_lines: f32, id: usize, rows: u16) f32 {
-    const tau: f32 = 0.13; // slower than the cursor: scroll glide is meant to be seen
+    const tau: f32 = 0.045; // short glide: smooths per-frame steps but tracks input fast
     const max_dt_ms: i64 = 64;
 
     const now = nowMs();
