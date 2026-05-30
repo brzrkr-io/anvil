@@ -141,10 +141,19 @@ pub const SessionManager = struct {
         self.focused = self.activeTree().?.anyLeaf();
     }
 
-    /// Split the focused pane along `axis`; the new session takes focus.
+    /// Split the focused pane along `axis`; the new session takes focus and
+    /// inherits the focused pane's cwd.
     pub fn splitFocused(self: *SessionManager, axis: pane.Axis, rows: u16, cols: u16) !void {
         const tree = self.activeTree() orelse return;
-        const id = try self.add(rows, cols);
+        var cwd_buf: [1024]u8 = undefined;
+        var cwd: []const u8 = "";
+        if (self.focusedSession()) |s| {
+            const c = s.term.cwd();
+            const n = @min(c.len, cwd_buf.len);
+            @memcpy(cwd_buf[0..n], c[0..n]);
+            cwd = cwd_buf[0..n];
+        }
+        const id = try self.addWithCwd(rows, cols, cwd);
         try tree.split(self.focused, axis, id);
         self.focused = id;
     }
