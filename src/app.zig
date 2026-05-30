@@ -38,6 +38,7 @@ var mgr = SessionManager{ .alloc = std.heap.page_allocator };
 var renderer = Renderer{ .cell_w = 16, .cell_h = 32, .pad_x = 8, .pad_y = bar_h + 6, .pad_bottom = 8 };
 var instances: [max_instances]inst.CellInstance = undefined;
 var pane_buf: [max_panes]pane.PaneRect = undefined;
+var pane_range_buf: [max_panes + 1]inst.PaneRange = undefined;
 var divider_rects: [max_panes]pane.Rect = undefined;
 var win_w: f32 = 0;
 var win_h: f32 = 0;
@@ -208,6 +209,58 @@ fn animateCursor(target_x: f32, target_y: f32, id: usize) struct { x: f32, y: f3
 
     markDirty();
     return .{ .x = cur_anim_x, .y = cur_anim_y };
+}
+
+// Scroll animation state. scr_anim_init=false causes the next call to snap.
+var scr_anim_off: f32 = 0;
+var scr_anim_id: usize = 0;
+var scr_anim_init: bool = false;
+var scr_anim_last_ms: i64 = 0;
+
+/// Exponential-decay animation for scrollback scrolling. `target_lines` is the
+/// integer view_offset (lines from live); `id` is the session id. Returns
+/// `off_f`, the fractional line offset for rendering.
+///
+/// Snap conditions (no glide):
+///   - first call (scr_anim_init == false)
+///   - session id changed (tab/pane switch)
+///   - large jump (> grid.rows lines)
+fn animateScroll(target_lines: f32, id: usize, rows: u16) f32 {
+    const tau: f32 = 0.028;
+    const max_dt_ms: i64 = 64;
+
+    const now = nowMs();
+    const snap_lines: f32 = @floatFromInt(rows);
+
+    const should_snap = !scr_anim_init or
+        id != scr_anim_id or
+        @abs(target_lines - scr_anim_off) > snap_lines;
+
+    if (should_snap) {
+        scr_anim_off = target_lines;
+        scr_anim_id = id;
+        scr_anim_init = true;
+        scr_anim_last_ms = now;
+        return target_lines;
+    }
+
+    const raw_dt = now - scr_anim_last_ms;
+    const dt_ms = if (raw_dt > max_dt_ms) max_dt_ms else raw_dt;
+    scr_anim_last_ms = now;
+
+    const dt_s: f32 = @as(f32, @floatFromInt(dt_ms)) / 1000.0;
+    const alpha = 1.0 - std.math.exp(-dt_s / tau);
+    scr_anim_off += (target_lines - scr_anim_off) * alpha;
+
+    // settle threshold: 0.5 / cell_h lines (sub-pixel residue)
+    const settle: f32 = 0.5 / renderer.cell_h;
+    if (@abs(target_lines - scr_anim_off) < settle) {
+        scr_anim_off = target_lines;
+        return target_lines; // idle: do NOT markDirty
+    }
+
+    markDirty();
+    return scr_anim_off;
 }
 
 /// Stamp the configured default cursor onto the focused session. Programs may
@@ -1054,6 +1107,8 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
         .palette_text_count = 0,
         .pending = &renderer.atlas.pending,
         .pending_count = 0,
+        .pane_ranges = &pane_range_buf,
+        .pane_range_count = 0,
     };
     if (!ready) return;
 
@@ -1061,13 +1116,28 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
     const tree = mgr.activeTree() orelse return;
     const np = layoutPanes(&pane_buf);
     var n: usize = 0;
+    var pr_n: usize = 0;
     const multi = np > 1;
     for (pane_buf[0..np]) |p| {
         const s = mgr.byId(p.id) orelse continue;
         const ox = p.rect.x + renderer.pad_x;
         const oy = p.rect.y + renderer.pad_x;
         const start = n;
-        n += renderer.buildInstances(&s.term, ox, oy, instances[n..]);
+
+        // Compute scroll animation offset for this pane.
+        const target_f: f32 = @floatFromInt(s.term.view_offset);
+        var off_f: f32 = target_f;
+        if (cfg.scroll_smooth and s.id == mgr.focused) {
+            off_f = animateScroll(target_f, s.id, s.term.grid.rows);
+        } else if (!cfg.scroll_smooth) {
+            scr_anim_init = false;
+        }
+        const base: usize = @intFromFloat(@floor(off_f));
+        const frac: f32 = off_f - @as(f32, @floatFromInt(base));
+        const y_shift: f32 = -frac * renderer.cell_h;
+
+        n += renderer.buildInstances(&s.term, ox, oy, y_shift, base, instances[n..]);
+
         // Dim unfocused panes (only meaningful when split).
         if (multi and s.id != mgr.focused) {
             for (instances[start..n]) |*ci| ci.flags |= inst.flag_dim;
@@ -1092,7 +1162,31 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
                 n += 1;
             }
         }
+
+        // Record the per-pane scissor range. Scissor rect: pane area clamped
+        // to [bar_h, win_h] so the title bar is always protected.
+        if (pr_n < max_panes) {
+            const sx: f32 = p.rect.x;
+            const sy_raw: f32 = p.rect.y;
+            const sy: f32 = @max(sy_raw, bar_h);
+            const sw: f32 = p.rect.w;
+            const sh: f32 = @max(0, p.rect.h - (sy - sy_raw));
+            pane_range_buf[pr_n] = .{
+                .offset = @intCast(start),
+                .count = @intCast(n - start),
+                .x = sx,
+                .y = sy,
+                .w = sw,
+                .h = sh,
+            };
+            pr_n += 1;
+        }
     }
+    // Trailing title-bar chrome (tab labels + context chip) is appended after
+    // the per-pane cell ranges. It lives in no pane, so record a tail range
+    // with a full-window scissor below or the per-pane draw loop drops it.
+    const tail_start = n;
+
     // Tab labels in the title bar: program title (or cwd basename, or number),
     // the active tab highlighted.
     if (mgr.tabs.items.len > 1) {
@@ -1125,7 +1219,22 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
     // Context chip: git branch + kube context in the right side of the title bar.
     n += emitContextChip(th, n);
 
+    // Tail range for the title-bar chrome glyphs, drawn with a full-window
+    // scissor so tab labels and the context chip are not clipped away.
+    if (n > tail_start and pr_n <= max_panes) {
+        pane_range_buf[pr_n] = .{
+            .offset = @intCast(tail_start),
+            .count = @intCast(n - tail_start),
+            .x = 0,
+            .y = 0,
+            .w = win_w,
+            .h = win_h,
+        };
+        pr_n += 1;
+    }
+
     out.count = @intCast(n);
+    out.pane_range_count = @intCast(pr_n);
     out.divider_count = if (zoomed) 0 else @intCast(tree.dividers(ws, divider_px, &divider_rects));
 
     if (caldera_drawer) {
@@ -1744,4 +1853,52 @@ test "animateCursor: already at target returns target without moving" {
     const r = animateCursor(80, 64, 3);
     try std.testing.expectEqual(@as(f32, 80), r.x);
     try std.testing.expectEqual(@as(f32, 64), r.y);
+}
+
+test "animateScroll: snaps on first call (scr_anim_init=false)" {
+    scr_anim_init = false;
+    const off = animateScroll(5, 1, 24);
+    try std.testing.expectEqual(@as(f32, 5), off);
+    try std.testing.expect(scr_anim_init);
+    try std.testing.expectEqual(@as(f32, 5), scr_anim_off);
+}
+
+test "animateScroll: snaps on id change" {
+    scr_anim_init = true;
+    scr_anim_id = 1;
+    scr_anim_off = 3;
+    const off = animateScroll(5, 2, 24);
+    try std.testing.expectEqual(@as(f32, 5), off);
+    try std.testing.expectEqual(@as(usize, 2), scr_anim_id);
+}
+
+test "animateScroll: snaps on large jump (> grid.rows)" {
+    scr_anim_init = true;
+    scr_anim_id = 7;
+    scr_anim_off = 0;
+    // rows=24; jump of 25 lines > snap_lines=24
+    const off = animateScroll(25, 7, 24);
+    try std.testing.expectEqual(@as(f32, 25), off);
+}
+
+test "animateScroll: settles to exact target without calling markDirty" {
+    scr_anim_init = true;
+    scr_anim_id = 9;
+    scr_anim_off = 10;
+    scr_anim_last_ms = nowMs();
+    frame_dirty = false;
+    const off = animateScroll(10, 9, 24);
+    try std.testing.expectEqual(@as(f32, 10), off);
+    try std.testing.expect(!frame_dirty); // idle: no markDirty
+}
+
+test "scroll offset floor/frac split" {
+    const off_f: f32 = 3.7;
+    const base: usize = @intFromFloat(@floor(off_f));
+    const frac: f32 = off_f - @as(f32, @floatFromInt(base));
+    try std.testing.expectEqual(@as(usize, 3), base);
+    try std.testing.expect(@abs(frac - 0.7) < 1e-5);
+    const cell_h: f32 = 32;
+    const y_shift: f32 = -frac * cell_h;
+    try std.testing.expect(@abs(y_shift - (-22.4)) < 1e-3);
 }

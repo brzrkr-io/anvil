@@ -42,14 +42,25 @@ pub const Renderer = struct {
 
     /// Emit one instance per cell into `out` starting at `out[0]`, positioning
     /// the grid at device-pixel origin (`ox`, `oy`). Returns the count written.
-    /// `out` must hold at least rows*cols entries.
-    pub fn buildInstances(self: *Renderer, term: *Terminal, ox: f32, oy: f32, out: []CellInstance) usize {
+    /// `y_shift` slides the grid up by a sub-row amount (device px, negative =
+    /// up), and `base` is the integer view_offset used to read rows; pass
+    /// term.view_offset and 0 for the normal (non-animated) case.
+    /// When `y_shift` is non-zero an extra row (r == rows) is drawn to fill the
+    /// revealed strip at the bottom; that row is blank when at totalLines.
+    /// `out` must hold at least (rows+1)*cols entries when y_shift != 0.
+    pub fn buildInstances(self: *Renderer, term: *Terminal, ox: f32, oy: f32, y_shift: f32, base: usize, out: []CellInstance) usize {
         const width = @import("../vt/width.zig").charWidth;
+        const frac_threshold: f32 = 1e-3;
+        const draw_extra = @abs(y_shift) > frac_threshold;
         var n: usize = 0;
         var r: u16 = 0;
-        while (r < term.grid.rows) : (r += 1) {
-            const cells = term.viewRow(r);
-            const y = oy + @as(f32, @floatFromInt(r)) * self.cell_h;
+        const row_limit: u16 = if (draw_extra) term.grid.rows + 1 else term.grid.rows;
+        while (r < row_limit) : (r += 1) {
+            const cells = if (r < term.grid.rows)
+                term.viewRowAt(base, r)
+            else
+                &[_]@import("../vt/cell.zig").Cell{};
+            const y = oy + @as(f32, @floatFromInt(r)) * self.cell_h + y_shift;
             // Right half UV owed to the spacer cell of a preceding wide glyph.
             var wide_right: ?[2]f32 = null;
             var c: u16 = 0;
@@ -144,7 +155,7 @@ test "buildInstances emits one per cell with positions" {
     defer t.deinit();
     var rd = Renderer{ .cell_w = 10, .cell_h = 20, .pad_x = 0, .pad_y = 0 };
     var buf: [6]CellInstance = undefined;
-    const n = rd.buildInstances(&t, 0, 0, &buf);
+    const n = rd.buildInstances(&t, 0, 0, 0, t.view_offset, &buf);
     try std.testing.expectEqual(@as(usize, 6), n);
     try std.testing.expectEqual(@as(f32, 0), buf[0].x);
     try std.testing.expectEqual(@as(f32, 0), buf[0].y);
@@ -158,7 +169,7 @@ test "buildInstances offsets every cell by the pane origin" {
     defer t.deinit();
     var rd = Renderer{ .cell_w = 10, .cell_h = 20, .pad_x = 0, .pad_y = 0 };
     var buf: [1]CellInstance = undefined;
-    _ = rd.buildInstances(&t, 100, 50, &buf);
+    _ = rd.buildInstances(&t, 100, 50, 0, t.view_offset, &buf);
     try std.testing.expectEqual(@as(f32, 100), buf[0].x);
     try std.testing.expectEqual(@as(f32, 50), buf[0].y);
 }
@@ -170,7 +181,7 @@ test "buildInstances carries glyph uv and resolves color" {
     t.print('A');
     var rd = Renderer{ .cell_w = 10, .cell_h = 20, .pad_x = 0, .pad_y = 0 };
     var buf: [1]CellInstance = undefined;
-    _ = rd.buildInstances(&t, 0, 0, &buf);
+    _ = rd.buildInstances(&t, 0, 0, 0, t.view_offset, &buf);
     try std.testing.expectEqual(rd.atlas.uvOrigin('A'), buf[0].uv);
     const red = palette.indexed(1).f32x4();
     try std.testing.expectEqual(red, buf[0].fg);
@@ -205,7 +216,33 @@ test "buildInstances swaps fg/bg on reverse" {
     t.print('x');
     var rd = Renderer{ .cell_w = 10, .cell_h = 20, .pad_x = 0, .pad_y = 0 };
     var buf: [1]CellInstance = undefined;
-    _ = rd.buildInstances(&t, 0, 0, &buf);
+    _ = rd.buildInstances(&t, 0, 0, 0, t.view_offset, &buf);
     try std.testing.expectEqual(palette.defaultBg().f32x4(), buf[0].fg);
     try std.testing.expectEqual(palette.defaultFg().f32x4(), buf[0].bg);
+}
+
+test "buildInstances y_shift slides row positions" {
+    // 2 rows, 1 col; y_shift=-5 triggers draw_extra → 3 instances needed
+    var t = try Terminal.init(std.testing.allocator, 2, 1);
+    defer t.deinit();
+    var rd = Renderer{ .cell_w = 10, .cell_h = 20, .pad_x = 0, .pad_y = 0 };
+    var buf: [3]CellInstance = undefined;
+    const n = rd.buildInstances(&t, 0, 0, -5, t.view_offset, &buf);
+    // draw_extra=true → row_limit=3; extra row r=2 at base=0 → logical=2 = totalLines=2 → blank
+    try std.testing.expectEqual(@as(usize, 3), n);
+    try std.testing.expectEqual(@as(f32, -5), buf[0].y); // row 0: 0*20 + (-5)
+    try std.testing.expectEqual(@as(f32, 15), buf[1].y); // row 1: 1*20 + (-5)
+    try std.testing.expectEqual(@as(f32, 35), buf[2].y); // row 2 (extra): 2*20 + (-5)
+}
+
+test "buildInstances extra row when y_shift is non-trivial" {
+    var t = try Terminal.init(std.testing.allocator, 1, 1);
+    defer t.deinit();
+    var rd = Renderer{ .cell_w = 10, .cell_h = 20, .pad_x = 0, .pad_y = 0 };
+    // y_shift=-5 (abs > 1e-3) → draw_extra=true → row_limit=2
+    var buf: [2]CellInstance = undefined;
+    const n = rd.buildInstances(&t, 0, 0, -5, t.view_offset, &buf);
+    try std.testing.expectEqual(@as(usize, 2), n);
+    // row r=1 is the extra row; its y = 1*20 + (-5) = 15
+    try std.testing.expectEqual(@as(f32, 15), buf[1].y);
 }

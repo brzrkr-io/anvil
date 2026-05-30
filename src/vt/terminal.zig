@@ -396,6 +396,18 @@ pub const Terminal = struct {
         return self.grid.row(@intCast(logical - sb));
     }
 
+    /// Like viewRow but treats `base` as the view_offset instead of self.view_offset.
+    /// Returns Cell.blank when the logical index is at or beyond totalLines.
+    pub fn viewRowAt(self: *Terminal, base: usize, r: u16) []Cell {
+        const sb = self.scrollback.len();
+        const total = self.totalLines();
+        if (base > sb) return &[_]Cell{};
+        const logical = (sb - base) + r;
+        if (logical >= total) return &[_]Cell{};
+        if (logical < sb) return self.scrollback.at(logical);
+        return self.grid.row(@intCast(logical - sb));
+    }
+
     /// Scroll the viewport: positive = back into history, negative = toward live.
     pub fn scrollView(self: *Terminal, delta: i32) void {
         const sb: i64 = @intCast(self.scrollback.len());
@@ -1339,4 +1351,28 @@ test "visibleRunBlocks spans each mark to the next, colored by state" {
     try std.testing.expectEqual(MarkState.ok, out[0].state);
     try std.testing.expectEqual(@as(u16, 2), out[1].row);
     try std.testing.expectEqual(MarkState.running, out[1].state);
+}
+
+test "viewRowAt: valid rows return cells; r >= totalLines returns empty" {
+    var t = try Terminal.init(std.testing.allocator, 2, 3);
+    defer t.deinit();
+    // no scrollback, totalLines = 2; base=0
+    const row0 = t.viewRowAt(0, 0);
+    try std.testing.expect(row0.len > 0); // grid row 0
+    const row1 = t.viewRowAt(0, 1);
+    try std.testing.expect(row1.len > 0); // grid row 1
+    // r=2 → logical index = 2 = totalLines → out of bounds → empty slice
+    const row2 = t.viewRowAt(0, 2);
+    try std.testing.expectEqual(@as(usize, 0), row2.len);
+}
+
+test "viewRowAt: base=rows snaps to integer offset without mutating view_offset" {
+    var t = try Terminal.init(std.testing.allocator, 2, 3);
+    defer t.deinit();
+    // Write something on row 0 so we can tell it apart from blank.
+    t.print('X');
+    const original_off = t.view_offset;
+    // base=0 is the live view; viewRowAt must not change view_offset.
+    _ = t.viewRowAt(0, 0);
+    try std.testing.expectEqual(original_off, t.view_offset);
 }

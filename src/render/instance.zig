@@ -43,4 +43,19 @@ pub const FrameData = extern struct {
     // `cp` into its `slot` before drawing. Empty once the cache is warm.
     pending: [*]const @import("atlas.zig").PendingGlyph,
     pending_count: u32,
+    // Per-pane scissor ranges for the cell draw pass. Each entry gives the
+    // slice of `instances` for one pane and its device-pixel scissor rect.
+    pane_ranges: [*]const PaneRange,
+    pane_range_count: u32,
+};
+
+/// Per-pane scissor rect and instance range for the cell draw pass.
+/// x/y/w/h are device pixels, clamped so the scissor stays within the drawable.
+pub const PaneRange = extern struct {
+    offset: u32,
+    count: u32,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
 };

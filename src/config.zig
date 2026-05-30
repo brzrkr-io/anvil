@@ -25,6 +25,7 @@ pub const Config = struct {
     cursor_style: CursorStyle = .block,
     cursor_blink: bool = true,
     cursor_smooth: bool = true,
+    scroll_smooth: bool = true,
     background_opacity: f32 = 1.0,
 
     pub fn themeVariant(self: *const Config) []const u8 {
@@ -156,6 +157,16 @@ fn applyKey(cfg: *Config, key: []const u8, val: []const u8, err: ?*[128]u8, err_
             return;
         }
         setErr(err, err_len, "config.toml: invalid cursor_smooth '{s}' (line {})", .{ val, line_num });
+    } else if (std.mem.eql(u8, key, "scroll_smooth")) {
+        if (std.mem.eql(u8, val, "true")) {
+            cfg.scroll_smooth = true;
+            return;
+        }
+        if (std.mem.eql(u8, val, "false")) {
+            cfg.scroll_smooth = false;
+            return;
+        }
+        setErr(err, err_len, "config.toml: invalid scroll_smooth '{s}' (line {})", .{ val, line_num });
     } else if (std.mem.eql(u8, key, "background_opacity")) {
         if (std.fmt.parseFloat(f32, val)) |v| {
             if (v >= 0.0 and v <= 1.0) {
@@ -258,6 +269,15 @@ test "parse reads cursor_smooth; defaults true" {
     try std.testing.expect(!cfg_off.cursor_smooth);
     const cfg_on = parse("cursor_smooth = true\n");
     try std.testing.expect(cfg_on.cursor_smooth);
+}
+
+test "parse reads scroll_smooth; defaults true" {
+    const cfg_default = parse("theme = dark\n");
+    try std.testing.expect(cfg_default.scroll_smooth);
+    const cfg_off = parse("scroll_smooth = false\n");
+    try std.testing.expect(!cfg_off.scroll_smooth);
+    const cfg_on = parse("scroll_smooth = true\n");
+    try std.testing.expect(cfg_on.scroll_smooth);
 }
 
 test "parse rejects out-of-range font size" {

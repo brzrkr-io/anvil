@@ -11,6 +11,11 @@
 #import <unistd.h>
 
 typedef struct {
+    uint32_t offset, count;
+    float x, y, w, h;
+} PaneRange;
+
+typedef struct {
     const void *instances;
     uint32_t count;
     float cell_w, cell_h, pad_x, pad_y;
@@ -27,6 +32,8 @@ typedef struct {
     uint32_t palette_text_count; // glyph instances after `count`, drawn last
     const void *pending; // PendingGlyph[]: {uint32 cp, uint32 slot, uint32 wide}
     uint32_t pending_count;
+    const PaneRange *pane_ranges;
+    uint32_t pane_range_count;
 } FrameData;
 
 typedef struct {
@@ -353,13 +360,45 @@ static void render(void) {
         uint32_t c1 = fd.count > total ? total : fd.count;
         if (c1 > 0) {
             [enc setRenderPipelineState:gPipeline];
-            [enc setVertexBuffer:gInstanceBuf offset:0 atIndex:0];
             [enc setVertexBytes:&u length:sizeof(u) atIndex:1];
             [enc setFragmentTexture:gAtlas atIndex:0];
-            [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip
-                    vertexStart:0
-                    vertexCount:4
-                  instanceCount:c1];
+            if (fd.pane_range_count > 0) {
+                for (uint32_t pi = 0; pi < fd.pane_range_count; pi++) {
+                    const PaneRange *pr = &fd.pane_ranges[pi];
+                    uint32_t end = pr->offset + pr->count;
+                    if (end > c1) end = c1;
+                    if (pr->offset >= end) continue;
+                    NSUInteger sx = (NSUInteger)pr->x;
+                    NSUInteger sy = (NSUInteger)pr->y;
+                    NSUInteger sw = (NSUInteger)pr->w;
+                    NSUInteger sh = (NSUInteger)pr->h;
+                    if (sw == 0 || sh == 0) continue;
+                    // Clamp to drawable bounds to avoid Metal validation error.
+                    if (sx + sw > (NSUInteger)ds.width)
+                        sw = (NSUInteger)ds.width > sx ? (NSUInteger)ds.width - sx : 0;
+                    if (sy + sh > (NSUInteger)ds.height)
+                        sh = (NSUInteger)ds.height > sy ? (NSUInteger)ds.height - sy : 0;
+                    if (sw == 0 || sh == 0) continue;
+                    MTLScissorRect scissor = {sx, sy, sw, sh};
+                    [enc setScissorRect:scissor];
+                    [enc setVertexBuffer:gInstanceBuf
+                                  offset:pr->offset * INSTANCE_STRIDE
+                                 atIndex:0];
+                    [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip
+                            vertexStart:0
+                            vertexCount:4
+                          instanceCount:end - pr->offset];
+                }
+                // Reset scissor to full drawable for subsequent passes.
+                MTLScissorRect full = {0, 0, (NSUInteger)ds.width, (NSUInteger)ds.height};
+                [enc setScissorRect:full];
+            } else {
+                [enc setVertexBuffer:gInstanceBuf offset:0 atIndex:0];
+                [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip
+                        vertexStart:0
+                        vertexCount:4
+                      instanceCount:c1];
+            }
         }
     }
 
@@ -459,11 +498,42 @@ void anvil_dump(const char *path, uint32_t w, uint32_t h) {
             uint32_t c1 = fd.count > total ? total : fd.count;
             if (c1 > 0) {
                 [enc setRenderPipelineState:gPipeline];
-                [enc setVertexBuffer:gInstanceBuf offset:0 atIndex:0];
                 [enc setVertexBytes:&u length:sizeof(u) atIndex:1];
                 [enc setFragmentTexture:gAtlas atIndex:0];
-                [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip
-                        vertexStart:0 vertexCount:4 instanceCount:c1];
+                CGSize dds = CGSizeMake(w, h);
+                if (fd.pane_range_count > 0) {
+                    for (uint32_t pi = 0; pi < fd.pane_range_count; pi++) {
+                        const PaneRange *pr = &fd.pane_ranges[pi];
+                        uint32_t end = pr->offset + pr->count;
+                        if (end > c1) end = c1;
+                        if (pr->offset >= end) continue;
+                        NSUInteger sx = (NSUInteger)pr->x;
+                        NSUInteger sy = (NSUInteger)pr->y;
+                        NSUInteger sw = (NSUInteger)pr->w;
+                        NSUInteger sh = (NSUInteger)pr->h;
+                        if (sw == 0 || sh == 0) continue;
+                        if (sx + sw > (NSUInteger)dds.width)
+                            sw = (NSUInteger)dds.width > sx ? (NSUInteger)dds.width - sx : 0;
+                        if (sy + sh > (NSUInteger)dds.height)
+                            sh = (NSUInteger)dds.height > sy ? (NSUInteger)dds.height - sy : 0;
+                        if (sw == 0 || sh == 0) continue;
+                        MTLScissorRect scissor = {sx, sy, sw, sh};
+                        [enc setScissorRect:scissor];
+                        [enc setVertexBuffer:gInstanceBuf
+                                      offset:pr->offset * INSTANCE_STRIDE
+                                     atIndex:0];
+                        [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip
+                                vertexStart:0
+                                vertexCount:4
+                              instanceCount:end - pr->offset];
+                    }
+                    MTLScissorRect full = {0, 0, (NSUInteger)dds.width, (NSUInteger)dds.height};
+                    [enc setScissorRect:full];
+                } else {
+                    [enc setVertexBuffer:gInstanceBuf offset:0 atIndex:0];
+                    [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip
+                            vertexStart:0 vertexCount:4 instanceCount:c1];
+                }
             }
         }
         if (gSolidPipeline) {
