@@ -1580,13 +1580,19 @@ fn putSans(n: *usize, x: f32, y: f32, fg: theme.Rgb, bg: theme.Rgb, cp: u21) f32
     // a fractional overlap lets the next glyph's bg wipe the previous glyph's
     // rightmost ink column (a hairline seam after wide glyphs like 'm').
     const x0 = @round(x);
+    // Cap the quad at one atlas cell. The grid is sized to the mono cell, but a
+    // few Sans glyphs ('m', 'w', caps) advance slightly wider at chrome scale; a
+    // quad wider than one cell makes the shader's UV slice spill into the next
+    // atlas slot and sample its neighbour's left edge — a phantom stroke that
+    // makes ".md" read as ".mld". The advance past one cell becomes inter-glyph
+    // background (the pen still advances the full `adv`), which is correct.
     instances[n.*] = .{
         .x = x0,
         .y = @round(y),
         .fg = fg.f32x4(),
         .bg = bg.f32x4(),
         .uv = atlasmod.Atlas.slotUV(slot),
-        .w = @round(x + adv) - x0,
+        .w = @min(@round(x + adv) - x0, renderer.cell_w),
         .h = chromeH(),
     };
     n.* += 1;
