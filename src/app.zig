@@ -781,9 +781,12 @@ export fn anvil_mouse(kind: c_int, x: f32, y: f32) callconv(.c) void {
                     markDirty();
                 },
                 1 => {
-                    if (mgr.byId(mgr.focused)) |s| {
-                        const ent = &exp_entries[hr.idx];
-                        s.write(ent.name[0..ent.len]);
+                    const ent = &exp_entries[hr.idx];
+                    if (ent.is_dir) {
+                        toggleExpanded(ent.rel[0..ent.rel_len]);
+                        markDirty();
+                    } else if (mgr.byId(mgr.focused)) |s| {
+                        s.write(ent.rel[0..ent.rel_len]);
                         markDirty();
                     }
                 },
@@ -1837,9 +1840,13 @@ fn emitPanelHeaders(th: *const theme.Theme, start: usize, np: usize) usize {
     var prog = s.term.title();
     if (prog.len == 0) prog = "zsh";
     x += putSansClip(&n, x, ly, chrome.mist, bg, prog, max_x);
-    // Separator (em-dash) + cwd basename in alloy.
-    x += putSansRun(&n, x, ly, chrome.ash, bg, " — ");
-    x += putSansClip(&n, x, ly, chrome.alloy, bg, basename(s.term.cwd()), max_x);
+    // Separator (em-dash) + cwd basename in alloy. Use explorerPath so the
+    // basename is present before the shell reports a cwd via OSC 7.
+    const base = basename(explorerPath());
+    if (base.len > 0) {
+        x += putSansRun(&n, x, ly, chrome.ash, bg, " — ");
+        x += putSansClip(&n, x, ly, chrome.alloy, bg, base, max_x);
+    }
     return n - start;
 }
 
@@ -1915,48 +1922,145 @@ fn emitRail(start: usize) usize {
 }
 
 /// One EXPLORER entry: a file or directory name in the focused pane's cwd.
-const ExpEntry = struct { name: [128]u8 = undefined, len: usize = 0, is_dir: bool = false };
+const ExpEntry = struct {
+    name: [128]u8 = undefined,
+    len: usize = 0,
+    rel: [256]u8 = undefined, // path relative to the root (for open + expand toggle)
+    rel_len: usize = 0,
+    is_dir: bool = false,
+    depth: u8 = 0,
+    expanded: bool = false,
+};
 var exp_entries: [64]ExpEntry = undefined;
 var exp_n: usize = 0;
 var exp_cwd: [512]u8 = undefined;
 var exp_cwd_len: usize = 0;
-/// Device-y of the first EXPLORER entry row and its row count, for hit-testing.
+var exp_rescan: bool = true; // force a rescan (root changed or a dir was toggled)
+/// Device-y of the first EXPLORER entry row, for hit-testing.
 var exp_row_y0: f32 = 0;
 
-/// Scan `path` into `exp_entries` (dirs first, hidden files skipped). Cheap
-/// no-op when `path` matches the last scan, so it is safe to call per frame.
+// Directories the user has expanded, keyed by path relative to the root.
+const max_expanded = 24;
+var expanded_buf: [max_expanded][256]u8 = undefined;
+var expanded_len: [max_expanded]usize = undefined;
+var expanded_n: usize = 0;
+
+fn isExpanded(rel: []const u8) bool {
+    var i: usize = 0;
+    while (i < expanded_n) : (i += 1) {
+        if (std.mem.eql(u8, expanded_buf[i][0..expanded_len[i]], rel)) return true;
+    }
+    return false;
+}
+
+/// Expand a collapsed dir, or collapse an expanded one. Forces a rescan.
+fn toggleExpanded(rel: []const u8) void {
+    var i: usize = 0;
+    while (i < expanded_n) : (i += 1) {
+        if (std.mem.eql(u8, expanded_buf[i][0..expanded_len[i]], rel)) {
+            expanded_n -= 1; // remove by swapping the last entry into the hole
+            if (i != expanded_n) {
+                expanded_buf[i] = expanded_buf[expanded_n];
+                expanded_len[i] = expanded_len[expanded_n];
+            }
+            exp_rescan = true;
+            return;
+        }
+    }
+    if (rel.len > 256 or expanded_n >= max_expanded) return;
+    @memcpy(expanded_buf[expanded_n][0..rel.len], rel);
+    expanded_len[expanded_n] = rel.len;
+    expanded_n += 1;
+    exp_rescan = true;
+}
+
+const max_tree_depth = 8;
+const Local = struct { name: [128]u8 = undefined, len: usize = 0, is_dir: bool = false };
+
+fn localLess(_: void, a: Local, b: Local) bool {
+    if (a.is_dir != b.is_dir) return a.is_dir; // dirs first
+    return std.mem.lessThan(u8, a.name[0..a.len], b.name[0..b.len]);
+}
+
+/// Scan the root into a flattened depth-first tree in `exp_entries`, descending
+/// only into expanded directories. A no-op when the root and expand state are
+/// unchanged, so it is safe to call per frame.
 fn scanExplorer(path: []const u8) void {
-    if (path.len == exp_cwd_len and std.mem.eql(u8, path, exp_cwd[0..exp_cwd_len])) return;
+    if (!exp_rescan and path.len == exp_cwd_len and std.mem.eql(u8, path, exp_cwd[0..exp_cwd_len])) return;
+    exp_rescan = false;
     exp_n = 0;
     const m = @min(path.len, exp_cwd.len);
     @memcpy(exp_cwd[0..m], path[0..m]);
     exp_cwd_len = m;
-    if (path.len == 0 or path.len >= 512) return;
-
-    var pbuf: [512:0]u8 = undefined;
-    @memcpy(pbuf[0..path.len], path);
-    pbuf[path.len] = 0;
-    const dp = cdir.opendir(@ptrCast(&pbuf)) orelse return;
-    defer _ = cdir.closedir(dp);
-    while (cdir.readdir(dp)) |raw| {
-        if (exp_n >= exp_entries.len) break;
-        const name_ptr: [*:0]const u8 = @ptrCast(&raw.*.d_name);
-        const name = std.mem.span(name_ptr);
-        if (name.len == 0 or name[0] == '.') continue; // skip hidden
-        var ent = &exp_entries[exp_n];
-        const n = @min(name.len, ent.name.len);
-        @memcpy(ent.name[0..n], name[0..n]);
-        ent.len = n;
-        ent.is_dir = raw.*.d_type == cdir.DT_DIR;
-        exp_n += 1;
-    }
-    // Directories first, then files; alphabetical within each group.
-    std.mem.sort(ExpEntry, exp_entries[0..exp_n], {}, expLess);
+    if (path.len == 0 or path.len >= 480) return;
+    walkDir(path, "", 0);
 }
 
-fn expLess(_: void, a: ExpEntry, b: ExpEntry) bool {
-    if (a.is_dir != b.is_dir) return a.is_dir;
-    return std.mem.lessThan(u8, a.name[0..a.len], b.name[0..b.len]);
+/// Recurse one directory level into `exp_entries`. `abs` is the absolute dir
+/// path, `rel` its path relative to the root ("" at the root). Only real
+/// directories (DT_DIR, never symlinks) are descended, and depth + entry count
+/// are capped, so this can neither cycle nor overflow.
+fn walkDir(abs: []const u8, rel: []const u8, depth: u8) void {
+    if (depth >= max_tree_depth or exp_n >= exp_entries.len) return;
+    var pbuf: [512:0]u8 = undefined;
+    if (abs.len >= pbuf.len) return;
+    @memcpy(pbuf[0..abs.len], abs);
+    pbuf[abs.len] = 0;
+    const dp = cdir.opendir(@ptrCast(&pbuf)) orelse return;
+    defer _ = cdir.closedir(dp);
+
+    // Collect this directory's visible entries, then sort dirs-first/alpha.
+    var locals: [96]Local = undefined;
+    var cnt: usize = 0;
+    while (cdir.readdir(dp)) |raw| {
+        if (cnt >= locals.len) break;
+        const name_ptr: [*:0]const u8 = @ptrCast(&raw.*.d_name);
+        const name = std.mem.span(name_ptr);
+        if (name.len == 0 or name[0] == '.' or name.len > 128) continue; // skip hidden
+        @memcpy(locals[cnt].name[0..name.len], name);
+        locals[cnt].len = name.len;
+        locals[cnt].is_dir = raw.*.d_type == cdir.DT_DIR;
+        cnt += 1;
+    }
+    std.mem.sort(Local, locals[0..cnt], {}, localLess);
+
+    for (locals[0..cnt]) |*lc| {
+        if (exp_n >= exp_entries.len) return;
+        const nm = lc.name[0..lc.len];
+        // Compose rel = rel + "/" + nm (or just nm at the root).
+        var childrel: [256]u8 = undefined;
+        var rl: usize = 0;
+        if (rel.len > 0) {
+            if (rel.len + 1 + nm.len > childrel.len) continue;
+            @memcpy(childrel[0..rel.len], rel);
+            childrel[rel.len] = '/';
+            rl = rel.len + 1;
+        } else if (nm.len > childrel.len) continue;
+        @memcpy(childrel[rl .. rl + nm.len], nm);
+        rl += nm.len;
+
+        const is_exp = lc.is_dir and isExpanded(childrel[0..rl]);
+        var e = &exp_entries[exp_n];
+        @memcpy(e.name[0..nm.len], nm);
+        e.len = nm.len;
+        @memcpy(e.rel[0..rl], childrel[0..rl]);
+        e.rel_len = rl;
+        e.is_dir = lc.is_dir;
+        e.depth = depth;
+        e.expanded = is_exp;
+        exp_n += 1;
+
+        if (is_exp) {
+            var childabs: [512]u8 = undefined;
+            const need = abs.len + 1 + nm.len;
+            if (need <= childabs.len) {
+                @memcpy(childabs[0..abs.len], abs);
+                childabs[abs.len] = '/';
+                @memcpy(childabs[abs.len + 1 .. need], nm);
+                walkDir(childabs[0..need], childrel[0..rl], depth + 1);
+            }
+        }
+    }
 }
 
 /// The directory the EXPLORER lists: the focused pane's OSC-7 cwd, or the
@@ -2018,7 +2122,14 @@ fn emitSidebar(start: usize) usize {
         const icon: u21 = if (ent.is_dir) 0xf07b else 0xf016; // folder / file
         const ic = if (ent.is_dir) chrome.alloy else chrome.ash;
         const fg = if (ent.is_dir) chrome.mist else chrome.alloy;
-        var x = x0;
+        const indent = @as(f32, @floatFromInt(ent.depth)) * (iw * 1.1);
+        var x = x0 + indent;
+        // Disclosure chevron for dirs; files reserve the slot so names align.
+        if (ent.is_dir) {
+            const chev: u21 = if (ent.expanded) 0x25BE else 0x25B8; // ▾ / ▸
+            _ = putChromeIcon(&n, x, ry, chrome.alloy, bg, chev);
+        }
+        x += iw * 0.9;
         x += putChromeIcon(&n, x, ry, ic, bg, icon);
         x += iw * 0.5;
         _ = putSansClip(&n, x, ry, fg, bg, ent.name[0..ent.len], right);
