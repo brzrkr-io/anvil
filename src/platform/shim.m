@@ -57,6 +57,7 @@ typedef struct {
 extern const char *anvil_shader_src(size_t *len);
 extern const uint8_t *anvil_font_data(size_t *len);
 extern const uint8_t *anvil_font_bold_data(size_t *len);
+extern const uint8_t *anvil_sans_data(size_t *len);
 extern const uint8_t *anvil_icon_data(size_t *len);
 extern void anvil_resize(float w, float h);
 extern void anvil_frame(FrameData *out);
@@ -69,6 +70,8 @@ extern void anvil_input(const char *bytes, size_t len);
 extern void anvil_paste(const char *bytes, size_t len);
 extern void anvil_scroll(int delta);
 extern void anvil_mouse(int kind, float x, float y);
+extern void anvil_hover(float x, float y);
+extern void anvil_hover_exit(void);
 extern void anvil_split(int axis);
 extern void anvil_close_pane(void);
 extern void anvil_focus_dir(int dir);
@@ -101,6 +104,7 @@ extern void anvil_cfg_error_dismiss(void);
 extern void anvil_respawn(void);
 extern const char *anvil_copy(size_t *out_len);
 extern void anvil_caldera_drawer_toggle(void);
+extern void anvil_drawer_toggle(void);
 extern int anvil_caldera_drawer_open(void);
 extern void anvil_caldera_drawer_key(int key);
 extern void anvil_set_theme_mode(int mode);
@@ -112,7 +116,8 @@ extern int anvil_link_at(float x, float y, const char **out_ptr, size_t *out_len
 extern bool anvil_needs_render(void);
 extern void anvil_force_render(void);
 
-#define INSTANCE_STRIDE (13 * sizeof(float))
+#define INSTANCE_STRIDE (14 * sizeof(float))
+#define SANS_TAG 0x00200000u // atlas-key bit: glyph belongs to the Plex Sans face
 #define MAX_INSTANCES 60000
 #define ATLAS_SCALE 2.0
 #define BAR_H_PT 20.0 // compact title-bar height, logical points
@@ -124,6 +129,8 @@ static id<MTLRenderPipelineState> gSolidPipeline;
 static id<MTLBuffer> gInstanceBuf;
 static id<MTLTexture> gAtlas;
 static CTFontRef gFont;   // kept alive for lazy glyph rasterization
+static CTFontRef gFontSans; // IBM Plex Sans face for chrome nav/heading labels
+static CGFloat gPtSize;   // atlas point size (device px) shared by both faces
 static int gGW, gGH;      // glyph cell size in pixels
 static uint32_t gCols, gRows; // atlas grid dimensions (cells)
 static CGFloat gDescent;  // font descent, for baseline placement
@@ -187,6 +194,7 @@ static void buildAtlas(void) {
     gRows = ap.rows;
 
     CGFloat sz = ap.pt_size * ATLAS_SCALE;
+    gPtSize = sz;
     // Primary font is the bundled Blex Mono Nerd Font (embedded by Zig), so
     // icon/powerline glyphs render directly. System cascade still fills gaps.
     // weight > 0 swaps in the real Bold face — a crisp heavier weight, not a
@@ -240,10 +248,67 @@ static void buildAtlas(void) {
     free(zero);
 }
 
+// Lazily create the IBM Plex Sans face (embedded by Zig) at the atlas point
+// size. Used for chrome nav/heading labels. CoreText-only; no Metal needed, so
+// it is safe to call during measurement before the atlas/device exist.
+static void ensureSansFont(void) {
+    if (gFontSans) return;
+    CGFloat sz = gPtSize;
+    if (sz <= 0.0) {
+        AtlasParams ap = {0};
+        anvil_atlas_params(&ap);
+        sz = ap.pt_size * ATLAS_SCALE;
+    }
+    size_t flen = 0;
+    const uint8_t *fdata = anvil_sans_data(&flen);
+    if (fdata && flen > 0) {
+        CFDataRef cfd = CFDataCreateWithBytesNoCopy(NULL, fdata, flen, kCFAllocatorNull);
+        CGDataProviderRef prov = CGDataProviderCreateWithCFData(cfd);
+        CGFontRef cgf = prov ? CGFontCreateWithDataProvider(prov) : NULL;
+        if (cgf) {
+            gFontSans = CTFontCreateWithGraphicsFont(cgf, sz, NULL, NULL);
+            CGFontRelease(cgf);
+        }
+        if (prov) CGDataProviderRelease(prov);
+        if (cfd) CFRelease(cfd);
+    }
+    if (!gFontSans) gFontSans = CTFontCreateWithName(CFSTR("Helvetica"), sz, NULL);
+}
+
+// Horizontal advance (device px) of one codepoint in the Plex Sans face.
+float anvil_sans_advance(uint32_t cp);
+float anvil_sans_advance(uint32_t cp) {
+    ensureSansFont();
+    if (!gFontSans) return 0.0f;
+    UniChar ch[2];
+    CGGlyph g[2] = {0, 0};
+    CFIndex nch = 1;
+    if (cp < 0x10000) {
+        ch[0] = (UniChar)cp;
+    } else {
+        uint32_t v = cp - 0x10000;
+        ch[0] = (UniChar)(0xD800 + (v >> 10));
+        ch[1] = (UniChar)(0xDC00 + (v & 0x3FF));
+        nch = 2;
+    }
+    CTFontGetGlyphsForCharacters(gFontSans, ch, g, nch);
+    CGSize adv;
+    CTFontGetAdvancesForGlyphs(gFontSans, kCTFontOrientationHorizontal, g, &adv, 1);
+    return (float)adv.width;
+}
+
 // Rasterize one codepoint into its cache slot. Uses a CTLine so the system
-// font cascade fills glyphs Menlo lacks (box-drawing, symbols, etc).
+// font cascade fills glyphs Menlo lacks (box-drawing, symbols, etc). A key with
+// SANS_TAG set selects the Plex Sans face and carries the bare cp in its low
+// bits — chrome labels share the atlas grid under a distinct keyspace.
 static void rasterizeGlyph(uint32_t cp, uint32_t slot, uint32_t wide) {
-    if (!gAtlas || !gFont) return;
+    CTFontRef font = gFont;
+    if (cp & SANS_TAG) {
+        ensureSansFont();
+        font = gFontSans;
+        cp &= ~SANS_TAG;
+    }
+    if (!gAtlas || !font) return;
     int col = (int)(slot % gCols);
     int row = (int)(slot / gCols);
     int w = wide ? gGW * 2 : gGW; // wide glyphs span two adjacent cells
@@ -259,7 +324,7 @@ static void rasterizeGlyph(uint32_t cp, uint32_t slot, uint32_t wide) {
         // Draw with the context fill color (white) so the R8 mask captures
         // coverage; without this CTLine defaults to black and the slot stays 0.
         CFStringRef keys[2] = {kCTFontAttributeName, kCTForegroundColorFromContextAttributeName};
-        CFTypeRef vals[2] = {gFont, kCFBooleanTrue};
+        CFTypeRef vals[2] = {font, kCFBooleanTrue};
         CFDictionaryRef attrs = CFDictionaryCreate(NULL, (const void **)keys, (const void **)vals, 2,
                                                    &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
         CFAttributedStringRef as = CFAttributedStringCreate(NULL, s, attrs);
@@ -680,6 +745,26 @@ static void layoutTrafficLights(NSWindow *win) {
 - (void)mouseUp:(NSEvent *)e {
     [self sendMouse:e kind:2];
 }
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    for (NSTrackingArea *ta in [self.trackingAreas copy]) [self removeTrackingArea:ta];
+    NSTrackingArea *ta = [[NSTrackingArea alloc]
+        initWithRect:self.bounds
+             options:(NSTrackingMouseMoved | NSTrackingMouseEnteredAndExited |
+                      NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect)
+               owner:self
+            userInfo:nil];
+    [self addTrackingArea:ta];
+}
+- (void)mouseMoved:(NSEvent *)e {
+    NSPoint p = [self convertPoint:e.locationInWindow fromView:nil];
+    CGFloat scale = self.window.backingScaleFactor ?: 2.0;
+    anvil_hover((float)(p.x * scale),
+                (float)((self.bounds.size.height - p.y) * scale));
+}
+- (void)mouseExited:(NSEvent *)e {
+    anvil_hover_exit();
+}
 - (void)copySelection {
     size_t n = 0;
     const char *txt = anvil_copy(&n);
@@ -851,6 +936,7 @@ static void layoutTrafficLights(NSWindow *win) {
         else if (lc == 't') anvil_new_tab();
         else if (lc == 'w') { if (shift) anvil_close_tab(); else anvil_close_pane(); }
         else if (lc == 'r' && !shift) anvil_respawn();
+        else if (lc == 'j') anvil_drawer_toggle();
         return;
     }
     if (s.length == 1) {

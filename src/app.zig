@@ -16,10 +16,19 @@ const chip_mod = @import("context_chip.zig");
 const copy_mode_mod = @import("copy_mode.zig");
 const caldera = @import("caldera.zig");
 const ipc = @import("ipc.zig");
+const chrome = @import("chrome.zig");
+
+// libc directory listing for the EXPLORER sidebar (std.fs is mid-migration to
+// the Io interface in this Zig; libc @cImport matches the pty/socket pattern).
+const cdir = @cImport({
+    @cInclude("dirent.h");
+    @cInclude("unistd.h");
+});
 
 const shader_src = @embedFile("platform/shaders.metal");
 const font_data = @embedFile("font_ttf");
 const font_bold_data = @embedFile("font_ttf_bold");
+const sans_data = @embedFile("sans_ttf");
 const icon_data = @embedFile("app_icon_png");
 
 /// Write UTF-8 text to the system pasteboard (OSC 52). Implemented in shim.m.
@@ -27,12 +36,15 @@ extern fn anvil_pasteboard_write(ptr: [*]const u8, len: usize) void;
 /// Post a macOS user notification. Implemented in shim.m; no-op when unbundled
 /// or when the app is frontmost. Title and body are null-terminated UTF-8.
 extern fn anvil_notify(title: [*:0]const u8, body: [*:0]const u8) void;
+/// Horizontal advance (device px) of `cp` in the IBM Plex Sans chrome face, at
+/// the atlas point size. Implemented in shim.m; lazily loads the Sans CTFont.
+extern fn anvil_sans_advance(cp: u32) f32;
 const max_instances = 60000;
 const max_panes = 64;
 const divider_px: f32 = 2; // layout gap + mouse hit zone (device px)
 const divider_draw_px: f32 = 2; // drawn hairline width (1 logical pt @2x)
 const font_pt: f32 = 13.0;
-const bar_h: f32 = 40; // compact title bar, device pixels (20pt @2x)
+const bar_h: f32 = chrome.top_bar_h; // command bar, device pixels (22pt @2x)
 const tab_inset_x: f32 = 152; // clear the macOS traffic-light buttons (device px)
 
 var mgr = SessionManager{ .alloc = std.heap.page_allocator };
@@ -48,7 +60,7 @@ var cpal = cmd.Palette{};
 var srch = search.Search{};
 var help_open: bool = false;
 var copy_mode = copy_mode_mod.CopyMode{};
-var overlay: [128 * 7]f32 = undefined; // colored rects (x,y,w,h,r,g,b)
+var overlay: [256 * 7]f32 = undefined; // colored rects (x,y,w,h,r,g,b)
 var ctx_chip: chip_mod.Chip = .{};
 
 var caldera_snap: caldera.Snapshot = .{};
@@ -292,9 +304,48 @@ fn focused() *Session {
     return mgr.focusedSession().?;
 }
 
-/// The pane area: the window minus the title bar.
+/// True when the SESSIONS/EXPLORER sidebar is shown (Option A chrome).
+var sidebar_open: bool = true;
+
+/// Current sidebar width (device px); user-draggable within sane bounds.
+var sidebar_w: f32 = chrome.sidebar_w;
+var sidebar_dragging: bool = false;
+const sidebar_w_min: f32 = 180;
+const sidebar_w_max: f32 = 520;
+
+/// Last hover position in device px (-1 = outside the window / unknown).
+var hover_x: f32 = -1;
+var hover_y: f32 = -1;
+
+/// Left chrome width: activity rail plus the sidebar when open.
+fn leftChromeW() f32 {
+    return chrome.rail_w + (if (sidebar_open) sidebar_w else 0);
+}
+
+/// True when the right context drawer (RUNS / TRACE / AGENT) is shown (Option C).
+var drawer_open: bool = true;
+
+/// Right chrome width: the context drawer when open, else zero.
+fn rightChromeW() f32 {
+    return if (drawer_open) chrome.drawer_w else 0;
+}
+
+/// The pane area: the window minus command bar, status bar, left chrome
+/// (rail + sidebar), panel inset, and the per-pane header strip. Panes lay
+/// out inside the inset panel body.
 fn workspaceRect() pane.Rect {
-    return .{ .x = 0, .y = bar_h, .w = win_w, .h = win_h - bar_h };
+    const pp = chrome.panel_pad;
+    const hs = chrome.header_strip_h;
+    const sb = chrome.status_bar_h;
+    const pb = chrome.panel_pad_bottom;
+    const lc = leftChromeW();
+    const rc = rightChromeW();
+    return .{
+        .x = lc + pp,
+        .y = bar_h + pp + hs,
+        .w = win_w - lc - rc - 2 * pp,
+        .h = win_h - bar_h - pp - hs - sb - pb,
+    };
 }
 
 var zoomed = false; // focused pane temporarily fills the workspace
@@ -405,6 +456,11 @@ export fn anvil_font_data(out_len: *usize) callconv(.c) [*]const u8 {
 export fn anvil_font_bold_data(out_len: *usize) callconv(.c) [*]const u8 {
     out_len.* = font_bold_data.len;
     return font_bold_data.ptr;
+}
+
+export fn anvil_sans_data(out_len: *usize) callconv(.c) [*]const u8 {
+    out_len.* = sans_data.len;
+    return sans_data.ptr;
 }
 
 export fn anvil_icon_data(out_len: *usize) callconv(.c) [*]const u8 {
@@ -636,8 +692,97 @@ fn contains(r: pane.Rect, x: f32, y: f32) bool {
 /// kind: 0 = press (start), 1 = drag, 2 = release (extend). x/y in device px.
 /// Press hit-tests the pane under the cursor and focuses it; drag/release
 /// stay in the focused pane.
+/// Passive mouse-move: record the hover position and repaint if it moved into
+/// a different sidebar row (so the hover highlight can follow the cursor).
+export fn anvil_hover(x: f32, y: f32) callconv(.c) void {
+    if (!ready) return;
+    if (x == hover_x and y == hover_y) return;
+    const was_row = hoverSidebarRow(hover_x, hover_y);
+    hover_x = x;
+    hover_y = y;
+    if (!sameHoverRow(hoverSidebarRow(x, y), was_row)) markDirty();
+}
+
+fn sameHoverRow(a: ?HoverRow, b: ?HoverRow) bool {
+    if (a == null and b == null) return true;
+    if (a == null or b == null) return false;
+    return a.?.kind == b.?.kind and a.?.idx == b.?.idx;
+}
+
+/// Clear hover state when the cursor leaves the view.
+export fn anvil_hover_exit() callconv(.c) void {
+    if (!ready) return;
+    if (hover_x < 0 and hover_y < 0) return;
+    const had = hoverSidebarRow(hover_x, hover_y) != null;
+    hover_x = -1;
+    hover_y = -1;
+    if (had) markDirty();
+}
+
+/// The (kind, index) of the sidebar row under (x,y), or null. kind: 0 = session
+/// row, 1 = explorer row. Geometry mirrors emitSidebar; exp_row_y0 is the
+/// explorer list top recorded on the previous frame.
+const HoverRow = struct { kind: u8, idx: usize };
+
+fn hoverSidebarRow(x: f32, y: f32) ?HoverRow {
+    if (!sidebar_open) return null;
+    if (x < chrome.rail_w or x >= leftChromeW()) return null;
+    const sess_y0 = bar_h + chrome.sidebar_header_h + 8;
+    if (y >= sess_y0 and mgr.tabs.items.len > 0) {
+        const i_f = (y - sess_y0) / chrome.row_h;
+        if (i_f >= 0) {
+            const i: usize = @intFromFloat(i_f);
+            if (i < mgr.tabs.items.len) return .{ .kind = 0, .idx = i };
+        }
+    }
+    if (exp_row_y0 > 0 and y >= exp_row_y0) {
+        const i_f = (y - exp_row_y0) / chrome.row_h;
+        if (i_f >= 0) {
+            const i: usize = @intFromFloat(i_f);
+            if (i < exp_n) return .{ .kind = 1, .idx = i };
+        }
+    }
+    return null;
+}
+
 export fn anvil_mouse(kind: c_int, x: f32, y: f32) callconv(.c) void {
     if (!ready) return;
+    // Sidebar resize: grab the right edge and drag. A 6px band around the edge
+    // starts the drag; subsequent motion sets the width; release ends it.
+    if (sidebar_open) {
+        const edge = leftChromeW();
+        const in_body = y > bar_h and y < win_h - chrome.status_bar_h;
+        if (kind == 0 and in_body and @abs(x - edge) <= 6) {
+            sidebar_dragging = true;
+            return;
+        }
+        if (sidebar_dragging) {
+            if (kind == 2) {
+                sidebar_dragging = false;
+                return;
+            }
+            sidebar_w = std.math.clamp(x - chrome.rail_w, sidebar_w_min, sidebar_w_max);
+            relayout();
+            markDirty();
+            return;
+        }
+    }
+    // EXPLORER click: a press inside the sidebar's file list inserts the
+    // entry's name at the focused pane's prompt (the "open" action).
+    if (kind == 0 and sidebar_open and x >= chrome.rail_w and x < leftChromeW() and y >= exp_row_y0) {
+        const idx_f = (y - exp_row_y0) / chrome.row_h;
+        if (idx_f >= 0) {
+            const idx: usize = @intFromFloat(idx_f);
+            if (idx < exp_n) {
+                if (mgr.byId(mgr.focused)) |s| {
+                    const ent = &exp_entries[idx];
+                    s.write(ent.name[0..ent.len]);
+                    markDirty();
+                }
+                return;
+            }
+        }
+    }
     const np = layoutPanes(&pane_buf);
     if (kind == 0) {
         for (pane_buf[0..np]) |p| {
@@ -1000,6 +1145,14 @@ export fn anvil_caldera_drawer_open() callconv(.c) c_int {
     return if (caldera_drawer) 1 else 0;
 }
 
+/// Toggle the right context drawer (RUNS / TRACE / AGENT). Bound to Cmd+J.
+export fn anvil_drawer_toggle() callconv(.c) void {
+    if (!ready) return;
+    drawer_open = !drawer_open;
+    relayout();
+    markDirty();
+}
+
 /// key: 0 esc/close, 1 up, 2 down.
 export fn anvil_caldera_drawer_key(key: c_int) callconv(.c) void {
     switch (key) {
@@ -1197,88 +1350,58 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
             pr_n += 1;
         }
     }
-    // Trailing title-bar chrome (tab labels + context chip) is appended after
-    // the per-pane cell ranges. It lives in no pane, so record a tail range
-    // with a full-window scissor below or the per-pane draw loop drops it.
-    const tail_start = n;
+    // Base shell overlay rects (panel frame + header strip + status-bar bg),
+    // emitted every frame before any modal rects. These draw in the overlay
+    // pass (over terminal cells, under palette text).
+    const base_ri = emitShellRects(th, np);
 
-    // Tab labels in the title bar: program title (or cwd basename, or number),
-    // the active tab highlighted.
-    if (mgr.tabs.items.len > 1) {
-        const label_y: f32 = (bar_h - renderer.cell_h) / 2;
-        var x = tab_inset_x;
-        var ti: usize = 0;
-        while (ti < mgr.tabs.items.len) : (ti += 1) {
-            const active = ti == mgr.active_tab;
-            const fg4 = if (active) palette.selectionFg().f32x4() else palette.defaultFg().f32x4();
-            const bg4 = if (active) palette.selectionBg().f32x4() else th.bar.f32x4();
-            var buf: [128]u8 = undefined;
-            const label = tabLabel(ti, &buf);
-            var it = std.unicode.Utf8View.initUnchecked(label).iterator();
-            while (it.nextCodepoint()) |cp| {
-                if (n >= instances.len) break;
-                instances[n] = .{
-                    .x = x,
-                    .y = label_y,
-                    .fg = fg4,
-                    .bg = bg4,
-                    .uv = renderer.atlas.uvOrigin(cp),
-                };
-                n += 1;
-                x += renderer.cell_w;
-            }
-            x += renderer.cell_w; // gap between tabs
-        }
-    }
-
-    // Context chip: git branch + kube context in the right side of the title bar.
-    n += emitContextChip(th, n);
-
-    // Tail range for the title-bar chrome glyphs, drawn with a full-window
-    // scissor so tab labels and the context chip are not clipped away.
-    if (n > tail_start and pr_n <= max_panes) {
-        pane_range_buf[pr_n] = .{
-            .offset = @intCast(tail_start),
-            .count = @intCast(n - tail_start),
-            .x = 0,
-            .y = 0,
-            .w = win_w,
-            .h = win_h,
-        };
-        pr_n += 1;
-    }
-
-    out.count = @intCast(n);
+    out.count = @intCast(n); // terminal cells only; chrome glyphs are palette text
     out.pane_range_count = @intCast(pr_n);
     out.divider_count = if (zoomed) 0 else @intCast(tree.dividers(ws, divider_px, &divider_rects));
 
+    // Chrome glyphs (command bar, header strip, status bar) are drawn in the
+    // palette-text pass — after the overlay rects — so the header and status
+    // backgrounds do not paint over their own labels. All palette text is
+    // contiguous starting at out.count: chrome first, then any modal/extra text.
+    var pt = n;
+    pt += emitCommandBar(th, pt, np);
+    pt += emitPanelHeaders(th, pt, np);
+    pt += emitStatusBar(th, pt);
+    pt += emitRail(pt);
+    pt += emitSidebar(pt);
+    pt += emitDrawer(pt);
+    const chrome_text: usize = pt - n;
+
+    // Modal overlays append after the base shell rects (base_ri slots used).
     if (caldera_drawer) {
         caldera.get(&caldera_snap);
         if (caldera_snap.runs == 0 or caldera_sel >= caldera_snap.runs) {
             caldera_drawer = false;
+            out.palette_text_count = @intCast(chrome_text);
+            out.overlay_count = @intCast(base_ri);
         } else {
-            const r = emitCalderaDrawer(th, n);
-            out.palette_text_count = @intCast(r.text);
-            out.overlay_count = @intCast(r.rects);
+            const r = emitCalderaDrawerAt(th, pt, base_ri);
+            out.palette_text_count = @intCast(chrome_text + r.text);
+            out.overlay_count = @intCast(base_ri + r.rects);
         }
     } else if (help_open) {
-        const r = emitHelp(th, n);
-        out.palette_text_count = @intCast(r.text);
-        out.overlay_count = @intCast(r.rects);
+        const r = emitHelpAt(th, pt, base_ri);
+        out.palette_text_count = @intCast(chrome_text + r.text);
+        out.overlay_count = @intCast(base_ri + r.rects);
     } else if (cpal.open) {
-        const r = emitPalette(th, n);
-        out.palette_text_count = @intCast(r.text);
-        out.overlay_count = @intCast(r.rects);
+        const r = emitPaletteAt(th, pt, base_ri);
+        out.palette_text_count = @intCast(chrome_text + r.text);
+        out.overlay_count = @intCast(base_ri + r.rects);
     } else if (srch.open) {
-        const r = emitSearch(th, n);
-        out.palette_text_count = @intCast(r.text);
-        out.overlay_count = @intCast(r.rects);
+        const r = emitSearchAt(th, pt, base_ri);
+        out.palette_text_count = @intCast(chrome_text + r.text);
+        out.overlay_count = @intCast(base_ri + r.rects);
     } else {
-        const rails = emitRunRails(th);
-        const ex = emitExitedPanes(th, rails, n);
-        const ce = emitCfgError(th, rails + ex.rects, n + ex.text);
-        out.overlay_count = @intCast(rails + ex.rects + ce.rects);
-        out.palette_text_count = @intCast(ex.text + ce.text);
+        const rails = emitRunRailsAt(th, base_ri);
+        const ex = emitExitedPanes(th, base_ri + rails, pt);
+        const ce = emitCfgError(th, base_ri + rails + ex.rects, pt + ex.text);
+        out.overlay_count = @intCast(base_ri + rails + ex.rects + ce.rects);
+        out.palette_text_count = @intCast(chrome_text + ex.text + ce.text);
     }
 
     out.pending_count = renderer.atlas.pending_n;
@@ -1387,6 +1510,563 @@ fn putRect(ri: usize, x: f32, y: f32, w: f32, h: f32, c: theme.Rgb) void {
     o[6] = f[2];
 }
 
+/// Write a single codepoint glyph into `instances[idx]`.
+fn putCp(idx: usize, x: f32, y: f32, fg: theme.Rgb, bg: theme.Rgb, cp: u21) void {
+    if (idx >= instances.len) return;
+    instances[idx] = .{
+        .x = x,
+        .y = y,
+        .fg = fg.f32x4(),
+        .bg = bg.f32x4(),
+        .uv = renderer.atlas.uvOrigin(cp),
+    };
+}
+
+/// Emit one IBM Plex Sans glyph at (x, y), returning its proportional advance
+/// in device px. Sans glyphs live in the shared atlas under `sans_tag`; the
+/// shim rasterizes + measures them. A blank space advances the pen but writes
+/// no instance. Used for chrome nav/heading labels (BRAND: UI text = Plex Sans).
+fn putSans(n: *usize, x: f32, y: f32, fg: theme.Rgb, bg: theme.Rgb, cp: u21) f32 {
+    const adv = anvil_sans_advance(@as(u32, cp));
+    if (cp == ' ') return adv;
+    if (n.* >= instances.len) return adv;
+    const slot = renderer.atlas.slotForKey(atlasmod.sans_tag | @as(u32, cp));
+    instances[n.*] = .{
+        .x = x,
+        .y = y,
+        .fg = fg.f32x4(),
+        .bg = bg.f32x4(),
+        .uv = atlasmod.Atlas.slotUV(slot),
+        .w = adv,
+    };
+    n.* += 1;
+    return adv;
+}
+
+/// Lay out a UTF-8 run in IBM Plex Sans starting at (x, y); returns total width.
+fn putSansRun(n: *usize, x: f32, y: f32, fg: theme.Rgb, bg: theme.Rgb, text: []const u8) f32 {
+    var pen = x;
+    var it = std.unicode.Utf8View.initUnchecked(text).iterator();
+    while (it.nextCodepoint()) |cp| {
+        pen += putSans(n, pen, y, fg, bg, @intCast(cp));
+    }
+    return pen - x;
+}
+
+/// Codepoint count (display cells) of a UTF-8 slice.
+fn utf8Cells(s: []const u8) usize {
+    var it = std.unicode.Utf8View.initUnchecked(s).iterator();
+    var k: usize = 0;
+    while (it.nextCodepoint()) |_| k += 1;
+    return k;
+}
+
+/// Replace a leading $HOME with `~` for a compact breadcrumb path.
+fn contractHome(path: []const u8, buf: []u8) []const u8 {
+    const home_c = std.c.getenv("HOME") orelse return path;
+    const home = std.mem.span(home_c);
+    if (home.len == 0 or !std.mem.startsWith(u8, path, home)) return path;
+    const rest = path[home.len..];
+    if (1 + rest.len > buf.len) return path;
+    buf[0] = '~';
+    @memcpy(buf[1 .. 1 + rest.len], rest);
+    return buf[0 .. 1 + rest.len];
+}
+
+/// Base shell rects (drawn every frame, before any modal rects): the snug
+/// terminal panel frame + slim header strip + bottom status bar background.
+/// Returns the number of rects written, which becomes the modal base offset.
+fn emitShellRects(th: *const theme.Theme, np: usize) usize {
+    _ = th;
+    _ = np;
+    const lc = leftChromeW();
+    const rc = rightChromeW();
+    const px = lc + chrome.panel_pad;
+    const ptop = bar_h + chrome.panel_pad;
+    const pw = win_w - lc - rc - 2 * chrome.panel_pad;
+    const pbot = win_h - chrome.status_bar_h - chrome.panel_pad_bottom;
+    const ph = pbot - ptop;
+    const hdr_div_y = ptop + chrome.header_strip_h;
+    const border = chrome.ash_soft;
+    const body_top = bar_h;
+    const body_h = win_h - bar_h - chrome.status_bar_h;
+
+    var ri: usize = 0;
+    // Left chrome fills: activity rail + (optional) sidebar.
+    putRect(ri, 0, body_top, chrome.rail_w, body_h, chrome.graphite); // rail bg
+    ri += 1;
+    if (sidebar_open) {
+        putRect(ri, chrome.rail_w, body_top, sidebar_w, body_h, chrome.charcoal); // sidebar bg
+        ri += 1;
+        // Active SESSIONS row highlight.
+        if (mgr.tabs.items.len > 0) {
+            const ry = body_top + chrome.sidebar_header_h + 8 +
+                @as(f32, @floatFromInt(mgr.active_tab)) * chrome.row_h;
+            putRect(ri, chrome.rail_w + 4, ry, sidebar_w - 8, chrome.row_h, chrome.ash_soft);
+            ri += 1;
+        }
+        // Hover highlight on the row under the cursor (skip the active session).
+        if (hoverSidebarRow(hover_x, hover_y)) |h| {
+            const hov_y = if (h.kind == 0)
+                body_top + chrome.sidebar_header_h + 8 + @as(f32, @floatFromInt(h.idx)) * chrome.row_h
+            else
+                exp_row_y0 + @as(f32, @floatFromInt(h.idx)) * chrome.row_h;
+            const skip = h.kind == 0 and h.idx == mgr.active_tab;
+            if (!skip and hov_y > 0) {
+                putRect(ri, chrome.rail_w + 4, hov_y, sidebar_w - 8, chrome.row_h, chrome.hover);
+                ri += 1;
+            }
+        }
+    }
+    putRect(ri, lc - 1, body_top, 1, body_h, border); // left-chrome right edge
+    ri += 1;
+    // Right context drawer: charcoal fill + left separator hairline.
+    if (drawer_open) {
+        const dx = win_w - chrome.drawer_w;
+        putRect(ri, dx, body_top, chrome.drawer_w, body_h, chrome.charcoal); // drawer bg
+        ri += 1;
+        putRect(ri, dx, body_top, 1, body_h, border); // drawer left edge
+        ri += 1;
+    }
+    // Fills first (painter order), hairlines on top.
+    putRect(ri, 0, win_h - chrome.status_bar_h, win_w, chrome.status_bar_h, chrome.charcoal); // status bg
+    ri += 1;
+    putRect(ri, px, ptop, pw, chrome.header_strip_h, chrome.charcoal); // panel header strip
+    ri += 1;
+    putRect(ri, 0, bar_h - 1, win_w, 1, border); // command-bar underline
+    ri += 1;
+    putRect(ri, 0, win_h - chrome.status_bar_h, win_w, 1, border); // status-bar topline
+    ri += 1;
+    putRect(ri, px, hdr_div_y, pw, 1, border); // header/body divider
+    ri += 1;
+    putRect(ri, px, ptop, pw, 1, border); // panel top edge
+    ri += 1;
+    putRect(ri, px, pbot - 1, pw, 1, border); // panel bottom edge
+    ri += 1;
+    putRect(ri, px, ptop, 1, ph, border); // panel left edge
+    ri += 1;
+    putRect(ri, px + pw - 1, ptop, 1, ph, border); // panel right edge
+    ri += 1;
+    return ri;
+}
+
+/// Top command bar glyphs: accent wordmark, cwd breadcrumb, right-aligned tab
+/// labels. The bar background is drawn by the renderer from `bar_color`.
+fn emitCommandBar(th: *const theme.Theme, start: usize, np: usize) usize {
+    _ = np;
+    const cw = renderer.cell_w;
+    const ch = renderer.cell_h;
+    const ly: f32 = (bar_h - ch) / 2;
+    var n = start;
+    var x: f32 = tab_inset_x;
+
+    // Wordmark: accent initial + bone tail, in IBM Plex Sans.
+    x += putSans(&n, x, ly, chrome.mineral, th.bar, 'A');
+    x += putSansRun(&n, x, ly, chrome.bone, th.bar, "nvil");
+    x += 2 * cw;
+
+    // Measure right-aligned tab labels so the breadcrumb stops clear of them.
+    var tabs_w: f32 = 0;
+    var tb: [128]u8 = undefined;
+    if (mgr.tabs.items.len > 1) {
+        var ti: usize = 0;
+        while (ti < mgr.tabs.items.len) : (ti += 1) {
+            const label = tabLabel(ti, &tb);
+            tabs_w += @as(f32, @floatFromInt(utf8Cells(label) + 2)) * cw;
+        }
+    }
+
+    // Breadcrumb: focused pane cwd, $HOME contracted, in alloy.
+    if (mgr.focusedSession()) |s| {
+        var pbuf: [192]u8 = undefined;
+        const path = contractHome(s.term.cwd(), &pbuf);
+        const budget_px = win_w - 8 - tabs_w - x;
+        const budget_cells: usize = if (budget_px > cw) @intFromFloat(budget_px / cw) else 0;
+        var i: usize = 0;
+        var it = std.unicode.Utf8View.initUnchecked(path).iterator();
+        while (it.nextCodepoint()) |cp| {
+            if (i >= budget_cells) break;
+            putCp(n, x, ly, chrome.alloy, th.bar, cp);
+            n += 1;
+            x += cw;
+            i += 1;
+        }
+    }
+
+    // Tab labels, right-aligned. Active in bone, others in ash.
+    if (mgr.tabs.items.len > 1) {
+        var tx = win_w - 8 - tabs_w;
+        var ti: usize = 0;
+        while (ti < mgr.tabs.items.len) : (ti += 1) {
+            const active = ti == mgr.active_tab;
+            const fg = if (active) chrome.bone else chrome.ash;
+            const label = tabLabel(ti, &tb);
+            tx += cw; // leading pad
+            var it = std.unicode.Utf8View.initUnchecked(label).iterator();
+            while (it.nextCodepoint()) |cp| {
+                putCp(n, tx, ly, fg, th.bar, cp);
+                n += 1;
+                tx += cw;
+            }
+            tx += cw; // trailing pad
+        }
+    }
+    return n - start;
+}
+
+/// Panel header strip label: focused pane program/title — cwd basename.
+fn emitPanelHeaders(th: *const theme.Theme, start: usize, np: usize) usize {
+    _ = th;
+    _ = np;
+    const cw = renderer.cell_w;
+    const ch = renderer.cell_h;
+    const ptop = bar_h + chrome.panel_pad;
+    const ly: f32 = ptop + (chrome.header_strip_h - ch) / 2;
+    const bg = chrome.charcoal;
+    var n = start;
+    var x: f32 = leftChromeW() + chrome.panel_pad + renderer.pad_x;
+
+    const s = mgr.focusedSession() orelse return 0;
+    var prog = s.term.title();
+    if (prog.len == 0) prog = "zsh";
+    var it = std.unicode.Utf8View.initUnchecked(prog).iterator();
+    var pc: usize = 0;
+    while (it.nextCodepoint()) |cp| {
+        if (pc >= 24) break;
+        putCp(n, x, ly, chrome.mist, bg, cp);
+        n += 1;
+        x += cw;
+        pc += 1;
+    }
+    // Separator (em-dash) + cwd basename in alloy.
+    putGlyph(n, x, ly, chrome.ash, bg, ' ');
+    n += 1;
+    x += cw;
+    putCp(n, x, ly, chrome.ash, bg, 0x2014);
+    n += 1;
+    x += cw;
+    putGlyph(n, x, ly, chrome.ash, bg, ' ');
+    n += 1;
+    x += cw;
+    const base = basename(s.term.cwd());
+    var bit = std.unicode.Utf8View.initUnchecked(base).iterator();
+    var bc: usize = 0;
+    while (bit.nextCodepoint()) |cp| {
+        if (bc >= 40) break;
+        putCp(n, x, ly, chrome.alloy, bg, cp);
+        n += 1;
+        x += cw;
+        bc += 1;
+    }
+    return n - start;
+}
+
+/// Bottom status bar glyphs over the charcoal status background: git branch and
+/// kube context on the left, a semantic ready label on the right.
+fn emitStatusBar(th: *const theme.Theme, start: usize) usize {
+    _ = th;
+    const cw = renderer.cell_w;
+    const ch = renderer.cell_h;
+    const ly: f32 = win_h - chrome.status_bar_h + (chrome.status_bar_h - ch) / 2;
+    const bg = chrome.charcoal;
+    var n = start;
+    var x: f32 = chrome.panel_pad + renderer.pad_x;
+
+    if (mgr.focusedSession()) |s| ctx_chip.update(s.term.cwd());
+
+    const branch = ctx_chip.branch();
+    if (branch.len > 0) {
+        putCp(n, x, ly, chrome.mineral, bg, glyph_git);
+        n += 1;
+        x += cw * 1.5;
+        var it = std.unicode.Utf8View.initUnchecked(branch[0..@min(branch.len, chip_max_branch)]).iterator();
+        while (it.nextCodepoint()) |cp| {
+            putCp(n, x, ly, chrome.mist, bg, cp);
+            n += 1;
+            x += cw;
+        }
+        x += cw * 2;
+    }
+
+    const kube = ctx_chip.kube();
+    if (kube.len > 0) {
+        putCp(n, x, ly, chrome.agent, bg, glyph_kube);
+        n += 1;
+        x += cw * 1.5;
+        var it = std.unicode.Utf8View.initUnchecked(kube[0..@min(kube.len, chip_max_kube)]).iterator();
+        while (it.nextCodepoint()) |cp| {
+            putCp(n, x, ly, chrome.mist, bg, cp);
+            n += 1;
+            x += cw;
+        }
+    }
+
+    // Right: semantic ready label.
+    const label = "READY";
+    var rx = win_w - chrome.panel_pad - renderer.pad_x - @as(f32, @floatFromInt(label.len)) * cw;
+    for (label) |c| {
+        putGlyph(n, rx, ly, chrome.verified, bg, c);
+        n += 1;
+        rx += cw;
+    }
+    return n - start;
+}
+
+// Nerd Font glyphs for the left activity rail.
+const rail_glyphs = [_]u21{
+    0xf120, // terminal
+    0xf07b, // folder / explorer
+    0xf002, // search
+    0xf0e7, // bolt / runs
+    0xf013, // gear / settings
+};
+const rail_active: usize = 0; // highlighted rail entry (terminal, for now)
+
+/// Left activity rail: a vertical stack of Nerd Font icons. The active entry
+/// is mineral; the rest are alloy. Drawn as palette text over the rail bg.
+fn emitRail(start: usize) usize {
+    const cw = renderer.cell_w;
+    const cx = (chrome.rail_w - cw) / 2;
+    var n = start;
+    var y: f32 = bar_h + 18;
+    for (rail_glyphs, 0..) |g, i| {
+        const c = if (i == rail_active) chrome.mineral else chrome.alloy;
+        putCp(n, cx, y, c, chrome.graphite, g);
+        n += 1;
+        y += chrome.rail_w;
+    }
+    return n - start;
+}
+
+/// One EXPLORER entry: a file or directory name in the focused pane's cwd.
+const ExpEntry = struct { name: [128]u8 = undefined, len: usize = 0, is_dir: bool = false };
+var exp_entries: [64]ExpEntry = undefined;
+var exp_n: usize = 0;
+var exp_cwd: [512]u8 = undefined;
+var exp_cwd_len: usize = 0;
+/// Device-y of the first EXPLORER entry row and its row count, for hit-testing.
+var exp_row_y0: f32 = 0;
+
+/// Scan `path` into `exp_entries` (dirs first, hidden files skipped). Cheap
+/// no-op when `path` matches the last scan, so it is safe to call per frame.
+fn scanExplorer(path: []const u8) void {
+    if (path.len == exp_cwd_len and std.mem.eql(u8, path, exp_cwd[0..exp_cwd_len])) return;
+    exp_n = 0;
+    const m = @min(path.len, exp_cwd.len);
+    @memcpy(exp_cwd[0..m], path[0..m]);
+    exp_cwd_len = m;
+    if (path.len == 0 or path.len >= 512) return;
+
+    var pbuf: [512:0]u8 = undefined;
+    @memcpy(pbuf[0..path.len], path);
+    pbuf[path.len] = 0;
+    const dp = cdir.opendir(@ptrCast(&pbuf)) orelse return;
+    defer _ = cdir.closedir(dp);
+    while (cdir.readdir(dp)) |raw| {
+        if (exp_n >= exp_entries.len) break;
+        const name_ptr: [*:0]const u8 = @ptrCast(&raw.*.d_name);
+        const name = std.mem.span(name_ptr);
+        if (name.len == 0 or name[0] == '.') continue; // skip hidden
+        var ent = &exp_entries[exp_n];
+        const n = @min(name.len, ent.name.len);
+        @memcpy(ent.name[0..n], name[0..n]);
+        ent.len = n;
+        ent.is_dir = raw.*.d_type == cdir.DT_DIR;
+        exp_n += 1;
+    }
+    // Directories first, then files; alphabetical within each group.
+    std.mem.sort(ExpEntry, exp_entries[0..exp_n], {}, expLess);
+}
+
+fn expLess(_: void, a: ExpEntry, b: ExpEntry) bool {
+    if (a.is_dir != b.is_dir) return a.is_dir;
+    return std.mem.lessThan(u8, a.name[0..a.len], b.name[0..b.len]);
+}
+
+/// The directory the EXPLORER lists: the focused pane's OSC-7 cwd, or the
+/// process working directory until the shell reports one.
+var exp_pwd_buf: [512]u8 = undefined;
+fn explorerPath() []const u8 {
+    if (mgr.focusedSession()) |s| {
+        const c = s.term.cwd();
+        if (c.len > 0) return c;
+    }
+    const r = cdir.getcwd(&exp_pwd_buf, exp_pwd_buf.len);
+    if (r == null) return "";
+    return std.mem.span(@as([*:0]const u8, @ptrCast(&exp_pwd_buf)));
+}
+
+/// SESSIONS sidebar: a section header plus one row per tab (session). The
+/// active session is bone with a verified dot; the rest are mist with an
+/// alloy dot. The active-row highlight rect is drawn in emitShellRects.
+fn emitSidebar(start: usize) usize {
+    if (!sidebar_open) return 0;
+    const cw = renderer.cell_w;
+    const ch = renderer.cell_h;
+    const bg = chrome.charcoal;
+    const x0 = chrome.rail_w + renderer.pad_x + 6;
+    var n = start;
+
+    // Section header (Plex Sans).
+    const hy = bar_h + (chrome.sidebar_header_h - ch) / 2;
+    _ = putSansRun(&n, x0, hy, chrome.alloy, bg, "SESSIONS");
+
+    // Session rows.
+    const right = chrome.rail_w + sidebar_w - renderer.pad_x;
+    var y: f32 = bar_h + chrome.sidebar_header_h + 8;
+    var tb: [128]u8 = undefined;
+    var ti: usize = 0;
+    while (ti < mgr.tabs.items.len) : (ti += 1) {
+        const active = ti == mgr.active_tab;
+        const dot = if (active) chrome.verified else chrome.alloy;
+        const fg = if (active) chrome.bone else chrome.mist;
+        const ry = y + (chrome.row_h - ch) / 2;
+        var x = x0;
+        putCp(n, x, ry, dot, bg, 0x25CF);
+        n += 1;
+        x += cw * 1.5;
+        const label = tabLabel(ti, &tb);
+        var it = std.unicode.Utf8View.initUnchecked(label).iterator();
+        while (it.nextCodepoint()) |cp| {
+            if (x + cw > right) break;
+            putCp(n, x, ry, fg, bg, cp);
+            n += 1;
+            x += cw;
+        }
+        y += chrome.row_h;
+    }
+
+    // EXPLORER: flat listing of the focused pane's cwd. Dirs (alloy folder
+    // glyph) sort first; files (ash file glyph) follow. Click opens (see mouse).
+    y += 8;
+    const ehy = y + (chrome.sidebar_header_h - ch) / 2;
+    _ = putSansRun(&n, x0, ehy, chrome.alloy, bg, "EXPLORER");
+    y += chrome.sidebar_header_h + 4;
+
+    scanExplorer(explorerPath());
+    exp_row_y0 = y;
+    for (exp_entries[0..exp_n]) |*ent| {
+        if (y + chrome.row_h > win_h - chrome.status_bar_h) break;
+        const ry = y + (chrome.row_h - ch) / 2;
+        const icon: u21 = if (ent.is_dir) 0xf07b else 0xf016; // folder / file
+        const ic = if (ent.is_dir) chrome.alloy else chrome.ash;
+        const fg = if (ent.is_dir) chrome.mist else chrome.alloy;
+        var x = x0;
+        putCp(n, x, ry, ic, bg, icon);
+        n += 1;
+        x += cw * 1.5;
+        var it = std.unicode.Utf8View.initUnchecked(ent.name[0..ent.len]).iterator();
+        while (it.nextCodepoint()) |cp| {
+            if (x + cw > right) break;
+            putCp(n, x, ry, fg, bg, cp);
+            n += 1;
+            x += cw;
+        }
+        y += chrome.row_h;
+    }
+    return n - start;
+}
+
+/// Latest Caldera snapshot for the persistent drawer (refreshed per frame).
+var drawer_snap: caldera.Snapshot = .{};
+
+/// Drawer layout cursor: x origin, right clip edge, and running y position.
+const DrawerCtx = struct {
+    x0: f32,
+    right: f32,
+    y: f32,
+};
+
+/// Map a Caldera row kind to its semantic status color.
+fn rowKindColor(kind: caldera.RowKind) theme.Rgb {
+    return switch (kind) {
+        .run_passed => chrome.verified,
+        .run_open => chrome.mineral,
+        .attn_warning => chrome.attention,
+        .attn_error => chrome.ember,
+    };
+}
+
+/// Render a section header ("RUNS") into the drawer and advance the cursor.
+fn drawerHeader(n: *usize, ctx: *DrawerCtx, label: []const u8) void {
+    const ch = renderer.cell_h;
+    const hy = ctx.y + (chrome.sidebar_header_h - ch) / 2;
+    _ = putSansRun(n, ctx.x0, hy, chrome.alloy, chrome.charcoal, label);
+    ctx.y += chrome.sidebar_header_h + 4;
+}
+
+/// Render one drawer row: a status dot then a clipped label. Advances the cursor.
+fn drawerRow(n: *usize, ctx: *DrawerCtx, dot: theme.Rgb, fg: theme.Rgb, label: []const u8) void {
+    const cw = renderer.cell_w;
+    const ch = renderer.cell_h;
+    const bg = chrome.charcoal;
+    const ry = ctx.y + (chrome.row_h - ch) / 2;
+    var x = ctx.x0;
+    putCp(n.*, x, ry, dot, bg, 0x25CF);
+    n.* += 1;
+    x += cw * 2;
+    var it = std.unicode.Utf8View.initUnchecked(label).iterator();
+    while (it.nextCodepoint()) |cp| {
+        if (x + cw > ctx.right) break;
+        putCp(n.*, x, ry, fg, bg, cp);
+        n.* += 1;
+        x += cw;
+    }
+    ctx.y += chrome.row_h;
+}
+
+/// Right context drawer (Option C): RUNS and TRACE from the Caldera snapshot,
+/// AGENT placeholder (wired in #79). Each section falls back to a dim "none".
+fn emitDrawer(start: usize) usize {
+    if (!drawer_open) return 0;
+    caldera.get(&drawer_snap);
+    var n = start;
+    var ctx = DrawerCtx{
+        .x0 = win_w - chrome.drawer_w + renderer.pad_x + 6,
+        .right = win_w - renderer.pad_x,
+        .y = bar_h + 8,
+    };
+
+    // RUNS: one row per Caldera run row, colored by status.
+    drawerHeader(&n, &ctx, "RUNS");
+    if (drawer_snap.runs == 0) {
+        drawerRow(&n, &ctx, chrome.ash, chrome.ash, "none");
+    } else {
+        for (drawer_snap.rows[0..drawer_snap.runs]) |*r| {
+            drawerRow(&n, &ctx, rowKindColor(r.kind), chrome.mist, r.slice());
+        }
+    }
+    ctx.y += 8;
+
+    // TRACE: events of the most recent run.
+    drawerHeader(&n, &ctx, "TRACE");
+    const trace_events: usize = if (drawer_snap.runs > 0) drawer_snap.details[0].event_count else 0;
+    if (trace_events == 0) {
+        drawerRow(&n, &ctx, chrome.ash, chrome.ash, "none");
+    } else {
+        for (drawer_snap.details[0].events[0..trace_events]) |*ev| {
+            drawerRow(&n, &ctx, chrome.mineral, chrome.mist, ev.slice());
+        }
+    }
+    ctx.y += 8;
+
+    // AGENT: one row per run — "agent · step", dot colored by status.
+    drawerHeader(&n, &ctx, "AGENT");
+    if (drawer_snap.runs == 0) {
+        drawerRow(&n, &ctx, chrome.ash, chrome.ash, "none");
+    } else {
+        for (drawer_snap.details[0..drawer_snap.runs]) |*d| {
+            const passed = std.mem.eql(u8, d.statusSlice(), "passed");
+            const dot = if (passed) chrome.verified else chrome.agent;
+            var lbuf: [96]u8 = undefined;
+            const label = std.fmt.bufPrint(&lbuf, "{s} · {s}", .{ d.agentSlice(), d.stepSlice() }) catch d.agentSlice();
+            drawerRow(&n, &ctx, dot, chrome.mist, label);
+        }
+    }
+
+    return n - start;
+}
+
 /// A block caret for copy mode, rendered in the status.trace color (mineral/cyan).
 fn copyModeCaret(th: *const theme.Theme, ox: f32, oy: f32) inst.CellInstance {
     const s = focused();
@@ -1408,11 +2088,11 @@ fn copyModeCaret(th: *const theme.Theme, ox: f32, oy: f32) inst.CellInstance {
 /// Inline run-block rails: a 3px vertical bar in each pane's left gutter,
 /// one per visible OSC-133 command block, colored by exit state. Writes into
 /// `overlay` and returns the rect count. Only called when no modal is open.
-fn emitRunRails(th: *const theme.Theme) usize {
+fn emitRunRailsAt(th: *const theme.Theme, base_ri: usize) usize {
     const RunBlock = @import("vt/terminal.zig").RunBlock;
     const max_rail = overlay.len / 7;
     var blocks: [64]RunBlock = undefined;
-    var ri: usize = 0;
+    var ri: usize = base_ri;
     const np = layoutPanes(&pane_buf);
     for (pane_buf[0..np]) |p| {
         const s = mgr.byId(p.id) orelse continue;
@@ -1431,7 +2111,7 @@ fn emitRunRails(th: *const theme.Theme) usize {
             ri += 1;
         }
     }
-    return ri;
+    return ri - base_ri;
 }
 
 /// Render a one-line config error banner at the top of the workspace using
@@ -1546,7 +2226,7 @@ fn putGlyph(idx: usize, x: f32, y: f32, fg: theme.Rgb, bg: theme.Rgb, ch: u8) vo
 
 /// Lay out the command palette overlay: colored rects into `overlay` and
 /// glyph instances into `instances[start..]`. Returns the counts written.
-fn emitPalette(th: *const theme.Theme, start: usize) struct { text: usize, rects: usize } {
+fn emitPaletteAt(th: *const theme.Theme, start: usize, base_ri: usize) struct { text: usize, rects: usize } {
     const cw = renderer.cell_w;
     const ch = renderer.cell_h;
     const pad = renderer.pad_x;
@@ -1560,7 +2240,7 @@ fn emitPalette(th: *const theme.Theme, start: usize) struct { text: usize, rects
     const py = @floor(win_h * 0.25);
     const top: usize = if (cpal.sel >= 8) cpal.sel - 7 else 0;
 
-    var ri: usize = 0;
+    var ri: usize = base_ri;
     putRect(ri, px - 1, py - 1, pw + 2, ph + 2, th.separator); // border
     ri += 1;
     putRect(ri, px, py, pw, ph, th.bar); // panel
@@ -1596,12 +2276,12 @@ fn emitPalette(th: *const theme.Theme, start: usize) struct { text: usize, rects
             n += 1;
         }
     }
-    return .{ .text = n - start, .rects = ri };
+    return .{ .text = n - start, .rects = ri - base_ri };
 }
 
 /// Lay out the search bar: a one-line input box at the top-right of the window
 /// showing the query and the current/total match count.
-fn emitSearch(th: *const theme.Theme, start: usize) struct { text: usize, rects: usize } {
+fn emitSearchAt(th: *const theme.Theme, start: usize, base_ri: usize) struct { text: usize, rects: usize } {
     const cw = renderer.cell_w;
     const ch = renderer.cell_h;
     const pad = renderer.pad_x;
@@ -1612,7 +2292,7 @@ fn emitSearch(th: *const theme.Theme, start: usize) struct { text: usize, rects:
     const bx = @floor(win_w - bw - pad);
     const by = bar_h + pad;
 
-    var ri: usize = 0;
+    var ri: usize = base_ri;
     putRect(ri, bx - 1, by - 1, bw + 2, ch + 2, th.separator); // border
     ri += 1;
     putRect(ri, bx, by, bw, ch, th.bar); // panel
@@ -1643,12 +2323,12 @@ fn emitSearch(th: *const theme.Theme, start: usize) struct { text: usize, rects:
         putGlyph(n, rx + @as(f32, @floatFromInt(i)) * cw, by, th.separator, th.bar, c);
         n += 1;
     }
-    return .{ .text = n - start, .rects = ri };
+    return .{ .text = n - start, .rects = ri - base_ri };
 }
 
 /// Lay out the Caldera run-detail drawer: a centered panel showing the selected
 /// run's header fields and all event summaries in order.
-fn emitCalderaDrawer(th: *const theme.Theme, start: usize) struct { text: usize, rects: usize } {
+fn emitCalderaDrawerAt(th: *const theme.Theme, start: usize, base_ri: usize) struct { text: usize, rects: usize } {
     const cw = renderer.cell_w;
     const ch = renderer.cell_h;
     const pad = renderer.pad_x;
@@ -1668,7 +2348,7 @@ fn emitCalderaDrawer(th: *const theme.Theme, start: usize) struct { text: usize,
     const px = @floor((win_w - pw) / 2);
     const py = @floor(win_h * 0.12);
 
-    var ri: usize = 0;
+    var ri: usize = base_ri;
     putRect(ri, px - 1, py - 1, pw + 2, ph + 2, th.separator);
     ri += 1;
     putRect(ri, px, py, pw, ph, th.bar);
@@ -1731,12 +2411,12 @@ fn emitCalderaDrawer(th: *const theme.Theme, start: usize) struct { text: usize,
         row += 1;
     }
 
-    return .{ .text = n - start, .rects = ri };
+    return .{ .text = n - start, .rects = ri - base_ri };
 }
 
 /// Lay out the keyboard shortcut cheatsheet overlay: a centered panel listing
 /// all key bindings grouped by section.
-fn emitHelp(th: *const theme.Theme, start: usize) struct { text: usize, rects: usize } {
+fn emitHelpAt(th: *const theme.Theme, start: usize, base_ri: usize) struct { text: usize, rects: usize } {
     const cw = renderer.cell_w;
     const ch = renderer.cell_h;
     const pad = renderer.pad_x;
@@ -1762,7 +2442,7 @@ fn emitHelp(th: *const theme.Theme, start: usize) struct { text: usize, rects: u
     const px = @floor((win_w - pw) / 2);
     const py = @floor(win_h * 0.12);
 
-    var ri: usize = 0;
+    var ri: usize = base_ri;
     putRect(ri, px - 1, py - 1, pw + 2, ph + 2, th.separator); // border
     ri += 1;
     putRect(ri, px, py, pw, ph, th.bar); // panel
@@ -1824,7 +2504,7 @@ fn emitHelp(th: *const theme.Theme, start: usize) struct { text: usize, rects: u
         }
     }
 
-    return .{ .text = n - start, .rects = ri };
+    return .{ .text = n - start, .rects = ri - base_ri };
 }
 
 test "animateCursor: snaps on first call (cur_anim_init=false)" {

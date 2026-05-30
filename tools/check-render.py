@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
-Structural golden check for the headless --dump render.
+Structural golden check for the headless --dump Control Room render.
 
 Does NOT do exact pixel comparison (CoreText antialiasing and shell-prompt
-content vary across macOS versions and machines). Instead asserts:
+content vary across macOS versions and machines). Instead it asserts the
+three-zone operator-console shell is laid out as expected:
   - dimensions are 1600x1000
-  - dominant pixel color is the Mineral dark background #0b0d0e (>= 90%)
-  - title bar region contains the bar color #161a1c
+  - left SESSIONS/EXPLORER sidebar band is charcoal #161a1c
+  - center terminal panel body is Mineral dark #0b0d0e
+  - right RUNS/TRACE/AGENT drawer band is charcoal #161a1c
+  - bottom status bar is charcoal #161a1c
 
 Run: python3 tools/check-render.py /tmp/anvil-ci.png
 """
@@ -67,33 +70,47 @@ def decode_png(path):
     return width, height, bpp, rows
 
 
+def region_frac(rows, bpp, color, x0, x1, y0, y1):
+    """Fraction of pixels in [x0,x1)x[y0,y1) exactly matching `color`."""
+    hit = 0
+    total = 0
+    for y in range(y0, y1):
+        row = rows[y]
+        for x in range(x0, x1):
+            i = x * bpp
+            total += 1
+            if tuple(row[i : i + bpp]) == color:
+                hit += 1
+    return hit / total if total else 0.0
+
+
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else "/tmp/anvil-ci.png"
     width, height, bpp, rows = decode_png(path)
 
-    # 1. Dimensions
+    # 1. Dimensions.
     assert width == 1600 and height == 1000, f"unexpected dimensions {width}x{height}"
 
-    # 2. Dominant background color = Mineral dark bg #0b0d0e
-    total = width * height
-    counts = Counter()
-    for row in rows:
-        for i in range(0, len(row), bpp):
-            counts[tuple(row[i : i + bpp])] += 1
-    bg = (0x0B, 0x0D, 0x0E)
-    bg_frac = counts[bg] / total
-    assert bg_frac >= 0.90, f"background #{bg[0]:02x}{bg[1]:02x}{bg[2]:02x} covers only {bg_frac:.1%} (expected >= 90%)"
+    charcoal = (0x16, 0x1A, 0x1C)
+    pane_bg = (0x1A, 0x1B, 0x26)
 
-    # 3. Title bar strip (rows 0-79, 2x scale) contains bar color #161a1c
-    bar = (0x16, 0x1A, 0x1C)
-    bar_counts = Counter()
-    for row in rows[:80]:
-        for i in range(0, len(row), bpp):
-            bar_counts[tuple(row[i : i + bpp])] += 1
-    bar_frac = bar_counts[bar] / (80 * width)
-    assert bar_frac >= 0.30, f"title bar color #{bar[0]:02x}{bar[1]:02x}{bar[2]:02x} covers only {bar_frac:.1%} of bar rows (expected >= 30%)"
+    # 2. Left sidebar band (SESSIONS / EXPLORER) is charcoal.
+    side = region_frac(rows, bpp, charcoal, 60, 350, 120, 880)
+    assert side >= 0.60, f"sidebar charcoal only {side:.1%} (expected >= 60%)"
 
-    print(f"ok: {width}x{height}, bg={bg_frac:.1%}, bar={bar_frac:.1%}")
+    # 3. Center terminal panel body is the pane background.
+    body = region_frac(rows, bpp, pane_bg, 420, 1240, 220, 860)
+    assert body >= 0.60, f"panel body pane-bg only {body:.1%} (expected >= 60%)"
+
+    # 4. Right context drawer band (RUNS / TRACE / AGENT) is charcoal.
+    draw = region_frac(rows, bpp, charcoal, 1300, 1590, 320, 880)
+    assert draw >= 0.60, f"drawer charcoal only {draw:.1%} (expected >= 60%)"
+
+    # 5. Bottom status bar is charcoal.
+    status = region_frac(rows, bpp, charcoal, 400, 1200, 972, 998)
+    assert status >= 0.60, f"status bar charcoal only {status:.1%} (expected >= 60%)"
+
+    print(f"ok: {width}x{height}, sidebar={side:.1%}, body={body:.1%}, drawer={draw:.1%}, status={status:.1%}")
 
 
 if __name__ == "__main__":
