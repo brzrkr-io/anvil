@@ -6,6 +6,12 @@ pub const cols: u16 = 32;
 pub const rows_n: u16 = 32;
 pub const capacity: u16 = cols * rows_n; // 1024 slots
 
+/// Key bit that tags a slot as belonging to the IBM Plex Sans face rather than
+/// the primary mono font. The shim strips this bit and rasterizes the low 21
+/// bits with the Sans CTFont. Keeps Sans glyphs from colliding with the mono
+/// glyph of the same codepoint in the shared atlas grid.
+pub const sans_tag: u32 = 0x0020_0000; // bit 21 (above the 0x10FFFF cp range)
+
 /// One glyph the shim must rasterize this frame: `cp` into grid `slot`.
 /// `wide` = 1 means a double-width glyph spanning `slot` and `slot`+1.
 /// Layout matches the C `PendingGlyph` read in shim.m (three u32s).
@@ -52,18 +58,25 @@ pub const Atlas = struct {
     /// is full.
     pub fn slotFor(self: *Atlas, cp: u21) u16 {
         if (cp <= ' ') return 0;
+        return self.slotForKey(@as(u32, cp));
+    }
+
+    /// Slot for an arbitrary atlas key, assigning + queueing a raster on first
+    /// use. The key is the bare codepoint for the mono face, or `sans_tag | cp`
+    /// for the Plex Sans face. No blank short-circuit: callers handle spaces.
+    pub fn slotForKey(self: *Atlas, key: u32) u16 {
         const mask: u32 = capacity - 1;
-        var i: u32 = (@as(u32, cp) *% 2654435761) & mask;
+        var i: u32 = (key *% 2654435761) & mask;
         while (self.keys[i] != 0) {
-            if (self.keys[i] == cp) return self.vals[i];
+            if (self.keys[i] == key) return self.vals[i];
             i = (i + 1) & mask;
         }
         if (self.next >= capacity) return 0; // full → blank
         const slot = self.next;
         self.next += 1;
-        self.keys[i] = cp;
+        self.keys[i] = key;
         self.vals[i] = slot;
-        self.pending[self.pending_n] = .{ .cp = cp, .slot = slot, .wide = 0 };
+        self.pending[self.pending_n] = .{ .cp = key, .slot = slot, .wide = 0 };
         self.pending_n += 1;
         return slot;
     }
@@ -143,6 +156,17 @@ test "non-ASCII codepoints are cached like any other" {
     try std.testing.expect(dot != 0);
     try std.testing.expect(check != 0);
     try std.testing.expect(dot != check);
+}
+
+test "sans-tagged key gets a distinct slot from the mono codepoint" {
+    var a = Atlas{};
+    const mono_s = a.slotFor('S');
+    const sans_s = a.slotForKey(sans_tag | 'S');
+    try std.testing.expect(mono_s != 0);
+    try std.testing.expect(sans_s != 0);
+    try std.testing.expect(mono_s != sans_s); // same glyph, different face
+    try std.testing.expectEqual(sans_s, a.slotForKey(sans_tag | 'S')); // cached
+    try std.testing.expectEqual(sans_tag | @as(u32, 'S'), a.pending[1].cp);
 }
 
 test "resetPending clears the queue but keeps the cache" {

@@ -14,6 +14,7 @@ struct Instance {
     packed_float4 bg;
     packed_float2 uv;
     uint flags; // bit0 underline, bit1 strike, bit2 dim
+    float w;    // proportional quad width (device px); 0 = uniform cell width
 };
 
 struct VOut {
@@ -31,7 +32,13 @@ vertex VOut v_main(uint vid [[vertex_id]],
                    constant Uniforms &u [[buffer(1)]]) {
     float2 corner = float2(vid & 1, (vid >> 1) & 1);
     Instance in = inst[iid];
-    float2 px = float2(in.x, in.y) + corner * u.cell;
+    // Proportional glyphs (Plex Sans chrome) carry w > 0: draw a narrower quad
+    // and sample only the left w/cell_w slice of the cell. Mono cells (w == 0)
+    // fall back to the uniform cell box.
+    float qw = in.w > 0.0 ? in.w : u.cell.x;
+    float uvw = in.w > 0.0 ? (in.w / u.cell.x) * u.cell_uv.x : u.cell_uv.x;
+    float2 cell_px = float2(qw, u.cell.y);
+    float2 px = float2(in.x, in.y) + corner * cell_px;
     float2 ndc = (px / u.viewport) * 2.0 - 1.0;
     ndc.y = -ndc.y;
 
@@ -39,7 +46,7 @@ vertex VOut v_main(uint vid [[vertex_id]],
     o.pos = float4(ndc, 0.0, 1.0);
     o.fg = in.fg;
     o.bg = in.bg;
-    o.uv = in.uv + corner * u.cell_uv;
+    o.uv = in.uv + corner * float2(uvw, u.cell_uv.y);
     o.loc = corner;
     o.flags = in.flags;
     return o;

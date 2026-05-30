@@ -28,6 +28,7 @@ const cdir = @cImport({
 const shader_src = @embedFile("platform/shaders.metal");
 const font_data = @embedFile("font_ttf");
 const font_bold_data = @embedFile("font_ttf_bold");
+const sans_data = @embedFile("sans_ttf");
 const icon_data = @embedFile("app_icon_png");
 
 /// Write UTF-8 text to the system pasteboard (OSC 52). Implemented in shim.m.
@@ -35,6 +36,9 @@ extern fn anvil_pasteboard_write(ptr: [*]const u8, len: usize) void;
 /// Post a macOS user notification. Implemented in shim.m; no-op when unbundled
 /// or when the app is frontmost. Title and body are null-terminated UTF-8.
 extern fn anvil_notify(title: [*:0]const u8, body: [*:0]const u8) void;
+/// Horizontal advance (device px) of `cp` in the IBM Plex Sans chrome face, at
+/// the atlas point size. Implemented in shim.m; lazily loads the Sans CTFont.
+extern fn anvil_sans_advance(cp: u32) f32;
 const max_instances = 60000;
 const max_panes = 64;
 const divider_px: f32 = 2; // layout gap + mouse hit zone (device px)
@@ -452,6 +456,11 @@ export fn anvil_font_data(out_len: *usize) callconv(.c) [*]const u8 {
 export fn anvil_font_bold_data(out_len: *usize) callconv(.c) [*]const u8 {
     out_len.* = font_bold_data.len;
     return font_bold_data.ptr;
+}
+
+export fn anvil_sans_data(out_len: *usize) callconv(.c) [*]const u8 {
+    out_len.* = sans_data.len;
+    return sans_data.ptr;
 }
 
 export fn anvil_icon_data(out_len: *usize) callconv(.c) [*]const u8 {
@@ -1513,6 +1522,37 @@ fn putCp(idx: usize, x: f32, y: f32, fg: theme.Rgb, bg: theme.Rgb, cp: u21) void
     };
 }
 
+/// Emit one IBM Plex Sans glyph at (x, y), returning its proportional advance
+/// in device px. Sans glyphs live in the shared atlas under `sans_tag`; the
+/// shim rasterizes + measures them. A blank space advances the pen but writes
+/// no instance. Used for chrome nav/heading labels (BRAND: UI text = Plex Sans).
+fn putSans(n: *usize, x: f32, y: f32, fg: theme.Rgb, bg: theme.Rgb, cp: u21) f32 {
+    const adv = anvil_sans_advance(@as(u32, cp));
+    if (cp == ' ') return adv;
+    if (n.* >= instances.len) return adv;
+    const slot = renderer.atlas.slotForKey(atlasmod.sans_tag | @as(u32, cp));
+    instances[n.*] = .{
+        .x = x,
+        .y = y,
+        .fg = fg.f32x4(),
+        .bg = bg.f32x4(),
+        .uv = atlasmod.Atlas.slotUV(slot),
+        .w = adv,
+    };
+    n.* += 1;
+    return adv;
+}
+
+/// Lay out a UTF-8 run in IBM Plex Sans starting at (x, y); returns total width.
+fn putSansRun(n: *usize, x: f32, y: f32, fg: theme.Rgb, bg: theme.Rgb, text: []const u8) f32 {
+    var pen = x;
+    var it = std.unicode.Utf8View.initUnchecked(text).iterator();
+    while (it.nextCodepoint()) |cp| {
+        pen += putSans(n, pen, y, fg, bg, @intCast(cp));
+    }
+    return pen - x;
+}
+
 /// Codepoint count (display cells) of a UTF-8 slice.
 fn utf8Cells(s: []const u8) usize {
     var it = std.unicode.Utf8View.initUnchecked(s).iterator();
@@ -1620,15 +1660,9 @@ fn emitCommandBar(th: *const theme.Theme, start: usize, np: usize) usize {
     var n = start;
     var x: f32 = tab_inset_x;
 
-    // Wordmark: accent initial + bone tail.
-    putGlyph(n, x, ly, chrome.mineral, th.bar, 'A');
-    n += 1;
-    x += cw;
-    for ("nvil") |c| {
-        putGlyph(n, x, ly, chrome.bone, th.bar, c);
-        n += 1;
-        x += cw;
-    }
+    // Wordmark: accent initial + bone tail, in IBM Plex Sans.
+    x += putSans(&n, x, ly, chrome.mineral, th.bar, 'A');
+    x += putSansRun(&n, x, ly, chrome.bone, th.bar, "nvil");
     x += 2 * cw;
 
     // Measure right-aligned tab labels so the breadcrumb stops clear of them.
@@ -1873,14 +1907,9 @@ fn emitSidebar(start: usize) usize {
     const x0 = chrome.rail_w + renderer.pad_x + 6;
     var n = start;
 
-    // Section header.
+    // Section header (Plex Sans).
     const hy = bar_h + (chrome.sidebar_header_h - ch) / 2;
-    var hx = x0;
-    for ("SESSIONS") |c| {
-        putGlyph(n, hx, hy, chrome.alloy, bg, c);
-        n += 1;
-        hx += cw;
-    }
+    _ = putSansRun(&n, x0, hy, chrome.alloy, bg, "SESSIONS");
 
     // Session rows.
     const right = chrome.rail_w + sidebar_w - renderer.pad_x;
@@ -1911,12 +1940,7 @@ fn emitSidebar(start: usize) usize {
     // glyph) sort first; files (ash file glyph) follow. Click opens (see mouse).
     y += 8;
     const ehy = y + (chrome.sidebar_header_h - ch) / 2;
-    var ehx = x0;
-    for ("EXPLORER") |c| {
-        putGlyph(n, ehx, ehy, chrome.alloy, bg, c);
-        n += 1;
-        ehx += cw;
-    }
+    _ = putSansRun(&n, x0, ehy, chrome.alloy, bg, "EXPLORER");
     y += chrome.sidebar_header_h + 4;
 
     scanExplorer(explorerPath());
@@ -1965,15 +1989,9 @@ fn rowKindColor(kind: caldera.RowKind) theme.Rgb {
 
 /// Render a section header ("RUNS") into the drawer and advance the cursor.
 fn drawerHeader(n: *usize, ctx: *DrawerCtx, label: []const u8) void {
-    const cw = renderer.cell_w;
     const ch = renderer.cell_h;
     const hy = ctx.y + (chrome.sidebar_header_h - ch) / 2;
-    var hx = ctx.x0;
-    for (label) |c| {
-        putGlyph(n.*, hx, hy, chrome.alloy, chrome.charcoal, c);
-        n.* += 1;
-        hx += cw;
-    }
+    _ = putSansRun(n, ctx.x0, hy, chrome.alloy, chrome.charcoal, label);
     ctx.y += chrome.sidebar_header_h + 4;
 }
 

@@ -8,6 +8,10 @@ pub const CellInstance = extern struct {
     uv: [2]f32,
     /// Render flags drawn in-shader. bit0 underline, bit1 strike, bit2 dim.
     flags: u32 = 0,
+    /// Proportional quad width in device px. 0 = use the uniform cell width
+    /// (the mono default). > 0 draws a narrower quad and samples a matching
+    /// sub-slice of the glyph cell — used for IBM Plex Sans chrome labels.
+    w: f32 = 0,
 };
 
 pub const flag_underline: u32 = 1;
