@@ -16,6 +16,8 @@ pub const CliArgs = struct {
     verb_arg: ?[]const u8 = null,
     /// For "run": every argv token after the verb (the command + its args).
     run_args: []const [*:0]const u8 = &.{},
+    /// Target window pid for client verbs (`--window <pid>`); null → front window.
+    window_pid: ?u32 = null,
 };
 
 /// Parse process argv (after skipping argv[0]).
@@ -43,6 +45,11 @@ pub fn parse(args: []const [*:0]const u8) CliArgs {
         }
         if (std.mem.eql(u8, a, "--new")) {
             result.fresh = true;
+            continue;
+        }
+        if (std.mem.eql(u8, a, "--window")) {
+            i += 1;
+            if (i < args.len) result.window_pid = std.fmt.parseInt(u32, std.mem.span(args[i]), 10) catch null;
             continue;
         }
         if (std.mem.eql(u8, a, "split")) {
@@ -95,6 +102,7 @@ pub const help_text =
     \\  tab [path]        Open a new tab (optionally in path)
     \\  run <cmd...>      Open a new tab and run the command in it
     \\  pipe              Page stdin in a new tab (e.g. `cmd | anvil pipe`)
+    \\  --window <pid>    Target a specific window (default: the front window)
     \\
 ;
 
@@ -198,4 +206,11 @@ test "parse: pipe → client mode, verb pipe" {
     const a = parse(&.{"pipe"});
     try std.testing.expectEqual(Mode.client, a.mode);
     try std.testing.expectEqualStrings("pipe", a.verb);
+}
+
+test "parse: --window before verb sets window_pid" {
+    const a = parse(&.{ "--window", "4321", "split", "h" });
+    try std.testing.expectEqual(Mode.client, a.mode);
+    try std.testing.expectEqualStrings("split", a.verb);
+    try std.testing.expectEqual(@as(?u32, 4321), a.window_pid);
 }

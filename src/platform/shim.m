@@ -94,6 +94,7 @@ extern void anvil_set_theme_mode(int mode);
 extern void anvil_set_os_dark(int is_dark);
 extern int anvil_theme_is_dark(void);
 extern void anvil_save_session(void);
+extern void anvil_ipc_focus(void);
 extern int anvil_link_at(float x, float y, const char **out_ptr, size_t *out_len);
 
 #define INSTANCE_STRIDE (13 * sizeof(float))
@@ -815,6 +816,10 @@ static void layoutTrafficLights(NSWindow *win) {
 - (void)applicationWillTerminate:(NSNotification *)n {
     (void)n;
     anvil_save_session();
+}
+- (void)applicationDidBecomeActive:(NSNotification *)n {
+    (void)n;
+    anvil_ipc_focus();
 }
 @end
 

@@ -33,7 +33,7 @@ pub fn main(init: std.process.Init.Minimal) void {
         },
         .client => {
             if (std.mem.eql(u8, args.verb, "pipe")) {
-                _ = ipc.runPipe();
+                _ = ipc.runPipe(args.window_pid);
             } else if (std.mem.eql(u8, args.verb, "run")) {
                 var jbuf: [1024]u8 = undefined;
                 var jlen: usize = 0;
@@ -47,9 +47,9 @@ pub fn main(init: std.process.Init.Minimal) void {
                     @memcpy(jbuf[jlen..][0..n], t[0..n]);
                     jlen += n;
                 }
-                _ = ipc.tryClient("run", if (jlen > 0) jbuf[0..jlen] else null);
+                _ = ipc.tryClient("run", if (jlen > 0) jbuf[0..jlen] else null, args.window_pid);
             } else {
-                _ = ipc.tryClient(args.verb, args.verb_arg);
+                _ = ipc.tryClient(args.verb, args.verb_arg, args.window_pid);
             }
             return;
         },

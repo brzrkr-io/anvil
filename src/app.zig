@@ -281,6 +281,12 @@ export fn anvil_save_session() callconv(.c) void {
     persist.saveToFile(std.heap.page_allocator, &mgr);
 }
 
+/// Called when this window becomes the active app, so the CLI can target the
+/// front window by socket mtime. One window per process → app-active == focus.
+export fn anvil_ipc_focus() callconv(.c) void {
+    ipc.touchFocus();
+}
+
 /// Drain pending shell output into the terminal. Returns 0 only when every
 /// session has exited; individual dead panes show an in-pane indicator.
 fn drainIpc() void {

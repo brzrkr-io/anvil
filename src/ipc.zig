@@ -23,6 +23,9 @@ const c = @cImport({
     @cInclude("unistd.h");
     @cInclude("errno.h");
     @cInclude("fcntl.h");
+    @cInclude("dirent.h");
+    @cInclude("sys/stat.h");
+    @cInclude("sys/time.h");
 });
 
 // ---------------------------------------------------------------------------
@@ -73,18 +76,34 @@ pub fn takeCommands(out: []Command) usize {
 }
 
 // ---------------------------------------------------------------------------
-// Socket path
+// Socket paths
+//
+// Each window process owns its OWN socket: <tmpdir>anvil-<uid>-<pid>.sock.
+// This keeps the process-per-window model (and its crash isolation) while
+// letting the CLI reach ANY window, not just the first.  The client scans the
+// directory, picks a target (newest mtime = front window, or an explicit
+// --window <pid>), and reaps sockets whose owner has died.
 // ---------------------------------------------------------------------------
 
-var sock_path_buf: [108]u8 = undefined; // sun_path limit
+const sock_max = 108; // sun_path limit
+
+var sock_path_buf: [sock_max]u8 = undefined; // this process's server socket
 var sock_path_len: usize = 0;
 
-fn buildSockPath(buf: []u8) []const u8 {
-    const tmpdir_c = std.c.getenv("TMPDIR") orelse "/tmp/";
-    const tmpdir = std.mem.span(tmpdir_c);
+fn tmpDir() [*:0]const u8 {
+    return std.c.getenv("TMPDIR") orelse "/tmp/";
+}
+
+/// This process's server socket path: <tmpdir>anvil-<uid>-<pid>.sock.
+fn buildServerSockPath(buf: []u8) []const u8 {
     const uid = std.c.getuid();
-    const s = std.fmt.bufPrint(buf, "{s}anvil-{d}.sock", .{ tmpdir, uid }) catch buf[0..0];
-    return s;
+    const pid = c.getpid();
+    return std.fmt.bufPrint(buf, "{s}anvil-{d}-{d}.sock", .{ std.mem.span(tmpDir()), uid, pid }) catch buf[0..0];
+}
+
+/// Filename prefix shared by all of this user's window sockets ("anvil-<uid>-").
+fn sockPrefix(buf: []u8) []const u8 {
+    return std.fmt.bufPrint(buf, "anvil-{d}-", .{std.c.getuid()}) catch buf[0..0];
 }
 
 // ---------------------------------------------------------------------------
@@ -152,7 +171,7 @@ fn listenLoop() void {
 // ---------------------------------------------------------------------------
 
 pub fn start() void {
-    const path = buildSockPath(&sock_path_buf);
+    const path = buildServerSockPath(&sock_path_buf);
     sock_path_len = path.len;
 
     const fd = c.socket(c.AF_UNIX, c.SOCK_STREAM, 0);
@@ -164,35 +183,17 @@ pub fn start() void {
     @memcpy(addr.sun_path[0..copy_n], path[0..copy_n]);
     addr.sun_path[copy_n] = 0;
 
-    // Attempt bind.  On EADDRINUSE probe with connect: if connect succeeds
-    // another live server owns the socket — skip starting our own server.
-    // If connect fails the socket is stale — unlink and retry bind once.
-    if (c.bind(fd, @ptrCast(&addr), @sizeOf(c.struct_sockaddr_un)) != 0) {
-        if (c.__error().* == c.EADDRINUSE) {
-            const probe = c.socket(c.AF_UNIX, c.SOCK_STREAM, 0);
-            if (probe >= 0) {
-                if (c.connect(probe, @ptrCast(&addr), @sizeOf(c.struct_sockaddr_un)) == 0) {
-                    _ = c.close(probe);
-                    _ = c.close(fd);
-                    return; // live server exists
-                }
-                _ = c.close(probe);
-            }
-            // Stale socket: remove and retry.
-            var z: [109]u8 = undefined;
-            @memcpy(z[0..copy_n], path[0..copy_n]);
-            z[copy_n] = 0;
-            _ = c.unlink(&z);
-            if (c.bind(fd, @ptrCast(&addr), @sizeOf(c.struct_sockaddr_un)) != 0) {
-                _ = c.close(fd);
-                return;
-            }
-        } else {
-            _ = c.close(fd);
-            return;
-        }
-    }
+    // Our path is pid-unique, so a leftover file can only be a crashed prior
+    // run that reused our pid — unlink it, then bind.
+    var z: [sock_max + 1]u8 = undefined;
+    @memcpy(z[0..copy_n], path[0..copy_n]);
+    z[copy_n] = 0;
+    _ = c.unlink(&z);
 
+    if (c.bind(fd, @ptrCast(&addr), @sizeOf(c.struct_sockaddr_un)) != 0) {
+        _ = c.close(fd);
+        return;
+    }
     if (c.listen(fd, 8) != 0) {
         _ = c.close(fd);
         return;
@@ -207,49 +208,132 @@ pub fn start() void {
     t.detach();
 }
 
+/// Mark this window as most-recently-focused by bumping its socket's mtime.
+/// Called from the AppKit main thread when the app becomes active.
+pub fn touchFocus() void {
+    if (sock_path_len == 0) return;
+    var z: [sock_max + 1]u8 = undefined;
+    @memcpy(z[0..sock_path_len], sock_path_buf[0..sock_path_len]);
+    z[sock_path_len] = 0;
+    _ = c.utimes(&z, null); // null → set atime/mtime to now
+}
+
 // ---------------------------------------------------------------------------
 // Client mode  (called from main.zig before opening a window)
 // ---------------------------------------------------------------------------
 
-/// Connect to a running Anvil server, send `"<verb> <arg>\n"`, and return the
-/// reply.  Returns true on `ok`, false on `err ...`.  Returns an error if no
-/// server is reachable.
-pub fn tryClient(verb: []const u8, arg: ?[]const u8) bool {
-    var path_buf: [108]u8 = undefined;
-    const path = buildSockPath(&path_buf);
+/// Extract the pid from a socket filename "anvil-<uid>-<pid>.sock".
+fn pidFromName(name: []const u8, prefix: []const u8) ?u32 {
+    if (!std.mem.startsWith(u8, name, prefix)) return null;
+    if (!std.mem.endsWith(u8, name, ".sock")) return null;
+    const mid = name[prefix.len .. name.len - ".sock".len];
+    return std.fmt.parseInt(u32, mid, 10) catch null;
+}
 
-    const fd = c.socket(c.AF_UNIX, c.SOCK_STREAM, 0);
-    if (fd < 0) return false;
-    defer _ = c.close(fd);
+/// Choose a target socket path into `out`.  With `target_pid` set, returns that
+/// window's socket (or null if absent).  Otherwise returns the newest-by-mtime
+/// socket — the most recently focused window.  Returns null when none exist.
+fn pickSocket(out: []u8, target_pid: ?u32) ?[]const u8 {
+    var pfx_buf: [64]u8 = undefined;
+    const prefix = sockPrefix(&pfx_buf);
+    const tmp = std.mem.span(tmpDir());
 
-    var addr: c.struct_sockaddr_un = std.mem.zeroes(c.struct_sockaddr_un);
-    addr.sun_family = c.AF_UNIX;
-    const n = @min(path.len, addr.sun_path.len - 1);
-    @memcpy(addr.sun_path[0..n], path[0..n]);
-    addr.sun_path[n] = 0;
+    const dirp = c.opendir(tmpDir()) orelse return null;
+    defer _ = c.closedir(dirp);
 
-    if (c.connect(fd, @ptrCast(&addr), @sizeOf(c.struct_sockaddr_un)) != 0) {
-        const no_server = "anvil: no running Anvil window\n";
-        _ = std.c.write(2, no_server.ptr, no_server.len);
-        return false;
+    var best_name: [256]u8 = undefined;
+    var best_len: usize = 0;
+    var best_mtime: i128 = std.math.minInt(i128);
+
+    while (c.readdir(dirp)) |ent| {
+        const name = std.mem.sliceTo(@as([*:0]const u8, @ptrCast(&ent.*.d_name)), 0);
+        const pid = pidFromName(name, prefix) orelse continue;
+        if (target_pid) |want| {
+            if (pid != want) continue;
+        }
+
+        // Full path for stat / candidacy.
+        var path_buf: [sock_max]u8 = undefined;
+        const path = std.fmt.bufPrint(&path_buf, "{s}{s}", .{ tmp, name }) catch continue;
+        var pz: [sock_max + 1]u8 = undefined;
+        @memcpy(pz[0..path.len], path);
+        pz[path.len] = 0;
+
+        var st: c.struct_stat = undefined;
+        if (c.stat(&pz, &st) != 0) continue;
+        const mt: i128 = @as(i128, st.st_mtimespec.tv_sec) * std.time.ns_per_s + st.st_mtimespec.tv_nsec;
+
+        if (target_pid != null or mt > best_mtime) {
+            best_mtime = mt;
+            @memcpy(best_name[0..name.len], name);
+            best_len = name.len;
+            if (target_pid != null) break;
+        }
     }
 
-    // Build request line: "verb arg\n" or "verb\n".
-    var req_buf: [1024 + 16]u8 = undefined;
-    const req = if (arg) |a|
-        std.fmt.bufPrint(&req_buf, "{s} {s}\n", .{ verb, a }) catch return false
-    else
-        std.fmt.bufPrint(&req_buf, "{s}\n", .{verb}) catch return false;
-    _ = c.write(fd, req.ptr, req.len);
+    if (best_len == 0) return null;
+    return std.fmt.bufPrint(out, "{s}{s}", .{ tmp, best_name[0..best_len] }) catch null;
+}
 
-    // Read reply.
-    var rep: [64]u8 = undefined;
-    const nr = c.read(fd, &rep, rep.len);
-    if (nr <= 0) return false;
-    const reply = rep[0..@intCast(nr)];
-    if (std.mem.startsWith(u8, reply, "ok")) return true;
-    // Print error to stderr.
-    _ = std.c.write(2, reply.ptr, reply.len);
+/// Send `"<verb> <arg>\n"` to a running window and return the reply: true on
+/// `ok`, false on `err ...`.  With `target_pid` null, targets the front
+/// (newest-mtime) window; sockets whose owner has died are reaped and the scan
+/// retried.  Prints to stderr and returns false when no window is reachable.
+pub fn tryClient(verb: []const u8, arg: ?[]const u8, target_pid: ?u32) bool {
+    var attempt: usize = 0;
+    while (attempt < 64) : (attempt += 1) {
+        var path_buf: [sock_max]u8 = undefined;
+        const path = pickSocket(&path_buf, target_pid) orelse {
+            const msg = if (target_pid != null)
+                "anvil: no window with that pid\n"
+            else
+                "anvil: no running Anvil window\n";
+            _ = std.c.write(2, msg.ptr, msg.len);
+            return false;
+        };
+
+        const fd = c.socket(c.AF_UNIX, c.SOCK_STREAM, 0);
+        if (fd < 0) return false;
+
+        var addr: c.struct_sockaddr_un = std.mem.zeroes(c.struct_sockaddr_un);
+        addr.sun_family = c.AF_UNIX;
+        const n = @min(path.len, addr.sun_path.len - 1);
+        @memcpy(addr.sun_path[0..n], path[0..n]);
+        addr.sun_path[n] = 0;
+
+        if (c.connect(fd, @ptrCast(&addr), @sizeOf(c.struct_sockaddr_un)) != 0) {
+            _ = c.close(fd);
+            // Stale socket: reap it and rescan.
+            var z: [sock_max + 1]u8 = undefined;
+            @memcpy(z[0..path.len], path);
+            z[path.len] = 0;
+            _ = c.unlink(&z);
+            if (target_pid != null) {
+                const msg = "anvil: that window is not running\n";
+                _ = std.c.write(2, msg.ptr, msg.len);
+                return false;
+            }
+            continue;
+        }
+        defer _ = c.close(fd);
+
+        // Build request line: "verb arg\n" or "verb\n".
+        var req_buf: [1024 + 16]u8 = undefined;
+        const req = if (arg) |a|
+            std.fmt.bufPrint(&req_buf, "{s} {s}\n", .{ verb, a }) catch return false
+        else
+            std.fmt.bufPrint(&req_buf, "{s}\n", .{verb}) catch return false;
+        _ = c.write(fd, req.ptr, req.len);
+
+        // Read reply.
+        var rep: [64]u8 = undefined;
+        const nr = c.read(fd, &rep, rep.len);
+        if (nr <= 0) return false;
+        const reply = rep[0..@intCast(nr)];
+        if (std.mem.startsWith(u8, reply, "ok")) return true;
+        _ = std.c.write(2, reply.ptr, reply.len);
+        return false;
+    }
     return false;
 }
 
@@ -267,7 +351,7 @@ fn pipeCommand(buf: []u8, file: []const u8) []const u8 {
 
 /// Stream stdin to a temp file and open it in a pager pane via the `run`
 /// verb.  Refuses when stdin is a terminal (nothing was piped in).
-pub fn runPipe() bool {
+pub fn runPipe(target_pid: ?u32) bool {
     if (c.isatty(0) == 1) {
         const msg = "anvil pipe: nothing on stdin (pipe a command into it)\n";
         _ = std.c.write(2, msg.ptr, msg.len);
@@ -301,23 +385,28 @@ pub fn runPipe() bool {
 
     var cmd_buf: [path_max]u8 = undefined;
     const cmd = pipeCommand(&cmd_buf, file);
-    return tryClient("run", cmd);
+    return tryClient("run", cmd, target_pid);
 }
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
-test "buildSockPath includes uid" {
-    var buf: [108]u8 = undefined;
-    const path = buildSockPath(&buf);
+test "buildServerSockPath includes uid and pid" {
+    var buf: [sock_max]u8 = undefined;
+    const path = buildServerSockPath(&buf);
     try std.testing.expect(path.len > 0);
     try std.testing.expect(std.mem.endsWith(u8, path, ".sock"));
-    // Must contain the uid as a decimal number somewhere after the last slash.
-    const uid = std.c.getuid();
-    var uid_buf: [32]u8 = undefined;
-    const uid_str = std.fmt.bufPrint(&uid_buf, "{d}", .{uid}) catch unreachable;
+    var id_buf: [32]u8 = undefined;
+    const uid_str = std.fmt.bufPrint(&id_buf, "anvil-{d}-", .{std.c.getuid()}) catch unreachable;
     try std.testing.expect(std.mem.indexOf(u8, path, uid_str) != null);
+}
+
+test "pidFromName parses pid, rejects non-matching" {
+    try std.testing.expectEqual(@as(?u32, 12345), pidFromName("anvil-501-12345.sock", "anvil-501-"));
+    try std.testing.expectEqual(@as(?u32, null), pidFromName("anvil-501-12345.sock", "anvil-999-"));
+    try std.testing.expectEqual(@as(?u32, null), pidFromName("anvil-501-.sock", "anvil-501-"));
+    try std.testing.expectEqual(@as(?u32, null), pidFromName("anvil-501-12.txt", "anvil-501-"));
 }
 
 test "parseRequest: split h and v" {
