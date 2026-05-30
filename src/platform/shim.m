@@ -101,6 +101,7 @@ extern void anvil_cfg_error_dismiss(void);
 extern void anvil_respawn(void);
 extern const char *anvil_copy(size_t *out_len);
 extern void anvil_caldera_drawer_toggle(void);
+extern void anvil_drawer_toggle(void);
 extern int anvil_caldera_drawer_open(void);
 extern void anvil_caldera_drawer_key(int key);
 extern void anvil_set_theme_mode(int mode);
@@ -851,6 +852,7 @@ static void layoutTrafficLights(NSWindow *win) {
         else if (lc == 't') anvil_new_tab();
         else if (lc == 'w') { if (shift) anvil_close_tab(); else anvil_close_pane(); }
         else if (lc == 'r' && !shift) anvil_respawn();
+        else if (lc == 'j') anvil_drawer_toggle();
         return;
     }
     if (s.length == 1) {

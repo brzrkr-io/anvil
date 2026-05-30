@@ -39,6 +39,9 @@ pub const sidebar_w: f32 = 300; // SESSIONS / EXPLORER sidebar
 pub const sidebar_header_h: f32 = 30; // section header row height
 pub const row_h: f32 = 34; // list row height (sessions, explorer entries)
 
+// Option C chrome (right side): context drawer — RUNS / TRACE / AGENT.
+pub const drawer_w: f32 = 312;
+
 /// Geometry regions for one window frame (device pixels).
 /// Left rail, sidebar, and right drawer are zero-width for now (Option B).
 pub const LayoutRegions = struct {

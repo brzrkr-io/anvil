@@ -301,6 +301,14 @@ fn leftChromeW() f32 {
     return chrome.rail_w + (if (sidebar_open) chrome.sidebar_w else 0);
 }
 
+/// True when the right context drawer (RUNS / TRACE / AGENT) is shown (Option C).
+var drawer_open: bool = true;
+
+/// Right chrome width: the context drawer when open, else zero.
+fn rightChromeW() f32 {
+    return if (drawer_open) chrome.drawer_w else 0;
+}
+
 /// The pane area: the window minus command bar, status bar, left chrome
 /// (rail + sidebar), panel inset, and the per-pane header strip. Panes lay
 /// out inside the inset panel body.
@@ -310,10 +318,11 @@ fn workspaceRect() pane.Rect {
     const sb = chrome.status_bar_h;
     const pb = chrome.panel_pad_bottom;
     const lc = leftChromeW();
+    const rc = rightChromeW();
     return .{
         .x = lc + pp,
         .y = bar_h + pp + hs,
-        .w = win_w - lc - 2 * pp,
+        .w = win_w - lc - rc - 2 * pp,
         .h = win_h - bar_h - pp - hs - sb - pb,
     };
 }
@@ -1021,6 +1030,14 @@ export fn anvil_caldera_drawer_open() callconv(.c) c_int {
     return if (caldera_drawer) 1 else 0;
 }
 
+/// Toggle the right context drawer (RUNS / TRACE / AGENT). Bound to Cmd+J.
+export fn anvil_drawer_toggle() callconv(.c) void {
+    if (!ready) return;
+    drawer_open = !drawer_open;
+    relayout();
+    markDirty();
+}
+
 /// key: 0 esc/close, 1 up, 2 down.
 export fn anvil_caldera_drawer_key(key: c_int) callconv(.c) void {
     switch (key) {
@@ -1237,6 +1254,7 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
     pt += emitStatusBar(th, pt);
     pt += emitRail(pt);
     pt += emitSidebar(pt);
+    pt += emitDrawer(pt);
     const chrome_text: usize = pt - n;
 
     // Modal overlays append after the base shell rects (base_ri slots used).
@@ -1416,9 +1434,10 @@ fn emitShellRects(th: *const theme.Theme, np: usize) usize {
     _ = th;
     _ = np;
     const lc = leftChromeW();
+    const rc = rightChromeW();
     const px = lc + chrome.panel_pad;
     const ptop = bar_h + chrome.panel_pad;
-    const pw = win_w - lc - 2 * chrome.panel_pad;
+    const pw = win_w - lc - rc - 2 * chrome.panel_pad;
     const pbot = win_h - chrome.status_bar_h - chrome.panel_pad_bottom;
     const ph = pbot - ptop;
     const hdr_div_y = ptop + chrome.header_strip_h;
@@ -1443,6 +1462,14 @@ fn emitShellRects(th: *const theme.Theme, np: usize) usize {
     }
     putRect(ri, lc - 1, body_top, 1, body_h, border); // left-chrome right edge
     ri += 1;
+    // Right context drawer: charcoal fill + left separator hairline.
+    if (drawer_open) {
+        const dx = win_w - chrome.drawer_w;
+        putRect(ri, dx, body_top, chrome.drawer_w, body_h, chrome.charcoal); // drawer bg
+        ri += 1;
+        putRect(ri, dx, body_top, 1, body_h, border); // drawer left edge
+        ri += 1;
+    }
     // Fills first (painter order), hairlines on top.
     putRect(ri, 0, win_h - chrome.status_bar_h, win_w, chrome.status_bar_h, chrome.charcoal); // status bg
     ri += 1;
@@ -1702,6 +1729,47 @@ fn emitSidebar(start: usize) usize {
             x += cw;
         }
         y += chrome.row_h;
+    }
+    return n - start;
+}
+
+/// Right context drawer (Option C): RUNS / TRACE / AGENT section headers with
+/// empty-state placeholders. Live data is wired in #78/#79; this is the shell.
+fn emitDrawer(start: usize) usize {
+    if (!drawer_open) return 0;
+    const cw = renderer.cell_w;
+    const ch = renderer.cell_h;
+    const bg = chrome.charcoal;
+    const x0 = win_w - chrome.drawer_w + renderer.pad_x + 6;
+    const right = win_w - renderer.pad_x;
+    var n = start;
+    var y: f32 = bar_h + 8;
+
+    const sections = [_][]const u8{ "RUNS", "TRACE", "AGENT" };
+    for (sections) |sec| {
+        // Section header.
+        const hy = y + (chrome.sidebar_header_h - ch) / 2;
+        var hx = x0;
+        for (sec) |c| {
+            putGlyph(n, hx, hy, chrome.alloy, bg, c);
+            n += 1;
+            hx += cw;
+        }
+        y += chrome.sidebar_header_h + 4;
+
+        // Empty-state placeholder row (dim em-dash).
+        const ry = y + (chrome.row_h - ch) / 2;
+        var x = x0;
+        putCp(n, x, ry, chrome.ash, bg, 0x2014);
+        n += 1;
+        x += cw * 2;
+        for ("none") |c| {
+            if (x + cw > right) break;
+            putGlyph(n, x, ry, chrome.ash, bg, c);
+            n += 1;
+            x += cw;
+        }
+        y += chrome.row_h + 8;
     }
     return n - start;
 }
