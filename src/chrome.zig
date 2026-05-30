@@ -21,7 +21,7 @@ pub const ash_soft = Rgb{ .r = 0x20, .g = 0x28, .b = 0x2b };
 // panel edge against charcoal/graphite — the Hermes/Honcho "every module is a
 // box" look — without the harshness of full ash. Used for region frames,
 // section-header rules, and panel edges.
-pub const line = Rgb{ .r = 0x2d, .g = 0x36, .b = 0x3c };
+pub const line = Rgb{ .r = 0x3a, .g = 0x45, .b = 0x4d };
 
 // Row hover tint: between charcoal and ash_soft — a subtle pointer affordance.
 pub const hover = Rgb{ .r = 0x1b, .g = 0x21, .b = 0x24 };
