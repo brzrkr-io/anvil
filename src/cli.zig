@@ -65,6 +65,11 @@ pub fn parse(args: []const [*:0]const u8) CliArgs {
             result.run_args = args[i + 1 ..];
             return result;
         }
+        if (std.mem.eql(u8, a, "pipe")) {
+            result.mode = .client;
+            result.verb = "pipe";
+            return result;
+        }
         if (!std.mem.startsWith(u8, a, "-")) {
             result.start_dir = a;
         }
@@ -89,6 +94,7 @@ pub const help_text =
     \\  split h|v         Split the focused pane horizontally or vertically
     \\  tab [path]        Open a new tab (optionally in path)
     \\  run <cmd...>      Open a new tab and run the command in it
+    \\  pipe              Page stdin in a new tab (e.g. `cmd | anvil pipe`)
     \\
 ;
 
@@ -186,4 +192,10 @@ test "parse: run echo hi → client mode, verb run, run_args captured" {
     try std.testing.expectEqual(@as(usize, 2), a.run_args.len);
     try std.testing.expectEqualStrings("echo", std.mem.span(a.run_args[0]));
     try std.testing.expectEqualStrings("hi", std.mem.span(a.run_args[1]));
+}
+
+test "parse: pipe → client mode, verb pipe" {
+    const a = parse(&.{"pipe"});
+    try std.testing.expectEqual(Mode.client, a.mode);
+    try std.testing.expectEqualStrings("pipe", a.verb);
 }

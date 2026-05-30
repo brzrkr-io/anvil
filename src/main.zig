@@ -32,7 +32,9 @@ pub fn main(init: std.process.Init.Minimal) void {
             return;
         },
         .client => {
-            if (std.mem.eql(u8, args.verb, "run")) {
+            if (std.mem.eql(u8, args.verb, "pipe")) {
+                _ = ipc.runPipe();
+            } else if (std.mem.eql(u8, args.verb, "run")) {
                 var jbuf: [1024]u8 = undefined;
                 var jlen: usize = 0;
                 for (args.run_args, 0..) |tok, ti| {

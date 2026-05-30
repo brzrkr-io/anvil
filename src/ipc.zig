@@ -22,6 +22,7 @@ const c = @cImport({
     @cInclude("sys/un.h");
     @cInclude("unistd.h");
     @cInclude("errno.h");
+    @cInclude("fcntl.h");
 });
 
 // ---------------------------------------------------------------------------
@@ -253,6 +254,57 @@ pub fn tryClient(verb: []const u8, arg: ?[]const u8) bool {
 }
 
 // ---------------------------------------------------------------------------
+// Pipe mode  (`cmd | anvil pipe` → new pager pane in a running window)
+// ---------------------------------------------------------------------------
+
+/// Build the shell line a piped pane runs: open `file` in $PAGER (default
+/// `less -R`), then delete it.  Written into `buf`; returns the slice.
+fn pipeCommand(buf: []u8, file: []const u8) []const u8 {
+    const pager_c = std.c.getenv("PAGER") orelse "less -R";
+    const pager = std.mem.span(pager_c);
+    return std.fmt.bufPrint(buf, "sh -c '{s} {s}; rm {s}'", .{ pager, file, file }) catch buf[0..0];
+}
+
+/// Stream stdin to a temp file and open it in a pager pane via the `run`
+/// verb.  Refuses when stdin is a terminal (nothing was piped in).
+pub fn runPipe() bool {
+    if (c.isatty(0) == 1) {
+        const msg = "anvil pipe: nothing on stdin (pipe a command into it)\n";
+        _ = std.c.write(2, msg.ptr, msg.len);
+        return false;
+    }
+
+    // Temp file: $TMPDIR/anvil-pipe-<pid>.txt
+    var file_buf: [256]u8 = undefined;
+    const tmpdir_c = std.c.getenv("TMPDIR") orelse "/tmp/";
+    const tmpdir = std.mem.span(tmpdir_c);
+    const file = std.fmt.bufPrint(&file_buf, "{s}anvil-pipe-{d}.txt", .{ tmpdir, c.getpid() }) catch return false;
+
+    var z: [257]u8 = undefined;
+    @memcpy(z[0..file.len], file);
+    z[file.len] = 0;
+    const fd = c.open(&z, c.O_CREAT | c.O_WRONLY | c.O_TRUNC, @as(c_uint, 0o600));
+    if (fd < 0) return false;
+
+    var io_buf: [8192]u8 = undefined;
+    while (true) {
+        const n = c.read(0, &io_buf, io_buf.len);
+        if (n <= 0) break;
+        var off: usize = 0;
+        while (off < n) {
+            const w = c.write(fd, io_buf[@intCast(off)..].ptr, @intCast(@as(isize, n) - @as(isize, @intCast(off))));
+            if (w <= 0) break;
+            off += @intCast(w);
+        }
+    }
+    _ = c.close(fd);
+
+    var cmd_buf: [path_max]u8 = undefined;
+    const cmd = pipeCommand(&cmd_buf, file);
+    return tryClient("run", cmd);
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -286,6 +338,14 @@ test "parseRequest: tab with and without path" {
 test "parseRequest: run with command" {
     const r = parseRequest("run echo hi\n").?;
     try std.testing.expectEqualStrings("echo hi", r.run.cmd[0..r.run.len]);
+}
+
+test "pipeCommand embeds pager and file, deletes after" {
+    var buf: [path_max]u8 = undefined;
+    const cmd = pipeCommand(&buf, "/tmp/anvil-pipe-9.txt");
+    try std.testing.expect(std.mem.startsWith(u8, cmd, "sh -c '"));
+    try std.testing.expect(std.mem.indexOf(u8, cmd, "/tmp/anvil-pipe-9.txt") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cmd, "; rm /tmp/anvil-pipe-9.txt'") != null);
 }
 
 test "parseRequest: bare run returns null" {
