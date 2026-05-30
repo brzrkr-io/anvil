@@ -303,9 +303,15 @@ fn focused() *Session {
 /// True when the SESSIONS/EXPLORER sidebar is shown (Option A chrome).
 var sidebar_open: bool = true;
 
+/// Current sidebar width (device px); user-draggable within sane bounds.
+var sidebar_w: f32 = chrome.sidebar_w;
+var sidebar_dragging: bool = false;
+const sidebar_w_min: f32 = 180;
+const sidebar_w_max: f32 = 520;
+
 /// Left chrome width: activity rail plus the sidebar when open.
 fn leftChromeW() f32 {
-    return chrome.rail_w + (if (sidebar_open) chrome.sidebar_w else 0);
+    return chrome.rail_w + (if (sidebar_open) sidebar_w else 0);
 }
 
 /// True when the right context drawer (RUNS / TRACE / AGENT) is shown (Option C).
@@ -675,6 +681,26 @@ fn contains(r: pane.Rect, x: f32, y: f32) bool {
 /// stay in the focused pane.
 export fn anvil_mouse(kind: c_int, x: f32, y: f32) callconv(.c) void {
     if (!ready) return;
+    // Sidebar resize: grab the right edge and drag. A 6px band around the edge
+    // starts the drag; subsequent motion sets the width; release ends it.
+    if (sidebar_open) {
+        const edge = leftChromeW();
+        const in_body = y > bar_h and y < win_h - chrome.status_bar_h;
+        if (kind == 0 and in_body and @abs(x - edge) <= 6) {
+            sidebar_dragging = true;
+            return;
+        }
+        if (sidebar_dragging) {
+            if (kind == 2) {
+                sidebar_dragging = false;
+                return;
+            }
+            sidebar_w = std.math.clamp(x - chrome.rail_w, sidebar_w_min, sidebar_w_max);
+            relayout();
+            markDirty();
+            return;
+        }
+    }
     // EXPLORER click: a press inside the sidebar's file list inserts the
     // entry's name at the focused pane's prompt (the "open" action).
     if (kind == 0 and sidebar_open and x >= chrome.rail_w and x < leftChromeW() and y >= exp_row_y0) {
@@ -1473,13 +1499,13 @@ fn emitShellRects(th: *const theme.Theme, np: usize) usize {
     putRect(ri, 0, body_top, chrome.rail_w, body_h, chrome.graphite); // rail bg
     ri += 1;
     if (sidebar_open) {
-        putRect(ri, chrome.rail_w, body_top, chrome.sidebar_w, body_h, chrome.charcoal); // sidebar bg
+        putRect(ri, chrome.rail_w, body_top, sidebar_w, body_h, chrome.charcoal); // sidebar bg
         ri += 1;
         // Active SESSIONS row highlight.
         if (mgr.tabs.items.len > 0) {
             const ry = body_top + chrome.sidebar_header_h + 8 +
                 @as(f32, @floatFromInt(mgr.active_tab)) * chrome.row_h;
-            putRect(ri, chrome.rail_w + 4, ry, chrome.sidebar_w - 8, chrome.row_h, chrome.ash_soft);
+            putRect(ri, chrome.rail_w + 4, ry, sidebar_w - 8, chrome.row_h, chrome.ash_soft);
             ri += 1;
         }
     }
@@ -1788,7 +1814,7 @@ fn emitSidebar(start: usize) usize {
     }
 
     // Session rows.
-    const right = chrome.rail_w + chrome.sidebar_w - renderer.pad_x;
+    const right = chrome.rail_w + sidebar_w - renderer.pad_x;
     var y: f32 = bar_h + chrome.sidebar_header_h + 8;
     var tb: [128]u8 = undefined;
     var ti: usize = 0;
