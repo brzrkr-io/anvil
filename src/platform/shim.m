@@ -62,6 +62,8 @@ extern void anvil_focus_dir(int dir);
 extern void anvil_new_tab(void);
 extern void anvil_cycle_tab(int delta);
 extern void anvil_select_tab(int idx);
+extern size_t anvil_focused_cwd(char *buf, size_t cap);
+extern size_t anvil_window_title(char *buf, size_t cap);
 extern void anvil_close_tab(void);
 extern void anvil_jump_prompt(int dir);
 extern void anvil_resize_pane(int dir);
@@ -296,6 +298,15 @@ static void render(void) {
     if (!anvil_poll()) {
         [NSApp terminate:nil];
         return;
+    }
+
+    // Reflect the active tab's label as the window title (Mission Control,
+    // Window menu, Cmd+`). Only assign on change to avoid per-frame churn.
+    char tbuf[256];
+    size_t tn = anvil_window_title(tbuf, sizeof(tbuf));
+    if (tn > 0 && gWindow) {
+        NSString *title = [[NSString alloc] initWithBytes:tbuf length:tn encoding:NSUTF8StringEncoding];
+        if (title && ![gWindow.title isEqualToString:title]) gWindow.title = title;
     }
 
     FrameData fd = {0};
@@ -592,14 +603,22 @@ static void layoutTrafficLights(NSWindow *win) {
     unichar ilc = (ich >= 'A' && ich <= 'Z') ? ich + 32 : ich;
     BOOL cmd = (f & NSEventModifierFlagCommand) != 0;
 
-    // Cmd+N opens a new window (separate process, no session restore/save).
+    // Cmd+N opens a new window (separate process, no session restore/save),
+    // starting in the focused pane's cwd when known.
     if (cmd && ilc == 'n') {
         NSString *exe = [[NSBundle mainBundle] executablePath];
         if (!exe) exe = [[NSProcessInfo processInfo].arguments firstObject];
         if (exe) {
+            NSMutableArray *args = [@[@"--new"] mutableCopy];
+            char cbuf[1024];
+            size_t cn = anvil_focused_cwd(cbuf, sizeof(cbuf));
+            if (cn > 0) {
+                NSString *cwd = [[NSString alloc] initWithBytes:cbuf length:cn encoding:NSUTF8StringEncoding];
+                if (cwd) [args addObject:cwd];
+            }
             NSTask *task = [[NSTask alloc] init];
             task.launchPath = exe;
-            task.arguments = @[@"--new"];
+            task.arguments = args;
             [task launch];
         }
         return;

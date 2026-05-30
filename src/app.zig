@@ -475,9 +475,39 @@ export fn anvil_new_tab() callconv(.c) void {
     if (!ready) return;
     const ws = workspaceRect();
     const g = renderer.paneGrid(ws.w, ws.h);
-    mgr.newTab(g.rows, g.cols) catch return;
+    var cwd_buf: [1024]u8 = undefined;
+    var cwd: []const u8 = "";
+    if (mgr.focusedSession()) |s| {
+        const c = s.term.cwd();
+        const n = @min(c.len, cwd_buf.len);
+        @memcpy(cwd_buf[0..n], c[0..n]);
+        cwd = cwd_buf[0..n];
+    }
+    mgr.newTabCwd(g.rows, g.cols, cwd) catch return;
     applyCursorDefault();
     relayout();
+}
+
+/// Copy the focused pane's cwd into `buf`, returning its length (0 if none).
+/// Used by the shim to open a new window in the same directory.
+export fn anvil_focused_cwd(buf: [*]u8, cap: usize) callconv(.c) usize {
+    if (!ready) return 0;
+    const s = mgr.focusedSession() orelse return 0;
+    const cwd = s.term.cwd();
+    const n = @min(cwd.len, cap);
+    @memcpy(buf[0..n], cwd[0..n]);
+    return n;
+}
+
+/// Copy the active tab's display label into `buf`, returning its length.
+/// Used by the shim to set the NSWindow title.
+export fn anvil_window_title(buf: [*]u8, cap: usize) callconv(.c) usize {
+    if (!ready) return 0;
+    var tmp: [256]u8 = undefined;
+    const label = tabLabel(mgr.active_tab, &tmp);
+    const n = @min(label.len, cap);
+    @memcpy(buf[0..n], label[0..n]);
+    return n;
 }
 
 /// delta: signed tab offset, wraps.

@@ -101,7 +101,12 @@ pub const SessionManager = struct {
 
     /// Open a new tab with a fresh session, made active.
     pub fn newTab(self: *SessionManager, rows: u16, cols: u16) !void {
-        const id = try self.add(rows, cols);
+        return self.newTabCwd(rows, cols, "");
+    }
+
+    /// Like newTab but starts the shell in `cwd` (empty → default).
+    pub fn newTabCwd(self: *SessionManager, rows: u16, cols: u16, cwd: []const u8) !void {
+        const id = try self.addWithCwd(rows, cols, cwd);
         try self.tabs.append(self.alloc, pane.PaneTree.init(self.alloc, id));
         self.active_tab = self.tabs.items.len - 1;
         self.focused = id;
