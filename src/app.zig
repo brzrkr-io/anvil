@@ -1548,13 +1548,18 @@ fn putSans(n: *usize, x: f32, y: f32, fg: theme.Rgb, bg: theme.Rgb, cp: u21) f32
     const slot = renderer.atlas.slotForKey(atlasmod.sans_tag | @as(u32, cp));
     // Snap glyph origin to whole device pixels: fractional positions make the
     // nearest-sampled atlas glyph straddle pixel boundaries and look blurry.
+    // Width tiles to the next glyph's snapped origin (round(x+adv) - round(x))
+    // rather than the raw advance: opaque glyph quads must meet edge-to-edge, or
+    // a fractional overlap lets the next glyph's bg wipe the previous glyph's
+    // rightmost ink column (a hairline seam after wide glyphs like 'm').
+    const x0 = @round(x);
     instances[n.*] = .{
-        .x = @round(x),
+        .x = x0,
         .y = @round(y),
         .fg = fg.f32x4(),
         .bg = bg.f32x4(),
         .uv = atlasmod.Atlas.slotUV(slot),
-        .w = adv,
+        .w = @round(x + adv) - x0,
         .h = chromeH(),
     };
     n.* += 1;
