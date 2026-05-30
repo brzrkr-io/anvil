@@ -27,6 +27,7 @@ pub const Config = struct {
     cursor_smooth: bool = true,
     scroll_smooth: bool = true,
     background_opacity: f32 = 1.0,
+    font_weight: f32 = 0,
 
     pub fn themeVariant(self: *const Config) []const u8 {
         return self.theme_variant[0..self.theme_variant_len];
@@ -176,6 +177,16 @@ fn applyKey(cfg: *Config, key: []const u8, val: []const u8, err: ?*[128]u8, err_
             setErr(err, err_len, "config.toml: background_opacity {s} out of range 0.0-1.0 (line {})", .{ val, line_num });
         } else |_| {
             setErr(err, err_len, "config.toml: invalid background_opacity '{s}' (line {})", .{ val, line_num });
+        }
+    } else if (std.mem.eql(u8, key, "font_weight")) {
+        if (std.fmt.parseFloat(f32, val)) |v| {
+            if (v >= 0.0 and v <= 2.0) {
+                cfg.font_weight = v;
+                return;
+            }
+            setErr(err, err_len, "config.toml: font_weight {s} out of range 0.0-2.0 (line {})", .{ val, line_num });
+        } else |_| {
+            setErr(err, err_len, "config.toml: invalid font_weight '{s}' (line {})", .{ val, line_num });
         }
     } else if (std.mem.eql(u8, key, "theme_variant")) {
         const n = @min(val.len, cfg.theme_variant.len);
@@ -350,4 +361,17 @@ test "parseFull: background_opacity out of range yields error" {
     const r = parseFull("background_opacity = 1.5\n");
     try std.testing.expect(r.err_len > 0);
     try std.testing.expect(std.mem.indexOf(u8, r.errMsg(), "background_opacity") != null);
+}
+
+test "parse reads font_weight; defaults 0" {
+    const def = parse("theme = dark\n");
+    try std.testing.expectEqual(@as(f32, 0), def.font_weight);
+    const cfg = parse("font_weight = 0.6\n");
+    try std.testing.expectEqual(@as(f32, 0.6), cfg.font_weight);
+}
+
+test "parseFull: font_weight out of range yields error" {
+    const r = parseFull("font_weight = 5\n");
+    try std.testing.expect(r.err_len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, r.errMsg(), "font_weight") != null);
 }

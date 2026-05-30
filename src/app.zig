@@ -226,7 +226,7 @@ var scr_anim_last_ms: i64 = 0;
 ///   - session id changed (tab/pane switch)
 ///   - large jump (> grid.rows lines)
 fn animateScroll(target_lines: f32, id: usize, rows: u16) f32 {
-    const tau: f32 = 0.028;
+    const tau: f32 = 0.13; // slower than the cursor: scroll glide is meant to be seen
     const max_dt_ms: i64 = 64;
 
     const now = nowMs();
@@ -388,6 +388,7 @@ const AtlasParams = extern struct {
     cols: u32,
     rows: u32,
     pt_size: f32,
+    weight: f32,
 };
 
 export fn anvil_shader_src(out_len: *usize) callconv(.c) [*]const u8 {
@@ -407,7 +408,7 @@ export fn anvil_icon_data(out_len: *usize) callconv(.c) [*]const u8 {
 
 export fn anvil_atlas_params(out: *AtlasParams) callconv(.c) void {
     if (!cfg_loaded) loadConfig(); // font size must be known before the atlas builds
-    out.* = .{ .cols = atlasmod.cols, .rows = atlasmod.rows_n, .pt_size = cfg.font_size };
+    out.* = .{ .cols = atlasmod.cols, .rows = atlasmod.rows_n, .pt_size = cfg.font_size, .weight = cfg.font_weight };
 }
 
 /// Queue the common TUI glyph set into the atlas so drainPending can upload

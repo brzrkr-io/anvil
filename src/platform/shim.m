@@ -51,6 +51,7 @@ typedef struct {
 typedef struct {
     uint32_t cols, rows;
     float pt_size;
+    float weight;
 } AtlasParams;
 
 extern const char *anvil_shader_src(size_t *len);
@@ -124,6 +125,7 @@ static CTFontRef gFont;   // kept alive for lazy glyph rasterization
 static int gGW, gGH;      // glyph cell size in pixels
 static uint32_t gCols, gRows; // atlas grid dimensions (cells)
 static CGFloat gDescent;  // font descent, for baseline placement
+static CGFloat gGlyphStroke; // synthetic-bold weight, raw config 0..2 (0 = off)
 static CAMetalLayer *gLayer;
 static double gLastW, gLastH;
 static NSWindow *gWindow;
@@ -184,6 +186,7 @@ static void buildAtlas(void) {
     gRows = ap.rows;
 
     CGFloat sz = ap.pt_size * ATLAS_SCALE;
+    gGlyphStroke = (CGFloat)ap.weight;
     // Primary font is the bundled Blex Mono Nerd Font (embedded by Zig), so
     // icon/powerline glyphs render directly. System cascade still fills gaps.
     gFont = NULL;
@@ -246,15 +249,27 @@ static void rasterizeGlyph(uint32_t cp, uint32_t slot, uint32_t wide) {
     CGColorSpaceRef gray = CGColorSpaceCreateDeviceGray();
     CGContextRef ctx = CGBitmapContextCreate(buf, w, gGH, 8, w, gray, kCGImageAlphaNone);
     CGContextSetGrayFillColor(ctx, 1.0, 1.0);
+    CGContextSetGrayStrokeColor(ctx, 1.0, 1.0); // stroke shares the fill color
 
     CFStringRef s = CFStringCreateWithBytes(NULL, (const UInt8 *)&cp, 4,
                                             kCFStringEncodingUTF32LE, false);
     if (s) {
         // Draw with the context fill color (white) so the R8 mask captures
         // coverage; without this CTLine defaults to black and the slot stays 0.
-        CFStringRef keys[2] = {kCTFontAttributeName, kCTForegroundColorFromContextAttributeName};
-        CFTypeRef vals[2] = {gFont, kCFBooleanTrue};
-        CFDictionaryRef attrs = CFDictionaryCreate(NULL, (const void **)keys, (const void **)vals, 2,
+        CFStringRef keys[3] = {kCTFontAttributeName, kCTForegroundColorFromContextAttributeName,
+                               kCTStrokeWidthAttributeName};
+        CFTypeRef vals[3] = {gFont, kCFBooleanTrue, NULL};
+        CFIndex nattr = 2;
+        // Synthetic bold: a negative stroke width (percent of em) makes CoreText
+        // fill AND stroke the glyph, widening every stem. weight 1.0 -> -5%.
+        CFNumberRef sw = NULL;
+        if (gGlyphStroke > 0.0) {
+            double pct = -5.0 * (double)gGlyphStroke;
+            sw = CFNumberCreate(NULL, kCFNumberDoubleType, &pct);
+            vals[2] = sw;
+            nattr = 3;
+        }
+        CFDictionaryRef attrs = CFDictionaryCreate(NULL, (const void **)keys, (const void **)vals, nattr,
                                                    &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
         CFAttributedStringRef as = CFAttributedStringCreate(NULL, s, attrs);
         CTLineRef line = CTLineCreateWithAttributedString(as);
@@ -263,6 +278,7 @@ static void rasterizeGlyph(uint32_t cp, uint32_t slot, uint32_t wide) {
         CFRelease(line);
         CFRelease(as);
         CFRelease(attrs);
+        if (sw) CFRelease(sw);
         CFRelease(s);
     }
 
