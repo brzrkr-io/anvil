@@ -268,6 +268,18 @@ pub const SessionManager = struct {
         return id;
     }
 
+    /// Open `url` in a web (WKWebView) pane. The native view is created lazily
+    /// by app.zig on first layout.
+    pub fn addWeb(self: *SessionManager, url: []const u8, rows: u16, cols: u16) !usize {
+        const id = self.next_id;
+        var s = try Session.initWeb(self.alloc, rows, cols, url);
+        errdefer s.deinit();
+        s.id = id;
+        try self.sessions.append(self.alloc, s);
+        self.next_id += 1;
+        return id;
+    }
+
     fn removeSession(self: *SessionManager, id: usize) void {
         for (self.sessions.items, 0..) |*s, i| {
             if (s.id == id) {
@@ -342,6 +354,16 @@ test "selectTab jumps to index and ignores out-of-range" {
     try std.testing.expectEqual(tab0_focus, mgr.focused);
     mgr.selectTab(9); // out of range: no-op
     try std.testing.expectEqual(@as(usize, 0), mgr.active_tab);
+}
+
+test "addWeb creates a .web session with the given url" {
+    var mgr = SessionManager{ .alloc = std.testing.allocator };
+    defer mgr.deinit();
+    try mgr.spawnFirst(24, 80);
+    const id = try mgr.addWeb("https://example.com", 24, 80);
+    const s = mgr.byId(id).?;
+    try std.testing.expectEqual(@import("session.zig").Kind.web, s.kind);
+    try std.testing.expectEqualStrings("https://example.com", s.web.?.url());
 }
 
 test "closeTab kills its sessions and keeps at least one tab" {
