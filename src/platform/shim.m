@@ -8,6 +8,7 @@
 #import <ImageIO/ImageIO.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <UserNotifications/UserNotifications.h>
+#import <WebKit/WebKit.h>
 #import <unistd.h>
 
 typedef struct {
@@ -1037,6 +1038,93 @@ static void layoutTrafficLights(NSWindow *win) {
     render();
 }
 @end
+
+// --- Web pane bridge -------------------------------------------------------
+// Zig receives KVO/crash events. kind: 0=title 1=progress 2=nav 3=failed.
+extern void anvil_web_event(void *handle, int kind, const void *payload, size_t len);
+
+@interface AnvilWebDelegate : NSObject <WKNavigationDelegate>
+@end
+@implementation AnvilWebDelegate
+- (void)webViewWebContentProcessDidTerminate:(WKWebView *)wv { [wv reload]; }
+- (void)webView:(WKWebView *)wv didFailNavigation:(WKNavigation *)n withError:(NSError *)e {
+    anvil_web_event((__bridge void *)wv, 3, NULL, 0);
+}
+- (void)webView:(WKWebView *)wv didFailProvisionalNavigation:(WKNavigation *)n withError:(NSError *)e {
+    anvil_web_event((__bridge void *)wv, 3, NULL, 0);
+}
+@end
+static AnvilWebDelegate *gWebDelegate;
+
+@interface AnvilWebObserver : NSObject
+@end
+@implementation AnvilWebObserver
+- (void)observeValueForKeyPath:(NSString *)kp ofObject:(id)obj
+                        change:(NSDictionary *)c context:(void *)ctx {
+    WKWebView *wv = (WKWebView *)obj;
+    void *h = (__bridge void *)wv;
+    if ([kp isEqualToString:@"title"]) {
+        const char *t = wv.title.UTF8String ?: "";
+        anvil_web_event(h, 0, t, strlen(t));
+    } else if ([kp isEqualToString:@"estimatedProgress"]) {
+        float p = (float)wv.estimatedProgress;
+        anvil_web_event(h, 1, &p, sizeof(p));
+    } else {
+        unsigned char nav[2] = { wv.canGoBack ? 1 : 0, wv.canGoForward ? 1 : 0 };
+        anvil_web_event(h, 2, nav, 2);
+    }
+}
+@end
+static AnvilWebObserver *gWebObserver;
+
+void *anvil_web_create(void) {
+    if (!gWebDelegate) gWebDelegate = [[AnvilWebDelegate alloc] init];
+    if (!gWebObserver) gWebObserver = [[AnvilWebObserver alloc] init];
+    WKWebViewConfiguration *cfg = [[WKWebViewConfiguration alloc] init];
+    cfg.websiteDataStore = [WKWebsiteDataStore nonPersistentDataStore];
+    WKWebView *wv = [[WKWebView alloc] initWithFrame:NSZeroRect configuration:cfg];
+    wv.navigationDelegate = gWebDelegate;
+    wv.hidden = YES;
+    [wv addObserver:gWebObserver forKeyPath:@"title" options:0 context:NULL];
+    [wv addObserver:gWebObserver forKeyPath:@"estimatedProgress" options:0 context:NULL];
+    [wv addObserver:gWebObserver forKeyPath:@"canGoBack" options:0 context:NULL];
+    [wv addObserver:gWebObserver forKeyPath:@"canGoForward" options:0 context:NULL];
+    [gWindow.contentView addSubview:wv];
+    return (__bridge_retained void *)wv;
+}
+
+void anvil_web_navigate(void *handle, const char *url) {
+    if (!handle) return;
+    WKWebView *wv = (__bridge WKWebView *)handle;
+    NSString *s = [NSString stringWithUTF8String:url];
+    NSURL *u = [NSURL URLWithString:s];
+    if (u) [wv loadRequest:[NSURLRequest requestWithURL:u]];
+}
+
+void anvil_web_back(void *handle)    { if (handle) [(__bridge WKWebView *)handle goBack]; }
+void anvil_web_forward(void *handle) { if (handle) [(__bridge WKWebView *)handle goForward]; }
+void anvil_web_reload(void *handle)  { if (handle) [(__bridge WKWebView *)handle reload]; }
+
+void anvil_web_set_frame(void *handle, double x, double y, double w, double h) {
+    if (!handle) return;
+    WKWebView *wv = (__bridge WKWebView *)handle;
+    CGFloat ch = gWindow.contentView.bounds.size.height;
+    wv.frame = NSMakeRect(x, ch - y - h, w, h);
+}
+
+void anvil_web_set_hidden(void *handle, bool hidden) {
+    if (handle) ((__bridge WKWebView *)handle).hidden = hidden ? YES : NO;
+}
+
+void anvil_web_destroy(void *handle) {
+    if (!handle) return;
+    WKWebView *wv = (__bridge_transfer WKWebView *)handle;
+    [wv removeObserver:gWebObserver forKeyPath:@"title"];
+    [wv removeObserver:gWebObserver forKeyPath:@"estimatedProgress"];
+    [wv removeObserver:gWebObserver forKeyPath:@"canGoBack"];
+    [wv removeObserver:gWebObserver forKeyPath:@"canGoForward"];
+    [wv removeFromSuperview];
+}
 
 @interface AnvilController : NSObject <NSApplicationDelegate, NSWindowDelegate>
 @end

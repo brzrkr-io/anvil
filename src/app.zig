@@ -61,6 +61,21 @@ var instances: [max_instances]inst.CellInstance = undefined;
 var pane_buf: [max_panes]pane.PaneRect = undefined;
 var pane_range_buf: [max_panes + 1]inst.PaneRange = undefined;
 var divider_rects: [max_panes]pane.Rect = undefined;
+
+const webpane = @import("web/pane.zig");
+
+extern fn anvil_web_create() callconv(.c) ?*anyopaque;
+extern fn anvil_web_navigate(handle: ?*anyopaque, url: [*:0]const u8) callconv(.c) void;
+extern fn anvil_web_back(handle: ?*anyopaque) callconv(.c) void;
+extern fn anvil_web_forward(handle: ?*anyopaque) callconv(.c) void;
+extern fn anvil_web_reload(handle: ?*anyopaque) callconv(.c) void;
+extern fn anvil_web_set_frame(handle: ?*anyopaque, x: f64, y: f64, w: f64, h: f64) callconv(.c) void;
+extern fn anvil_web_set_hidden(handle: ?*anyopaque, hidden: bool) callconv(.c) void;
+extern fn anvil_web_destroy(handle: ?*anyopaque) callconv(.c) void;
+
+const WebHandle = struct { id: usize, handle: ?*anyopaque };
+var web_handles: [max_panes]WebHandle = undefined;
+var web_handle_count: usize = 0;
 var win_w: f32 = 0;
 var win_h: f32 = 0;
 var ready = false;
@@ -1474,6 +1489,93 @@ export fn anvil_copy(out_len: *usize) callconv(.c) [*]const u8 {
     return &copy_buf;
 }
 
+fn webHandleFor(id: usize) ?*anyopaque {
+    for (web_handles[0..web_handle_count]) |wh| {
+        if (wh.id == id) return wh.handle;
+    }
+    return null;
+}
+
+fn reconcileWebPanes(panes: []const pane.PaneRect) void {
+    var i: usize = 0;
+    while (i < web_handle_count) {
+        const wh = web_handles[i];
+        var live = false;
+        for (panes) |p| {
+            if (p.id != wh.id) continue;
+            const s = mgr.byId(p.id) orelse break;
+            if (s.kind == .web) live = true;
+            break;
+        }
+        if (!live) {
+            anvil_web_destroy(wh.handle);
+            web_handles[i] = web_handles[web_handle_count - 1];
+            web_handle_count -= 1;
+        } else i += 1;
+    }
+    for (panes) |p| {
+        const s = mgr.byId(p.id) orelse continue;
+        if (s.kind != .web) continue;
+        var handle = webHandleFor(p.id);
+        if (handle == null and web_handle_count < max_panes) {
+            handle = anvil_web_create();
+            web_handles[web_handle_count] = .{ .id = p.id, .handle = handle };
+            web_handle_count += 1;
+            if (s.web) |*w| {
+                var buf: [2048:0]u8 = undefined;
+                const u = w.url();
+                const nn = @min(u.len, buf.len - 1);
+                @memcpy(buf[0..nn], u[0..nn]);
+                buf[nn] = 0;
+                anvil_web_navigate(handle, &buf);
+            }
+        }
+        const r = p.rect;
+        const body = webpane.bodyFrame(.{
+            .x = @as(f64, @floatCast(r.x)),
+            .y = @as(f64, @floatCast(r.y)),
+            .w = @as(f64, @floatCast(r.w)),
+            .h = @as(f64, @floatCast(r.h)),
+        });
+        anvil_web_set_frame(handle, body.x, body.y, body.w, body.h);
+        anvil_web_set_hidden(handle, false);
+    }
+    for (web_handles[0..web_handle_count]) |wh| {
+        var on_tab = false;
+        for (panes) |p| {
+            if (p.id == wh.id) {
+                on_tab = true;
+                break;
+            }
+        }
+        if (!on_tab) anvil_web_set_hidden(wh.handle, true);
+    }
+}
+
+export fn anvil_web_event(handle: ?*anyopaque, kind: c_int, payload: ?*const anyopaque, len: usize) callconv(.c) void {
+    var target_id: ?usize = null;
+    for (web_handles[0..web_handle_count]) |wh| {
+        if (wh.handle == handle) {
+            target_id = wh.id;
+            break;
+        }
+    }
+    const id = target_id orelse return;
+    const s = mgr.byId(id) orelse return;
+    if (s.web) |*w| {
+        switch (kind) {
+            0 => if (payload) |p| w.setTitle(@as([*]const u8, @ptrCast(p))[0..len]),
+            1 => if (payload) |p| w.setProgress(@as(*const f32, @ptrCast(@alignCast(p))).*),
+            2 => if (payload != null and len >= 2) {
+                const b = @as([*]const u8, @ptrCast(payload.?));
+                w.setNav(b[0] != 0, b[1] != 0);
+            },
+            3 => w.setFailed(),
+            else => {},
+        }
+    }
+}
+
 export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
     const th = activeTheme();
     palette.setActive(th);
@@ -1573,6 +1675,7 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
             pr_n += 1;
         }
     }
+    reconcileWebPanes(pane_buf[0..np]);
     // Base shell overlay rects (panel frame + header strip + status-bar bg),
     // emitted every frame before any modal rects. These draw in the overlay
     // pass (over terminal cells, under palette text).
