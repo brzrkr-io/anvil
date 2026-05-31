@@ -144,14 +144,20 @@ pub const Editor = struct {
 
     // --- cursor movement -------------------------------------------------
 
-    /// Width of the line-number gutter: digit count of the last line number plus
-    /// one trailing pad space. Depends only on `lines.len`, so the content column
-    /// stays fixed while scrolling. Callers clamp to the grid width.
+    /// Blank columns between the explorer wall and the first digit. Numbers are
+    /// left-aligned at this margin so a given line number sits at the same column
+    /// in every file, independent of the file's length.
+    const gutter_margin: usize = 1;
+
+    /// Width of the line-number gutter: the fixed left margin, the digit count of
+    /// the last line number, and one trailing pad space. Depends only on
+    /// `lines.len`, so the content column stays fixed while scrolling. Callers
+    /// clamp to the grid width.
     fn gutterWidth(self: *const Editor) usize {
         var n = self.lines.items.len; // always >= 1
         var digits: usize = 1;
         while (n >= 10) : (n /= 10) digits += 1;
-        return digits + 1;
+        return gutter_margin + digits + 1;
     }
 
     fn lineLen(self: *Editor, row: usize) usize {
@@ -307,19 +313,25 @@ pub const Editor = struct {
 
     // --- render ----------------------------------------------------------
 
-    /// Paint a right-aligned 1-based line number into columns [0, gw) of screen
-    /// row `sr`. The current line's number is bright; others are dim. `term.reset`
-    /// has already blanked the row, so unwritten leading columns stay spaces,
-    /// giving right-alignment for free.
+    /// Paint a 1-based line number left-aligned at `gutter_margin` columns from
+    /// the explorer wall, so the same line number lands on the same column in
+    /// every file regardless of length. The current line's number is bright;
+    /// others are dim. `term.reset` has already blanked the row, so surrounding
+    /// columns stay spaces.
     fn drawGutter(self: *Editor, term: *Terminal, sr: u16, gw: u16, li: usize) void {
-        if (gw < 2) return; // no room for a digit plus the pad space
+        if (@as(usize, gw) < gutter_margin + 2) return; // need margin + a digit + the pad
         const fg: Color = if (li == self.cur_row) .default else .{ .indexed = 8 };
-        var num = li + 1;
-        var c: u16 = gw - 2; // rightmost digit column (gw-1 is the pad space)
+        const num = li + 1;
+        // Digit count fixes the number's rightmost column; we then fill left.
+        var nd: u16 = 1;
+        var t = num / 10;
+        while (t > 0) : (t /= 10) nd += 1;
+        var rem = num;
+        var c: u16 = @as(u16, @intCast(gutter_margin)) + nd - 1;
         while (true) {
-            term.grid.at(sr, c).* = .{ .cp = @intCast('0' + (num % 10)), .fg = fg };
-            num /= 10;
-            if (num == 0 or c == 0) break;
+            term.grid.at(sr, c).* = .{ .cp = @intCast('0' + (rem % 10)), .fg = fg };
+            rem /= 10;
+            if (rem == 0 or c == 0) break;
             c -= 1;
         }
     }
@@ -486,11 +498,11 @@ test "tab expands to spaces" {
 test "gutterWidth counts digits of the last line plus a pad space" {
     var ed = try Editor.initEmpty(std.testing.allocator);
     defer ed.deinit();
-    // One line -> "1 " -> width 2.
-    try std.testing.expectEqual(@as(usize, 2), ed.gutterWidth());
-    // Ten lines -> "10 " -> width 3.
-    try ed.input("a\nb\nc\nd\ne\nf\ng\nh\ni\nj");
+    // One line -> margin + "1" + pad -> width 3.
     try std.testing.expectEqual(@as(usize, 3), ed.gutterWidth());
+    // Ten lines -> margin + "10" + pad -> width 4.
+    try ed.input("a\nb\nc\nd\ne\nf\ng\nh\ni\nj");
+    try std.testing.expectEqual(@as(usize, 4), ed.gutterWidth());
 }
 
 test "scroll clamps to the document bounds" {
@@ -517,8 +529,8 @@ test "render keeps a manual scroll instead of snapping back to the cursor" {
     // The viewport stayed where the wheel put it (line "2" at the top), not
     // snapped back to the cursor's line.
     try std.testing.expectEqual(@as(usize, 2), ed.top);
-    // 5 lines -> gw = 2; content shifts to col 2.
-    try std.testing.expectEqual(@as(u21, '2'), term.grid.at(0, 2).cp);
+    // 5 lines -> gw = 3; content shifts to col 3.
+    try std.testing.expectEqual(@as(u21, '2'), term.grid.at(0, 3).cp);
     // Cursor is clamped on-screen, no underflow.
     try std.testing.expectEqual(@as(u16, 0), term.cy);
     // Typing re-enables follow and brings the cursor back into view.
@@ -533,55 +545,55 @@ test "render writes cells and places the cursor" {
     defer term.deinit();
     var ed = try Editor.initEmpty(alloc);
     defer ed.deinit();
-    try ed.input("ab"); // one line -> gw = 2
+    try ed.input("ab"); // one line -> gw = 3
     ed.render(&term, 4, 10);
-    // Gutter digit '1' for the (current) first line at col gw-2 = 0.
-    try std.testing.expectEqual(@as(u21, '1'), term.grid.at(0, 0).cp);
-    // Content shifted right by gw = 2.
-    try std.testing.expectEqual(@as(u21, 'a'), term.grid.at(0, 2).cp);
-    try std.testing.expectEqual(@as(u21, 'b'), term.grid.at(0, 3).cp);
+    // Gutter digit '1' left-aligned at col gutter_margin = 1.
+    try std.testing.expectEqual(@as(u21, '1'), term.grid.at(0, 1).cp);
+    // Content shifted right by gw = 3.
+    try std.testing.expectEqual(@as(u21, 'a'), term.grid.at(0, 3).cp);
+    try std.testing.expectEqual(@as(u21, 'b'), term.grid.at(0, 4).cp);
     try std.testing.expectEqual(@as(u16, 0), term.cy);
-    try std.testing.expectEqual(@as(u16, 4), term.cx); // cur_col 2 + gw 2
+    try std.testing.expectEqual(@as(u16, 5), term.cx); // cur_col 2 + gw 3
 }
 
-test "gutter shows right-aligned line numbers, current line brighter" {
+test "gutter shows left-aligned line numbers, current line brighter" {
     const alloc = std.testing.allocator;
     var term = try Terminal.init(alloc, 4, 20);
     defer term.deinit();
     var ed = try Editor.initEmpty(alloc);
     defer ed.deinit();
-    // 12 lines -> gw = digits(12)+1 = 3. Numbers right-aligned in [0,gw-1),
-    // col gw-1 (=2) is the pad space.
+    // 12 lines -> gw = margin(1) + digits(2) + pad(1) = 4. Numbers left-aligned
+    // at col gutter_margin = 1, so every number shares the same left edge.
     try ed.input("l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12");
     ed.cur_row = 0;
     ed.cur_col = 0;
     ed.top = 0;
     ed.render(&term, 4, 20);
-    // Row 0 = line 1 -> " 1": col0 blank, col1 '1'.
+    // Row 0 = line 1 -> "1": col0 blank (margin), col1 '1'.
     try std.testing.expectEqual(@as(u21, ' '), term.grid.at(0, 0).cp);
     try std.testing.expectEqual(@as(u21, '1'), term.grid.at(0, 1).cp);
-    // Row 3 = line 4 -> " 4".
+    // Row 3 = line 4 -> "4" at the same left edge, col1.
     try std.testing.expectEqual(@as(u21, '4'), term.grid.at(3, 1).cp);
-    // Content starts at col gw = 3.
-    try std.testing.expectEqual(@as(u21, 'l'), term.grid.at(0, 3).cp);
+    // Content starts at col gw = 4.
+    try std.testing.expectEqual(@as(u21, 'l'), term.grid.at(0, 4).cp);
     // Current line number is bright (.default); others dim (indexed 8).
     try std.testing.expectEqual(Color.default, term.grid.at(0, 1).fg);
     try std.testing.expectEqual(Color{ .indexed = 8 }, term.grid.at(3, 1).fg);
-    // Multi-digit numbers fill both digit columns. Scroll so line 10 is visible.
+    // Multi-digit numbers extend rightward from the margin. Scroll to line 10.
     ed.top = 8; // viewport shows lines 9..12
     ed.follow = false; // keep the manual viewport; don't snap to the cursor
     ed.render(&term, 4, 20);
-    // Row 1 = line 10 -> "10": col0 '1', col1 '0'.
-    try std.testing.expectEqual(@as(u21, '1'), term.grid.at(1, 0).cp);
-    try std.testing.expectEqual(@as(u21, '0'), term.grid.at(1, 1).cp);
+    // Row 1 = line 10 -> "10": col1 '1', col2 '0'.
+    try std.testing.expectEqual(@as(u21, '1'), term.grid.at(1, 1).cp);
+    try std.testing.expectEqual(@as(u21, '0'), term.grid.at(1, 2).cp);
 }
 
 test "click maps past the gutter to the buffer column" {
     const alloc = std.testing.allocator;
     var ed = try Editor.initEmpty(alloc);
     defer ed.deinit();
-    try ed.input("hello world"); // one line -> gw = 2
-    ed.click(0, 2 + 3, 4); // screen col gw+3 -> buffer col 3
+    try ed.input("hello world"); // one line -> gw = 3
+    ed.click(0, 3 + 3, 4); // screen col gw+3 -> buffer col 3
     try std.testing.expectEqual(@as(usize, 0), ed.cur_row);
     try std.testing.expectEqual(@as(usize, 3), ed.cur_col);
     // A click inside the gutter saturates to buffer column 0.

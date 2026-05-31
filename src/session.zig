@@ -237,9 +237,9 @@ test "editor session: load renders grid, type + save round-trips through disk" {
     defer s.deinit();
     try std.testing.expectEqual(Kind.editor, s.kind);
     // The buffer is rendered into the grid on open.
-    try std.testing.expectEqual(@as(u21, 'c'), s.term.grid.at(0, 2).cp); // content past gw=2
+    try std.testing.expectEqual(@as(u21, 'c'), s.term.grid.at(0, 3).cp); // content past gw=3
     try std.testing.expectEqual(@as(u16, 0), s.term.cy);
-    try std.testing.expectEqual(@as(u16, 2), s.term.cx); // cur_col 0 + gw 2
+    try std.testing.expectEqual(@as(u16, 3), s.term.cx); // cur_col 0 + gw 3
 
     try s.editorInput("\x1b[F"); // jump to end of line
     try s.editorInput(" // note");
@@ -262,12 +262,12 @@ test "reloadEditor swaps the buffer in place, repainting the grid" {
     var s = try Session.initEditor(alloc, 10, 40, a);
     defer s.deinit();
     try std.testing.expectEqualStrings("alpha", s.editor.?.lines.items[0].items);
-    try std.testing.expectEqual(@as(u21, 'a'), s.term.grid.at(0, 2).cp);
+    try std.testing.expectEqual(@as(u21, 'a'), s.term.grid.at(0, 3).cp);
 
     try s.reloadEditor(b);
     try std.testing.expectEqualStrings("bravo", s.editor.?.lines.items[0].items);
     // Grid repainted with the new file's first glyph.
-    try std.testing.expectEqual(@as(u21, 'b'), s.term.grid.at(0, 2).cp);
+    try std.testing.expectEqual(@as(u21, 'b'), s.term.grid.at(0, 3).cp);
 }
 
 test "poll: consumed=true on data, alive=false on eof" {
