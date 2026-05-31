@@ -10,6 +10,24 @@ const c = @cImport({
     @cInclude("sys/ioctl.h");
 });
 
+// libproc, declared by hand: its header (`libproc.h`) transitively pulls in
+// mach message descriptor types that Zig's translate-c can't size. We only need
+// proc_pidinfo(PROC_PIDVNODEPATHINFO) to read a process's cwd.
+const PROC_PIDVNODEPATHINFO = 9;
+const MAXPATHLEN = 1024;
+extern "c" fn proc_pidinfo(pid: c_int, flavor: c_int, arg: u64, buffer: ?*anyopaque, buffersize: c_int) c_int;
+// Mirrors `struct vnode_info_path`: a fixed `struct vnode_info` (152 bytes on
+// arm64/x86_64) followed by the path. We only read the path, so the prefix is
+// opaque padding.
+const VnodeInfoPath = extern struct {
+    vi: [152]u8,
+    path: [MAXPATHLEN]u8,
+};
+const ProcVnodePathInfo = extern struct {
+    cdir: VnodeInfoPath,
+    rdir: VnodeInfoPath,
+};
+
 pub const ReadResult = union(enum) {
     data: usize,
     would_block,
@@ -95,6 +113,21 @@ pub const Pty = struct {
         }
     }
 
+    /// The child shell's current working directory, queried straight from the
+    /// kernel via libproc. OSC-7-independent, so the explorer tracks `cd` even
+    /// when the shell emits no OSC 7. Writes into `buf`; empty slice on failure.
+    pub fn procCwd(self: *const Pty, buf: []u8) []const u8 {
+        if (self.pid < 0) return "";
+        var vpi: ProcVnodePathInfo = undefined;
+        const sz = proc_pidinfo(self.pid, PROC_PIDVNODEPATHINFO, 0, &vpi, @sizeOf(ProcVnodePathInfo));
+        if (sz <= 0) return "";
+        const path: [*:0]const u8 = @ptrCast(&vpi.cdir.path);
+        const s = std.mem.span(path);
+        const n = @min(s.len, buf.len);
+        @memcpy(buf[0..n], s[0..n]);
+        return buf[0..n];
+    }
+
     pub fn deinit(self: *Pty) void {
         if (self.master < 0) return;
         _ = c.close(self.master);
@@ -110,6 +143,18 @@ pub const Pty = struct {
 test "Pty has master + pid fields" {
     try std.testing.expect(@hasField(Pty, "master"));
     try std.testing.expect(@hasField(Pty, "pid"));
+}
+
+test "procCwd reports the child shell's working directory" {
+    var p = try Pty.spawnCwd(24, 80, "/tmp");
+    defer p.deinit();
+    // Give forkpty's child a moment to chdir before exec.
+    const ts = std.c.timespec{ .sec = 0, .nsec = 50 * std.time.ns_per_ms };
+    _ = std.c.nanosleep(&ts, null);
+    var buf: [1024]u8 = undefined;
+    const got = p.procCwd(&buf);
+    // /tmp is a symlink to /private/tmp on macOS; the kernel resolves it.
+    try std.testing.expect(std.mem.endsWith(u8, got, "/tmp"));
 }
 
 test "Pty round-trips bytes and reports eof on shell exit" {
