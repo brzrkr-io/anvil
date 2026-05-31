@@ -7,8 +7,9 @@ content vary across macOS versions and machines). Instead it asserts the
 three-zone operator-console shell is laid out as expected:
   - dimensions are 1600x1000
   - left SESSIONS/EXPLORER sidebar band is charcoal #1c1614
-  - center terminal panel body is Mineral Warm dark #0e0b0a
-  - right RUNS/TRACE/AGENT drawer band is charcoal #1c1614
+  - center+right terminal panel body is Mineral Warm dark #0e0b0a
+    (the RUNS/TRACE/AGENT drawer defaults closed, so the terminal
+    panel spans to the right edge)
   - bottom status bar is charcoal #1c1614
 
 Run: python3 tools/check-render.py /tmp/anvil-ci.png
@@ -102,9 +103,10 @@ def main():
     body = region_frac(rows, bpp, pane_bg, 420, 1240, 220, 860)
     assert body >= 0.60, f"panel body pane-bg only {body:.1%} (expected >= 60%)"
 
-    # 4. Right context drawer band (RUNS / TRACE / AGENT) is charcoal.
-    draw = region_frac(rows, bpp, charcoal, 1300, 1590, 320, 880)
-    assert draw >= 0.60, f"drawer charcoal only {draw:.1%} (expected >= 60%)"
+    # 4. Right band is the terminal panel body: the RUNS/TRACE/AGENT drawer
+    #    defaults closed, so the terminal extends to the right edge.
+    draw = region_frac(rows, bpp, pane_bg, 1300, 1590, 320, 880)
+    assert draw >= 0.60, f"right panel pane-bg only {draw:.1%} (expected >= 60%)"
 
     # 5. Bottom status bar is charcoal.
     status = region_frac(rows, bpp, charcoal, 400, 1200, 972, 998)
