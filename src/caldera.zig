@@ -1,4 +1,5 @@
 const std = @import("std");
+const agent = @import("agent.zig");
 
 const c = @cImport({
     @cInclude("sys/socket.h");
@@ -7,108 +8,27 @@ const c = @cImport({
     @cInclude("unistd.h");
 });
 
-/// Read-only client for the local Caldera daemon (127.0.0.1:4175). Polls a few
-/// GET endpoints on a background thread and exposes a plain-bytes Snapshot the
-/// render thread copies under a mutex. The app must degrade cleanly when the
-/// daemon is absent — `.offline` is a normal state, not an error.
+/// Caldera adapter for the agent activity surface. Implements the
+/// `agent.Provider` seam: polls a few GET endpoints on the local Caldera daemon
+/// (127.0.0.1:4175) on a background thread and exposes the neutral
+/// `agent.Snapshot` the render thread copies under a mutex. The app must
+/// degrade cleanly when the daemon is absent — `.offline` is a normal state,
+/// not an error. Caldera is just one provider; the surface is provider-generic.
 const host = "127.0.0.1";
 const port = 4175;
 
-pub const Connection = enum { offline, live, disabled };
-
-pub const RowKind = enum { run_passed, run_open, attn_warning, attn_error };
-
-pub const Row = struct {
-    kind: RowKind = .run_open,
-    text: [120]u8 = undefined,
-    len: usize = 0,
-
-    pub fn slice(self: *const Row) []const u8 {
-        return self.text[0..self.len];
-    }
-
-    fn set(self: *Row, kind: RowKind, comptime fmt: []const u8, args: anytype) void {
-        self.kind = kind;
-        const s = std.fmt.bufPrint(&self.text, fmt, args) catch self.text[0..self.text.len];
-        self.len = s.len;
-    }
-};
-
-const max_rows = 16;
 const max_events_per_run = 8;
-const event_summary_max = 64;
-const run_field_max = 48;
 
-pub const EventSummary = struct {
-    text: [event_summary_max]u8 = undefined,
-    len: usize = 0,
-
-    pub fn slice(self: *const EventSummary) []const u8 {
-        return self.text[0..self.len];
-    }
-
-    fn set(self: *EventSummary, s: []const u8) void {
-        const n = @min(s.len, event_summary_max);
-        @memcpy(self.text[0..n], s[0..n]);
-        self.len = n;
-    }
-};
-
-pub const RunDetail = struct {
-    agent: [run_field_max]u8 = undefined,
-    agent_len: usize = 0,
-    step: [run_field_max]u8 = undefined,
-    step_len: usize = 0,
-    status: [run_field_max]u8 = undefined,
-    status_len: usize = 0,
-    events: [max_events_per_run]EventSummary = undefined,
-    event_count: usize = 0,
-
-    pub fn agentSlice(self: *const RunDetail) []const u8 {
-        return self.agent[0..self.agent_len];
-    }
-    pub fn stepSlice(self: *const RunDetail) []const u8 {
-        return self.step[0..self.step_len];
-    }
-    pub fn statusSlice(self: *const RunDetail) []const u8 {
-        return self.status[0..self.status_len];
-    }
-
-    fn setField(buf: []u8, len_out: *usize, s: []const u8) void {
-        const n = @min(s.len, buf.len);
-        @memcpy(buf[0..n], s[0..n]);
-        len_out.* = n;
-    }
-};
-
-pub const Snapshot = struct {
-    conn: Connection = .offline,
-    project: [64]u8 = undefined,
-    project_len: usize = 0,
-    runs: usize = 0, // count of run rows (they lead `rows`)
-    rows: [max_rows]Row = undefined,
-    row_count: usize = 0,
-    details: [max_rows]RunDetail = undefined,
-
-    pub fn projectName(self: *const Snapshot) []const u8 {
-        return self.project[0..self.project_len];
-    }
-
-    fn pushRow(self: *Snapshot) ?*Row {
-        if (self.row_count >= max_rows) return null;
-        const r = &self.rows[self.row_count];
-        self.row_count += 1;
-        return r;
-    }
-};
+/// The Caldera implementation of the agent provider seam.
+pub const provider = agent.Provider{ .name = "caldera", .start = start, .get = get };
 
 var g_mutex: std.c.pthread_mutex_t = std.c.PTHREAD_MUTEX_INITIALIZER;
-var g_snap: Snapshot = .{};
+var g_snap: agent.Snapshot = .{};
 var g_alloc: std.mem.Allocator = undefined;
 var g_running = false;
 
 /// Copy the latest snapshot. Safe to call from the render thread.
-pub fn get(out: *Snapshot) void {
+pub fn get(out: *agent.Snapshot) void {
     _ = std.c.pthread_mutex_lock(&g_mutex);
     defer _ = std.c.pthread_mutex_unlock(&g_mutex);
     out.* = g_snap;
@@ -206,12 +126,12 @@ fn parse(comptime T: type, alloc: std.mem.Allocator, body: []const u8) ?std.json
 
 /// Build a fresh snapshot from the daemon. Never errors: a dead daemon yields
 /// the default `.offline` snapshot.
-fn buildSnapshot() Snapshot {
+fn buildSnapshot() agent.Snapshot {
     var arena = std.heap.ArenaAllocator.init(g_alloc);
     defer arena.deinit();
     const a = arena.allocator();
 
-    var s = Snapshot{};
+    var s = agent.Snapshot{};
 
     // Health: any failure means offline.
     const health = fetch(a, "/health") catch return s;
@@ -240,9 +160,9 @@ fn buildSnapshot() Snapshot {
                 row.set(if (passed) .run_passed else .run_open, "{s}  {s}  {s}", .{ run.agent, run.current_step, task });
                 var d = &s.details[idx];
                 d.* = .{};
-                RunDetail.setField(&d.agent, &d.agent_len, run.agent);
-                RunDetail.setField(&d.step, &d.step_len, run.current_step);
-                RunDetail.setField(&d.status, &d.status_len, run.backend_status);
+                agent.RunDetail.setField(&d.agent, &d.agent_len, run.agent);
+                agent.RunDetail.setField(&d.step, &d.step_len, run.current_step);
+                agent.RunDetail.setField(&d.status, &d.status_len, run.backend_status);
                 const n_ev = @min(run.events.len, max_events_per_run);
                 for (run.events[0..n_ev], 0..) |ev, ei| {
                     d.events[ei].set(ev.summary);
@@ -286,10 +206,10 @@ test "buildSnapshot retains all capped event summaries in order" {
     const p = parse(RunsResp, std.testing.allocator, body).?;
     defer p.deinit();
     const run = p.value.agent_runs[0];
-    var d = RunDetail{};
-    RunDetail.setField(&d.agent, &d.agent_len, run.agent);
-    RunDetail.setField(&d.step, &d.step_len, run.current_step);
-    RunDetail.setField(&d.status, &d.status_len, run.backend_status);
+    var d = agent.RunDetail{};
+    agent.RunDetail.setField(&d.agent, &d.agent_len, run.agent);
+    agent.RunDetail.setField(&d.step, &d.step_len, run.current_step);
+    agent.RunDetail.setField(&d.status, &d.status_len, run.backend_status);
     const n_ev = @min(run.events.len, max_events_per_run);
     for (run.events[0..n_ev], 0..) |ev, ei| d.events[ei].set(ev.summary);
     d.event_count = n_ev;
@@ -310,11 +230,4 @@ test "parse activity attention, tolerating unknown fields" {
     defer p.deinit();
     try std.testing.expectEqual(@as(usize, 1), p.value.attention.len);
     try std.testing.expectEqualStrings("warning", p.value.attention[0].severity);
-}
-
-test "Row.set truncates and exposes a slice" {
-    var r = Row{};
-    r.set(.run_passed, "{s}", .{"hello"});
-    try std.testing.expectEqualStrings("hello", r.slice());
-    try std.testing.expectEqual(RowKind.run_passed, r.kind);
 }

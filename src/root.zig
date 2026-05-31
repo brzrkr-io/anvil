@@ -30,6 +30,7 @@ test {
     _ = @import("context_chip.zig");
     _ = @import("copy_mode.zig");
     _ = @import("caldera.zig");
+    _ = @import("agent.zig");
     _ = @import("ipc.zig");
     _ = @import("syntax.zig");
     _ = @import("fileview.zig");
