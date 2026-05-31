@@ -836,6 +836,20 @@ export fn anvil_open_editor(ptr: [*]const u8, len: usize) callconv(.c) void {
     openEditorPane(ptr[0..len]);
 }
 
+/// Open a new web (WKWebView) pane in the active tab, split like other panes.
+/// The native view is created lazily by reconcileWebPanes on first layout.
+export fn anvil_open_web() callconv(.c) void {
+    if (!ready) return;
+    const ws = workspaceRect();
+    const g = renderer.paneGrid(ws.w, ws.h);
+    const tree = mgr.activeTree() orelse return;
+    const id = mgr.addWeb("https://example.com", g.rows, g.cols) catch return;
+    tree.splitNewFirst(mgr.focused, pane.Axis.y, id, 0.7) catch return;
+    mgr.focused = id;
+    relayout();
+    markDirty();
+}
+
 /// Save the focused editor pane's buffer to its file. No-op otherwise.
 export fn anvil_editor_save() callconv(.c) void {
     if (!ready) return;
@@ -1510,6 +1524,7 @@ fn runAction(id: cmd.ActionId) void {
         .mode_terminal => anvil_set_mode(0),
         .mode_editor => anvil_set_mode(1),
         .mode_ide => anvil_set_mode(2),
+        .open_web => anvil_open_web(),
     }
 }
 

@@ -19,6 +19,7 @@ pub const ActionId = enum {
     mode_terminal,
     mode_editor,
     mode_ide,
+    open_web,
 };
 
 pub const Action = struct { id: ActionId, label: []const u8 };
@@ -40,6 +41,7 @@ pub const registry = [_]Action{
     .{ .id = .mode_terminal, .label = "Mode: Terminal" },
     .{ .id = .mode_editor, .label = "Mode: Editor" },
     .{ .id = .mode_ide, .label = "Mode: IDE" },
+    .{ .id = .open_web, .label = "Open Browser Pane" },
 };
 
 /// Case-insensitive subsequence match. Returns a score (lower is better:
