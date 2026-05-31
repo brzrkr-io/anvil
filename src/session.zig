@@ -5,9 +5,10 @@ const Pty = @import("pty.zig").Pty;
 const syntax = @import("syntax.zig");
 const fileview = @import("fileview.zig");
 const Editor = @import("editor.zig").Editor;
+const WebPane = @import("web/pane.zig").WebPane;
 const Color = @import("vt/cell.zig").Color;
 
-pub const Kind = enum { shell, viewer, editor };
+pub const Kind = enum { shell, viewer, editor, web };
 
 fn roleColor(role: syntax.Role) Color {
     return switch (role) {
@@ -35,6 +36,8 @@ pub const Session = struct {
     view_alloc: std.mem.Allocator = undefined,
     // Editor state: a native editable buffer (editor kind only).
     editor: ?Editor = null,
+    // Web state: pure display state; app.zig owns the WKWebView handle.
+    web: ?WebPane = null,
 
     pub fn init(alloc: std.mem.Allocator, rows: u16, cols: u16) !Session {
         return initWithCwd(alloc, rows, cols, null);
@@ -82,11 +85,27 @@ pub const Session = struct {
         return s;
     }
 
+    /// Create a web (WKWebView) pane session. Holds only pure display state;
+    /// app.zig creates and owns the native WKWebView once this pane lays out.
+    pub fn initWeb(alloc: std.mem.Allocator, rows: u16, cols: u16, url: []const u8) !Session {
+        var term = try Terminal.init(alloc, rows, cols);
+        errdefer term.deinit();
+        const pty = Pty.initNull();
+        return .{
+            .term = term,
+            .pty = pty,
+            .kind = .web,
+            .web = WebPane.init(url),
+            .view_alloc = alloc,
+        };
+    }
+
     pub fn deinit(self: *Session) void {
         switch (self.kind) {
             .viewer => if (self.view_bytes.len > 0) self.view_alloc.free(self.view_bytes),
             .editor => if (self.editor) |*e| e.deinit(),
             .shell => self.pty.deinit(),
+            .web => {},
         }
         self.term.deinit();
     }
@@ -97,6 +116,7 @@ pub const Session = struct {
             .shell => self.pty.resize(rows, cols),
             .viewer => self.fillGrid(),
             .editor => if (self.editor) |*e| e.render(&self.term, rows, cols),
+            .web => {},
         }
     }
 
@@ -268,6 +288,16 @@ test "reloadEditor swaps the buffer in place, repainting the grid" {
     try std.testing.expectEqualStrings("bravo", s.editor.?.lines.items[0].items);
     // Grid repainted with the new file's first glyph.
     try std.testing.expectEqual(@as(u21, 'b'), s.term.grid.at(0, 3).cp);
+}
+
+test "web session: initWeb sets kind + url, poll is inert" {
+    const alloc = std.testing.allocator;
+    var s = try Session.initWeb(alloc, 10, 40, "https://example.com");
+    defer s.deinit();
+    try std.testing.expectEqual(Kind.web, s.kind);
+    try std.testing.expectEqualStrings("https://example.com", s.web.?.url());
+    const r = s.poll();
+    try std.testing.expect(r.alive and !r.consumed);
 }
 
 test "poll: consumed=true on data, alive=false on eof" {
