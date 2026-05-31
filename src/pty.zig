@@ -96,8 +96,14 @@ pub const Pty = struct {
     }
 
     pub fn deinit(self: *Pty) void {
+        if (self.master < 0) return;
         _ = c.close(self.master);
         _ = c.kill(self.pid, c.SIGHUP);
+    }
+
+    /// A null PTY: no process, no fd. Used for viewer sessions.
+    pub fn initNull() Pty {
+        return .{ .master = -1, .pid = -1 };
     }
 };
 

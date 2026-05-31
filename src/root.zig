@@ -31,4 +31,7 @@ test {
     _ = @import("copy_mode.zig");
     _ = @import("caldera.zig");
     _ = @import("ipc.zig");
+    _ = @import("syntax.zig");
+    _ = @import("fileview.zig");
+    _ = @import("editor.zig");
 }

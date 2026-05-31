@@ -2,14 +2,39 @@ const std = @import("std");
 const Terminal = @import("vt/terminal.zig").Terminal;
 const Parser = @import("vt/parser.zig").Parser;
 const Pty = @import("pty.zig").Pty;
+const syntax = @import("syntax.zig");
+const fileview = @import("fileview.zig");
+const Editor = @import("editor.zig").Editor;
+const Color = @import("vt/cell.zig").Color;
 
-/// One terminal session: a VT emulator, its parser, and the PTY feeding it.
+pub const Kind = enum { shell, viewer, editor };
+
+fn roleColor(role: syntax.Role) Color {
+    return switch (role) {
+        .keyword => .{ .indexed = 13 },
+        .string => .{ .indexed = 2 },
+        .number => .{ .indexed = 3 },
+        .comment => .{ .indexed = 8 },
+        .type => .{ .indexed = 6 },
+        .punct => .default,
+        .text => .default,
+    };
+}
+
+/// One terminal session: a VT emulator, its parser, and (for shell kind) a PTY.
 pub const Session = struct {
     id: usize = 0,
     term: Terminal,
     parser: Parser = .{},
     pty: Pty,
     exited: bool = false,
+    kind: Kind = .shell,
+    // Viewer state: retained file bytes owned by the session's allocator.
+    view_bytes: []u8 = &[_]u8{},
+    view_lang: syntax.Lang = .unknown,
+    view_alloc: std.mem.Allocator = undefined,
+    // Editor state: a native editable buffer (editor kind only).
+    editor: ?Editor = null,
 
     pub fn init(alloc: std.mem.Allocator, rows: u16, cols: u16) !Session {
         return initWithCwd(alloc, rows, cols, null);
@@ -23,20 +48,64 @@ pub const Session = struct {
         return .{ .term = term, .pty = pty };
     }
 
+    /// Create a viewer session (no PTY). The caller must call fillGrid after
+    /// setting view_bytes/view_lang, or use initViewer.
+    pub fn initViewer(alloc: std.mem.Allocator, rows: u16, cols: u16) !Session {
+        var term = try Terminal.init(alloc, rows, cols);
+        errdefer term.deinit();
+        const pty = Pty.initNull();
+        return .{
+            .term = term,
+            .pty = pty,
+            .kind = .viewer,
+            .view_alloc = alloc,
+        };
+    }
+
+    /// Create an editor session (no PTY) holding a native editable buffer
+    /// loaded from `path`. The buffer is rendered into the grid immediately.
+    pub fn initEditor(alloc: std.mem.Allocator, rows: u16, cols: u16, path: []const u8) !Session {
+        var term = try Terminal.init(alloc, rows, cols);
+        errdefer term.deinit();
+        const pty = Pty.initNull();
+        var ed = try Editor.initEmpty(alloc);
+        errdefer ed.deinit();
+        try ed.loadFile(path);
+        var s = Session{
+            .term = term,
+            .pty = pty,
+            .kind = .editor,
+            .editor = ed,
+            .view_alloc = alloc,
+        };
+        s.editor.?.render(&s.term, rows, cols);
+        return s;
+    }
+
     pub fn deinit(self: *Session) void {
-        self.pty.deinit();
+        switch (self.kind) {
+            .viewer => if (self.view_bytes.len > 0) self.view_alloc.free(self.view_bytes),
+            .editor => if (self.editor) |*e| e.deinit(),
+            .shell => self.pty.deinit(),
+        }
         self.term.deinit();
     }
 
     pub fn resize(self: *Session, rows: u16, cols: u16) !void {
         try self.term.resize(rows, cols);
-        self.pty.resize(rows, cols);
+        switch (self.kind) {
+            .shell => self.pty.resize(rows, cols),
+            .viewer => self.fillGrid(),
+            .editor => if (self.editor) |*e| e.render(&self.term, rows, cols),
+        }
     }
 
     pub const PollResult = struct { alive: bool, consumed: bool };
 
     /// Drain pending shell output into the terminal.
+    /// Viewer and editor sessions return immediately (alive, nothing consumed).
     pub fn poll(self: *Session) PollResult {
+        if (self.kind != .shell) return .{ .alive = true, .consumed = false };
         var buf: [8192]u8 = undefined;
         var consumed = false;
         while (true) {
@@ -66,12 +135,140 @@ pub const Session = struct {
     }
 
     /// Send input to the shell; typing jumps to the live view and clears selection.
+    /// No-op for viewer and editor sessions (editor input goes through editorInput).
     pub fn write(self: *Session, bytes: []const u8) void {
+        if (self.kind != .shell) return;
         if (self.term.view_offset != 0) self.term.view_offset = 0;
         self.term.clearSelection();
         self.pty.write(bytes);
     }
+
+    /// Feed key bytes to the editor and repaint the grid. No-op otherwise.
+    pub fn editorInput(self: *Session, bytes: []const u8) !void {
+        if (self.editor) |*e| {
+            try e.input(bytes);
+            e.render(&self.term, self.term.grid.rows, self.term.grid.cols);
+        }
+    }
+
+    /// Save the editor buffer to its file. Errors if there is no editor/path.
+    pub fn editorSave(self: *Session) !void {
+        if (self.editor) |*e| try e.save() else return error.NotAnEditor;
+    }
+
+    /// Replace this editor pane's buffer with `path`, reusing the pane. Lets the
+    /// explorer open files into one editor instead of splitting a new pane each
+    /// click. Errors (binary/too large/missing) leave the old buffer intact.
+    pub fn reloadEditor(self: *Session, path: []const u8) !void {
+        if (self.kind != .editor) return error.NotAnEditor;
+        var ed = try Editor.initEmpty(self.view_alloc);
+        errdefer ed.deinit();
+        try ed.loadFile(path);
+        if (self.editor) |*old| old.deinit();
+        self.editor = ed;
+        self.editor.?.render(&self.term, self.term.grid.rows, self.term.grid.cols);
+    }
+
+    /// Place the editor cursor from a grid click and repaint.
+    pub fn editorClick(self: *Session, row: usize, col: usize) void {
+        if (self.editor) |*e| {
+            e.click(row, col, self.term.grid.rows);
+            e.render(&self.term, self.term.grid.rows, self.term.grid.cols);
+        }
+    }
+
+    /// Scroll the editor viewport by `delta` lines and repaint.
+    pub fn editorScroll(self: *Session, delta: i32) void {
+        if (self.editor) |*e| {
+            e.scroll(delta, self.term.grid.rows);
+            e.render(&self.term, self.term.grid.rows, self.term.grid.cols);
+        }
+    }
+
+    /// Tokenize view_bytes and write colored cells into the terminal grid.
+    /// Called after load and after resize. Resets the terminal first.
+    pub fn fillGrid(self: *Session) void {
+        self.term.reset();
+        if (self.view_bytes.len == 0) return;
+
+        const cols = self.term.grid.cols;
+        var line_bufs: [8192][]const u8 = undefined;
+        const n_lines = fileview.splitLines(self.view_bytes, &line_bufs);
+        var tok_buf: [512]syntax.Token = undefined;
+
+        var li: usize = 0;
+        while (li < n_lines) : (li += 1) {
+            const line = line_bufs[li];
+            const n_toks = syntax.tokenizeLine(self.view_lang, line, &tok_buf);
+
+            // Emit tokens, truncating at grid width.
+            var col: u16 = 0;
+            var ti: usize = 0;
+            while (ti < n_toks and col < cols) : (ti += 1) {
+                const tok = tok_buf[ti];
+                const tok_bytes = line[tok.start .. tok.start + tok.len];
+                self.term.pen.fg = roleColor(tok.role);
+                for (tok_bytes) |byte| {
+                    if (col >= cols) break;
+                    self.term.print(byte);
+                    col += 1;
+                }
+            }
+
+            // Reset pen and emit newline (lineFeed + carriageReturn).
+            self.term.pen.fg = .default;
+            self.term.carriageReturn();
+            self.term.lineFeed();
+        }
+
+        // Scroll to top so the first line is visible.
+        const sb = self.term.scrollback.len();
+        if (sb > 0) self.term.view_offset = sb;
+    }
 };
+
+test "editor session: load renders grid, type + save round-trips through disk" {
+    const alloc = std.testing.allocator;
+    const path = "/tmp/anvil_session_editor_test.zig";
+    try fileview.save(path, "const x = 1;\n");
+    defer _ = std.c.unlink(path);
+
+    var s = try Session.initEditor(alloc, 10, 40, path);
+    defer s.deinit();
+    try std.testing.expectEqual(Kind.editor, s.kind);
+    // The buffer is rendered into the grid on open.
+    try std.testing.expectEqual(@as(u21, 'c'), s.term.grid.at(0, 2).cp); // content past gw=2
+    try std.testing.expectEqual(@as(u16, 0), s.term.cy);
+    try std.testing.expectEqual(@as(u16, 2), s.term.cx); // cur_col 0 + gw 2
+
+    try s.editorInput("\x1b[F"); // jump to end of line
+    try s.editorInput(" // note");
+    try s.editorSave();
+
+    var s2 = try Session.initEditor(alloc, 10, 40, path);
+    defer s2.deinit();
+    try std.testing.expectEqualStrings("const x = 1; // note", s2.editor.?.lines.items[0].items);
+}
+
+test "reloadEditor swaps the buffer in place, repainting the grid" {
+    const alloc = std.testing.allocator;
+    const a = "/tmp/anvil_reload_a.zig";
+    const b = "/tmp/anvil_reload_b.zig";
+    try fileview.save(a, "alpha\n");
+    try fileview.save(b, "bravo\n");
+    defer _ = std.c.unlink(a);
+    defer _ = std.c.unlink(b);
+
+    var s = try Session.initEditor(alloc, 10, 40, a);
+    defer s.deinit();
+    try std.testing.expectEqualStrings("alpha", s.editor.?.lines.items[0].items);
+    try std.testing.expectEqual(@as(u21, 'a'), s.term.grid.at(0, 2).cp);
+
+    try s.reloadEditor(b);
+    try std.testing.expectEqualStrings("bravo", s.editor.?.lines.items[0].items);
+    // Grid repainted with the new file's first glyph.
+    try std.testing.expectEqual(@as(u21, 'b'), s.term.grid.at(0, 2).cp);
+}
 
 test "poll: consumed=true on data, alive=false on eof" {
     var s = try Session.init(std.testing.allocator, 24, 80);

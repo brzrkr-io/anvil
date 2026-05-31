@@ -56,7 +56,12 @@ pub fn capture(alloc: std.mem.Allocator, mgr: *const SessionManager) !StateJson 
 fn convertNode(alloc: std.mem.Allocator, node: pane.NodeExport, mgr: *const SessionManager) !NodeJson {
     switch (node) {
         .leaf => |id| {
-            const cwd_str = if (mgr.byIdConst(id)) |s| s.term.cwd() else "";
+            // Viewer and editor sessions have no persistent cwd; save as empty
+            // so restore spawns a plain shell at the default directory.
+            const cwd_str = if (mgr.byIdConst(id)) |s|
+                (if (s.kind == .shell) s.term.cwd() else "")
+            else
+                "";
             return .{ .leaf = .{ .cwd = try alloc.dupe(u8, cwd_str) } };
         },
         .split => |sp| {

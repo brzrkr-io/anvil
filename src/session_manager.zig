@@ -2,6 +2,8 @@ const std = @import("std");
 const Session = @import("session.zig").Session;
 const pane = @import("workspace/pane_tree.zig");
 const persist = @import("session_persist.zig");
+const fileview = @import("fileview.zig");
+const syntax = @import("syntax.zig");
 
 const max_panes = 64;
 
@@ -214,6 +216,52 @@ pub const SessionManager = struct {
     fn add(self: *SessionManager, rows: u16, cols: u16) !usize {
         const id = self.next_id;
         var s = try Session.init(self.alloc, rows, cols);
+        s.id = id;
+        try self.sessions.append(self.alloc, s);
+        self.next_id += 1;
+        return id;
+    }
+
+    /// Open `path` as a read-only syntax-highlighted viewer pane.
+    /// On load error or binary file, fills a single error line instead of crashing.
+    pub fn addViewer(self: *SessionManager, path: []const u8, rows: u16, cols: u16) !usize {
+        const id = self.next_id;
+        var s = try Session.initViewer(self.alloc, rows, cols);
+        errdefer s.deinit();
+        s.id = id;
+
+        const bname = if (std.mem.lastIndexOfScalar(u8, path, '/')) |i| path[i + 1 ..] else path;
+        var loaded = false;
+
+        if (fileview.load(self.alloc, path)) |res| {
+            if (!res.is_binary) {
+                s.view_bytes = res.bytes;
+                s.view_lang = syntax.detect(path);
+                loaded = true;
+            } else {
+                self.alloc.free(res.bytes);
+            }
+        } else |_| {}
+
+        if (!loaded) {
+            var buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "cannot open {s}", .{bname}) catch "cannot open file";
+            s.view_bytes = self.alloc.dupe(u8, msg) catch &[_]u8{};
+            s.view_lang = .unknown;
+        }
+
+        s.fillGrid();
+        try self.sessions.append(self.alloc, s);
+        self.next_id += 1;
+        return id;
+    }
+
+    /// Open `path` in a native editor pane. Propagates load errors (too large,
+    /// binary, missing) so the caller can fall back to a read-only viewer.
+    pub fn addEditor(self: *SessionManager, path: []const u8, rows: u16, cols: u16) !usize {
+        const id = self.next_id;
+        var s = try Session.initEditor(self.alloc, rows, cols, path);
+        errdefer s.deinit();
         s.id = id;
         try self.sessions.append(self.alloc, s);
         self.next_id += 1;
