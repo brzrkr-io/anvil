@@ -28,6 +28,7 @@ pub const Config = struct {
     scroll_smooth: bool = true,
     background_opacity: f32 = 1.0,
     font_weight: f32 = 0, // > 0 selects the bold Nerd Font face; 0 = regular
+    ui_scale: f32 = 0, // 0 = auto (DPI-derived); >0 = user-pinned (0.5-4.0)
 
     pub fn themeVariant(self: *const Config) []const u8 {
         return self.theme_variant[0..self.theme_variant_len];
@@ -188,6 +189,16 @@ fn applyKey(cfg: *Config, key: []const u8, val: []const u8, err: ?*[128]u8, err_
         } else |_| {
             setErr(err, err_len, "config.toml: invalid font_weight '{s}' (line {})", .{ val, line_num });
         }
+    } else if (std.mem.eql(u8, key, "ui_scale")) {
+        if (std.fmt.parseFloat(f32, val)) |v| {
+            if (v == 0 or (v >= 0.5 and v <= 4.0)) {
+                cfg.ui_scale = v;
+                return;
+            }
+            setErr(err, err_len, "config.toml: ui_scale {s} out of range 0.5-4.0 (line {})", .{ val, line_num });
+        } else |_| {
+            setErr(err, err_len, "config.toml: invalid ui_scale '{s}' (line {})", .{ val, line_num });
+        }
     } else if (std.mem.eql(u8, key, "theme_variant")) {
         const n = @min(val.len, cfg.theme_variant.len);
         @memcpy(cfg.theme_variant[0..n], val[0..n]);
@@ -253,6 +264,22 @@ pub fn persistTheme(path: [:0]const u8, mode: ThemeMode) void {
         .light => "light",
         .dark => "dark",
     };
+    var buf: [64]u8 = undefined;
+    const line = std.fmt.bufPrint(&buf, "theme = \"{s}\"", .{name}) catch return;
+    persistKey(path, "theme", line);
+}
+
+/// Persist the user's chosen UI scale so a live zoom survives relaunch.
+pub fn persistUiScale(path: [:0]const u8, value: f32) void {
+    var buf: [64]u8 = undefined;
+    const line = std.fmt.bufPrint(&buf, "ui_scale = {d:.2}", .{value}) catch return;
+    persistKey(path, "ui_scale", line);
+}
+
+/// Replace the first `key = ...` line in the config file with `line`
+/// (a full "key = value" string), or append it if absent. Best-effort:
+/// any I/O or buffer-overflow condition silently leaves the file unchanged.
+fn persistKey(path: [:0]const u8, key: []const u8, line: []const u8) void {
     var in: [1 << 16]u8 = undefined;
     var in_len: usize = 0;
     if (c.fopen(path.ptr, "rb")) |f| {
@@ -272,13 +299,14 @@ pub fn persistTheme(path: [:0]const u8, mode: ThemeMode) void {
         }
         first = false;
         const kl = trim(stripComment(raw));
-        const is_theme = if (std.mem.indexOfScalar(u8, kl, '=')) |eq|
-            std.mem.eql(u8, trim(kl[0..eq]), "theme")
+        const is_key = if (std.mem.indexOfScalar(u8, kl, '=')) |eq|
+            std.mem.eql(u8, trim(kl[0..eq]), key)
         else
             false;
-        if (is_theme and !replaced) {
-            const s = std.fmt.bufPrint(out[w..], "theme = \"{s}\"", .{name}) catch return;
-            w += s.len;
+        if (is_key and !replaced) {
+            if (w + line.len > out.len) return;
+            @memcpy(out[w..][0..line.len], line);
+            w += line.len;
             replaced = true;
         } else {
             if (w + raw.len > out.len) return;
@@ -288,7 +316,7 @@ pub fn persistTheme(path: [:0]const u8, mode: ThemeMode) void {
     }
     if (!replaced) {
         const sep = if (w == 0 or out[w - 1] == '\n') "" else "\n";
-        const s = std.fmt.bufPrint(out[w..], "{s}theme = \"{s}\"\n", .{ sep, name }) catch return;
+        const s = std.fmt.bufPrint(out[w..], "{s}{s}\n", .{ sep, line }) catch return;
         w += s.len;
     }
     const f = c.fopen(path.ptr, "wb") orelse return;
@@ -428,6 +456,35 @@ test "parseFull: font_weight out of range yields error" {
     const r = parseFull("font_weight = 5\n");
     try std.testing.expect(r.err_len > 0);
     try std.testing.expect(std.mem.indexOf(u8, r.errMsg(), "font_weight") != null);
+}
+
+test "parse reads ui_scale" {
+    const cfg = parse("ui_scale = 1.5");
+    try std.testing.expectEqual(@as(f32, 1.5), cfg.ui_scale);
+}
+
+test "ui_scale defaults to 0 (auto)" {
+    const cfg = parse("theme = dark");
+    try std.testing.expectEqual(@as(f32, 0), cfg.ui_scale);
+}
+
+test "ui_scale 0 is accepted (auto sentinel)" {
+    const r = parseFull("ui_scale = 0\n");
+    try std.testing.expectEqual(@as(usize, 0), r.err_len);
+    try std.testing.expectEqual(@as(f32, 0), r.cfg.ui_scale);
+}
+
+test "out-of-range ui_scale yields error and keeps default" {
+    const r = parseFull("ui_scale = 9\n");
+    try std.testing.expect(r.err_len > 0);
+    try std.testing.expectEqual(@as(f32, 0), r.cfg.ui_scale);
+}
+
+test "persistUiScale then parse round-trips the pinned value" {
+    var buf: [64]u8 = undefined;
+    const line = std.fmt.bufPrint(&buf, "ui_scale = {d:.2}", .{@as(f32, 1.30)}) catch unreachable;
+    const cfg = parse(line);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.30), cfg.ui_scale, 0.001);
 }
 
 fn writeFile(path: [:0]const u8, text: []const u8) void {

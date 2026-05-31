@@ -127,6 +127,17 @@ pub const Atlas = struct {
             self.next = 1;
         }
     }
+
+    /// Drop the entire glyph→slot cache. Call when the backing texture is
+    /// reallocated (e.g. a UI-scale change rebuilds the atlas at a new cell
+    /// size): the old slots point into a freed texture, so every glyph must
+    /// re-rasterize. Without this the next frame reuses stale slots and never
+    /// re-queues rasters, leaving every glyph blank.
+    pub fn reset(self: *Atlas) void {
+        self.keys = [_]u32{0} ** capacity;
+        self.next = 1;
+        self.pending_n = 0;
+    }
 };
 
 test "blank and controls map to slot 0 without queueing" {
@@ -182,6 +193,18 @@ test "resetPending clears the queue but keeps the cache" {
     try std.testing.expectEqual(@as(u16, 0), a.pending_n);
     try std.testing.expectEqual(s, a.slotFor('A')); // still cached
     try std.testing.expectEqual(@as(u16, 0), a.pending_n); // no requeue
+}
+
+test "reset drops the cache so a cached glyph re-queues a raster" {
+    var a = Atlas{};
+    const s = a.slotFor('A');
+    a.resetPending(); // clear the queue but keep the cache (normal frame boundary)
+    try std.testing.expectEqual(@as(u16, 0), a.pending_n);
+    a.reset(); // texture rebuilt: cache must be dropped
+    try std.testing.expectEqual(@as(u16, 1), a.next); // back to empty
+    const s2 = a.slotFor('A');
+    try std.testing.expectEqual(s, s2); // first slot reassigned
+    try std.testing.expectEqual(@as(u16, 1), a.pending_n); // and re-queued for raster
 }
 
 test "cache full falls back to blank, then flushes at frame boundary" {

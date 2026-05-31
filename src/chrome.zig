@@ -70,30 +70,70 @@ pub const surface_light = Surface{
     .hover = Rgb{ .r = 0xed, .g = 0xe3, .b = 0xd8 }, // hover tint
 };
 
-// Spacing tokens (px).
-pub const sp4: f32 = 4;
-pub const sp8: f32 = 8;
-pub const sp12: f32 = 12;
-pub const sp16: f32 = 16;
-pub const sp24: f32 = 24;
-pub const sp32: f32 = 32;
+// Spacing tokens. Base values are logical points; applyScale multiplies the
+// base table by s = ui_scale * backingScaleFactor to get device pixels.
+// The pub vars are initialized to the 2x defaults so the unscaled state
+// matches today exactly even before applyScale runs.
+const base_sp4: f32 = 2;
+const base_sp8: f32 = 4;
+const base_sp12: f32 = 6;
+const base_sp16: f32 = 8;
+const base_sp24: f32 = 12;
+const base_sp32: f32 = 16;
+pub var sp4: f32 = 4;
+pub var sp8: f32 = 8;
+pub var sp12: f32 = 12;
+pub var sp16: f32 = 16;
+pub var sp24: f32 = 24;
+pub var sp32: f32 = 32;
 
-// Heights (device pixels at 2x, i.e. logical pt * 2).
-pub const top_bar_h: f32 = 44;
-pub const status_bar_h: f32 = 30;
-// SNUG recess: a tight 8px gutter frames the terminal panel — compact, not floating.
-pub const panel_pad: f32 = 8; // inset gutter: left/right/top of body
-pub const panel_pad_bottom: f32 = 8; // inset gutter: bottom (before status bar)
-pub const header_strip_h: f32 = 34; // slim charcoal strip atop the panel (fits one Mono line)
+// Heights and widths (device pixels at the current scale).
+const base_top_bar_h: f32 = 22;
+const base_status_bar_h: f32 = 15;
+// SNUG recess: a tight gutter frames the terminal panel — compact, not floating.
+const base_panel_pad: f32 = 4; // inset gutter: left/right/top of body
+const base_panel_pad_bottom: f32 = 4; // inset gutter: bottom (before status bar)
+const base_header_strip_h: f32 = 17; // slim charcoal strip atop the panel (fits one Mono line)
+pub var top_bar_h: f32 = 44;
+pub var status_bar_h: f32 = 30;
+pub var panel_pad: f32 = 8; // inset gutter: left/right/top of body
+pub var panel_pad_bottom: f32 = 8; // inset gutter: bottom (before status bar)
+pub var header_strip_h: f32 = 34; // slim charcoal strip atop the panel (fits one Mono line)
 
 // Option A chrome (left side): activity rail + collapsible sidebar (device px).
-pub const rail_w: f32 = 56; // vertical activity rail
-pub const sidebar_w: f32 = 300; // SESSIONS / EXPLORER sidebar
-pub const sidebar_header_h: f32 = 26; // section header row height
-pub const row_h: f32 = 28; // list row height (sessions, explorer entries)
+const base_rail_w: f32 = 28;
+const base_sidebar_w: f32 = 150;
+const base_sidebar_header_h: f32 = 13;
+const base_row_h: f32 = 14;
+pub var rail_w: f32 = 56; // vertical activity rail
+pub var sidebar_w: f32 = 300; // SESSIONS / EXPLORER sidebar
+pub var sidebar_header_h: f32 = 26; // section header row height
+pub var row_h: f32 = 28; // list row height (sessions, explorer entries)
 
 // Option C chrome (right side): context drawer — RUNS / TRACE / AGENT.
-pub const drawer_w: f32 = 312;
+const base_drawer_w: f32 = 156;
+pub var drawer_w: f32 = 312;
+
+/// Rescale the whole chrome size table by s = ui_scale * backingScaleFactor.
+/// s=2 reproduces the original 2x defaults.
+pub fn applyScale(s: f32) void {
+    sp4 = base_sp4 * s;
+    sp8 = base_sp8 * s;
+    sp12 = base_sp12 * s;
+    sp16 = base_sp16 * s;
+    sp24 = base_sp24 * s;
+    sp32 = base_sp32 * s;
+    top_bar_h = base_top_bar_h * s;
+    status_bar_h = base_status_bar_h * s;
+    panel_pad = base_panel_pad * s;
+    panel_pad_bottom = base_panel_pad_bottom * s;
+    header_strip_h = base_header_strip_h * s;
+    rail_w = base_rail_w * s;
+    sidebar_w = base_sidebar_w * s;
+    sidebar_header_h = base_sidebar_header_h * s;
+    row_h = base_row_h * s;
+    drawer_w = base_drawer_w * s;
+}
 
 /// Geometry regions for one window frame (device pixels).
 /// Left rail, sidebar, and right drawer are zero-width for now (Option B).
@@ -148,4 +188,16 @@ test "LayoutRegions.compute geometry" {
     try std.testing.expectEqual(920 - top_bar_h - status_bar_h, r.body.h);
     try std.testing.expectEqual(920 - status_bar_h, r.status_bar.y);
     try std.testing.expectEqual(status_bar_h, r.status_bar.h);
+}
+
+test "applyScale scales sizes from the 2x base; s=2 reproduces defaults" {
+    const std = @import("std");
+    applyScale(2.0);
+    try std.testing.expectEqual(@as(f32, 44), top_bar_h);
+    try std.testing.expectEqual(@as(f32, 30), status_bar_h);
+    try std.testing.expectEqual(@as(f32, 34), header_strip_h);
+    applyScale(1.0); // half size
+    try std.testing.expectEqual(@as(f32, 22), top_bar_h);
+    try std.testing.expectEqual(@as(f32, 17), header_strip_h);
+    applyScale(2.0); // restore default for other tests
 }

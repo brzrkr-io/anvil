@@ -66,6 +66,8 @@ extern void anvil_atlas_params(AtlasParams *out);
 extern bool anvil_translucent(void);
 extern void anvil_prewarm_atlas(const void **out_ptr, uint32_t *out_count);
 extern void anvil_set_metrics(float cell_w, float cell_h);
+extern void anvil_set_backing_scale(float b, float logical_ppi);
+extern void anvil_rebuild_atlas(void);
 extern int anvil_poll(void);
 extern void anvil_input(const char *bytes, size_t len);
 extern void anvil_paste(const char *bytes, size_t len);
@@ -85,6 +87,9 @@ extern void anvil_close_tab(void);
 extern void anvil_jump_prompt(int dir);
 extern void anvil_resize_pane(int dir);
 extern void anvil_balance_panes(void);
+extern void anvil_zoom_in(void);
+extern void anvil_zoom_out(void);
+extern void anvil_zoom_reset(void);
 extern void anvil_zoom_toggle(void);
 extern void anvil_palette_toggle(void);
 extern int anvil_palette_open(void);
@@ -125,9 +130,9 @@ extern void anvil_web_urlbar_focus(void);
 #define CHROME_TAG 0x00400000u // atlas-key bit: small chrome mono glyph (scaled, top-left)
 #define CHROME_SCALE 0.8f // chrome text/icon size relative to the terminal cell
 #define MAX_INSTANCES 60000
-#define ATLAS_SCALE 2.0
 #define BAR_H_PT 20.0 // compact title-bar height, logical points
 
+static CGFloat gRenderScale = 2.0;
 static id<MTLDevice> gDevice;
 static id<MTLCommandQueue> gQueue;
 static id<MTLRenderPipelineState> gPipeline;
@@ -207,7 +212,7 @@ static void buildAtlas(void) {
     gCols = ap.cols;
     gRows = ap.rows;
 
-    CGFloat sz = ap.pt_size * ATLAS_SCALE;
+    CGFloat sz = ap.pt_size * gRenderScale;
     gPtSize = sz;
     // Primary font is the bundled Blex Mono Nerd Font (embedded by Zig), so
     // icon/powerline glyphs render directly. System cascade still fills gaps.
@@ -262,6 +267,16 @@ static void buildAtlas(void) {
     free(zero);
 }
 
+void anvil_rebuild_atlas(void) {
+    if (!gDevice) return;
+    // Drop the chrome faces so they re-create at the new pt size; otherwise
+    // ensureSansFont/ensureMonoSm early-return and chrome labels stay stuck at
+    // the previous scale while the terminal cell grows.
+    if (gFontSans) { CFRelease(gFontSans); gFontSans = NULL; }
+    if (gFontMonoSm) { CFRelease(gFontMonoSm); gFontMonoSm = NULL; }
+    buildAtlas();
+}
+
 // Lazily create the IBM Plex Sans face (embedded by Zig) at the atlas point
 // size. Used for chrome nav/heading labels. CoreText-only; no Metal needed, so
 // it is safe to call during measurement before the atlas/device exist.
@@ -271,7 +286,7 @@ static void ensureSansFont(void) {
     if (sz <= 0.0) {
         AtlasParams ap = {0};
         anvil_atlas_params(&ap);
-        sz = ap.pt_size * ATLAS_SCALE;
+        sz = ap.pt_size * gRenderScale;
     }
     sz *= CHROME_SCALE; // chrome labels render smaller than the terminal cell
     size_t flen = 0;
@@ -299,7 +314,7 @@ static void ensureMonoSm(void) {
     if (sz <= 0.0) {
         AtlasParams ap = {0};
         anvil_atlas_params(&ap);
-        sz = ap.pt_size * ATLAS_SCALE;
+        sz = ap.pt_size * gRenderScale;
     }
     sz *= CHROME_SCALE;
     size_t flen = 0;
@@ -971,6 +986,7 @@ static void layoutTrafficLights(NSWindow *win) {
                 case NSRightArrowFunctionKey: anvil_focus_dir(1); return;
                 case NSUpArrowFunctionKey:    anvil_focus_dir(2); return;
                 case NSDownArrowFunctionKey:  anvil_focus_dir(3); return;
+                case '=': case '+':           anvil_balance_panes(); return;
             }
         }
         // Shift+arrow resizes the focused pane; plain Cmd+up/down jumps prompts.
@@ -984,7 +1000,9 @@ static void layoutTrafficLights(NSWindow *win) {
         if (ch == ']' || ch == '}') { anvil_cycle_tab(1); return; }
         if (ch == '[' || ch == '{') { anvil_cycle_tab(-1); return; }
         if (ch == '\r' || ch == '\n') { if (shift) anvil_zoom_toggle(); else anvil_zen_toggle(); return; }
-        if (ch == '=' || ch == '+') { anvil_balance_panes(); return; }
+        if (ch == '=' || ch == '+') { anvil_zoom_in();    return; }
+        if (ch == '-')              { anvil_zoom_out();   return; }
+        if (ch == '0')              { anvil_zoom_reset(); return; }
         unichar lc = (ch >= 'A' && ch <= 'Z') ? ch + 32 : ch;
         if (lc == 'c') [self copySelection];
         else if (lc == 'v') [self pasteClipboard];
@@ -1120,6 +1138,10 @@ void anvil_web_set_frame(void *handle, double x, double y, double w, double h) {
 
 void anvil_web_set_hidden(void *handle, bool hidden) {
     if (handle) ((__bridge WKWebView *)handle).hidden = hidden ? YES : NO;
+}
+
+void anvil_web_set_zoom(void *handle, double z) {
+    if (handle) ((__bridge WKWebView *)handle).pageZoom = z;
 }
 
 void anvil_web_destroy(void *handle) {
@@ -1284,19 +1306,6 @@ void anvil_run(void) {
         gLayer.framebufferOnly = YES;
 
         buildPipeline();
-        buildAtlas();
-
-        // Rasterize common TUI glyphs before the first frame to avoid
-        // per-glyph stall during initial paint (vim, lazygit, btop).
-        {
-            const void *pw_ptr = NULL;
-            uint32_t pw_count = 0;
-            anvil_prewarm_atlas(&pw_ptr, &pw_count);
-            const uint32_t *pg = (const uint32_t *)pw_ptr;
-            for (uint32_t i = 0; i < pw_count; i++) {
-                rasterizeGlyph(pg[i * 3], pg[i * 3 + 1], pg[i * 3 + 2]);
-            }
-        }
 
         NSRect frame = NSMakeRect(0, 0, 800, 500);
         NSWindow *win = [[NSWindow alloc]
@@ -1310,6 +1319,32 @@ void anvil_run(void) {
         win.titleVisibility = NSWindowTitleHidden;
         win.titlebarAppearsTransparent = YES;
         gWindow = win;
+        gRenderScale = gWindow.backingScaleFactor ?: 2.0;
+        // Logical PPI = points-per-inch of the display. Drives the DPI-auto
+        // default: dense displays (high logical PPI) scale the UI up so it
+        // stays physically the same size as on a standard Retina screen.
+        float logicalPPI = 0;
+        {
+            NSScreen *scr = gWindow.screen ?: [NSScreen mainScreen];
+            CGDirectDisplayID did =
+                [scr.deviceDescription[@"NSScreenNumber"] unsignedIntValue];
+            CGSize mm = CGDisplayScreenSize(did);
+            if (mm.width > 0)
+                logicalPPI = (float)(scr.frame.size.width / (mm.width / 25.4));
+        }
+        anvil_set_backing_scale((float)gRenderScale, logicalPPI);
+        buildAtlas();
+        // Rasterize common TUI glyphs before the first frame to avoid
+        // per-glyph stall during initial paint (vim, lazygit, btop).
+        {
+            const void *pw_ptr = NULL;
+            uint32_t pw_count = 0;
+            anvil_prewarm_atlas(&pw_ptr, &pw_count);
+            const uint32_t *pg = (const uint32_t *)pw_ptr;
+            for (uint32_t i = 0; i < pw_count; i++) {
+                rasterizeGlyph(pg[i * 3], pg[i * 3 + 1], pg[i * 3 + 2]);
+            }
+        }
 
         gController = [[AnvilController alloc] init];
         NSApp.delegate = gController;
@@ -1353,7 +1388,7 @@ void anvil_run(void) {
         view.wantsLayer = YES;
         view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
         gLayer.frame = view.bounds;
-        gLayer.drawableSize = CGSizeMake(frame.size.width * 2, frame.size.height * 2);
+        gLayer.drawableSize = CGSizeMake(frame.size.width * gRenderScale, frame.size.height * gRenderScale);
         [contentHost addSubview:view];
         // Restore the last window position/size; center only on first launch.
         win.frameAutosaveName = @"AnvilMainWindow";

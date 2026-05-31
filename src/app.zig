@@ -45,7 +45,6 @@ const max_panes = 64;
 const divider_px: f32 = 2; // layout gap + mouse hit zone (device px)
 const divider_draw_px: f32 = 2; // drawn hairline width (1 logical pt @2x)
 const font_pt: f32 = 13.0;
-const bar_h: f32 = chrome.top_bar_h; // command bar, device pixels (22pt @2x)
 const tab_inset_x: f32 = 152; // clear the macOS traffic-light buttons (device px)
 // Advance from an active tab's status dot to its label, as a fraction of the
 // chrome icon cell: the ● ink is centred in a full cell, so a snug-but-clear
@@ -53,10 +52,12 @@ const tab_inset_x: f32 = 152; // clear the macOS traffic-light buttons (device p
 // by emitCommandBar (drawing) and tabsWidth (right-alignment) so the strip
 // stays aligned to its right margin.
 const tab_dot_adv: f32 = 0.9;
-const tab_strip_margin: f32 = chrome.sp16; // right margin of the tab strip
+fn tabStripMargin() f32 {
+    return chrome.sp16;
+} // right margin of the tab strip
 
 var mgr = SessionManager{ .alloc = std.heap.page_allocator };
-var renderer = Renderer{ .cell_w = 16, .cell_h = 32, .pad_x = 8, .pad_y = bar_h + 6, .pad_bottom = 8 };
+var renderer = Renderer{ .cell_w = 16, .cell_h = 32, .pad_x = 8, .pad_y = 50, .pad_bottom = 8 }; // placeholder; set in loadConfig
 var instances: [max_instances]inst.CellInstance = undefined;
 var pane_buf: [max_panes]pane.PaneRect = undefined;
 var pane_range_buf: [max_panes + 1]inst.PaneRange = undefined;
@@ -71,6 +72,7 @@ extern fn anvil_web_forward(handle: ?*anyopaque) callconv(.c) void;
 extern fn anvil_web_reload(handle: ?*anyopaque) callconv(.c) void;
 extern fn anvil_web_set_frame(handle: ?*anyopaque, x: f64, y: f64, w: f64, h: f64) callconv(.c) void;
 extern fn anvil_web_set_hidden(handle: ?*anyopaque, hidden: bool) callconv(.c) void;
+extern fn anvil_web_set_zoom(handle: ?*anyopaque, z: f64) callconv(.c) void;
 extern fn anvil_web_destroy(handle: ?*anyopaque) callconv(.c) void;
 extern fn anvil_focus_metal_view() callconv(.c) void;
 extern fn anvil_web_focus(handle: ?*anyopaque) callconv(.c) void;
@@ -143,7 +145,7 @@ fn loadConfig() void {
     active_variant = theme.byName(cfg.themeVariant()) orelse
         .{ .dark = theme.mineral_dark, .light = theme.mineral_light };
     renderer.pad_x = cfg.padding_x;
-    renderer.pad_y = bar_h + cfg.padding_y;
+    renderer.pad_y = chrome.top_bar_h + cfg.padding_y;
     cfg_mtime = config.mtime(path);
 }
 
@@ -349,14 +351,14 @@ var mode: Mode = .ide;
 /// sit on a painted strip instead of bleeding the desktop through the
 /// transparent titlebar.
 fn barH() f32 {
-    return bar_h;
+    return chrome.top_bar_h;
 }
 
 /// True when the SESSIONS/EXPLORER sidebar is shown (Option A chrome).
 var sidebar_open: bool = true;
 
 /// Current sidebar width (device px); user-draggable within sane bounds.
-var sidebar_w: f32 = chrome.sidebar_w;
+var sidebar_w: f32 = 300; // device px; user-draggable, see sidebar_w_min/max
 var sidebar_dragging: bool = false;
 const sidebar_w_min: f32 = 180;
 const sidebar_w_max: f32 = 520;
@@ -373,7 +375,9 @@ fn leftChromeW() f32 {
 }
 
 /// True when the right context drawer (RUNS / TRACE / AGENT) is shown (Option C).
-var drawer_open: bool = true;
+/// Closed by default: an empty drawer is a dead column of "none" placeholders.
+/// Cmd+J opens it; later phases auto-reveal it when run/trace/agent data exists.
+var drawer_open: bool = false;
 
 /// The agent drawer shows only in IDE mode, and only when toggled open.
 /// Terminal and editor modes never show it.
@@ -390,7 +394,7 @@ fn rightChromeW() f32 {
 /// (rail + sidebar), panel inset, and the per-pane header strip. Panes lay
 /// out inside the inset panel body.
 fn workspaceRect() pane.Rect {
-    if (mode == .terminal) return .{ .x = 0, .y = bar_h, .w = win_w, .h = win_h - bar_h - chrome.status_bar_h };
+    if (mode == .terminal) return .{ .x = 0, .y = chrome.top_bar_h, .w = win_w, .h = win_h - chrome.top_bar_h - chrome.status_bar_h };
     const pp = chrome.panel_pad;
     const hs = chrome.header_strip_h;
     const sb = chrome.status_bar_h;
@@ -399,9 +403,9 @@ fn workspaceRect() pane.Rect {
     const rc = rightChromeW();
     return .{
         .x = lc + pp,
-        .y = bar_h + pp + hs,
+        .y = chrome.top_bar_h + pp + hs,
         .w = win_w - lc - rc - 2 * pp,
-        .h = win_h - bar_h - pp - hs - sb - pb,
+        .h = win_h - chrome.top_bar_h - pp - hs - sb - pb,
     };
 }
 
@@ -544,9 +548,80 @@ export fn anvil_icon_data(out_len: *usize) callconv(.c) [*]const u8 {
     return icon_data.ptr;
 }
 
+var g_backing: f32 = 2.0;
+var g_logical_ppi: f32 = 0; // 0 = unknown (headless / query failed)
+var ui_scale: f32 = 1.0;
+extern fn anvil_rebuild_atlas() callconv(.c) void;
+
+/// Reference logical density: a standard Apple Retina display is ~110 points
+/// per inch. Denser displays scale the UI up so chrome stays physically the
+/// same readable size.
+const ref_logical_ppi: f32 = 110.0;
+
+/// DPI-auto default when the user has not pinned `ui_scale`. Prefers the
+/// display's logical PPI (covers dense HiDPI screens that still report
+/// backingScaleFactor 2.0); falls back to the backing heuristic when PPI is
+/// unknown.
+fn autoUiScale() f32 {
+    if (g_logical_ppi > 0) {
+        const raw = g_logical_ppi / ref_logical_ppi;
+        const snapped = @round(raw * 10.0) / 10.0; // nearest 0.1
+        return std.math.clamp(snapped, 1.0, 2.5);
+    }
+    return if (g_backing < 2.0) 2.0 else 1.0;
+}
+
+export fn anvil_set_backing_scale(b: f32, logical_ppi: f32) callconv(.c) void {
+    if (!cfg_loaded) loadConfig();
+    g_backing = if (b > 0) b else 2.0;
+    g_logical_ppi = if (logical_ppi > 0) logical_ppi else 0;
+    if (cfg.ui_scale > 0) {
+        ui_scale = cfg.ui_scale; // user-pinned
+    } else {
+        ui_scale = autoUiScale(); // DPI-auto
+    }
+    default_ui_scale = ui_scale; // ⌘0 returns here
+    applyUiScale();
+}
+
+fn applyUiScale() void {
+    chrome.applyScale(ui_scale * g_backing);
+    renderer.pad_y = chrome.top_bar_h + cfg.padding_y;
+}
+
+/// The scale ⌘0 returns to. Task 4 sets this to the DPI-auto default; until
+/// then it is the unscaled 1.0.
+var default_ui_scale: f32 = 1.0;
+
+fn persistUiScale() void {
+    const path = configPath() orelse return;
+    config.persistUiScale(path, ui_scale);
+    cfg_mtime = config.mtime(path); // don't trip reloadConfigIfChanged on our own write
+}
+
+fn setUiScale(v: f32) void {
+    ui_scale = std.math.clamp(v, 0.5, 4.0);
+    applyUiScale();
+    anvil_rebuild_atlas(); // reallocates the atlas texture at the new pt size
+    renderer.atlas.reset(); // stale slots point into the freed texture; re-raster next frame
+    relayout();
+    markDirty();
+    persistUiScale();
+}
+
+export fn anvil_zoom_in() callconv(.c) void {
+    setUiScale(ui_scale + 0.1);
+}
+export fn anvil_zoom_out() callconv(.c) void {
+    setUiScale(ui_scale - 0.1);
+}
+export fn anvil_zoom_reset() callconv(.c) void {
+    setUiScale(default_ui_scale);
+}
+
 export fn anvil_atlas_params(out: *AtlasParams) callconv(.c) void {
     if (!cfg_loaded) loadConfig(); // font size must be known before the atlas builds
-    out.* = .{ .cols = atlasmod.cols, .rows = atlasmod.rows_n, .pt_size = cfg.font_size, .weight = cfg.font_weight };
+    out.* = .{ .cols = atlasmod.cols, .rows = atlasmod.rows_n, .pt_size = cfg.font_size * ui_scale, .weight = cfg.font_weight };
 }
 
 /// True only when the user actually opted into a translucent background. The
@@ -956,7 +1031,7 @@ const HoverRow = struct { kind: u8, idx: usize };
 fn hoverSidebarRow(x: f32, y: f32) ?HoverRow {
     if (!sidebar_open) return null;
     if (x < chrome.rail_w or x >= leftChromeW()) return null;
-    const sess_y0 = bar_h + chrome.sidebar_header_h + 8;
+    const sess_y0 = chrome.top_bar_h + chrome.sidebar_header_h + 8;
     if (y >= sess_y0 and mgr.tabs.items.len > 0) {
         const i_f = (y - sess_y0) / chrome.row_h;
         if (i_f >= 0) {
@@ -980,7 +1055,7 @@ export fn anvil_mouse(kind: c_int, x: f32, y: f32) callconv(.c) void {
     // starts the drag; subsequent motion sets the width; release ends it.
     if (sidebar_open and mode != .terminal) {
         const edge = leftChromeW();
-        const in_body = y > bar_h and y < win_h - chrome.status_bar_h;
+        const in_body = y > chrome.top_bar_h and y < win_h - chrome.status_bar_h;
         if (kind == 0 and in_body and @abs(x - edge) <= 6) {
             sidebar_dragging = true;
             return;
@@ -1618,6 +1693,7 @@ fn reconcileWebPanes(panes: []const pane.PaneRect) void {
             .h = @as(f64, @floatCast(r.h)),
         });
         anvil_web_set_frame(handle, body.x, body.y, body.w, body.h);
+        anvil_web_set_zoom(handle, @as(f64, @floatCast(ui_scale)));
         anvil_web_set_hidden(handle, false);
     }
     for (web_handles[0..web_handle_count]) |wh| {
@@ -1753,7 +1829,7 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
         }
 
         // Record the per-pane scissor range. Scissor rect: pane area clamped
-        // to [bar_h, win_h] so the title bar is always protected.
+        // to [chrome.top_bar_h, win_h] so the title bar is always protected.
         if (pr_n < max_panes) {
             const sx: f32 = p.rect.x;
             const sy_raw: f32 = p.rect.y;
@@ -1849,7 +1925,7 @@ fn emitContextChip(th: *const theme.Theme, start: usize) usize {
     if (ctx_chip.isEmpty()) return 0;
 
     const cw = renderer.cell_w;
-    const label_y: f32 = (bar_h - renderer.cell_h) / 2;
+    const label_y: f32 = (chrome.top_bar_h - renderer.cell_h) / 2;
     const fg = th.ansi[6]; // mineral/cyan = status.info/trace
     const bg = th.bar;
     const pad: f32 = 8;
@@ -2095,7 +2171,7 @@ fn crumbBox(buf: []u8) ?Crumb {
     const pad = anvil_sans_advance(' ');
     var tb: [128]u8 = undefined;
     const left = tab_inset_x + sansWidth("Anvil") + 2 * pad;
-    const right = win_w - tab_strip_margin - tabsWidth(&tb, pad) - 2 * pad;
+    const right = win_w - tabStripMargin() - tabsWidth(&tb, pad) - 2 * pad;
     const band = right - left;
     if (band < 80) return null; // too cramped to read: skip the pill
     const padx = pad * 1.25;
@@ -2103,7 +2179,7 @@ fn crumbBox(buf: []u8) ?Crumb {
     const ph = chromeH() + 8;
     const pw = @min(tw + 2 * padx, band);
     const px = left + (band - pw) / 2;
-    const py = (bar_h - ph) / 2;
+    const py = (chrome.top_bar_h - ph) / 2;
     var last: usize = 0;
     if (std.mem.lastIndexOfScalar(u8, path, '/')) |i| last = i + 1;
     return .{
@@ -2114,7 +2190,7 @@ fn crumbBox(buf: []u8) ?Crumb {
         .pw = pw,
         .ph = ph,
         .tx = px + padx,
-        .ty = (bar_h - chromeH()) / 2,
+        .ty = (chrome.top_bar_h - chromeH()) / 2,
         .maxx = px + pw - padx,
     };
 }
@@ -2138,7 +2214,7 @@ fn drawerSectionRows(count: usize) f32 {
 fn emitZenBar(start: usize) usize {
     const cs = chromeSurface();
     var ri = start;
-    putRect(ri, 0, bar_h - 1, win_w, 1, cs.line); // command-bar underline
+    putRect(ri, 0, chrome.top_bar_h - 1, win_w, 1, cs.line); // command-bar underline
     ri += 1;
     putRect(ri, 0, win_h - chrome.status_bar_h, win_w, chrome.status_bar_h, cs.charcoal); // status bg
     ri += 1;
@@ -2167,14 +2243,14 @@ fn emitShellRects(th: *const theme.Theme, np: usize) usize {
     const lc = leftChromeW();
     const rc = rightChromeW();
     const px = lc + chrome.panel_pad;
-    const ptop = bar_h + chrome.panel_pad;
+    const ptop = chrome.top_bar_h + chrome.panel_pad;
     const pw = win_w - lc - rc - 2 * chrome.panel_pad;
     const pbot = win_h - chrome.status_bar_h - chrome.panel_pad_bottom;
     const ph = pbot - ptop;
     const hdr_div_y = ptop + chrome.header_strip_h;
     const border = cs.line;
-    const body_top = bar_h;
-    const body_h = win_h - bar_h - chrome.status_bar_h;
+    const body_top = chrome.top_bar_h;
+    const body_h = win_h - chrome.top_bar_h - chrome.status_bar_h;
 
     var ri: usize = 0;
     // Left chrome fills: activity rail + (optional) sidebar.
@@ -2284,7 +2360,7 @@ fn emitShellRects(th: *const theme.Theme, np: usize) usize {
     ri += 1;
     putRect(ri, px, ptop, pw, chrome.header_strip_h, cs.charcoal); // panel header strip
     ri += 1;
-    putRect(ri, 0, bar_h - 1, win_w, 1, border); // command-bar underline
+    putRect(ri, 0, chrome.top_bar_h - 1, win_w, 1, border); // command-bar underline
     ri += 1;
     putRect(ri, 0, win_h - chrome.status_bar_h, win_w, 1, border); // status-bar topline
     ri += 1;
@@ -2335,7 +2411,7 @@ fn emitShellRects(th: *const theme.Theme, np: usize) usize {
 fn emitCommandBar(th: *const theme.Theme, start: usize, np: usize) usize {
     _ = np;
     const cs = chromeSurface();
-    const ly: f32 = (bar_h - chromeH()) / 2;
+    const ly: f32 = (chrome.top_bar_h - chromeH()) / 2;
     const pad = anvil_sans_advance(' '); // one Sans space as the spacing unit
     var n = start;
     var x: f32 = tab_inset_x;
@@ -2346,7 +2422,7 @@ fn emitCommandBar(th: *const theme.Theme, start: usize, np: usize) usize {
     // Tab strip, right-aligned, always shown. The active tab carries a leading
     // mineral status dot and reads in bone; the rest are alloy.
     var tb: [128]u8 = undefined;
-    var tx = win_w - tab_strip_margin - tabsWidth(&tb, pad);
+    var tx = win_w - tabStripMargin() - tabsWidth(&tb, pad);
     var ti: usize = 0;
     while (ti < mgr.tabs.items.len) : (ti += 1) {
         const active = ti == mgr.active_tab;
@@ -2376,7 +2452,7 @@ fn emitPanelHeaders(th: *const theme.Theme, start: usize, np: usize) usize {
     _ = th;
     _ = np;
     const cs = chromeSurface();
-    const ptop = bar_h + chrome.panel_pad;
+    const ptop = chrome.top_bar_h + chrome.panel_pad;
     const ly: f32 = ptop + (chrome.header_strip_h - chromeH()) / 2;
     const bg = cs.charcoal;
     var n = start;
@@ -2442,18 +2518,8 @@ fn emitStatusBar(th: *const theme.Theme, start: usize) usize {
     var n = start;
     var x: f32 = chrome.panel_pad + renderer.pad_x;
 
-    // Mode chip: the active chrome preset (real state, always present), then a
-    // thin pipe separator before the operational context cluster.
-    const mode_lbl = switch (mode) {
-        .terminal => "TERMINAL",
-        .editor => "EDITOR",
-        .ide => "IDE",
-    };
-    x += putSansRun(&n, x, ly, cs.alloy, bg, mode_lbl);
-    x += gap;
-    x += putSansRun(&n, x, ly, cs.ash, bg, "|");
-    x += gap;
-
+    // Left cluster: live operator context only (git branch, kube context). The
+    // mode is already obvious from the layout, so no mode-label chip here.
     if (mgr.focusedSession()) |s| ctx_chip.update(s.term.cwd());
 
     const branch = ctx_chip.branch();
@@ -2506,7 +2572,7 @@ const rail_active: usize = 0; // highlighted rail entry (terminal, for now)
 /// hit-test exactly so hover feedback and click dispatch always agree.
 fn hoverRailSlot(x: f32, y: f32) ?usize {
     if (mode == .terminal or x < 0 or x >= chrome.rail_w) return null;
-    const top = bar_h + 18;
+    const top = chrome.top_bar_h + 18;
     if (y < top) return null;
     const idx: usize = @intFromFloat((y - top) / chrome.rail_w);
     if (idx >= rail_glyphs.len) return null;
@@ -2516,7 +2582,7 @@ fn hoverRailSlot(x: f32, y: f32) ?usize {
 /// Dispatch a click on the activity rail. Maps device-y to a rail icon and runs
 /// its action: terminal→toggle bare terminal, explorer→sidebar, search→find, runs→drawer.
 fn railClick(y: f32) void {
-    const top = bar_h + 18;
+    const top = chrome.top_bar_h + 18;
     if (y < top) return;
     const idx: usize = @intFromFloat((y - top) / chrome.rail_w);
     if (idx >= rail_glyphs.len) return;
@@ -2539,9 +2605,9 @@ fn emitRail(start: usize) usize {
     const cs = chromeSurface();
     const cx = (chrome.rail_w - chromeIconW()) / 2;
     var n = start;
-    // Center each glyph in its 56px slot (slots start at bar_h+18, matching the
+    // Center each glyph in its 56px slot (slots start at chrome.top_bar_h+18, matching the
     // active-cell rect and railClick hit-testing).
-    var y: f32 = bar_h + 18 + (chrome.rail_w - chromeH()) / 2;
+    var y: f32 = chrome.top_bar_h + 18 + (chrome.rail_w - chromeH()) / 2;
     const hov = hoverRailSlot(hover_x, hover_y);
     for (rail_glyphs, 0..) |g, i| {
         const active = i == rail_active;
@@ -2761,12 +2827,12 @@ fn emitSidebar(start: usize) usize {
     var n = start;
 
     // Section header (Plex Sans).
-    const hy = bar_h + (chrome.sidebar_header_h - chromeH()) / 2;
+    const hy = chrome.top_bar_h + (chrome.sidebar_header_h - chromeH()) / 2;
     _ = putSansRun(&n, x0, hy, cs.alloy, bg, "SESSIONS");
 
     // Session rows.
     const right = chrome.rail_w + sidebar_w - renderer.pad_x;
-    var y: f32 = bar_h + chrome.sidebar_header_h + 8;
+    var y: f32 = chrome.top_bar_h + chrome.sidebar_header_h + 8;
     var tb: [128]u8 = undefined;
     var ti: usize = 0;
     while (ti < mgr.tabs.items.len) : (ti += 1) {
@@ -2869,7 +2935,7 @@ fn emitDrawer(start: usize) usize {
     var ctx = DrawerCtx{
         .x0 = win_w - chrome.drawer_w + renderer.pad_x + 6,
         .right = win_w - renderer.pad_x,
-        .y = bar_h + 8,
+        .y = chrome.top_bar_h + 8,
     };
 
     // RUNS: one row per agent run row, colored by status.
@@ -2967,7 +3033,7 @@ fn emitCfgError(th: *const theme.Theme, ri_start: usize, inst_start: usize) stru
     const ch = renderer.cell_h;
     const bar_color = theme.Rgb{ .r = 0xb1, .g = 0x3a, .b = 0x30 }; // status.failure
     const text_color = theme.Rgb{ .r = 0xee, .g = 0xf1, .b = 0xf2 }; // bone
-    putRect(ri_start, 0, bar_h, win_w, ch, bar_color);
+    putRect(ri_start, 0, chrome.top_bar_h, win_w, ch, bar_color);
     const msg = cfg_error_buf[0..cfg_error_len];
     var ni = inst_start;
     for (msg, 0..) |byte, i| {
@@ -2976,7 +3042,7 @@ fn emitCfgError(th: *const theme.Theme, ri_start: usize, inst_start: usize) stru
         if (ni >= instances.len) break;
         instances[ni] = .{
             .x = gx,
-            .y = bar_h,
+            .y = chrome.top_bar_h,
             .fg = text_color.f32x4(),
             .bg = bar_color.f32x4(),
             .uv = renderer.atlas.uvOrigin(@intCast(byte)),
@@ -3135,7 +3201,7 @@ fn emitSearchAt(th: *const theme.Theme, start: usize, base_ri: usize) struct { t
     const max_bw = win_w * 0.9;
     if (bw > max_bw) bw = max_bw;
     const bx = @floor(win_w - bw - pad);
-    const by = bar_h + pad;
+    const by = chrome.top_bar_h + pad;
 
     var ri: usize = base_ri;
     putRect(ri, bx - 1, by - 1, bw + 2, ch + 2, th.separator); // border
@@ -3445,7 +3511,7 @@ test "scroll offset floor/frac split" {
 
 test "hoverRailSlot: hit-tests rail icons, rejects outside the rail" {
     mode = .ide;
-    const top = bar_h + 18; // first slot top
+    const top = chrome.top_bar_h + 18; // first slot top
     const w = chrome.rail_w;
     // Each 56px slot maps to its icon index.
     try std.testing.expectEqual(@as(?usize, 0), hoverRailSlot(20, top));

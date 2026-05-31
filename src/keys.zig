@@ -26,7 +26,7 @@ const panes = [_]Binding{
     .{ .chord = "\u{2318}\u{21e7}D", .action = "Split Down" },
     .{ .chord = "\u{2318}W", .action = "Close Pane" },
     .{ .chord = "\u{2318}\u{21e7}\u{23ce}", .action = "Zoom Pane" },
-    .{ .chord = "\u{2318}=", .action = "Balance Panes" },
+    .{ .chord = "\u{2318}\u{2325}=", .action = "Balance Panes" },
     .{ .chord = "\u{2318}\u{2325}\u{2190}", .action = "Focus Left" },
     .{ .chord = "\u{2318}\u{2325}\u{2192}", .action = "Focus Right" },
     .{ .chord = "\u{2318}\u{2325}\u{2191}", .action = "Focus Up" },
@@ -69,6 +69,12 @@ const agents = [_]Binding{
     .{ .chord = "Esc", .action = "Close Drawer" },
 };
 
+const view = [_]Binding{
+    .{ .chord = "\u{2318}=", .action = "Zoom In" },
+    .{ .chord = "\u{2318}-", .action = "Zoom Out" },
+    .{ .chord = "\u{2318}0", .action = "Reset Zoom" },
+};
+
 pub const sections = [_]Section{
     .{ .title = "General", .items = &general },
     .{ .title = "Search", .items = &search_bindings },
@@ -77,9 +83,10 @@ pub const sections = [_]Section{
     .{ .title = "Terminal", .items = &terminal },
     .{ .title = "Copy Mode", .items = &copy_mode_bindings },
     .{ .title = "Agents", .items = &agents },
+    .{ .title = "View", .items = &view },
 };
 
-pub const total_bindings: usize = general.len + search_bindings.len + panes.len + tabs.len + terminal.len + copy_mode_bindings.len + agents.len;
+pub const total_bindings: usize = general.len + search_bindings.len + panes.len + tabs.len + terminal.len + copy_mode_bindings.len + agents.len + view.len;
 
 test "sections non-empty" {
     try std.testing.expect(sections.len > 0);
@@ -95,5 +102,5 @@ test "all bindings have non-empty chord and action" {
 }
 
 test "total binding count" {
-    try std.testing.expectEqual(@as(usize, 42), total_bindings);
+    try std.testing.expectEqual(@as(usize, 45), total_bindings);
 }
