@@ -89,7 +89,7 @@ anvil/            (new repo)
 - **M2** — Multi-tab, search, shell integration, config/theme (Mineral palette).
 - **M3** — Webview host + typed IPC bridge; first web surface (overlays / HUD).
 - **M4** — Built-in browser surface.
-- **M5** — Editor + file explorer (web surfaces).
+- **M5** — Native read-only file viewer (Metal grid, syntax-highlighted); the webview editor surface is dropped (native-only decision). Full editor path remains nvim-in-a-pane via `anvil edit <file>`.
 - **M6** — Agent orchestration.
 - **M7** — Plugin backplane (write the spec before code).
 
