@@ -1,30 +1,27 @@
 const theme = @import("render/theme.zig");
 pub const Rgb = theme.Rgb;
 
-// Mineral palette tokens (BRAND.md exact hex).
-pub const graphite = Rgb{ .r = 0x0b, .g = 0x0d, .b = 0x0e };
-pub const charcoal = Rgb{ .r = 0x16, .g = 0x1a, .b = 0x1c };
-pub const ash = Rgb{ .r = 0x37, .g = 0x40, .b = 0x46 };
-pub const alloy = Rgb{ .r = 0x86, .g = 0x91, .b = 0x9a };
-pub const mist = Rgb{ .r = 0xd2, .g = 0xd8, .b = 0xdb };
-pub const bone = Rgb{ .r = 0xee, .g = 0xf1, .b = 0xf2 };
-pub const mineral = Rgb{ .r = 0x2f, .g = 0x7f, .b = 0x86 };
-pub const ember = Rgb{ .r = 0xc5, .g = 0x46, .b = 0x2a };
-pub const verified = Rgb{ .r = 0x3f, .g = 0x8a, .b = 0x5b };
-pub const attention = Rgb{ .r = 0xb0, .g = 0x7a, .b = 0x14 };
-pub const agent = Rgb{ .r = 0x6a, .g = 0x5f, .b = 0xa3 };
+// Mineral Warm palette tokens (BRAND.md exact hex, updated 2026-05-30).
+pub const graphite = Rgb{ .r = 0x0e, .g = 0x0b, .b = 0x0a };
+pub const charcoal = Rgb{ .r = 0x1c, .g = 0x16, .b = 0x14 };
+pub const ash = Rgb{ .r = 0x3e, .g = 0x30, .b = 0x28 };
+pub const alloy = Rgb{ .r = 0x8a, .g = 0x80, .b = 0x76 };
+pub const mist = Rgb{ .r = 0xd8, .g = 0xcf, .b = 0xc8 };
+pub const bone = Rgb{ .r = 0xf0, .g = 0xeb, .b = 0xe4 };
+pub const mineral = Rgb{ .r = 0xc2, .g = 0x61, .b = 0x4a };
+pub const ember = Rgb{ .r = 0xd4, .g = 0x60, .b = 0x1e };
+pub const verified = Rgb{ .r = 0x5a, .g = 0x8c, .b = 0x45 };
+pub const attention = Rgb{ .r = 0xb8, .g = 0x82, .b = 0x1a };
+pub const agent = Rgb{ .r = 0x8c, .g = 0x5f, .b = 0xa0 };
 
 // Snug-recess panel border: a touch lighter than charcoal, darker than ash.
-pub const ash_soft = Rgb{ .r = 0x20, .g = 0x28, .b = 0x2b };
+pub const ash_soft = Rgb{ .r = 0x26, .g = 0x1e, .b = 0x1a };
 
-// Structural frame line: crisp enough to read as a boxed operator-console
-// panel edge against charcoal/graphite — the Hermes/Honcho "every module is a
-// box" look — without the harshness of full ash. Used for region frames,
-// section-header rules, and panel edges.
-pub const line = Rgb{ .r = 0x3a, .g = 0x45, .b = 0x4d };
+// Structural frame line.
+pub const line = Rgb{ .r = 0x3d, .g = 0x2f, .b = 0x27 };
 
-// Row hover tint: between charcoal and ash_soft — a subtle pointer affordance.
-pub const hover = Rgb{ .r = 0x1b, .g = 0x21, .b = 0x24 };
+// Row hover tint.
+pub const hover = Rgb{ .r = 0x22, .g = 0x19, .b = 0x14 };
 
 // Chrome surface palette — the window-furniture tones, selected by the active
 // light/dark mode (see app.zig effectiveDark). Dark keeps the deep
@@ -60,18 +57,17 @@ pub const surface_dark = Surface{
     .hover = hover,
 };
 
-// Light mode: BRAND.md light surfaces. bone canvas, white raised panels, ink
-// emphasis + slate primary text, alloy-darkened muted text, soft mist borders.
+// Light mode: Mineral Warm light surfaces.
 pub const surface_light = Surface{
-    .graphite = bone, // #eef1f2 primary light canvas
-    .charcoal = Rgb{ .r = 0xff, .g = 0xff, .b = 0xff }, // white raised panels
-    .ash = Rgb{ .r = 0xa8, .g = 0xb0, .b = 0xb6 }, // dim muted gray
-    .ash_soft = Rgb{ .r = 0xd8, .g = 0xde, .b = 0xe1 }, // recessed row inset
-    .alloy = Rgb{ .r = 0x5b, .g = 0x65, .b = 0x6c }, // muted text, legible on light
-    .mist = Rgb{ .r = 0x2b, .g = 0x33, .b = 0x38 }, // primary text (slate)
-    .bone = Rgb{ .r = 0x0c, .g = 0x0d, .b = 0x0e }, // ink emphasis text
-    .line = Rgb{ .r = 0xbc, .g = 0xc4, .b = 0xc8 }, // soft hairline on bone/white/mist
-    .hover = Rgb{ .r = 0xdf, .g = 0xe4, .b = 0xe7 }, // hover tint
+    .graphite = Rgb{ .r = 0xf2, .g = 0xec, .b = 0xe4 }, // #f2ece4 primary light canvas
+    .charcoal = Rgb{ .r = 0xfd, .g = 0xf6, .b = 0xee }, // #fdf6ee raised panels
+    .ash = Rgb{ .r = 0xa0, .g = 0x90, .b = 0x80 }, // dim muted warm gray
+    .ash_soft = Rgb{ .r = 0xe8, .g = 0xdd, .b = 0xd2 }, // recessed row inset
+    .alloy = Rgb{ .r = 0x6b, .g = 0x5f, .b = 0x54 }, // muted text, legible on light
+    .mist = Rgb{ .r = 0x30, .g = 0x25, .b = 0x20 }, // primary text
+    .bone = Rgb{ .r = 0x14, .g = 0x0e, .b = 0x0a }, // ink emphasis text
+    .line = Rgb{ .r = 0xcb, .g = 0xbf, .b = 0xb4 }, // soft hairline
+    .hover = Rgb{ .r = 0xed, .g = 0xe3, .b = 0xd8 }, // hover tint
 };
 
 // Spacing tokens (px).

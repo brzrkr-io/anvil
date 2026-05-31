@@ -7,21 +7,21 @@
 -- else dark. Pick with `:colorscheme anvil`.
 
 local dark = {
-  bg = "#0b0d0e", fg = "#d2d8db", bar = "#161a1c", sep = "#374046",
-  sel_bg = "#2f4a4e", sel_fg = "#eef1f2",
-  black = "#161a1c", red = "#b13a30", green = "#3f8a5b", yellow = "#b07a14",
-  blue = "#4a6f8a", magenta = "#6a5fa3", cyan = "#2f7f86", white = "#d2d8db",
-  br_black = "#4a555c", br_red = "#cf5346", br_green = "#57a673", br_yellow = "#cf962b",
-  br_blue = "#5d86a3", br_magenta = "#8377c0", br_cyan = "#3f9aa1", br_white = "#eef1f2",
+  bg = "#0e0b0a", fg = "#d8cfc8", bar = "#1c1614", sep = "#3d2f27",
+  sel_bg = "#3a2820", sel_fg = "#f0ebe4",
+  black = "#1c1614", red = "#b53a2e", green = "#4a8c52", yellow = "#b88220",
+  blue = "#5272a0", magenta = "#8c5fa0", cyan = "#c2614a", white = "#d8cfc8",
+  br_black = "#503e34", br_red = "#d45a44", br_green = "#62a86a", br_yellow = "#d4a030",
+  br_blue = "#6882b8", br_magenta = "#a878c0", br_cyan = "#d4733e", br_white = "#f0ebe4",
 }
 
 local light = {
-  bg = "#eef1f2", fg = "#0c0d0e", bar = "#d2d8db", sep = "#86919a",
-  sel_bg = "#b8d4d6", sel_fg = "#0c0d0e",
-  black = "#0c0d0e", red = "#a8322a", green = "#2f7048", yellow = "#8f6210",
-  blue = "#3c5e78", magenta = "#574d8c", cyan = "#266a70", white = "#565f66",
-  br_black = "#86919a", br_red = "#c5462a", br_green = "#3f8a5b", br_yellow = "#b07a14",
-  br_blue = "#4a6f8a", br_magenta = "#6a5fa3", br_cyan = "#2f7f86", br_white = "#374046",
+  bg = "#f2ece4", fg = "#302520", bar = "#fdf6ee", sep = "#cbbfb4",
+  sel_bg = "#e0d4c8", sel_fg = "#140e0a",
+  black = "#140e0a", red = "#a03025", green = "#2e6c38", yellow = "#8c6214",
+  blue = "#3a5888", magenta = "#6c4880", cyan = "#a84c38", white = "#5c4e44",
+  br_black = "#9c8878", br_red = "#c5462a", br_green = "#4a8c52", br_yellow = "#b88220",
+  br_blue = "#5272a0", br_magenta = "#8c5fa0", br_cyan = "#c2614a", br_white = "#3d2e26",
 }
 
 local function variant()

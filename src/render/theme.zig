@@ -51,58 +51,58 @@ pub const Theme = struct {
     ansi: [16]Rgb,
 };
 
-// Mineral palette (BRAND.md). ANSI hues are brand-flavored but kept distinct.
+// Mineral Warm palette (BRAND.md, updated 2026-05-30). ANSI hues warm-recalibrated.
 pub const mineral_dark = Theme{
-    .bg = hex("0b0d0e"), // graphite
-    .fg = hex("d2d8db"), // mist
-    .bar = hex("161a1c"), // charcoal
-    .separator = hex("374046"), // ash
-    .sel_bg = hex("2f4a4e"), // dim mineral
-    .sel_fg = hex("eef1f2"), // bone
+    .bg = hex("0e0b0a"), // graphite
+    .fg = hex("d8cfc8"), // mist
+    .bar = hex("1c1614"), // charcoal
+    .separator = hex("3d2f27"), // line
+    .sel_bg = hex("3a2820"), // dim warm selection
+    .sel_fg = hex("f0ebe4"), // bone
     .ansi = .{
-        hex("161a1c"), // 0 black (charcoal, visible on graphite)
-        hex("b13a30"), // 1 red (failure)
-        hex("3f8a5b"), // 2 green (verified)
-        hex("b07a14"), // 3 yellow (attention)
-        hex("4a6f8a"), // 4 blue (steel)
-        hex("6a5fa3"), // 5 magenta (agent)
-        hex("2f7f86"), // 6 cyan (mineral)
-        hex("d2d8db"), // 7 white (mist)
-        hex("4a555c"), // 8 bright black
-        hex("cf5346"), // 9 bright red
-        hex("57a673"), // 10 bright green
-        hex("cf962b"), // 11 bright yellow
-        hex("5d86a3"), // 12 bright blue
-        hex("8377c0"), // 13 bright magenta
-        hex("3f9aa1"), // 14 bright cyan
-        hex("eef1f2"), // 15 bright white (bone)
+        hex("1c1614"), // 0 black (charcoal)
+        hex("b53a2e"), // 1 red (failure)
+        hex("4a8c52"), // 2 green (verified)
+        hex("b88220"), // 3 yellow (attention)
+        hex("5272a0"), // 4 blue
+        hex("8c5fa0"), // 5 magenta (agent)
+        hex("c2614a"), // 6 coral (mineral)
+        hex("d8cfc8"), // 7 white (mist)
+        hex("503e34"), // 8 bright black
+        hex("d45a44"), // 9 bright red
+        hex("62a86a"), // 10 bright green
+        hex("d4a030"), // 11 bright yellow
+        hex("6882b8"), // 12 bright blue
+        hex("a878c0"), // 13 bright magenta
+        hex("d4733e"), // 14 bright coral
+        hex("f0ebe4"), // 15 bright white (bone)
     },
 };
 
 pub const mineral_light = Theme{
-    .bg = hex("eef1f2"), // bone
-    .fg = hex("0c0d0e"), // ink
-    .bar = hex("d2d8db"), // mist
-    .separator = hex("86919a"), // alloy
-    .sel_bg = hex("b8d4d6"), // light mineral
-    .sel_fg = hex("0c0d0e"), // ink
+    .bg = hex("f2ece4"), // canvas
+    .fg = hex("302520"), // dark warm text
+    .bar = hex("fdf6ee"), // panels
+    .separator = hex("cbbfb4"), // line light
+    .sel_bg = hex("e0d4c8"), // warm selection
+    .sel_fg = hex("140e0a"), // ink
     .ansi = .{
-        hex("0c0d0e"), // 0 black (ink)
-        hex("a8322a"), // 1 red
-        hex("2f7048"), // 2 green
-        hex("8f6210"), // 3 yellow
-        hex("3c5e78"), // 4 blue
-        hex("574d8c"), // 5 magenta
-        hex("266a70"), // 6 cyan (mineral)
-        hex("565f66"), // 7 white (dark gray on light)
-        hex("86919a"), // 8 bright black (alloy)
+        hex("140e0a"), // 0 black (ink)
+        hex("a03025"), // 1 red
+        hex("2e6c38"), // 2 green
+        hex("8c6214"), // 3 yellow
+        hex("3a5888"), // 4 blue
+        hex("6c4880"), // 5 magenta
+        hex("a84c38"), // 6 coral (mineral)
+        hex("5c4e44"), // 7 white (dark warm on light)
+        hex("9c8878"), // 8 bright black
         hex("c5462a"), // 9 bright red (ember)
-        hex("3f8a5b"), // 10 bright green
-        hex("b07a14"), // 11 bright yellow
-        hex("4a6f8a"), // 12 bright blue
-        hex("6a5fa3"), // 13 bright magenta
-        hex("2f7f86"), // 14 bright cyan
-        hex("374046"), // 15 bright white (ash)
+        hex("4a8c52"), // 10 bright green
+        hex("b88220"), // 11 bright yellow
+        hex("5272a0"), // 12 bright blue
+        hex("8c5fa0"), // 13 bright magenta
+        hex("c2614a"), // 14 bright coral
+        hex("3d2e26"), // 15 bright white (warm near-black)
     },
 };
 
@@ -112,27 +112,27 @@ pub const Variant = struct {
     light: Theme,
 };
 
-// mineral-high: maximum-contrast Mineral pair.
-// Dark: graphite bg (#0b0d0e) + bone fg (#eef1f2) — both are brand endpoints.
-// Light: white bg (#ffffff) + ink fg (#0c0d0e) — pure raised-panel contrast.
-// Status hues are unchanged; only chrome/fg use the outer Mineral extremes.
+// mineral-high: maximum-contrast Mineral Warm pair.
+// Dark: graphite bg (#0e0b0a) + bone fg (#f0ebe4) — brand endpoints.
+// Light: panels bg (#fdf6ee) + ink fg (#140e0a) — raised-panel contrast.
+// Status hues are unchanged; only chrome/fg use the outer Mineral Warm extremes.
 pub const mineral_high_dark = Theme{
-    .bg = hex("0b0d0e"), // graphite (same as mineral_dark)
-    .fg = hex("eef1f2"), // bone — raised to max contrast
-    .bar = hex("0c0d0e"), // near-black, darker than charcoal
-    .separator = hex("4a555c"), // bright-black tone, visible on deep bg
-    .sel_bg = hex("2f4a4e"),
-    .sel_fg = hex("eef1f2"),
+    .bg = hex("0e0b0a"), // graphite (same as mineral_dark)
+    .fg = hex("f0ebe4"), // bone — raised to max contrast
+    .bar = hex("070504"), // near-black, darker than graphite
+    .separator = hex("503e34"), // bright-black warm tone, visible on deep bg
+    .sel_bg = hex("3a2820"),
+    .sel_fg = hex("f0ebe4"),
     .ansi = mineral_dark.ansi,
 };
 
 pub const mineral_high_light = Theme{
-    .bg = hex("ffffff"), // white — raised-panel maximum
-    .fg = hex("0c0d0e"), // ink
-    .bar = hex("eef1f2"), // bone
-    .separator = hex("86919a"), // alloy
-    .sel_bg = hex("b8d4d6"),
-    .sel_fg = hex("0c0d0e"),
+    .bg = hex("fdf6ee"), // panels — raised-panel maximum
+    .fg = hex("140e0a"), // ink
+    .bar = hex("f2ece4"), // canvas
+    .separator = hex("9c8878"), // warm alloy
+    .sel_bg = hex("e0d4c8"),
+    .sel_fg = hex("140e0a"),
     .ansi = mineral_light.ansi,
 };
 
@@ -341,8 +341,8 @@ pub fn byName(name: []const u8) ?Variant {
 }
 
 test "hex parses brand tokens" {
-    try std.testing.expectEqual(Rgb{ .r = 0x0b, .g = 0x0d, .b = 0x0e }, mineral_dark.bg);
-    try std.testing.expectEqual(Rgb{ .r = 0xee, .g = 0xf1, .b = 0xf2 }, mineral_light.bg);
+    try std.testing.expectEqual(Rgb{ .r = 0x0e, .g = 0x0b, .b = 0x0a }, mineral_dark.bg);
+    try std.testing.expectEqual(Rgb{ .r = 0xf2, .g = 0xec, .b = 0xe4 }, mineral_light.bg);
 }
 
 test "byName returns the named variant" {

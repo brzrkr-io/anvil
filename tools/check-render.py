@@ -6,10 +6,10 @@ Does NOT do exact pixel comparison (CoreText antialiasing and shell-prompt
 content vary across macOS versions and machines). Instead it asserts the
 three-zone operator-console shell is laid out as expected:
   - dimensions are 1600x1000
-  - left SESSIONS/EXPLORER sidebar band is charcoal #161a1c
-  - center terminal panel body is Mineral dark #0b0d0e
-  - right RUNS/TRACE/AGENT drawer band is charcoal #161a1c
-  - bottom status bar is charcoal #161a1c
+  - left SESSIONS/EXPLORER sidebar band is charcoal #1c1614
+  - center terminal panel body is Mineral Warm dark #0e0b0a
+  - right RUNS/TRACE/AGENT drawer band is charcoal #1c1614
+  - bottom status bar is charcoal #1c1614
 
 Run: python3 tools/check-render.py /tmp/anvil-ci.png
 """
@@ -91,8 +91,8 @@ def main():
     # 1. Dimensions.
     assert width == 1600 and height == 1000, f"unexpected dimensions {width}x{height}"
 
-    charcoal = (0x16, 0x1A, 0x1C)
-    pane_bg = (0x1A, 0x1B, 0x26)
+    charcoal = (0x1C, 0x16, 0x14)
+    pane_bg = (0x0E, 0x0B, 0x0A)
 
     # 2. Left sidebar band (SESSIONS / EXPLORER) is charcoal.
     side = region_frac(rows, bpp, charcoal, 60, 350, 120, 880)
