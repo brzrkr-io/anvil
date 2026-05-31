@@ -47,10 +47,16 @@ pub const RunArg = struct {
     len: usize = 0,
 };
 
+pub const ViewArg = struct {
+    path: [path_max]u8 = undefined,
+    len: usize = 0,
+};
+
 pub const Command = union(enum) {
     split: pane.Axis,
     tab: TabArg,
     run: RunArg,
+    view: ViewArg,
 };
 
 var q_mutex: std.c.pthread_mutex_t = std.c.PTHREAD_MUTEX_INITIALIZER;
@@ -141,6 +147,15 @@ fn parseRequest(line: []const u8) ?Command {
         @memcpy(arg.cmd[0..n], cmd[0..n]);
         arg.len = n;
         return Command{ .run = arg };
+    }
+    if (std.mem.startsWith(u8, trimmed, "view ")) {
+        const vpath = trimmed[5..];
+        if (vpath.len == 0) return null;
+        var arg = ViewArg{};
+        const n = @min(vpath.len, path_max);
+        @memcpy(arg.path[0..n], vpath[0..n]);
+        arg.len = n;
+        return Command{ .view = arg };
     }
     return null;
 }
@@ -535,6 +550,16 @@ test "pipeCommand embeds pager and file, deletes after" {
 test "parseRequest: bare run returns null" {
     try std.testing.expect(parseRequest("run\n") == null);
     try std.testing.expect(parseRequest("run \n") == null);
+}
+
+test "parseRequest: view with path" {
+    const r = parseRequest("view /x\n").?;
+    try std.testing.expectEqualStrings("/x", r.view.path[0..r.view.len]);
+}
+
+test "parseRequest: bare view returns null" {
+    try std.testing.expect(parseRequest("view\n") == null);
+    try std.testing.expect(parseRequest("view \n") == null);
 }
 
 test "parseRequest: unknown verb returns null" {

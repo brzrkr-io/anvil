@@ -103,11 +103,12 @@ extern int anvil_cfg_error_open(void);
 extern void anvil_cfg_error_dismiss(void);
 extern void anvil_respawn(void);
 extern const char *anvil_copy(size_t *out_len);
-extern void anvil_caldera_drawer_toggle(void);
+extern void anvil_agent_detail_toggle(void);
 extern void anvil_drawer_toggle(void);
 extern void anvil_zen_toggle(void);
-extern int anvil_caldera_drawer_open(void);
-extern void anvil_caldera_drawer_key(int key);
+extern void anvil_editor_save(void);
+extern int anvil_agent_detail_open(void);
+extern void anvil_agent_detail_key(int key);
 extern void anvil_set_theme_mode(int mode);
 extern void anvil_set_os_dark(int is_dark);
 extern int anvil_theme_is_dark(void);
@@ -869,15 +870,15 @@ static void layoutTrafficLights(NSWindow *win) {
         BOOL shift = (f & NSEventModifierFlagShift) != 0;
         if (cmd && shift && ich == ' ') { anvil_copy_mode_toggle(); return; }
     }
-    // Cmd+G toggles the Caldera run-detail drawer from any state.
-    if (cmd && ilc == 'g') { anvil_caldera_drawer_toggle(); return; }
+    // Cmd+G toggles the agent run-detail drawer from any state.
+    if (cmd && ilc == 'g') { anvil_agent_detail_toggle(); return; }
 
     // While the run-detail drawer is open it captures nav keys; PTY sees nothing.
-    if (anvil_caldera_drawer_open()) {
+    if (anvil_agent_detail_open()) {
         unichar ch = s.length ? [s characterAtIndex:0] : 0;
-        if (ch == 0x1b) { anvil_caldera_drawer_key(0); return; }
-        if (ch == NSUpArrowFunctionKey)   { anvil_caldera_drawer_key(1); return; }
-        if (ch == NSDownArrowFunctionKey) { anvil_caldera_drawer_key(2); return; }
+        if (ch == 0x1b) { anvil_agent_detail_key(0); return; }
+        if (ch == NSUpArrowFunctionKey)   { anvil_agent_detail_key(1); return; }
+        if (ch == NSDownArrowFunctionKey) { anvil_agent_detail_key(2); return; }
         return; // swallow everything else
     }
 
@@ -987,6 +988,7 @@ static void layoutTrafficLights(NSWindow *win) {
         else if (lc == 'w') { if (shift) anvil_close_tab(); else anvil_close_pane(); }
         else if (lc == 'r' && !shift) anvil_respawn();
         else if (lc == 'j') anvil_drawer_toggle();
+        else if (lc == 's' && !shift) anvil_editor_save();
         return;
     }
     if (s.length == 1) {
@@ -1036,7 +1038,7 @@ static void layoutTrafficLights(NSWindow *win) {
 }
 @end
 
-@interface AnvilController : NSObject <NSApplicationDelegate>
+@interface AnvilController : NSObject <NSApplicationDelegate, NSWindowDelegate>
 @end
 
 @implementation AnvilController
@@ -1059,6 +1061,14 @@ static void layoutTrafficLights(NSWindow *win) {
     (void)n;
     anvil_ipc_focus();
     anvil_force_render();
+}
+// AppKit re-lays out the traffic lights for a standard-height titlebar after
+// each resize. Repositioning them only in the view's setFrameSize: races that
+// pass and makes them jitter. windowDidResize: fires after AppKit's layout, so
+// our compact placement gets the final word and stays put.
+- (void)windowDidResize:(NSNotification *)n {
+    (void)n;
+    if (gWindow) layoutTrafficLights(gWindow);
 }
 @end
 
@@ -1201,6 +1211,7 @@ void anvil_run(void) {
 
         gController = [[AnvilController alloc] init];
         NSApp.delegate = gController;
+        win.delegate = gController;
         anvil_set_os_dark(osIsDark() ? 1 : 0);
         buildMenu();
         applyAppearance();

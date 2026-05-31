@@ -86,6 +86,15 @@ pub const PaneTree = struct {
         slot.* = .{ .split = sp };
     }
 
+    /// Split with the new pane as the FIRST child (top/left); the existing pane
+    /// becomes the second (bottom/right). `ratio` is the new pane's fraction.
+    pub fn splitNewFirst(self: *PaneTree, target: usize, axis: Axis, new_id: usize, ratio: f32) !void {
+        const slot = findLeaf(&self.root, target) orelse return;
+        const sp = try self.alloc.create(Split);
+        sp.* = .{ .axis = axis, .ratio = ratio, .a = .{ .leaf = new_id }, .b = slot.* };
+        slot.* = .{ .split = sp };
+    }
+
     /// Remove the leaf carrying `id`, collapsing its parent into the sibling.
     /// No-op if `id` is absent or is the only pane.
     pub fn close(self: *PaneTree, id: usize) void {
@@ -396,6 +405,27 @@ test "y split halves the height" {
     try t.expectEqual(@as(usize, 2), n);
     try t.expectEqual(@as(f32, 50), buf[0].rect.h);
     try t.expectEqual(@as(f32, 50), buf[1].rect.y);
+}
+
+test "splitNewFirst y stacks the new pane on top, full width" {
+    // Opening a file from the explorer puts the editor ABOVE the terminal:
+    // the new pane must be the first (top) child, full width, at the ratio.
+    var tree = PaneTree.init(t.allocator, 0); // existing terminal = id 0
+    defer tree.deinit();
+    try tree.splitNewFirst(0, .y, 1, 0.7); // editor = id 1 on top
+    var buf: [8]PaneRect = undefined;
+    const n = tree.layout(.{ .x = 0, .y = 0, .w = 80, .h = 100 }, 0, &buf);
+    try t.expectEqual(@as(usize, 2), n);
+    // buf[0] is the new (editor) pane: top, full width, 70% tall.
+    try t.expectEqual(@as(usize, 1), buf[0].id);
+    try t.expectEqual(@as(f32, 0), buf[0].rect.y);
+    try t.expectEqual(@as(f32, 80), buf[0].rect.w);
+    try t.expectEqual(@as(f32, 70), buf[0].rect.h);
+    // buf[1] is the old (terminal) pane: directly below, full width.
+    try t.expectEqual(@as(usize, 0), buf[1].id);
+    try t.expectEqual(@as(f32, 70), buf[1].rect.y);
+    try t.expectEqual(@as(f32, 80), buf[1].rect.w);
+    try t.expectEqual(@as(f32, 30), buf[1].rect.h);
 }
 
 test "close collapses the parent into the sibling" {

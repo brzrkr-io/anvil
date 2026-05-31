@@ -15,6 +15,7 @@ const persist = @import("session_persist.zig");
 const chip_mod = @import("context_chip.zig");
 const copy_mode_mod = @import("copy_mode.zig");
 const caldera = @import("caldera.zig");
+const agent = @import("agent.zig");
 const ipc = @import("ipc.zig");
 const chrome = @import("chrome.zig");
 
@@ -70,9 +71,9 @@ var copy_mode = copy_mode_mod.CopyMode{};
 var overlay: [256 * 7]f32 = undefined; // colored rects (x,y,w,h,r,g,b)
 var ctx_chip: chip_mod.Chip = .{};
 
-var caldera_snap: caldera.Snapshot = .{};
-var caldera_sel: usize = 0;
-var caldera_drawer: bool = false;
+var agent_snap: agent.Snapshot = .{};
+var agent_detail_sel: usize = 0;
+var agent_detail_open: bool = false;
 
 var frame_dirty: bool = true;
 inline fn markDirty() void {
@@ -142,7 +143,7 @@ fn cursorVisible(t: *const @import("vt/terminal.zig").Terminal) bool {
 var last_blink_phase: bool = false;
 
 fn blinkActive() bool {
-    if (cpal.open or srch.open or help_open or copy_mode.open or caldera_drawer) return false;
+    if (cpal.open or srch.open or help_open or copy_mode.open or agent_detail_open) return false;
     const s = focused();
     return s.id == mgr.focused and !s.exited and s.term.cursor_blink and s.term.view_offset == 0;
 }
@@ -311,16 +312,21 @@ fn focused() *Session {
     return mgr.focusedSession().?;
 }
 
-/// Zen / terminal-only mode: hides all chrome (top bar, status bar, rail,
-/// sidebar, drawer, panel inset) so the terminal fills the window. Toggled by
-/// Cmd+Return or the rail's terminal icon.
-var zen: bool = false;
+/// Workspace mode: the chrome preset for the window.
+///   terminal — bare terminal: compact title bar + persistent bottom bar, no
+///              side chrome.
+///   editor   — editor surface with the activity rail + sidebar for file
+///              navigation; no agent drawer.
+///   ide      — full operator console: rail, sidebar, agent drawer, panel frame.
+/// The bottom status bar persists in all three. Switched via Cmd+Return
+/// (terminal↔ide), the command palette, or the rail's terminal icon.
+const Mode = enum { terminal, editor, ide };
+var mode: Mode = .ide;
 
-/// Top command-bar height. Kept in zen mode too: zen hides the side chrome,
-/// status bar, and panel inset for a focused terminal, but retains the compact
-/// title bar so the window has a drag handle and the traffic lights sit on a
-/// painted strip instead of bleeding the desktop through the transparent
-/// titlebar.
+/// Top command-bar height. Kept in every mode: even bare terminal mode retains
+/// the compact title bar so the window has a drag handle and the traffic lights
+/// sit on a painted strip instead of bleeding the desktop through the
+/// transparent titlebar.
 fn barH() f32 {
     return bar_h;
 }
@@ -338,25 +344,32 @@ const sidebar_w_max: f32 = 520;
 var hover_x: f32 = -1;
 var hover_y: f32 = -1;
 
-/// Left chrome width: activity rail plus the sidebar when open. Zero in zen.
+/// Left chrome width: activity rail plus the sidebar when open. Zero in
+/// terminal mode (bare terminal has no side chrome).
 fn leftChromeW() f32 {
-    if (zen) return 0;
+    if (mode == .terminal) return 0;
     return chrome.rail_w + (if (sidebar_open) sidebar_w else 0);
 }
 
 /// True when the right context drawer (RUNS / TRACE / AGENT) is shown (Option C).
 var drawer_open: bool = true;
 
-/// Right chrome width: the context drawer when open, else zero. Zero in zen.
+/// The agent drawer shows only in IDE mode, and only when toggled open.
+/// Terminal and editor modes never show it.
+fn drawerVisible() bool {
+    return mode == .ide and drawer_open;
+}
+
+/// Right chrome width: the context drawer when visible, else zero.
 fn rightChromeW() f32 {
-    return if (drawer_open and !zen) chrome.drawer_w else 0;
+    return if (drawerVisible()) chrome.drawer_w else 0;
 }
 
 /// The pane area: the window minus command bar, status bar, left chrome
 /// (rail + sidebar), panel inset, and the per-pane header strip. Panes lay
 /// out inside the inset panel body.
 fn workspaceRect() pane.Rect {
-    if (zen) return .{ .x = 0, .y = bar_h, .w = win_w, .h = win_h - bar_h };
+    if (mode == .terminal) return .{ .x = 0, .y = bar_h, .w = win_w, .h = win_h - bar_h - chrome.status_bar_h };
     const pp = chrome.panel_pad;
     const hs = chrome.header_strip_h;
     const sb = chrome.status_bar_h;
@@ -555,7 +568,8 @@ export fn anvil_resize(px_w: f32, px_h: f32) callconv(.c) void {
             }
         }
         if (!restored) mgr.spawnFirstWithCwd(g.rows, g.cols, start_cwd) catch return;
-        caldera.start(std.heap.page_allocator);
+        agent.use(caldera.provider);
+        agent.start(std.heap.page_allocator);
         ipc.start();
         ready = true;
         applyCursorDefault();
@@ -609,6 +623,16 @@ fn drainIpc() void {
                     s.write("\n");
                 }
             },
+            .view => |varg| {
+                const ws = workspaceRect();
+                const g = renderer.paneGrid(ws.w, ws.h);
+                const tree = mgr.activeTree() orelse continue;
+                const vid = mgr.addViewer(varg.path[0..varg.len], g.rows, g.cols) catch continue;
+                tree.split(mgr.focused, @import("workspace/pane_tree.zig").Axis.x, vid) catch continue;
+                mgr.focused = vid;
+                relayout();
+                markDirty();
+            },
         }
     }
 }
@@ -631,7 +655,7 @@ export fn anvil_poll() callconv(.c) c_int {
     drainIpc();
     reloadConfigIfChanged();
     pushThemeColors();
-    if (caldera_drawer) markDirty();
+    if (agent_detail_open) markDirty();
     var any_alive: bool = false;
     for (mgr.sessions.items) |*s| {
         if (!s.exited) {
@@ -682,8 +706,90 @@ export fn anvil_respawn() callconv(.c) void {
 
 export fn anvil_input(ptr: [*]const u8, len: usize) callconv(.c) void {
     if (!ready) return;
-    focused().write(ptr[0..len]);
+    const s = focused();
+    if (s.kind == .viewer) {
+        // q or Escape closes the viewer pane; all other input is swallowed.
+        const bytes = ptr[0..len];
+        if (bytes.len > 0 and (bytes[0] == 'q' or bytes[0] == 0x1b)) {
+            mgr.closeFocused();
+            relayout();
+            markDirty();
+        }
+        return;
+    }
+    if (s.kind == .editor) {
+        s.editorInput(ptr[0..len]) catch {};
+        markDirty();
+        return;
+    }
+    s.write(ptr[0..len]);
     markDirty();
+}
+
+/// The id of an existing editor pane in the active tab, or null. Used so the
+/// explorer opens files into one reused editor instead of splitting per click.
+fn findEditorPane() ?usize {
+    const tree = mgr.activeTree() orelse return null;
+    var ids: [64]usize = undefined;
+    const n = tree.leaves(&ids);
+    for (ids[0..n]) |id| {
+        if (mgr.byId(id)) |s| {
+            if (s.kind == .editor) return id;
+        }
+    }
+    return null;
+}
+
+/// Open `path` in a native editor pane. Reuses the active tab's editor pane if
+/// one exists (replacing its buffer); otherwise splits a new pane. Switches to
+/// editor mode. Falls back to a read-only viewer if the file can't be loaded as
+/// an editable buffer (too large, binary, missing).
+fn openEditorPane(path: []const u8) void {
+    const ws = workspaceRect();
+    const g = renderer.paneGrid(ws.w, ws.h);
+    const tree = mgr.activeTree() orelse return;
+
+    // Reuse an existing editor pane: replace its buffer instead of splitting.
+    if (findEditorPane()) |eid| {
+        if (mgr.byId(eid)) |s| {
+            if (s.reloadEditor(path)) {
+                mgr.focused = eid;
+                mode = .editor;
+                relayout();
+                markDirty();
+                return;
+            } else |_| {
+                // Reload failed (binary/too large): fall through to a fresh pane.
+            }
+        }
+    }
+
+    const eid = mgr.addEditor(path, g.rows, g.cols) catch {
+        const vid = mgr.addViewer(path, g.rows, g.cols) catch return;
+        tree.splitNewFirst(mgr.focused, pane.Axis.y, vid, 0.7) catch return;
+        mgr.focused = vid;
+        relayout();
+        markDirty();
+        return;
+    };
+    tree.splitNewFirst(mgr.focused, pane.Axis.y, eid, 0.7) catch return;
+    mgr.focused = eid;
+    mode = .editor;
+    relayout();
+    markDirty();
+}
+
+/// Open a file in the native editor (used by the explorer and the CLI).
+export fn anvil_open_editor(ptr: [*]const u8, len: usize) callconv(.c) void {
+    if (!ready) return;
+    openEditorPane(ptr[0..len]);
+}
+
+/// Save the focused editor pane's buffer to its file. No-op otherwise.
+export fn anvil_editor_save() callconv(.c) void {
+    if (!ready) return;
+    const s = focused();
+    if (s.kind == .editor) s.editorSave() catch {};
 }
 
 /// Paste clipboard text. Wraps in bracketed-paste markers when the program
@@ -709,6 +815,13 @@ export fn anvil_scroll(delta: c_int) callconv(.c) void {
         const cb: u8 = if (delta > 0) 64 else 65;
         var n: c_int = if (delta > 0) delta else -delta;
         while (n > 0) : (n -= 1) sendMouseReport(s, cb, 0, 0, false);
+        markDirty();
+        return;
+    }
+    if (s.kind == .editor) {
+        // Terminal wheel convention is up = +delta (scroll into history); the
+        // editor's `top` advances downward, so negate to match wheel direction.
+        s.editorScroll(@intCast(-delta));
         markDirty();
         return;
     }
@@ -800,7 +913,7 @@ export fn anvil_mouse(kind: c_int, x: f32, y: f32) callconv(.c) void {
     if (!ready) return;
     // Sidebar resize: grab the right edge and drag. A 6px band around the edge
     // starts the drag; subsequent motion sets the width; release ends it.
-    if (sidebar_open and !zen) {
+    if (sidebar_open and mode != .terminal) {
         const edge = leftChromeW();
         const in_body = y > bar_h and y < win_h - chrome.status_bar_h;
         if (kind == 0 and in_body and @abs(x - edge) <= 6) {
@@ -823,7 +936,7 @@ export fn anvil_mouse(kind: c_int, x: f32, y: f32) callconv(.c) void {
     // selection underneath (which would start a phantom selection at the
     // clamped cell). A SESSIONS row switches to that tab; an EXPLORER row
     // inserts the entry name at the focused prompt (the "open" action).
-    if (kind == 0 and !zen and x < leftChromeW()) {
+    if (kind == 0 and mode != .terminal and x < leftChromeW()) {
         if (x < chrome.rail_w) {
             railClick(y);
         } else if (sidebar_open) {
@@ -838,9 +951,15 @@ export fn anvil_mouse(kind: c_int, x: f32, y: f32) callconv(.c) void {
                     if (ent.is_dir) {
                         toggleExpanded(ent.rel[0..ent.rel_len]);
                         markDirty();
-                    } else if (mgr.byId(mgr.focused)) |s| {
-                        s.write(ent.rel[0..ent.rel_len]);
-                        markDirty();
+                    } else {
+                        // Build absolute path: explorerPath() + "/" + rel, then
+                        // open it in the native editor (falls back to a viewer).
+                        var abuf: [1024]u8 = undefined;
+                        const root = explorerPath();
+                        const rel = ent.rel[0..ent.rel_len];
+                        const abs = std.fmt.bufPrint(&abuf, "{s}/{s}", .{ root, rel }) catch rel;
+                        setOpenFile(rel);
+                        openEditorPane(abs);
                     }
                 },
                 else => {},
@@ -869,6 +988,15 @@ export fn anvil_mouse(kind: c_int, x: f32, y: f32) callconv(.c) void {
     const rf = (y - oy) / renderer.cell_h;
     const col: u16 = @intFromFloat(std.math.clamp(cf, 0, @as(f32, @floatFromInt(s.term.grid.cols - 1))));
     const row: u16 = @intFromFloat(std.math.clamp(rf, 0, @as(f32, @floatFromInt(s.term.grid.rows - 1))));
+
+    // Editor pane: a press places the cursor; drags are ignored (B1).
+    if (s.kind == .editor) {
+        if (kind == 0) {
+            s.editorClick(row, col);
+            markDirty();
+        }
+        return;
+    }
 
     // Program tracking the mouse? Forward the event to the PTY instead of
     // driving local selection.
@@ -1189,25 +1317,25 @@ export fn anvil_cfg_error_dismiss() callconv(.c) void {
     markDirty();
 }
 
-export fn anvil_caldera_drawer_toggle() callconv(.c) void {
+export fn anvil_agent_detail_toggle() callconv(.c) void {
     if (!ready) return;
-    caldera.get(&caldera_snap);
-    if (caldera_drawer) {
-        caldera_drawer = false;
+    agent.get(&agent_snap);
+    if (agent_detail_open) {
+        agent_detail_open = false;
         markDirty();
     } else {
-        if (caldera_snap.runs == 0) return;
-        if (caldera_sel >= caldera_snap.runs) caldera_sel = 0;
+        if (agent_snap.runs == 0) return;
+        if (agent_detail_sel >= agent_snap.runs) agent_detail_sel = 0;
         cpal.hide();
         srch.hide();
         help_open = false;
-        caldera_drawer = true;
+        agent_detail_open = true;
         markDirty();
     }
 }
 
-export fn anvil_caldera_drawer_open() callconv(.c) c_int {
-    return if (caldera_drawer) 1 else 0;
+export fn anvil_agent_detail_open() callconv(.c) c_int {
+    return if (agent_detail_open) 1 else 0;
 }
 
 /// Toggle the right context drawer (RUNS / TRACE / AGENT). Bound to Cmd+J.
@@ -1218,26 +1346,43 @@ export fn anvil_drawer_toggle() callconv(.c) void {
     markDirty();
 }
 
-/// Zen / terminal-only mode: hide all chrome (top bar, rail, sidebar, drawer,
-/// status bar, panel inset) and let the terminal fill the window. Toggled from
-/// the rail's terminal icon or Cmd+Return.
+/// Toggle bare terminal mode. Cmd+Return and the rail's terminal icon call
+/// this: from any chrome mode it drops to the bare terminal; from the bare
+/// terminal it restores the full IDE console. The bottom status bar stays in
+/// both. Kept under the historical `zen` export name for the shim's ABI.
 export fn anvil_zen_toggle() callconv(.c) void {
     if (!ready) return;
-    zen = !zen;
+    mode = if (mode == .terminal) .ide else .terminal;
+    relayout();
+    markDirty();
+}
+
+/// Set the workspace mode directly: 0 = terminal, 1 = editor, 2 = ide.
+/// Out-of-range values are ignored. The command palette dispatches here.
+export fn anvil_set_mode(m: c_int) callconv(.c) void {
+    if (!ready) return;
+    const next: Mode = switch (m) {
+        0 => .terminal,
+        1 => .editor,
+        2 => .ide,
+        else => return,
+    };
+    if (next == mode) return;
+    mode = next;
     relayout();
     markDirty();
 }
 
 /// key: 0 esc/close, 1 up, 2 down.
-export fn anvil_caldera_drawer_key(key: c_int) callconv(.c) void {
+export fn anvil_agent_detail_key(key: c_int) callconv(.c) void {
     switch (key) {
-        0 => caldera_drawer = false,
+        0 => agent_detail_open = false,
         1 => {
-            if (caldera_sel > 0) caldera_sel -= 1;
+            if (agent_detail_sel > 0) agent_detail_sel -= 1;
         },
         2 => {
-            if (caldera_snap.runs > 0 and caldera_sel < caldera_snap.runs - 1)
-                caldera_sel += 1;
+            if (agent_snap.runs > 0 and agent_detail_sel < agent_snap.runs - 1)
+                agent_detail_sel += 1;
         },
         else => {},
     }
@@ -1282,6 +1427,9 @@ fn runAction(id: cmd.ActionId) void {
         .theme_system => anvil_set_theme_mode(0),
         .theme_light => anvil_set_theme_mode(1),
         .theme_dark => anvil_set_theme_mode(2),
+        .mode_terminal => anvil_set_mode(0),
+        .mode_editor => anvil_set_mode(1),
+        .mode_ide => anvil_set_mode(2),
     }
 }
 
@@ -1428,7 +1576,7 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
     // Base shell overlay rects (panel frame + header strip + status-bar bg),
     // emitted every frame before any modal rects. These draw in the overlay
     // pass (over terminal cells, under palette text).
-    const base_ri = if (zen) emitZenBar(0) else emitShellRects(th, np);
+    const base_ri = if (mode == .terminal) emitZenBar(0) else emitShellRects(th, np);
 
     out.count = @intCast(n); // terminal cells only; chrome glyphs are palette text
     out.pane_range_count = @intCast(pr_n);
@@ -1438,27 +1586,28 @@ export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
     // palette-text pass — after the overlay rects — so the header and status
     // backgrounds do not paint over their own labels. All palette text is
     // contiguous starting at out.count: chrome first, then any modal/extra text.
-    // Zen mode suppresses all persistent chrome; modal overlays still emit below.
+    // Terminal mode keeps only the command bar and bottom status bar; editor and
+    // ide add the panel headers, rail, and sidebar; the drawer is ide-only.
     var pt = n;
-    pt += emitCommandBar(th, pt, np); // compact title bar: kept in zen too
-    if (!zen) {
+    pt += emitCommandBar(th, pt, np); // compact title bar: every mode
+    pt += emitStatusBar(th, pt); // persistent bottom bar: every mode
+    if (mode != .terminal) {
         pt += emitPanelHeaders(th, pt, np);
-        pt += emitStatusBar(th, pt);
         pt += emitRail(pt);
         pt += emitSidebar(pt);
-        pt += emitDrawer(pt);
     }
+    if (drawerVisible()) pt += emitDrawer(pt);
     const chrome_text: usize = pt - n;
 
     // Modal overlays append after the base shell rects (base_ri slots used).
-    if (caldera_drawer) {
-        caldera.get(&caldera_snap);
-        if (caldera_snap.runs == 0 or caldera_sel >= caldera_snap.runs) {
-            caldera_drawer = false;
+    if (agent_detail_open) {
+        agent.get(&agent_snap);
+        if (agent_snap.runs == 0 or agent_detail_sel >= agent_snap.runs) {
+            agent_detail_open = false;
             out.palette_text_count = @intCast(chrome_text);
             out.overlay_count = @intCast(base_ri);
         } else {
-            const r = emitCalderaDrawerAt(th, pt, base_ri);
+            const r = emitAgentDetailAt(th, pt, base_ri);
             out.palette_text_count = @intCast(chrome_text + r.text);
             out.overlay_count = @intCast(base_ri + r.rects);
         }
@@ -1780,15 +1929,21 @@ fn drawerSectionRows(count: usize) f32 {
     return @floatFromInt(@max(count, 1));
 }
 
-/// Compact title bar for zen mode: just the command-bar underline and the
-/// recessed breadcrumb pill plate. The strip fill + traffic-light backing are
-/// painted by the shim from bar_color/sep_color (barH stays non-zero in zen);
-/// here we add the hairline and crumb plate so the bar reads as a boxed console
-/// strip. Side chrome, status bar, and panel frame stay hidden.
+/// Chrome rects for terminal mode: the command-bar underline, the recessed
+/// breadcrumb pill plate, and the persistent bottom status bar background. The
+/// strip fill + traffic-light backing are painted by the shim from
+/// bar_color/sep_color (barH stays non-zero in terminal mode); here we add the
+/// hairlines, crumb plate, and status-bar backing so the bare terminal still
+/// reads as a boxed console strip top and bottom. Side chrome and the panel
+/// frame stay hidden.
 fn emitZenBar(start: usize) usize {
     const cs = chromeSurface();
     var ri = start;
     putRect(ri, 0, bar_h - 1, win_w, 1, cs.line); // command-bar underline
+    ri += 1;
+    putRect(ri, 0, win_h - chrome.status_bar_h, win_w, chrome.status_bar_h, cs.charcoal); // status bg
+    ri += 1;
+    putRect(ri, 0, win_h - chrome.status_bar_h, win_w, 1, cs.line); // status-bar topline
     ri += 1;
     var cbuf: [192]u8 = undefined;
     if (crumbBox(&cbuf)) |c| {
@@ -1869,6 +2024,22 @@ fn emitShellRects(th: *const theme.Theme, np: usize) usize {
             putRect(ri, chrome.rail_w, ry, 2, chrome.row_h, chrome.mineral); // active tick
             ri += 1;
         }
+        // Open-file highlight: the EXPLORER row whose file is in the editor pane
+        // gets the same recessed plate + mineral tick as the active session row.
+        // Geometry mirrors emitSidebar; exp_row_y0 is last frame's list top.
+        if (exp_row_y0 > 0 and open_file_len > 0) {
+            for (exp_entries[0..exp_n], 0..) |*ent, i| {
+                if (!isOpenFile(ent)) continue;
+                const fy = exp_row_y0 + @as(f32, @floatFromInt(i)) * chrome.row_h;
+                if (fy > body_top and fy + chrome.row_h <= win_h - chrome.status_bar_h) {
+                    putRect(ri, chrome.rail_w + 4, fy, sidebar_w - 8, chrome.row_h, cs.ash_soft);
+                    ri += 1;
+                    putRect(ri, chrome.rail_w, fy, 2, chrome.row_h, chrome.mineral);
+                    ri += 1;
+                }
+                break;
+            }
+        }
         // Hover highlight on the row under the cursor (skip the active session).
         if (hoverSidebarRow(hover_x, hover_y)) |h| {
             const hov_y = if (h.kind == 0)
@@ -1885,7 +2056,7 @@ fn emitShellRects(th: *const theme.Theme, np: usize) usize {
     putRect(ri, lc - 1, body_top, 1, body_h, border); // left-chrome right edge
     ri += 1;
     // Right context drawer: charcoal fill + left separator hairline.
-    if (drawer_open) {
+    if (drawerVisible()) {
         const dx = win_w - chrome.drawer_w;
         putRect(ri, dx, body_top, chrome.drawer_w, body_h, cs.charcoal); // drawer bg
         ri += 1;
@@ -1894,7 +2065,7 @@ fn emitShellRects(th: *const theme.Theme, np: usize) usize {
         // Boxed section-header rules (RUNS / TRACE / AGENT). Positions mirror
         // emitDrawer's y math; refresh the snapshot here so the row counts that
         // drive section heights match the same frame's drawer text.
-        caldera.get(&drawer_snap);
+        agent.get(&drawer_snap);
         const sh = chrome.sidebar_header_h;
         const runs_n = drawerSectionRows(drawer_snap.runs);
         const trace_ev: usize = if (drawer_snap.runs > 0) drawer_snap.details[0].event_count else 0;
@@ -1957,13 +2128,8 @@ fn emitCommandBar(th: *const theme.Theme, start: usize, np: usize) usize {
     var n = start;
     var x: f32 = tab_inset_x;
 
-    // Basin mark: a circle with a filled lower hemisphere (BRAND.md), drawn in
-    // the mono chrome face which carries the geometric-shapes glyph, then the
-    // wordmark — accent initial + bone tail — in IBM Plex Sans.
-    x += putChromeIcon(&n, x, ly, chrome.mineral, th.bar, 0x25D2); // ◒ Basin
-    x += chromeIconW() * 0.45;
-    x += putSans(&n, x, ly, chrome.mineral, th.bar, 'A');
-    x += putSansRun(&n, x, ly, cs.bone, th.bar, "nvil");
+    // Wordmark: lowercase "anvil" in a single bone face, no mark.
+    x += putSansRun(&n, x, ly, cs.bone, th.bar, "anvil");
 
     // Tab strip, right-aligned, always shown. The active tab carries a leading
     // mineral status dot and reads in bone; the rest are alloy.
@@ -2006,6 +2172,19 @@ fn emitPanelHeaders(th: *const theme.Theme, start: usize, np: usize) usize {
     const max_x = win_w - rightChromeW() - chrome.panel_pad - renderer.pad_x;
 
     const s = mgr.focusedSession() orelse return 0;
+    // Editor pane: filename + a mineral unsaved-changes dot — the operator
+    // "modified document" cue — instead of the shell program/cwd breadcrumb.
+    if (s.kind == .editor) {
+        if (s.editor) |*e| {
+            if (e.dirty) {
+                _ = putChromeIcon(&n, x, ly, chrome.mineral, bg, 0x25CF); // ● unsaved
+                x += chromeIconW() * 0.7;
+            }
+            const fname = if (e.path.items.len > 0) basename(e.path.items) else "untitled";
+            _ = putSansClip(&n, x, ly, cs.bone, bg, fname, max_x);
+            return n - start;
+        }
+    }
     var prog = s.term.title();
     if (prog.len == 0) prog = "zsh";
     x += putSansClip(&n, x, ly, cs.mist, bg, prog, max_x);
@@ -2030,6 +2209,18 @@ fn emitStatusBar(th: *const theme.Theme, start: usize) usize {
     const bg = cs.charcoal;
     var n = start;
     var x: f32 = chrome.panel_pad + renderer.pad_x;
+
+    // Mode chip: the active chrome preset (real state, always present), then a
+    // thin pipe separator before the operational context cluster.
+    const mode_lbl = switch (mode) {
+        .terminal => "TERMINAL",
+        .editor => "EDITOR",
+        .ide => "IDE",
+    };
+    x += putSansRun(&n, x, ly, cs.alloy, bg, mode_lbl);
+    x += gap;
+    x += putSansRun(&n, x, ly, cs.ash, bg, "|");
+    x += gap;
 
     if (mgr.focusedSession()) |s| ctx_chip.update(s.term.cwd());
 
@@ -2082,7 +2273,7 @@ const rail_active: usize = 0; // highlighted rail entry (terminal, for now)
 /// The activity-rail icon index under (x, y), or null. Mirrors railClick's
 /// hit-test exactly so hover feedback and click dispatch always agree.
 fn hoverRailSlot(x: f32, y: f32) ?usize {
-    if (zen or x < 0 or x >= chrome.rail_w) return null;
+    if (mode == .terminal or x < 0 or x >= chrome.rail_w) return null;
     const top = bar_h + 18;
     if (y < top) return null;
     const idx: usize = @intFromFloat((y - top) / chrome.rail_w);
@@ -2091,14 +2282,14 @@ fn hoverRailSlot(x: f32, y: f32) ?usize {
 }
 
 /// Dispatch a click on the activity rail. Maps device-y to a rail icon and runs
-/// its action: terminal→zen, explorer→sidebar, search→find, runs→drawer.
+/// its action: terminal→toggle bare terminal, explorer→sidebar, search→find, runs→drawer.
 fn railClick(y: f32) void {
     const top = bar_h + 18;
     if (y < top) return;
     const idx: usize = @intFromFloat((y - top) / chrome.rail_w);
     if (idx >= rail_glyphs.len) return;
     switch (idx) {
-        0 => anvil_zen_toggle(), // terminal: zen toggle
+        0 => anvil_zen_toggle(), // terminal: toggle bare terminal
         1 => { // explorer: toggle sidebar
             sidebar_open = !sidebar_open;
             relayout();
@@ -2151,6 +2342,24 @@ var exp_cwd_len: usize = 0;
 var exp_rescan: bool = true; // force a rescan (root changed or a dir was toggled)
 /// Device-y of the first EXPLORER entry row, for hit-testing.
 var exp_row_y0: f32 = 0;
+
+/// Root-relative path of the file currently open in the editor pane, so the
+/// EXPLORER can mark it as selected (mineral tick + bone label) — the
+/// operator-console "open document" state cue. Empty when no file is open.
+var open_file_rel: [256]u8 = undefined;
+var open_file_len: usize = 0;
+
+fn setOpenFile(rel: []const u8) void {
+    const n = @min(rel.len, open_file_rel.len);
+    @memcpy(open_file_rel[0..n], rel[0..n]);
+    open_file_len = n;
+}
+
+/// True when `ent` is the file currently open in the editor pane.
+fn isOpenFile(ent: *const ExpEntry) bool {
+    if (open_file_len == 0 or ent.is_dir) return false;
+    return std.mem.eql(u8, ent.rel[0..ent.rel_len], open_file_rel[0..open_file_len]);
+}
 
 // Directories the user has expanded, keyed by path relative to the root.
 const max_expanded = 24;
@@ -2279,11 +2488,30 @@ fn walkDir(abs: []const u8, rel: []const u8, depth: u8) void {
 /// The directory the EXPLORER lists: the focused pane's OSC-7 cwd, or the
 /// process working directory until the shell reports one.
 var exp_pwd_buf: [512]u8 = undefined;
+/// Last non-empty shell cwd, cached so the explorer root stays put when an
+/// editor/viewer pane (which has no cwd) takes focus.
+var exp_root_buf: [512]u8 = undefined;
+var exp_root_len: usize = 0;
 fn explorerPath() []const u8 {
     if (mgr.focusedSession()) |s| {
+        // Shell panes: ask the kernel for the child's live cwd (tracks `cd`
+        // without OSC 7). Fall back to the terminal's OSC-7 cwd otherwise.
+        if (s.kind == .shell) {
+            const pc = s.pty.procCwd(&exp_root_buf);
+            if (pc.len > 0) {
+                exp_root_len = pc.len;
+                return exp_root_buf[0..pc.len];
+            }
+        }
         const c = s.term.cwd();
-        if (c.len > 0) return c;
+        if (c.len > 0) {
+            const n = @min(c.len, exp_root_buf.len);
+            @memcpy(exp_root_buf[0..n], c[0..n]);
+            exp_root_len = n;
+            return exp_root_buf[0..n];
+        }
     }
+    if (exp_root_len > 0) return exp_root_buf[0..exp_root_len];
     const r = cdir.getcwd(&exp_pwd_buf, exp_pwd_buf.len);
     if (r == null) return "";
     return std.mem.span(@as([*:0]const u8, @ptrCast(&exp_pwd_buf)));
@@ -2336,27 +2564,32 @@ fn emitSidebar(start: usize) usize {
     for (exp_entries[0..exp_n]) |*ent| {
         if (y + chrome.row_h > win_h - chrome.status_bar_h) break;
         const ry = y + (chrome.row_h - chromeH()) / 2;
-        const icon: u21 = if (ent.is_dir) 0xf07b else 0xf016; // folder / file
-        const ic = if (ent.is_dir) cs.alloy else cs.ash;
-        const fg = if (ent.is_dir) cs.mist else cs.alloy;
+        const open = isOpenFile(ent);
+        // The open file reads as selected: bone label over the ash_soft row
+        // (painted in emitShellRects); glyph backgrounds must match that tint or
+        // their charcoal cells punch dark bands through the highlight.
+        const row_bg = if (open) cs.ash_soft else bg;
+        const icon: u21 = if (ent.is_dir) (if (ent.expanded) 0xf07c else 0xf07b) else 0xf016; // folder-open / folder / file
+        const ic = if (ent.is_dir) cs.alloy else if (open) chrome.mineral else cs.ash;
+        const fg = if (ent.is_dir) cs.mist else if (open) cs.bone else cs.alloy;
         const indent = @as(f32, @floatFromInt(ent.depth)) * (iw * 1.1);
         var x = x0 + indent;
         // Disclosure chevron for dirs; files reserve the slot so names align.
         if (ent.is_dir) {
             const chev: u21 = if (ent.expanded) 0x25BE else 0x25B8; // ▾ / ▸
-            _ = putChromeIcon(&n, x, ry, cs.alloy, bg, chev);
+            _ = putChromeIcon(&n, x, ry, cs.alloy, row_bg, chev);
         }
         x += iw * 0.9;
-        x += putChromeIcon(&n, x, ry, ic, bg, icon);
+        x += putChromeIcon(&n, x, ry, ic, row_bg, icon);
         x += iw * 0.5;
-        _ = putSansClip(&n, x, ry, fg, bg, ent.name[0..ent.len], right);
+        _ = putSansClip(&n, x, ry, fg, row_bg, ent.name[0..ent.len], right);
         y += chrome.row_h;
     }
     return n - start;
 }
 
-/// Latest Caldera snapshot for the persistent drawer (refreshed per frame).
-var drawer_snap: caldera.Snapshot = .{};
+/// Latest agent snapshot for the persistent drawer (refreshed per frame).
+var drawer_snap: agent.Snapshot = .{};
 
 /// Drawer layout cursor: x origin, right clip edge, and running y position.
 const DrawerCtx = struct {
@@ -2365,8 +2598,8 @@ const DrawerCtx = struct {
     y: f32,
 };
 
-/// Map a Caldera row kind to its semantic status color.
-fn rowKindColor(kind: caldera.RowKind) theme.Rgb {
+/// Map an agent row kind to its semantic status color.
+fn rowKindColor(kind: agent.RowKind) theme.Rgb {
     return switch (kind) {
         .run_passed => chrome.verified,
         .run_open => chrome.mineral,
@@ -2394,12 +2627,12 @@ fn drawerRow(n: *usize, ctx: *DrawerCtx, dot: theme.Rgb, fg: theme.Rgb, label: [
     ctx.y += chrome.row_h;
 }
 
-/// Right context drawer (Option C): RUNS and TRACE from the Caldera snapshot,
+/// Right context drawer (Option C): RUNS and TRACE from the agent snapshot,
 /// AGENT placeholder (wired in #79). Each section falls back to a dim "none".
 fn emitDrawer(start: usize) usize {
     if (!drawer_open) return 0;
     const cs = chromeSurface();
-    caldera.get(&drawer_snap);
+    agent.get(&drawer_snap);
     var n = start;
     var ctx = DrawerCtx{
         .x0 = win_w - chrome.drawer_w + renderer.pad_x + 6,
@@ -2407,7 +2640,7 @@ fn emitDrawer(start: usize) usize {
         .y = bar_h + 8,
     };
 
-    // RUNS: one row per Caldera run row, colored by status.
+    // RUNS: one row per agent run row, colored by status.
     drawerHeader(&n, &ctx, "RUNS");
     if (drawer_snap.runs == 0) {
         drawerRow(&n, &ctx, cs.ash, cs.ash, "none");
@@ -2706,9 +2939,9 @@ fn emitSearchAt(th: *const theme.Theme, start: usize, base_ri: usize) struct { t
     return .{ .text = n - start, .rects = ri - base_ri };
 }
 
-/// Lay out the Caldera run-detail drawer: a centered panel showing the selected
+/// Lay out the agent run-detail drawer: a centered panel showing the selected
 /// run's header fields and all event summaries in order.
-fn emitCalderaDrawerAt(th: *const theme.Theme, start: usize, base_ri: usize) struct { text: usize, rects: usize } {
+fn emitAgentDetailAt(th: *const theme.Theme, start: usize, base_ri: usize) struct { text: usize, rects: usize } {
     const cw = renderer.cell_w;
     const ch = renderer.cell_h;
     const pad = renderer.pad_x;
@@ -2716,7 +2949,7 @@ fn emitCalderaDrawerAt(th: *const theme.Theme, start: usize, base_ri: usize) str
     const inner_cols: usize = 64;
     const pw = @as(f32, @floatFromInt(inner_cols)) * cw + pad * 2;
 
-    const d = &caldera_snap.details[caldera_sel];
+    const d = &agent_snap.details[agent_detail_sel];
     // header: agent, step, status; then blank; then events
     const event_rows = d.event_count;
     const total_rows: usize = 4 + event_rows; // title + 3 header lines + events
@@ -2741,7 +2974,7 @@ fn emitCalderaDrawerAt(th: *const theme.Theme, start: usize, base_ri: usize) str
     // Title: run index + agent name
     {
         var tbuf: [80]u8 = undefined;
-        const title = std.fmt.bufPrint(&tbuf, "Run {d}: {s}", .{ caldera_sel + 1, d.agentSlice() }) catch "Run Detail";
+        const title = std.fmt.bufPrint(&tbuf, "Run {d}: {s}", .{ agent_detail_sel + 1, d.agentSlice() }) catch "Run Detail";
         const ry = py + @as(f32, @floatFromInt(row)) * ch;
         for (title, 0..) |c, i| {
             if (n >= instances.len) break;
@@ -2979,7 +3212,7 @@ test "scroll offset floor/frac split" {
 }
 
 test "hoverRailSlot: hit-tests rail icons, rejects outside the rail" {
-    zen = false;
+    mode = .ide;
     const top = bar_h + 18; // first slot top
     const w = chrome.rail_w;
     // Each 56px slot maps to its icon index.
@@ -2991,8 +3224,8 @@ test "hoverRailSlot: hit-tests rail icons, rejects outside the rail" {
     try std.testing.expectEqual(@as(?usize, null), hoverRailSlot(20, top - 1));
     try std.testing.expectEqual(@as(?usize, null), hoverRailSlot(chrome.rail_w, top));
     try std.testing.expectEqual(@as(?usize, null), hoverRailSlot(-1, top));
-    // Zen mode hides the rail entirely.
-    zen = true;
+    // Terminal mode hides the rail entirely.
+    mode = .terminal;
     try std.testing.expectEqual(@as(?usize, null), hoverRailSlot(20, top));
-    zen = false;
+    mode = .ide;
 }

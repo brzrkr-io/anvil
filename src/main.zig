@@ -39,6 +39,12 @@ pub fn main(init: std.process.Init.Minimal) void {
             if (std.mem.eql(u8, args.verb, "pipe")) {
                 _ = ipc.runPipe(args.window_pid);
             } else if (std.mem.eql(u8, args.verb, "open")) {
+                // open <file>: open in the native read-only viewer.
+                if (args.verb_arg) |file| {
+                    _ = ipc.tryClient("view", file, args.window_pid);
+                }
+            } else if (std.mem.eql(u8, args.verb, "edit")) {
+                // edit <file>: open in $EDITOR (the original "open" behavior).
                 if (args.verb_arg) |file| {
                     const editor_c = std.c.getenv("EDITOR") orelse "vi";
                     const editor = std.mem.span(editor_c);
