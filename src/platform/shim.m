@@ -118,6 +118,7 @@ extern void anvil_ipc_focus(void);
 extern int anvil_link_at(float x, float y, const char **out_ptr, size_t *out_len);
 extern bool anvil_needs_render(void);
 extern void anvil_force_render(void);
+extern void anvil_web_urlbar_focus(void);
 
 #define INSTANCE_STRIDE (15 * sizeof(float))
 #define SANS_TAG 0x00200000u // atlas-key bit: glyph belongs to the Plex Sans face
@@ -143,6 +144,7 @@ static CGFloat gDescent;  // font descent, for baseline placement
 static CAMetalLayer *gLayer;
 static double gLastW, gLastH;
 static NSWindow *gWindow;
+static NSView *gMetalView;
 static void layoutTrafficLights(NSWindow *win);
 
 static BOOL osIsDark(void) {
@@ -873,6 +875,8 @@ static void layoutTrafficLights(NSWindow *win) {
     }
     // Cmd+G toggles the agent run-detail drawer from any state.
     if (cmd && ilc == 'g') { anvil_agent_detail_toggle(); return; }
+    // Cmd+L focuses the URL bar of the active web pane (no-op otherwise).
+    if (cmd && ilc == 'l') { anvil_web_urlbar_focus(); return; }
 
     // While the run-detail drawer is open it captures nav keys; PTY sees nothing.
     if (anvil_agent_detail_open()) {
@@ -1108,8 +1112,10 @@ void anvil_web_reload(void *handle)  { if (handle) [(__bridge WKWebView *)handle
 void anvil_web_set_frame(void *handle, double x, double y, double w, double h) {
     if (!handle) return;
     WKWebView *wv = (__bridge WKWebView *)handle;
-    CGFloat ch = gWindow.contentView.bounds.size.height;
-    wv.frame = NSMakeRect(x, ch - y - h, w, h);
+    CGFloat scale = gWindow.backingScaleFactor ?: 2.0;
+    CGFloat ch = gWindow.contentView.bounds.size.height; // logical points
+    CGFloat lx = x / scale, ly = y / scale, lw = w / scale, lh = h / scale;
+    wv.frame = NSMakeRect(lx, ch - ly - lh, lw, lh);
 }
 
 void anvil_web_set_hidden(void *handle, bool hidden) {
@@ -1124,6 +1130,14 @@ void anvil_web_destroy(void *handle) {
     [wv removeObserver:gWebObserver forKeyPath:@"canGoBack"];
     [wv removeObserver:gWebObserver forKeyPath:@"canGoForward"];
     [wv removeFromSuperview];
+}
+
+void anvil_focus_metal_view(void) {
+    if (gWindow && gMetalView) [gWindow makeFirstResponder:gMetalView];
+}
+
+void anvil_web_focus(void *handle) {
+    if (handle && gWindow) [gWindow makeFirstResponder:(__bridge WKWebView *)handle];
 }
 
 @interface AnvilController : NSObject <NSApplicationDelegate, NSWindowDelegate>
@@ -1335,6 +1349,7 @@ void anvil_run(void) {
         }
 
         AnvilView *view = [[AnvilView alloc] initWithFrame:frame];
+        gMetalView = view;
         view.wantsLayer = YES;
         view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
         gLayer.frame = view.bounds;

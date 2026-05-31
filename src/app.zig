@@ -72,10 +72,16 @@ extern fn anvil_web_reload(handle: ?*anyopaque) callconv(.c) void;
 extern fn anvil_web_set_frame(handle: ?*anyopaque, x: f64, y: f64, w: f64, h: f64) callconv(.c) void;
 extern fn anvil_web_set_hidden(handle: ?*anyopaque, hidden: bool) callconv(.c) void;
 extern fn anvil_web_destroy(handle: ?*anyopaque) callconv(.c) void;
+extern fn anvil_focus_metal_view() callconv(.c) void;
+extern fn anvil_web_focus(handle: ?*anyopaque) callconv(.c) void;
 
 const WebHandle = struct { id: usize, handle: ?*anyopaque };
 var web_handles: [max_panes]WebHandle = undefined;
 var web_handle_count: usize = 0;
+
+var web_urlbar_active: bool = false;
+var web_urlbar_buf: [2048]u8 = undefined;
+var web_urlbar_len: usize = 0;
 var win_w: f32 = 0;
 var win_h: f32 = 0;
 var ready = false;
@@ -737,6 +743,36 @@ export fn anvil_input(ptr: [*]const u8, len: usize) callconv(.c) void {
         markDirty();
         return;
     }
+    if (s.kind == .web) {
+        if (web_urlbar_active) {
+            const bytes = ptr[0..len];
+            if (bytes.len == 0) return;
+            const b = bytes[0];
+            if (b == 0x0d or b == 0x0a) {
+                const text = web_urlbar_buf[0..web_urlbar_len];
+                if (webpane.validateUrl(text)) {
+                    var zbuf: [2049:0]u8 = undefined;
+                    const nn = @min(text.len, zbuf.len - 1);
+                    @memcpy(zbuf[0..nn], text[0..nn]);
+                    zbuf[nn] = 0;
+                    anvil_web_navigate(webHandleFor(mgr.focused), &zbuf);
+                    if (s.web) |*w| w.beginNav(text);
+                    web_urlbar_active = false;
+                }
+            } else if (b == 0x1b) {
+                web_urlbar_active = false;
+            } else if (b == 0x7f or b == 0x08) {
+                if (web_urlbar_len > 0) web_urlbar_len -= 1;
+            } else if (b >= 0x20 and b < 0x7f) {
+                if (web_urlbar_len < web_urlbar_buf.len) {
+                    web_urlbar_buf[web_urlbar_len] = b;
+                    web_urlbar_len += 1;
+                }
+            }
+            markDirty();
+        }
+        return;
+    }
     s.write(ptr[0..len]);
     markDirty();
 }
@@ -997,6 +1033,35 @@ export fn anvil_mouse(kind: c_int, x: f32, y: f32) callconv(.c) void {
     }
     const r = fr orelse return;
     const s = mgr.byId(mgr.focused) orelse return;
+
+    // Web pane: handle nav-button clicks in the header strip; body clicks give
+    // first-responder to the WKWebView. Skip grid math entirely for web panes.
+    if (s.kind == .web and kind == 0) {
+        const strip_top = r.y - chrome.header_strip_h; // header strip top (device px)
+        if (y >= strip_top and y < r.y) {
+            // Click is inside the header strip — hit-test nav buttons.
+            const btn_x = leftChromeW() + chrome.panel_pad + renderer.pad_x;
+            const iw = chromeIconW();
+            const gap = chrome.sp8;
+            const bx0 = btn_x;
+            const bx1 = bx0 + iw + gap;
+            const bx2 = bx1 + iw + gap;
+            if (x >= bx0 and x < bx0 + iw) {
+                if (s.web) |w| if (w.can_back) anvil_web_back(webHandleFor(mgr.focused));
+            } else if (x >= bx1 and x < bx1 + iw) {
+                if (s.web) |w| if (w.can_fwd) anvil_web_forward(webHandleFor(mgr.focused));
+            } else if (x >= bx2 and x < bx2 + iw) {
+                anvil_web_reload(webHandleFor(mgr.focused));
+            }
+        } else {
+            // Click in web body: give focus to the WKWebView.
+            web_urlbar_active = false;
+            anvil_web_focus(webHandleFor(mgr.focused));
+        }
+        markDirty();
+        return;
+    }
+
     const ox = r.x + renderer.pad_x;
     const oy = r.y + renderer.pad_x;
     const cf = (x - ox) / renderer.cell_w;
@@ -1574,6 +1639,22 @@ export fn anvil_web_event(handle: ?*anyopaque, kind: c_int, payload: ?*const any
             else => {},
         }
     }
+}
+
+export fn anvil_web_urlbar_focus() callconv(.c) void {
+    if (!ready) return;
+    const s = focused();
+    if (s.kind != .web) return;
+    web_urlbar_active = true;
+    web_urlbar_len = 0;
+    if (s.web) |*w| {
+        const u = w.url();
+        const nn = @min(u.len, web_urlbar_buf.len);
+        @memcpy(web_urlbar_buf[0..nn], u[0..nn]);
+        web_urlbar_len = nn;
+    }
+    anvil_focus_metal_view();
+    markDirty();
 }
 
 export fn anvil_frame(out: *inst.FrameData) callconv(.c) void {
@@ -2218,6 +2299,19 @@ fn emitShellRects(th: *const theme.Theme, np: usize) usize {
         putRect(ri, c.px + c.pw - 1, c.py, 1, c.ph, border); // right
         ri += 1;
     }
+    // Loading progress bar: 2px strip at the bottom of the header band when a
+    // web pane is focused and actively loading.
+    if (mgr.focusedSession()) |fs| {
+        if (fs.kind == .web) {
+            if (fs.web) |*w| {
+                if (w.loading) {
+                    const prog_w = w.progress * pw;
+                    putRect(ri, px, ptop + chrome.header_strip_h - 2, prog_w, 2, chrome.mineral);
+                    ri += 1;
+                }
+            }
+        }
+    }
     return ri;
 }
 
@@ -2287,6 +2381,26 @@ fn emitPanelHeaders(th: *const theme.Theme, start: usize, np: usize) usize {
             _ = putSansClip(&n, x, ly, cs.bone, bg, fname, max_x);
             return n - start;
         }
+    }
+    // Web pane: back/forward/reload nav buttons + URL text + progress line.
+    if (s.kind == .web) {
+        if (s.web) |*w| {
+            const iw = chromeIconW();
+            const gap = chrome.sp8;
+            // Back (0xF053 = ), Forward (0xF054 = ), Reload (0xF021 = )
+            const back_fg = if (w.can_back) cs.bone else cs.alloy;
+            const fwd_fg = if (w.can_fwd) cs.bone else cs.alloy;
+            _ = putChromeIcon(&n, x, ly, back_fg, bg, 0xF053);
+            x += iw + gap;
+            _ = putChromeIcon(&n, x, ly, fwd_fg, bg, 0xF054);
+            x += iw + gap;
+            _ = putChromeIcon(&n, x, ly, cs.bone, bg, 0xF021);
+            x += iw + gap * 2;
+            // URL text: draw the live edit buffer when URL bar is active, else the current URL.
+            const url_text = if (web_urlbar_active) web_urlbar_buf[0..web_urlbar_len] else w.url();
+            _ = putSansClip(&n, x, ly, cs.bone, bg, url_text, max_x);
+        }
+        return n - start;
     }
     var prog = s.term.title();
     if (prog.len == 0) prog = "zsh";

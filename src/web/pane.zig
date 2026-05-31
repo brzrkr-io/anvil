@@ -2,8 +2,8 @@ const std = @import("std");
 
 /// Pure display state for one web (WKWebView) pane. Holds no native handle and
 /// makes no platform calls — app.zig owns the WKWebView and drives this state.
-/// Reserved native-chrome strip above the web body, in points.
-pub const header_strip_h: f64 = 30;
+/// Reserved native-chrome strip above the web body, device px (matches chrome.header_strip_h).
+pub const header_strip_h: f64 = 34;
 
 pub const Rect = struct { x: f64, y: f64, w: f64, h: f64 };
 
