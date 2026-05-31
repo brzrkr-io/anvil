@@ -35,4 +35,5 @@ test {
     _ = @import("syntax.zig");
     _ = @import("fileview.zig");
     _ = @import("editor.zig");
+    _ = @import("web/pane.zig");
 }
