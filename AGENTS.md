@@ -1,6 +1,6 @@
 # Anvil — Agent Instructions
 
-Anvil is a native macOS application: Rust, Metal, and AppKit. This file
+Anvil is a macOS desktop app: Tauri v2 (Rust backend) + SvelteKit SPA (Svelte 5 runes). This file
 holds the shared rules for any agent or contributor working in this repo.
 `CLAUDE.md` adds Claude-specific notes and includes this file.
 
@@ -36,31 +36,23 @@ them directly.
 
 ## Source Layout
 
-`src/` holds the Zig sources. Use `rg` for symbols; this map is for orientation.
+Use `rg` for symbols; this map is for orientation.
 
-- `src/main.zig` — binary entry point.
-- `src/app.zig` — app state plus the C-ABI exports the Obj-C shim calls (poll,
-  resize, render, input, theme). This is the native↔Zig boundary.
-- `src/root.zig` — `anvil` module root: re-exports and the test aggregator.
-- `src/platform/` — macOS interop: `shim.m` (Obj-C: NSWindow, CAMetalLayer, run
-  loop, CoreText font), `window.zig`, `shaders.metal` (compiled at runtime).
-- `src/render/` — GPU pipeline: `renderer.zig`, `atlas.zig` (lazy glyph atlas),
-  `instance.zig`, `palette.zig` (cell→color resolution), `theme.zig` (Mineral palettes).
-- `src/vt/` — VT emulation: `parser.zig`, `terminal.zig`, `grid.zig`,
-  `scrollback.zig`, `cell.zig`, `width.zig` (wcwidth).
-- `src/workspace/` — `pane_tree.zig`: split/close/focus layout math.
-- `src/session.zig` / `src/session_manager.zig` — one session (term+parser+pty)
-  and the multi-session/tab router.
-- `src/pty.zig` — forkpty + nonblocking master I/O (libc `@cImport`).
-- `src/config.zig` — config load + live reload. `src/palette.zig` — command-palette
-  model. `src/search.zig` — scrollback search. `src/caldera.zig` — Caldera IPC bridge.
+Frontend (`src/`):
+- `src/routes/+page.svelte` — main app shell; `src/routes/+layout.svelte` — root layout.
+- `src/lib/*.svelte` — UI components: `Terminal`, `Editor`, `SourceControl`, `FileBrowser`,
+  `Settings`, `DevOps`, `Caldera`, `AgentPanel`, `Palette`, `PaneGrid`, `SearchPanel`, etc.
+- `src/lib/*.ts` — logic and stores: `themes`, `keymap`, `panes`, `git`, `lsp`, `fonts`,
+  `redaction`, `terminal-settings`, `editor-settings`, `agent`, `accounts`, etc.
+- `src/app.css` — global design tokens and chrome styles.
+
+Backend (`src-tauri/`):
+- `src-tauri/src/lib.rs` — Tauri commands (PTY, git, fs, LSP glue). This is the JS↔Rust boundary.
+- `src-tauri/src/lsp.rs` — LSP server management.
 
 Static assets:
-- `assets/` — bundled binary assets, embedded at build time via `@embedFile` /
-  `addAnonymousImport`: Nerd Font TTF, `app-icon.png` (runtime dock icon).
-  `AppIcon.png` is the 1024² source art; `AppIcon.icns` (bundle icon) and
-  `app-icon.png` are regenerated from it by `tools/make-icns.sh`.
-- `editors/nvim/` — opt-in Neovim colorscheme matching the Mineral palette.
+- `static/fonts/` — bundled fonts.
+- `src-tauri/icons/` — app icons (multiple sizes + platform formats).
 
 ## Work Rules
 
@@ -69,31 +61,26 @@ Static assets:
 - Touch only what the task requires. Do not refactor unrelated code.
 - Every changed line must trace to the current request.
 - Define success criteria before implementation and verify them before claiming done.
-- Match the existing Zig style in the file you are editing; run `.zig/zig fmt src build.zig`.
+- Match the existing style in the file you are editing; run `cargo fmt` for Rust, `pnpm check` for TypeScript/Svelte.
 
 ## Toolchain
 
-This repo pins an exact Zig version (`tools/zig-version`). Run
-`./tools/get-zig.sh` once per checkout: it downloads the official prebuilt
-compiler **and** the matching `zls`, verifies their SHA-256, and extracts them
-to `.zig/` (gitignored). Use `.zig/zig` for all commands below so everyone
-builds with the same compiler.
-
-The script also writes a gitignored `zls.json` pointing `zig_exe_path` at the
-vendored `.zig/zig`, so language-server analysis always uses the pinned
-compiler. Point your editor's Zig language server at `.zig/zls` to keep the
-server version locked too.
+- Frontend: Node 20 + pnpm. Install deps with `pnpm install`.
+- Backend: Rust stable. `src-tauri/` is a standard Cargo workspace member.
+- No Zig, no `.zig/`, no `get-zig.sh`.
 
 ## Build And Verify
 
-- `.zig/zig build` — build the app.
-- `.zig/zig build bundle` — assemble `zig-out/Anvil.app` (Info.plist + AppIcon.icns).
-- `.zig/zig build test` — run unit tests.
-- `.zig/zig fmt --check src build.zig` — format check (`.zig/zig fmt src build.zig` to apply).
-- `./zig-out/bin/anvil --dump /tmp/x.png` — headless render check; Metal shaders
-  compile at runtime, so `--dump` is the only way to catch shader errors without
-  a GUI session.
-- A change is not done until `.zig/zig build test` passes or the failure is reported.
+- `pnpm tauri dev` — launch the app in dev mode (Vite HMR + Tauri).
+- `pnpm build` — build the SvelteKit frontend (Vite).
+- `pnpm check` — type-check TypeScript/Svelte (`svelte-check`).
+- `pnpm test` — run JS/TS unit tests (Vitest).
+- `pnpm test:coverage` — Vitest with coverage report.
+- `pnpm e2e` — run Playwright end-to-end tests.
+- `cd src-tauri && cargo test` — run Rust unit tests.
+- `cd src-tauri && cargo clippy` — Rust lint.
+- `cd src-tauri && cargo fmt` — Rust format.
+- A change is not done until `pnpm test` and `cd src-tauri && cargo test` pass, or failures are reported.
 
 ## Brand Gate
 
@@ -126,5 +113,5 @@ During:
 
 Closeout:
 - Append `wiki/log.md` for durable wiki, decision, source, or handoff changes.
-- Run `cargo test --workspace`.
+- Run `pnpm test` and `cd src-tauri && cargo test`.
 - Report changed files and remaining open work.

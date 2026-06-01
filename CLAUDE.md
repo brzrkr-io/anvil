@@ -8,11 +8,11 @@ on top of this file.
 
 ## This Project
 
-- Anvil is a native macOS app: Zig, Metal, AppKit (thin Obj-C shim).
-- Toolchain: run `./tools/get-zig.sh` once per checkout, then use `.zig/zig`.
-- Build and launch: `.zig/zig build run`.
-- Run unit tests: `.zig/zig build test`.
-- Format: `.zig/zig fmt src build.zig` (`--check` to verify).
-- Headless render check: `./zig-out/bin/anvil --dump /tmp/x.png` (catches runtime Metal shader errors).
-- Requires macOS with Xcode Command Line Tools.
-- See `docs/product/console-rebuild-plan.md` for the full rebuild plan.
+- Anvil is a macOS desktop app: Tauri v2 backend (Rust, `src-tauri/`) + SvelteKit SPA (Svelte 5 runes, adapter-static, ssr=false). Terminal = xterm.js + WebGL; editor = CodeMirror 6.
+- Toolchain: Node 20 + pnpm for the frontend; Rust stable for `src-tauri/`. No Zig.
+- Dev app: `pnpm tauri dev`.
+- Build frontend: `pnpm build` (Vite).
+- Type-check: `pnpm check`.
+- Unit tests (JS): `pnpm test` (Vitest); coverage: `pnpm test:coverage`.
+- Rust tests: `cd src-tauri && cargo test`; format: `cargo fmt`; lint: `cargo clippy`.
+- End-to-end: `pnpm e2e` (Playwright).
