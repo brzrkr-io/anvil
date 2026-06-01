@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [tauri, main]
+    branches: [main]
   pull_request:
-    branches: [tauri, main]
+    branches: [main]
 
 jobs:
   frontend:
@@ -22,107 +22,48 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
-
-      - name: Build frontend
-        run: node_modules/.bin/vite build
+        run: pnpm install --frozen-lockfile
 
       - name: Type-check
-        run: node_modules/.bin/svelte-check --tsconfig ./tsconfig.json
+        run: pnpm exec svelte-check --tsconfig ./tsconfig.json
 
       - name: Unit tests
-        run: node_modules/.bin/vitest run
+        run: pnpm test:coverage
 
-  e2e:
+      - name: Build frontend
+        run: pnpm build
+
+  rust:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
-
-      - name: Install Playwright browser
-        run: node_modules/.bin/playwright install --with-deps chromium
-
-      - name: Run Playwright e2e (shell smoke)
-        run: node_modules/.bin/playwright test e2e/shell.spec.ts
-        # Golden chrome snapshots (e2e/chrome-visual.spec.ts) are macOS baselines;
-        # run them locally with `pnpm e2e`. Generating Linux baselines in CI is a
-        # follow-up before gating PRs on them.
-
-  build:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: pnpm
-
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
 
-      - name: Install Linux system dependencies
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            librsvg2-dev \
-            patchelf \
-            libayatana-appindicator3-dev \
-            build-essential \
-            curl \
-            wget \
-            file
+      - name: Format check
+        working-directory: src-tauri
+        run: cargo fmt --all --check
 
-      - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+      - name: Clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets
 
-      - name: Build frontend
-        run: node_modules/.bin/vite build
-
-      - name: Build Tauri (Rust)
-        run: cargo build --manifest-path src-tauri/Cargo.toml
-
-      # Cross-platform distributable artifacts (#99). Unsigned — notarization
-      # (#97) needs an Apple Developer cert supplied via repo secrets. Bundles
-      # the per-OS installers and uploads them.
-      - name: Bundle app installers
-        if: github.event_name == 'push'
-        run: node_modules/.bin/tauri build
-        continue-on-error: true
-
-      - name: Upload installers
-        if: github.event_name == 'push'
-        uses: actions/upload-artifact@v4
-        with:
-          name: anvil-${{ matrix.os }}
-          if-no-files-found: ignore
-          path: |
-            src-tauri/target/release/bundle/**/*.dmg
-            src-tauri/target/release/bundle/macos/*.app
-            src-tauri/target/release/bundle/**/*.deb
-            src-tauri/target/release/bundle/**/*.AppImage
-            src-tauri/target/release/bundle/**/*.msi
+      - name: Tests
+        working-directory: src-tauri
+        run: cargo test
