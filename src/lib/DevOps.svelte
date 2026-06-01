@@ -726,7 +726,7 @@
   .tabs .sp { flex: 1; }
   .tabs .busy { color: var(--accent); }
   .bar { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-bottom: 1px solid var(--border); }
-  .lbl { color: var(--text3); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+  .lbl { color: var(--text3); font-size: 11px; font-weight: 500; }
   .bar select { background: var(--panel2); color: var(--accent); border: 1px solid var(--border);
     border-radius: 6px; padding: 3px 7px; font-size: 12px; font-family: var(--font-mono); outline: 0; }
   .out { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 10px 12px;
@@ -739,15 +739,16 @@
   .pfx { border: 0; background: transparent; color: var(--text3); cursor: default; padding: 0 2px; font-size: 11px; }
   .pfx:hover { color: var(--danger, #e5484d); }
   .secval { flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 12px; color: var(--text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .sparks { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; padding: 8px 12px; }
-  .spark { border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px; cursor: default; background: var(--panel2); }
-  .spark:hover { border-color: var(--accent); }
-  .spark-top { display: flex; align-items: baseline; gap: 6px; margin-bottom: 4px; }
-  .spark-nm { flex: 1; font-size: 11px; color: var(--text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .spark-val { font-family: var(--font-mono); font-size: 11px; color: var(--accent); }
+  .sparks { display: flex; flex-direction: column; background: var(--panel); }
+  .spark { display: flex; flex-direction: column; background: transparent; padding: 4px 12px 3px;
+    border-bottom: 1px solid var(--border); cursor: default; }
+  .spark:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
+  .spark-top { display: flex; align-items: baseline; gap: 6px; min-height: 22px; }
+  .spark-nm { flex: 1; font-size: 10.5px; color: var(--text3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .spark-val { font-family: var(--font-mono); font-size: 12px; color: var(--text); }
   .spark-x { border: 0; background: transparent; color: var(--text3); font-size: 13px; cursor: default; padding: 0 2px; }
   .spark-x:hover { color: var(--text); }
-  .spark-svg { display: block; width: 100%; height: 22px; }
+  .spark-svg { display: block; width: 100%; height: 18px; }
   .sevdot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--text3); margin-right: 8px; }
   .sevdot.crit { background: var(--danger, #e5484d); }
   .sevdot.warn { background: var(--warn, #f5a623); }
