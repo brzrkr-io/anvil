@@ -46,7 +46,7 @@
   }
 
   // Commit-graph swimlanes.
-  const LANE = 14, ROW_H = 26, NODE_R = 3.5;
+  const LANE = 12, ROW_H = 22, NODE_R = 3;
   const graph = $derived(buildGraph(commits));
   const graphW = $derived(Math.max(1, ...graph.map((r) => r.width)) * LANE);
   const LANE_COLORS = ["--accent", "--green", "--blue", "--purple", "--teal", "--yellow", "--accent2", "--red"];
@@ -86,7 +86,6 @@
   let popover = $state<{ commit: Commit; x: number; y: number; files: { code: string; path: string }[] } | null>(null);
   async function openCommitPopover(c: Commit, ev: MouseEvent) {
     sel = commits.indexOf(c);
-    const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
     let files: { code: string; path: string }[] = [];
     try {
       const raw = await invoke<string>("git_commit_files", { cwd, rev: c.short });
@@ -95,9 +94,10 @@
         return { code: p[0][0] ?? "M", path: p[p.length - 1] };
       });
     } catch { /* ignore */ }
-    const x = Math.min(r.left + 40, window.innerWidth - 420);
-    const y = Math.min(r.bottom + 2, window.innerHeight - 320);
-    popover = { commit: c, x: Math.max(8, x), y, files };
+    // Anchor the popover at the click point (Terax-style).
+    const x = Math.min(ev.clientX + 6, window.innerWidth - 420);
+    const y = Math.min(ev.clientY + 6, window.innerHeight - 332);
+    popover = { commit: c, x: Math.max(8, x), y: Math.max(8, y), files };
   }
   function openFileAt(rev: string, path: string) {
     popover = null;
@@ -165,6 +165,7 @@
   function persistTemplates() { if (typeof localStorage !== "undefined") localStorage.setItem("anvil-commit-templates", JSON.stringify(templates)); }
   function saveTemplate() { const t = commitMsg.trim(); if (!t) return; templates = [...templates.filter((x) => x !== t), t].slice(-20); persistTemplates(); }
   let tplOpen = $state(false);
+  let moreOpen = $state(false);
 
   // #42 Agent-written commit message from the staged diff (in-place).
   let genBusy = $state(false);
@@ -245,6 +246,16 @@
     return code === "A" ? "var(--green)" : code === "D" ? "var(--red)"
       : code === "?" ? "var(--text3)" : "var(--yellow)";
   }
+  // Author avatar: initials + a stable hue derived from the name (Terax-style).
+  function initials(name: string) {
+    const p = name.trim().split(/\s+/);
+    return ((p[0]?.[0] ?? "") + (p.length > 1 ? p[p.length - 1][0] : "")).toUpperCase() || "?";
+  }
+  function avatarHue(name: string) {
+    let h = 0;
+    for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360;
+    return h;
+  }
 </script>
 
 <div class="scm">
@@ -294,13 +305,14 @@
         {:else if n.change}
           {@const hk = `${isStaged}:${n.change.path}`}
           <div class="chg" style="padding-left:{14 + depth * 12}px">
-            <span class="bdg" style="color:{badge(n.change.code)}">{n.change.code}</span>
-            <span class="path" onclick={() => onOpenDiff?.({ path: n.change!.path, staged: isStaged })} role="button" tabindex="0">{n.name}</span>
+            <span class="sdot" style="background:{badge(n.change.code)}" title={n.change.code}></span>
+            <span class="fname" onclick={() => onOpenDiff?.({ path: n.change!.path, staged: isStaged })} role="button" tabindex="0">{n.name}</span>
+            {#if n.change.path.includes("/")}<span class="fdir">{n.change.path.split("/").slice(0, -1).join("/")}</span>{/if}
             {#if n.change.code !== "?"}
               <button class="op hk {expandedHunks.has(hk) ? 'on' : ''}" title="Stage by hunk" disabled={busy} onclick={() => toggleHunks(hk)}><Icon name="density" size={13} /></button>
             {/if}
             <button class="op" title="Stash just this file" disabled={busy} onclick={() => stashFile(n.change!.path)}><Icon name="stash" size={12} /></button>
-            <button class="op" title={isStaged ? "Unstage" : "Stage"} disabled={busy} onclick={() => (isStaged ? unstage(n.change!.path) : stage(n.change!.path))}><Icon name={isStaged ? "minus" : "plus"} size={13} /></button>
+            <button class="stagetoggle {isStaged ? 'on' : ''}" title={isStaged ? "Unstage" : "Stage"} disabled={busy} aria-label={isStaged ? "Unstage" : "Stage"} onclick={() => (isStaged ? unstage(n.change!.path) : stage(n.change!.path))}></button>
           </div>
           {#if expandedHunks.has(hk) && n.change.code !== "?"}
             <HunkStage {cwd} path={n.change.path} staged={isStaged} onChanged={load} />
@@ -321,56 +333,6 @@
       <div class="changes">{@render tree(unstagedTree, false, 0)}</div>
     {/if}
 
-    {#if branch && !error}
-      <div class="commit">
-        <div class="ci-wrap">
-          <textarea
-            bind:value={commitMsg}
-            onkeydown={onCommitKey}
-            placeholder={amend ? "Amend commit message…" : "Message (⌘Enter to commit)"}
-            rows="3"
-            spellcheck="false"
-          ></textarea>
-          <button class="genmsg" title="Write a commit message from the staged diff (agent)" disabled={genBusy} onclick={genMessage}>{genBusy ? "…" : "✨"}</button>
-          <button class="genmsg tpl" title="Commit message templates" onclick={() => (tplOpen = !tplOpen)}>≣</button>
-          {#if tplOpen}
-            <div class="tplmenu">
-              <button onclick={() => { saveTemplate(); tplOpen = false; }}>＋ Save current as template</button>
-              {#each templates as t (t)}
-                <div class="tplrow">
-                  <button class="tpluse" title={t} onclick={() => { commitMsg = t; tplOpen = false; }}>{t.split("\n")[0]}</button>
-                  <button class="tplx" title="Delete" onclick={() => { templates = templates.filter((x) => x !== t); persistTemplates(); }}>×</button>
-                </div>
-              {/each}
-              {#if !templates.length}<div class="tplempty">No templates yet</div>{/if}
-            </div>
-          {/if}
-        </div>
-        <div class="cbtns">
-          <button class="primary" disabled={busy || (!commitMsg.trim() && !amend)} onclick={() => commit(false)}>
-            {amend ? "Amend" : staged.length ? `Commit ${staged.length}` : "Commit All"}
-          </button>
-          <button class="ghost" title="Commit then push" disabled={busy || (!commitMsg.trim() && !amend)} onclick={() => commit(true)}>
-            <Icon name="up" size={12} /> Commit & Push
-          </button>
-          <button class="ghost mini {amend ? 'on' : ''}" title="Amend last commit" disabled={busy} onclick={toggleAmend}>Amend</button>
-          {#if coAuthors.length}
-            <select class="coauth" title="Add Co-authored-by trailer" onchange={(e) => { addCoAuthor((e.currentTarget as HTMLSelectElement).value); (e.currentTarget as HTMLSelectElement).selectedIndex = 0; }}>
-              <option value="">+ co-author</option>
-              {#each coAuthors as a (a)}<option value={a}>{a}</option>{/each}
-            </select>
-          {/if}
-        </div>
-      </div>
-    {/if}
-
-    {#if changes.length}
-      <div class="strip">
-        <button class="link" disabled={busy} onclick={stashSave}>Stash all</button>
-        <button class="link" disabled={busy} onclick={stashWithMessage}>Stash…</button>
-        <button class="link" disabled={busy} onclick={stashUntracked}>Stash incl. untracked</button>
-      </div>
-    {/if}
     {#if stashes.length}
       <div class="sect">Stashes <span class="cnt">{stashes.length}</span></div>
       <div class="changes">
@@ -409,12 +371,75 @@
               {#if i === 0 && c.refs}<span class="ref">{c.refs.split(",")[0].replace("HEAD -> ", "")}</span>{/if}
               {#if cv}<span class="ctype" style="color:{typeColor[cv.kind] || 'var(--blue)'}">{cv.kind}{cv.scope ? `(${cv.scope})` : ""}:</span> {cv.rest}{:else}{c.subject}{/if}
             </span>
+            <span class="avatar" style="background:hsl({avatarHue(c.author)} 45% 45%)" title={c.author}>{initials(c.author)}</span>
             <span class="auth">{c.author}</span>
             <span class="when mono">{relTime(c.ts, now)}</span>
           </div>
         {/each}
       </div>
     </div>
+  {/if}
+
+  {#if branch && !error}
+    <footer class="composer">
+      <div class="ci-card">
+        <textarea
+          bind:value={commitMsg}
+          onkeydown={onCommitKey}
+          placeholder="Commit message"
+          rows="2"
+          spellcheck="false"
+        ></textarea>
+        <button class="genmsg" title="Write a commit message from the staged diff (agent)" disabled={genBusy} onclick={genMessage}>{genBusy ? "…" : "✨"}</button>
+        {#if !commitMsg.trim()}<div class="ci-hint"><kbd>⌘↩</kbd> to commit</div>{/if}
+      </div>
+      <div class="ci-status">
+        <span class="ci-dot" class:on={staged.length > 0} class:warn={!staged.length && unstaged.length > 0}></span>
+        <span class="ci-stat">{amend ? "Amending last commit" : staged.length ? `${staged.length} staged` : unstaged.length ? `${unstaged.length} unstaged · commits all` : "Nothing to commit"}</span>
+        <span class="ci-up">{branch}</span>
+      </div>
+      <div class="ci-actions">
+        <button class="cbtn primary" disabled={busy || (!commitMsg.trim() && !amend)} onclick={() => commit(false)}>
+          {amend ? "Amend" : "Commit"}
+        </button>
+        <button class="cbtn" title="Push committed work" disabled={busy} onclick={push}>
+          <Icon name="up" size={12} /> Push
+        </button>
+        <button class="more {moreOpen ? 'on' : ''}" title="More commit actions" onclick={() => (moreOpen = !moreOpen)} aria-label="More actions">⋯</button>
+        {#if moreOpen}
+          <div class="mscrim" onclick={() => (moreOpen = false)} role="presentation"></div>
+          <div class="moremenu">
+            <button disabled={busy || (!commitMsg.trim() && !amend)} onclick={() => { commit(true); moreOpen = false; }}><Icon name="up" size={12} /> Commit &amp; Push</button>
+            <button class={amend ? "on" : ""} onclick={() => { toggleAmend(); moreOpen = false; }}>{amend ? "✓ " : ""}Amend last commit</button>
+            <button onclick={() => { tplOpen = !tplOpen; moreOpen = false; }}>Templates…</button>
+            {#if coAuthors.length}
+              <div class="mm-label">Co-author</div>
+              {#each coAuthors as a (a)}<button class="mm-sub" onclick={() => { addCoAuthor(a); moreOpen = false; }}>{a}</button>{/each}
+            {/if}
+            {#if changes.length}
+              <div class="mm-sep"></div>
+              <div class="mm-label">Stash</div>
+              <button class="mm-sub" disabled={busy} onclick={() => { stashSave(); moreOpen = false; }}>All changes</button>
+              <button class="mm-sub" disabled={busy} onclick={() => { stashWithMessage(); moreOpen = false; }}>With message…</button>
+              <button class="mm-sub" disabled={busy} onclick={() => { stashUntracked(); moreOpen = false; }}>Including untracked</button>
+            {/if}
+          </div>
+        {/if}
+        {#if tplOpen}
+          <div class="mscrim" onclick={() => (tplOpen = false)} role="presentation"></div>
+          <div class="tplmenu">
+            <button onclick={() => { saveTemplate(); tplOpen = false; }}>＋ Save current as template</button>
+            {#each templates as t (t)}
+              <div class="tplrow">
+                <button class="tpluse" title={t} onclick={() => { commitMsg = t; tplOpen = false; }}>{t.split("\n")[0]}</button>
+                <button class="tplx" title="Delete" onclick={() => { templates = templates.filter((x) => x !== t); persistTemplates(); }}>×</button>
+              </div>
+            {/each}
+            {#if !templates.length}<div class="tplempty">No templates yet</div>{/if}
+          </div>
+        {/if}
+      </div>
+    </footer>
   {/if}
 
   {#if popover}
@@ -467,16 +492,17 @@
   .pfdir { font-size: 11px; color: var(--text3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .pfbdg { margin-left: auto; font-family: var(--font-mono); font-weight: 700; font-size: 11px; flex: 0 0 auto; }
   .pempty { padding: 8px 14px; color: var(--text3); font-size: 11.5px; }
-  .head { height: 30px; flex: 0 0 auto; display: flex; align-items: center; gap: 12px; padding: 0 14px;
-    border-bottom: 1px solid var(--border); font-size: 12px; }
+  .head { height: 28px; flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 0 12px;
+    border-bottom: 1px solid var(--border); font-size: 11.5px; }
   .accent { color: var(--accent); font-weight: 600; }
   .muted { color: var(--text3); }
-  .sect { padding: 10px 14px 5px; font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+  .sect { padding: 7px 14px 3px; font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase;
     font-weight: 600; color: var(--text3); }
-  .changes { padding-bottom: 6px; border-bottom: 1px solid var(--border); }
-  .chg { display: flex; align-items: center; gap: 9px; padding: 3px 14px; font-size: 12.5px; }
+  .changes { padding-bottom: 4px; border-bottom: 1px solid var(--border); }
+  .chg { display: flex; align-items: center; gap: 8px; padding: 2px 14px; font-size: 12px;
+    transition: background 0.1s ease; }
+  .chg:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
   .chg.dir { cursor: default; }
-  .chg.dir:hover { background: var(--panel); }
   .caret { width: 14px; height: 14px; flex: 0 0 auto; color: var(--text3);
     transition: transform 0.12s ease; }
   .caret.open { transform: rotate(90deg); }
@@ -484,21 +510,34 @@
   .dirname { color: var(--text2); font-family: var(--font-ui); font-size: 12px; }
   .bdg { width: 14px; text-align: center; font-weight: 700; font-family: var(--font-mono); font-size: 11px; }
   .path { color: var(--text); font-family: var(--font-mono); font-size: 12px; }
-  .staged { margin-left: auto; color: var(--green); font-size: 10px; }
+  .sdot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+  .fname { color: var(--text); font-family: var(--font-mono); font-size: 12px; flex: 0 0 auto; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; max-width: 60%; }
+  .fname:hover { color: var(--accent); }
+  .fdir { flex: 1; min-width: 0; margin-left: 1px; color: var(--text3); font-size: 10.5px; font-family: var(--font-mono);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .stagetoggle { flex: 0 0 auto; width: 15px; height: 15px; border: 1.5px solid var(--text3); border-radius: 50%;
+    background: transparent; cursor: default; transition: background .1s ease, border-color .1s ease; }
+  .chg:hover .stagetoggle { border-color: var(--accent); }
+  .stagetoggle.on { background: var(--accent); border-color: var(--accent); }
+  .stagetoggle:disabled { opacity: 0.5; }
   .log { flex: 1; overflow-y: auto; position: relative; }
   .logspace { position: relative; width: 100%; }
-  .row { position: absolute; left: 0; right: 0; display: flex; align-items: center; height: 26px; padding: 0 14px; gap: 0; cursor: default; }
-  .row:hover { background: var(--panel); }
-  .row.sel { background: var(--sel); }
-  .graph { flex: 0 0 auto; height: 26px; overflow: visible; margin-right: 8px; }
-  .sha { width: 62px; flex: 0 0 auto; color: var(--text3); font-size: 11px; }
-  .subj { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+  .row { position: absolute; left: 0; right: 0; display: flex; align-items: center; height: 22px; padding: 0 14px; gap: 0; cursor: default; }
+  .row:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
+  .row.sel { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+  .graph { flex: 0 0 auto; height: 22px; overflow: visible; margin-right: 6px; }
+  .sha { width: 54px; flex: 0 0 auto; color: var(--text3); font-size: 10.5px; }
+  .subj { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); font-size: 12px; }
   .ctype { font-family: var(--font-mono); }
-  .ref { display: inline-block; font-size: 10px; padding: 0 6px; margin-right: 7px; border-radius: 9px;
+  .ref { display: inline-block; font-size: 9.5px; padding: 0 5px; margin-right: 6px; border-radius: 9px;
     background: var(--accent); color: var(--bg); font-family: var(--font-mono); }
-  .auth { width: 120px; flex: 0 0 auto; color: var(--text2); font-size: 11.5px; white-space: nowrap;
+  .avatar { flex: 0 0 auto; width: 16px; height: 16px; border-radius: 50%; margin-right: 6px;
+    display: inline-flex; align-items: center; justify-content: center; color: #fff;
+    font-family: var(--font-ui); font-size: 8px; font-weight: 700; letter-spacing: -0.02em; }
+  .auth { width: 84px; flex: 0 0 auto; color: var(--text3); font-size: 10.5px; white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis; }
-  .when { width: 52px; flex: 0 0 auto; text-align: right; color: var(--text3); font-size: 11px; }
+  .when { width: 40px; flex: 0 0 auto; text-align: right; color: var(--text3); font-size: 10.5px; }
   .empty { padding: 24px 14px; color: var(--text3); }
   .cnt { margin-left: 4px; color: var(--text3); }
   .chg .op { margin-left: auto; width: 20px; height: 20px; border: 0; border-radius: 6px;
@@ -511,24 +550,52 @@
   .chg .op.hk.on { color: var(--accent); }
   .link { margin-left: auto; border: 0; background: transparent; color: var(--accent);
     font-size: 11px; cursor: default; }
-  .commit { display: flex; flex-direction: column; gap: 7px; padding: 9px 14px; border-bottom: 1px solid var(--border); }
-  .commit textarea { width: 100%; box-sizing: border-box; resize: vertical; min-height: 46px;
-    padding: 7px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg);
-    color: var(--text); font-family: var(--font-ui); font-size: 12.5px; line-height: 1.4; outline: 0; }
-  .commit textarea:focus { border-color: var(--accent); }
-  .cbtns { display: flex; align-items: center; gap: 7px; }
-  .primary { border: 0; border-radius: 7px; padding: 6px 14px; background: var(--accent); color: var(--bg);
-    font-size: 12px; font-weight: 600; cursor: default; }
-  .primary:disabled { opacity: 0.5; }
-  .ghost { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border);
-    border-radius: 7px; padding: 5px 10px; background: transparent; color: var(--text2);
-    font-size: 11.5px; cursor: default; }
-  .ghost:hover:not(:disabled) { border-color: var(--accent); color: var(--text); }
-  .ghost:disabled { opacity: 0.45; }
-  .ghost.mini { margin-left: auto; padding: 5px 9px; }
-  .ghost.mini.on { border-color: var(--accent); color: var(--accent); }
-  .coauth { border: 1px solid var(--border); border-radius: 7px; background: transparent; color: var(--text2);
-    font-size: 11px; padding: 4px 6px; outline: 0; cursor: default; max-width: 120px; }
+  /* Bottom-docked commit composer (Terax-style): slim card pinned to the panel
+     foot; secondary actions fold into the ⋯ menu so the footer stays small. */
+  .composer { flex: 0 0 auto; display: flex; flex-direction: column; gap: 8px;
+    padding: 10px 12px 11px; border-top: 1px solid var(--border); background: var(--panel); position: relative; }
+  .ci-card { position: relative; }
+  .composer textarea { width: 100%; box-sizing: border-box; resize: none; min-height: 52px; max-height: 160px;
+    padding: 8px 30px 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg);
+    color: var(--text); font-family: var(--font-ui); font-size: 12.5px; line-height: 1.45; outline: 0; }
+  .composer textarea:focus { border-color: var(--accent); }
+  .ci-hint { position: absolute; left: 11px; bottom: 8px; pointer-events: none; color: var(--text3); font-size: 10.5px; }
+  .ci-hint kbd { font-family: var(--font-mono); font-size: 10px; color: var(--text2); background: var(--panel2);
+    border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; margin-right: 3px; }
+  .ci-status { display: flex; align-items: center; gap: 7px; font-size: 11px; }
+  .ci-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text3); flex: 0 0 auto; }
+  .ci-dot.on { background: var(--green); }
+  .ci-dot.warn { background: var(--yellow); }
+  .ci-stat { color: var(--text2); }
+  .ci-up { margin-left: auto; color: var(--text3); font-family: var(--font-mono); font-size: 10.5px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 50%; }
+  .ci-actions { display: flex; align-items: center; gap: 7px; position: relative; }
+  .cbtn { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+    border: 1px solid var(--border); border-radius: 8px; padding: 7px 12px; background: var(--panel2);
+    color: var(--text); font-size: 12px; font-weight: 500; cursor: default;
+    transition: background .1s ease, border-color .1s ease, opacity .1s ease; }
+  .cbtn:hover:not(:disabled) { border-color: var(--accent); }
+  .cbtn:disabled { opacity: 0.45; }
+  .cbtn.primary { border-color: transparent; background: var(--accent); color: var(--bg); font-weight: 600; }
+  .cbtn.primary:hover:not(:disabled) { filter: brightness(1.05); }
+  .more { flex: 0 0 auto; width: 32px; height: 30px; display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid var(--border); border-radius: 7px; background: transparent; color: var(--text2);
+    font-size: 16px; line-height: 1; cursor: default; transition: border-color .1s ease, color .1s ease; }
+  .more:hover, .more.on { border-color: var(--accent); color: var(--text); }
+  .mscrim { position: fixed; inset: 0; z-index: 44; }
+  .moremenu { position: absolute; bottom: 38px; right: 0; z-index: 45; min-width: 204px; padding: 4px;
+    background: var(--glass); backdrop-filter: var(--frost); -webkit-backdrop-filter: var(--frost);
+    border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--elev-3), inset 0 1px 0 var(--hairline);
+    display: flex; flex-direction: column; gap: 1px; }
+  .moremenu > button { display: flex; align-items: center; gap: 6px; text-align: left; border: 0; background: transparent;
+    color: var(--text); font-family: var(--font-ui); font-size: 12px; padding: 6px 9px; border-radius: 6px; cursor: default; }
+  .moremenu > button:hover:not(:disabled) { background: var(--sel); }
+  .moremenu > button:disabled { opacity: 0.45; }
+  .moremenu > button.on { color: var(--accent); }
+  .moremenu .mm-sub { padding-left: 16px; color: var(--text2); font-size: 11.5px; }
+  .mm-label { padding: 5px 9px 2px; font-size: 9.5px; letter-spacing: .07em; text-transform: uppercase;
+    font-weight: 600; color: var(--text3); }
+  .mm-sep { height: 1px; margin: 4px 6px; background: var(--border); }
   .rfeat { font-size: 9.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--text3);
     border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; background: transparent; cursor: default; }
   .rfeat:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
@@ -544,14 +611,13 @@
   .logfilters input { flex: 1; min-width: 0; background: var(--bg); color: var(--text); border: 1px solid var(--border);
     border-radius: 5px; padding: 3px 7px; font-size: 11.5px; font-family: var(--font-mono); outline: 0; }
   .logfilters input:focus { border-color: var(--accent); }
-  .ci-wrap { position: relative; }
   .genmsg { position: absolute; top: 6px; right: 6px; border: 1px solid var(--border); background: var(--panel2);
     color: var(--text2); border-radius: 6px; padding: 1px 6px; font-size: 12px; cursor: default; }
   .genmsg:hover:not(:disabled) { border-color: var(--accent); color: var(--text); }
   .genmsg:disabled { opacity: 0.5; }
-  .genmsg.tpl { right: 34px; }
-  .tplmenu { position: absolute; top: 30px; right: 6px; z-index: 20; min-width: 220px; max-height: 320px; overflow-y: auto;
-    background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 4px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45); }
+  .tplmenu { position: absolute; bottom: 38px; right: 0; z-index: 45; min-width: 220px; max-height: 320px; overflow-y: auto;
+    background: var(--glass); backdrop-filter: var(--frost); -webkit-backdrop-filter: var(--frost);
+    border: 1px solid var(--border); border-radius: 8px; padding: 4px; box-shadow: var(--elev-3), inset 0 1px 0 var(--hairline); }
   .tplmenu > button, .tplrow .tpluse { display: block; width: 100%; text-align: left; border: 0; background: transparent; color: var(--text);
     font-family: var(--font-ui); font-size: 12px; padding: 5px 8px; border-radius: 5px; cursor: default; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .tplmenu > button:hover, .tplrow .tpluse:hover { background: var(--sel); }
@@ -560,7 +626,6 @@
   .tplx { border: 0; background: transparent; color: var(--text3); cursor: default; padding: 0 6px; }
   .tplx:hover { color: var(--text); }
   .tplempty { color: var(--text3); font-size: 11px; padding: 6px 8px; }
-  .strip { padding: 4px 14px 8px; }
   .branchsel { background: var(--panel2); color: var(--accent); border: 1px solid var(--border);
     border-radius: 6px; padding: 2px 6px; font-size: 12px; font-weight: 600; outline: 0; cursor: default; }
 </style>
