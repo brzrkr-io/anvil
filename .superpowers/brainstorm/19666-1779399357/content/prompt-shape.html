@@ -1,0 +1,71 @@
+<h2>What shape should the Caldera prompt be?</h2>
+<p class="subtitle">All four carry the same info — current directory, git branch + dirty state, last exit status, command duration, time. Only the structure differs. Pick the direction that feels right; we'll tune colors, glyphs and which segments appear next. Click one (or tell me in the terminal).</p>
+
+<style>
+  .term {
+    background:#0b0d0e; border:1px solid #2a3033; border-radius:8px;
+    padding:16px 18px; margin:0;
+    font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;
+    font-size:13px; line-height:1.85; color:#e8e6e3; white-space:pre; overflow-x:auto;
+  }
+  .dir{color:#2f7f86;font-weight:600;}
+  .git{color:#b07a14;}
+  .ok{color:#3f8a5b;}
+  .err{color:#b13a30;}
+  .mut{color:#7d8791;}
+  .gl{color:#5a6470;}
+  .cmd{color:#e8e6e3;}
+  .cur{background:#2f7f86;color:#0b0d0e;}
+  .card-image{padding:0!important;background:transparent!important;}
+  .card h3{margin-bottom:4px;}
+</style>
+
+<div class="cards">
+
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+<div class="term"><span class="dir">caldera-console</span> <span class="git">main ●</span> <span class="gl">❯</span> <span class="cmd">zig build test</span>
+<span class="dir">caldera-console</span> <span class="git">main ●</span> <span class="gl">❯</span> <span class="cur"> </span></div>
+    </div>
+    <div class="card-body">
+      <h3>A · Minimal single-line</h3>
+      <p>Directory + branch + glyph, nothing else. Fastest to scan, lowest noise — the most "regular." Extra info (duration, exit code) shows only when it matters.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+<div class="term"><span class="mut">~/projects/caldera/</span><span class="dir">caldera-console</span>  <span class="git">⎇ main ●2</span>  <span class="ok">✓ 1.2s</span>  <span class="mut">14:32</span>  <span class="gl">❯</span> <span class="cur"> </span></div>
+    </div>
+    <div class="card-body">
+      <h3>B · Rich single-line</h3>
+      <p>Everything on one line, in segments. Most information density — but the line you type at sits far to the right after a long path.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image">
+<div class="term"><span class="mut">~/projects/caldera/</span><span class="dir">caldera-console</span>  <span class="git">⎇ main ●2</span>  <span class="ok">✓ 1.2s</span>  <span class="mut">14:32</span>
+<span class="gl">❯</span> <span class="cur"> </span></div>
+    </div>
+    <div class="card-body">
+      <h3>C · Two-line</h3>
+      <p>Context on top, a short clean line to type at below. Information never crowds what you write — the popular power-user setup.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="d" onclick="toggleSelect(this)">
+    <div class="card-image">
+<div class="term"><span class="gl">╭</span> <span class="mut">~/projects/caldera/</span><span class="dir">caldera-console</span>  <span class="git">⎇ main</span>  <span class="ok">✓ 0.4s</span>
+<span class="gl">╰❯</span> <span class="cmd">git status</span>
+<span class="mut">  nothing to commit, working tree clean</span>
+<span class="gl">╭</span> <span class="mut">~/projects/caldera/</span><span class="dir">caldera-console</span>  <span class="git">⎇ main ●2</span>  <span class="ok">✓ 1.2s</span>  <span class="mut">14:32</span>
+<span class="gl">╰❯</span> <span class="cur"> </span></div>
+    </div>
+    <div class="card-body">
+      <h3>D · Two-line, framed blocks</h3>
+      <p>Like C, but a light bracket joins each prompt to its command — scrollback reads as distinct command blocks. Structure without becoming a TUI.</p>
+    </div>
+  </div>
+
+</div>

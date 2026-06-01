@@ -1,0 +1,348 @@
+/* Maple Mono — bundled, used for all UI + terminal/editor for now. */
+@font-face { font-family: "Maple Mono"; font-weight: 400; font-style: normal; font-display: swap;
+  src: url("/fonts/maple/MapleMono-Regular.woff2") format("woff2"); }
+@font-face { font-family: "Maple Mono"; font-weight: 500; font-style: normal; font-display: swap;
+  src: url("/fonts/maple/MapleMono-Medium.woff2") format("woff2"); }
+@font-face { font-family: "Maple Mono"; font-weight: 600; font-style: normal; font-display: swap;
+  src: url("/fonts/maple/MapleMono-SemiBold.woff2") format("woff2"); }
+@font-face { font-family: "Maple Mono"; font-weight: 700; font-style: normal; font-display: swap;
+  src: url("/fonts/maple/MapleMono-Bold.woff2") format("woff2"); }
+@font-face { font-family: "Maple Mono"; font-weight: 400; font-style: italic; font-display: swap;
+  src: url("/fonts/maple/MapleMono-Italic.woff2") format("woff2"); }
+
+/* IBM Plex Mono — bundled (code + terminal option). */
+@font-face { font-family: "IBM Plex Mono"; font-weight: 400; font-style: normal; font-display: swap;
+  src: url("/fonts/plex-mono/IBMPlexMono-400.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Mono"; font-weight: 500; font-style: normal; font-display: swap;
+  src: url("/fonts/plex-mono/IBMPlexMono-500.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Mono"; font-weight: 600; font-style: normal; font-display: swap;
+  src: url("/fonts/plex-mono/IBMPlexMono-600.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Mono"; font-weight: 700; font-style: normal; font-display: swap;
+  src: url("/fonts/plex-mono/IBMPlexMono-700.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Mono"; font-weight: 400; font-style: italic; font-display: swap;
+  src: url("/fonts/plex-mono/IBMPlexMono-400i.woff2") format("woff2"); }
+
+/* Popular coding fonts — bundled (mono picker options). */
+@font-face { font-family: "JetBrains Mono"; font-weight: 400; src: url("/fonts/jbmono/400.woff2") format("woff2"); font-display: swap; }
+@font-face { font-family: "JetBrains Mono"; font-weight: 500; src: url("/fonts/jbmono/500.woff2") format("woff2"); font-display: swap; }
+@font-face { font-family: "JetBrains Mono"; font-weight: 700; src: url("/fonts/jbmono/700.woff2") format("woff2"); font-display: swap; }
+@font-face { font-family: "JetBrains Mono"; font-weight: 400; font-style: italic; src: url("/fonts/jbmono/400i.woff2") format("woff2"); font-display: swap; }
+@font-face { font-family: "Fira Code"; font-weight: 400; src: url("/fonts/firacode/400.woff2") format("woff2"); font-display: swap; }
+@font-face { font-family: "Fira Code"; font-weight: 500; src: url("/fonts/firacode/500.woff2") format("woff2"); font-display: swap; }
+@font-face { font-family: "Fira Code"; font-weight: 700; src: url("/fonts/firacode/700.woff2") format("woff2"); font-display: swap; }
+@font-face { font-family: "Cascadia Code"; font-weight: 400; src: url("/fonts/cascadia/400.woff2") format("woff2"); font-display: swap; }
+@font-face { font-family: "Cascadia Code"; font-weight: 500; src: url("/fonts/cascadia/500.woff2") format("woff2"); font-display: swap; }
+@font-face { font-family: "Cascadia Code"; font-weight: 700; src: url("/fonts/cascadia/700.woff2") format("woff2"); font-display: swap; }
+@font-face { font-family: "Cascadia Code"; font-weight: 400; font-style: italic; src: url("/fonts/cascadia/400i.woff2") format("woff2"); font-display: swap; }
+@font-face { font-family: "Source Code Pro"; font-weight: 400; src: url("/fonts/sourcecode/400.woff2") format("woff2"); font-display: swap; }
+@font-face { font-family: "Source Code Pro"; font-weight: 500; src: url("/fonts/sourcecode/500.woff2") format("woff2"); font-display: swap; }
+@font-face { font-family: "Source Code Pro"; font-weight: 700; src: url("/fonts/sourcecode/700.woff2") format("woff2"); font-display: swap; }
+@font-face { font-family: "Source Code Pro"; font-weight: 400; font-style: italic; src: url("/fonts/sourcecode/400i.woff2") format("woff2"); font-display: swap; }
+@font-face { font-family: "Inter"; font-weight: 400; src: url("/fonts/inter/400.woff2") format("woff2"); font-display: swap; }
+@font-face { font-family: "Inter"; font-weight: 500; src: url("/fonts/inter/500.woff2") format("woff2"); font-display: swap; }
+@font-face { font-family: "Inter"; font-weight: 700; src: url("/fonts/inter/700.woff2") format("woff2"); font-display: swap; }
+
+/* Nerd Font symbols — icon glyph fallback for the terminal (powerline, devicons). */
+@font-face { font-family: "Symbols Nerd Font Mono"; font-weight: normal; font-style: normal; font-display: swap;
+  src: url("/fonts/nerd/SymbolsNerdFontMono-Regular.ttf") format("truetype"); }
+
+/* IBM Plex Sans — bundled (UI chrome option). */
+@font-face { font-family: "IBM Plex Sans"; font-weight: 400; font-style: normal; font-display: swap;
+  src: url("/fonts/plex-sans/IBMPlexSans-400.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Sans"; font-weight: 500; font-style: normal; font-display: swap;
+  src: url("/fonts/plex-sans/IBMPlexSans-500.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Sans"; font-weight: 600; font-style: normal; font-display: swap;
+  src: url("/fonts/plex-sans/IBMPlexSans-600.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Sans"; font-weight: 700; font-style: normal; font-display: swap;
+  src: url("/fonts/plex-sans/IBMPlexSans-700.woff2") format("woff2"); }
+
+/* Anvil design tokens — Solarized Dark default; overridden at runtime by themes.ts. */
+:root {
+  --bg: #002b36;
+  --panel: #073642;
+  --panel2: #0a4150;
+  --border: #0f4a5a;
+  --text: #93a1a1;
+  --text2: #839496;
+  --text3: #586e75;
+  --sel: #134556;
+  --accent: #268bd2;
+  --accent2: #cb4b16;
+  --green: #859900;
+  --red: #dc322f;
+  --blue: #268bd2;
+  --purple: #6c71c4;
+  --teal: #2aa198;
+  --yellow: #b58900;
+
+  --font-ui: "Maple Mono", "SF Mono", Menlo, ui-monospace, monospace;
+  --font-mono: "Maple Mono", "SF Mono", Menlo, ui-monospace, monospace;
+
+  /* Glass + elevation system — frosted floating surfaces blur the workspace
+     behind them; persistent panels stay sharp (brand: tactical, not SaaS-soft). */
+  --glass: color-mix(in srgb, var(--panel) 76%, transparent);
+  --glass-2: color-mix(in srgb, var(--panel2) 80%, transparent);
+  --glass-scrim: color-mix(in srgb, var(--bg) 48%, transparent);
+  --hairline: color-mix(in srgb, #fff 7%, transparent);
+  --blur: 16px;
+  --frost: blur(var(--blur)) saturate(1.2);
+  --radius: 8px;
+  --elev-1: 0 1px 2px rgba(0, 0, 0, 0.28);
+  --elev-2: 0 8px 24px rgba(0, 0, 0, 0.36);
+  --elev-3: 0 18px 52px rgba(0, 0, 0, 0.5);
+
+  color-scheme: dark;
+}
+
+/* ---- Density: compact (Zed-like, tight) vs regular ---- */
+:root[data-density="compact"] {
+  --ui-fs: 11.5px;
+  --row-h: 20px;
+  --tab-h: 28px;
+  --rail-w: 32px;
+  --side-w: 186px;
+  --pad-x: 8px;
+  --head-h: 24px;
+  --status-h: 22px;
+  --sect-pt: 7px;
+}
+:root[data-density="regular"], :root {
+  --ui-fs: 13px;
+  --row-h: 25px;
+  --tab-h: 36px;
+  --rail-w: 38px;
+  --side-w: 230px;
+  --pad-x: 12px;
+  --head-h: 30px;
+  --status-h: 26px;
+  --sect-pt: 11px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--ui-fs);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  user-select: none;
+}
+/* Thin, subtle scrollbars app-wide (replaces the fat macOS overlay bar). */
+* { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--text3) 55%, transparent) transparent; }
+*::-webkit-scrollbar { width: 7px; height: 7px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text3) 45%, transparent);
+  border-radius: 7px; border: 2px solid transparent; background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--text3) 75%, transparent); background-clip: padding-box; }
+*::-webkit-scrollbar-corner { background: transparent; }
+.mono { font-family: var(--font-mono); }
+/* Floating dropdown menus — shared frosted chrome. Per-menu rules below set
+   only position/size/background. (cm-action-menu = CodeMirror quick-fix;
+   tabctx = tab right-click; taboverflow = tab overflow list.) */
+.cm-action-menu, .tabctx, .taboverflow {
+  position: fixed; padding: 4px; display: flex; flex-direction: column;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  backdrop-filter: var(--frost); -webkit-backdrop-filter: var(--frost);
+  box-shadow: var(--elev-2), inset 0 1px 0 var(--hairline);
+}
+.cm-action-menu button, .tabctx button, .taboverflow button {
+  text-align: left; border: 0; background: transparent; color: var(--text);
+  font-family: var(--font-ui); font-size: 12.5px; padding: 6px 10px; border-radius: 6px; cursor: default;
+}
+.cm-action-menu button:hover, .tabctx button:hover, .taboverflow button:hover { background: var(--sel); }
+.cm-action-menu { z-index: 200; min-width: 200px; max-width: 360px; gap: 1px; background: var(--glass); }
+/* inline git-blame decorations injected by Monaco (Editor.svelte) */
+.anvil-blame { color: var(--text3); font-style: italic; opacity: 0.8; }
+/* Git gutter bars (Editor.svelte #32): a colored stripe in the line margin. */
+.anvil-g-add::before, .anvil-g-mod::before, .anvil-g-del::before {
+  content: ""; position: absolute; left: 0; width: 3px; height: 100%;
+}
+.anvil-g-add::before { background: var(--green); }
+.anvil-g-mod::before { background: var(--blue); }
+.anvil-g-del::before { background: var(--red); height: 2px; top: 0; }
+
+/* ---- app shell ---- */
+:root { --scale: 1; }
+/* Global UI zoom: scale the whole shell but inverse-size it so it still fills
+   the viewport (keeps the bottom status bar on-screen at any scale). */
+.app { display: flex; flex-direction: column; width: 100vw; height: 100vh; overflow: hidden; }
+/* Zen / terminal mode — hide all chrome, show only content (⌘.). */
+.app.zen > .tabs, .app.zen .rail, .app.zen .side, .app.zen > .status { display: none !important; }
+/* Hiding the tab strip removes the inset that cleared the macOS traffic lights
+   (titleBarStyle Overlay). Keep a thin draggable strip so the lights don't
+   overlap the terminal and the window stays movable in zen. */
+.zen-bar { flex: 0 0 28px; height: 28px; width: 100%; -webkit-app-region: drag; background: var(--bg); }
+/* Presentation polish: fade chrome away, give content a calm inset, and hide the
+   pointer after it rests (revealed again on move). */
+.app.zen .main { animation: zen-fade 0.22s ease; }
+@keyframes zen-fade { from { opacity: 0.4; } to { opacity: 1; } }
+/* First-run onboarding overlay (#100). */
+.onboard-scrim { position: fixed; inset: 0; z-index: 90; display: flex; align-items: center; justify-content: center;
+  background: var(--glass-scrim); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+.onboard { width: 440px; max-width: 90vw; background: var(--glass); border: 1px solid var(--border);
+  backdrop-filter: var(--frost); -webkit-backdrop-filter: var(--frost);
+  border-radius: 8px; padding: 26px 28px; box-shadow: var(--elev-3), inset 0 1px 0 var(--hairline); }
+.ob-wm { font-size: 30px; font-weight: 700; letter-spacing: -0.02em; color: var(--text); }
+.ob-dot { color: var(--accent); }
+.ob-tag { margin: 4px 0 16px; font-size: 13px; color: var(--text2); }
+.ob-tips { list-style: none; margin: 0 0 18px; padding: 0; display: flex; flex-direction: column; gap: 9px; }
+.ob-tips li { font-size: 12.5px; color: var(--text2); }
+.ob-tips kbd { font-family: var(--font-mono); font-size: 11px; color: var(--accent); background: var(--bg);
+  border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; margin-right: 4px; }
+.ob-go { border: 0; background: var(--accent); color: var(--bg); font-family: var(--font-ui); font-size: 13px;
+  font-weight: 600; padding: 8px 18px; border-radius: 8px; cursor: default; }
+.ob-go:hover { filter: brightness(1.05); }
+.ob-h { margin: 6px 0 2px; font-size: 17px; font-weight: 600; color: var(--text); }
+.ob-dots { display: flex; gap: 6px; margin: 2px 0 14px; }
+.ob-d { width: 6px; height: 6px; border-radius: 50%; background: var(--border); }
+.ob-d.on { background: var(--accent); }
+.ob-nav { display: flex; align-items: center; gap: 8px; }
+.ob-skip, .ob-back { border: 0; background: transparent; color: var(--text3); font-family: var(--font-ui);
+  font-size: 12.5px; padding: 8px 12px; border-radius: 8px; cursor: default; }
+.ob-skip:hover, .ob-back:hover { color: var(--text); background: var(--sel); }
+/* Tab drag-reorder + right-click context menu (roadmap §A #15 / #16). */
+.tab.drag { opacity: 0.4; }
+.ctxscrim { position: fixed; inset: 0; z-index: 60; }
+.tabctx { z-index: 61; min-width: 168px; background: var(--glass-2); }
+.tab .pin { font-size: 9px; margin-right: 3px; opacity: 0.85; cursor: default; }
+.tab.pinned-tab { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.taboverflow { z-index: 61; top: 40px; right: 12px; min-width: 220px; max-height: 60vh; overflow-y: auto; background: var(--glass-2); }
+.taboverflow button { display: flex; align-items: center; gap: 4px; }
+.taboverflow button.on { background: var(--sel); color: var(--accent); }
+.taboverflow .ofpin { font-size: 9px; }
+.taboverflow .oftt { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agentq-chip { position: fixed; bottom: 10px; right: 12px; z-index: 70; font-family: var(--font-ui); font-size: 11px;
+  color: var(--text); background: var(--glass-2); backdrop-filter: blur(12px) saturate(1.3); -webkit-backdrop-filter: blur(12px) saturate(1.3);
+  border: 1px solid var(--border); border-radius: 20px; padding: 4px 12px;
+  cursor: default; box-shadow: var(--elev-2), inset 0 1px 0 var(--hairline); transition: border-color 0.12s ease; }
+.agentq-chip:hover { border-color: var(--accent); }
+.quake-scrim { position: fixed; inset: 0; z-index: 95; background: var(--glass-scrim); backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px); }
+.quake { position: fixed; top: 0; left: 0; right: 0; height: 42vh; z-index: 96; display: flex; flex-direction: column;
+  background: var(--glass); backdrop-filter: var(--frost); -webkit-backdrop-filter: var(--frost);
+  border-bottom: 1px solid var(--border); box-shadow: var(--elev-3), inset 0 1px 0 var(--hairline);
+  animation: quake-drop 0.16s cubic-bezier(0.2, 0.9, 0.3, 1); }
+@keyframes quake-drop { from { transform: translateY(-100%); } to { transform: translateY(0); } }
+.quake-head { display: flex; align-items: center; justify-content: space-between; padding: 5px 12px;
+  font-family: var(--font-ui); font-size: 11px; color: var(--text3); border-bottom: 1px solid var(--border); }
+.quake-hint { opacity: 0.7; }
+.quake-term { flex: 1; min-height: 0; padding: 6px 10px; }
+.fps-overlay { position: fixed; top: 6px; right: 8px; z-index: 80; font-family: var(--font-mono); font-size: 11px;
+  color: var(--green, #3fb950); background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  border: 1px solid var(--hairline); border-radius: 7px; padding: 2px 8px; pointer-events: none; }
+.offline-chip { position: fixed; top: 8px; left: 50%; transform: translateX(-50%); z-index: 70;
+  font-family: var(--font-ui); font-size: 11px; color: var(--bg); background: var(--warn, #f5a623);
+  border-radius: 20px; padding: 4px 12px; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4); pointer-events: none; }
+.broadcast-chip { position: fixed; bottom: 10px; left: 50%; transform: translateX(-50%); z-index: 70;
+  font-family: var(--font-ui); font-size: 11px; color: #fff; background: var(--danger, #e5484d);
+  border: 0; border-radius: 20px; padding: 4px 12px; cursor: default; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4); }
+.zen-exit { position: fixed; bottom: 10px; right: 12px; z-index: 50; font-family: var(--font-ui);
+  font-size: 11px; color: var(--text3); background: color-mix(in srgb, var(--panel) 80%, transparent);
+  border: 1px solid var(--border); border-radius: 20px; padding: 3px 10px; cursor: default; opacity: 0.5; }
+.zen-exit:hover { opacity: 1; color: var(--text); }
+/* Only when zoomed ≠ 100%: inverse-size + transform so the app still fills the
+   viewport. At 100% no transform → terminal canvas renders without GPU resample. */
+:root[data-scaled] .app {
+  width: calc(100vw / var(--scale));
+  height: calc(100vh / var(--scale));
+  transform: scale(var(--scale));
+  transform-origin: top left;
+}
+
+.tabs {
+  height: var(--tab-h); flex: 0 0 auto; display: flex; align-items: stretch;
+  background: var(--panel); border-bottom: 1px solid var(--border);
+  padding-left: 78px; /* clear macOS traffic lights */
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
+  -webkit-app-region: drag;
+}
+.tabs::-webkit-scrollbar { height: 0; display: none; }
+.tab {
+  display: flex; align-items: center; gap: 7px; padding: 0 10px;
+  flex: 0 1 auto; min-width: 76px; max-width: 168px;
+  font-size: 12.5px; color: var(--text2);
+  position: relative; -webkit-app-region: no-drag; cursor: default;
+  transition: background 0.1s ease, color 0.1s ease;
+}
+.tab:not(.on):hover { background: color-mix(in srgb, var(--text) 5%, transparent); color: var(--text); }
+.tab .tt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tab .dot, .tab .tab-ic, .tab .dirty, .tab .x { flex: 0 0 auto; }
+.tab.on { color: var(--text); background: var(--bg); }
+.tab.on::after { content: ""; position: absolute; left: 0; right: 0; top: -1px; height: 2px;
+  background: var(--accent); }
+.tab .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+.tabs .spacer { flex: 1; }
+
+.main { flex: 1; display: flex; min-height: 0; position: relative; }
+
+/* Auto-hide activity rail: float it off the left edge and slide it back on when
+   the pointer hits the hot-zone or the rail itself. Content reclaims the space. */
+.app.rail-auto .rail {
+  position: absolute; top: 0; bottom: 0; left: 0; z-index: 30;
+  transform: translateX(-100%); transition: transform 0.16s ease;
+  box-shadow: 2px 0 12px rgba(0, 0, 0, 0.25);
+}
+.app.rail-auto .rail-hot { position: absolute; top: 0; bottom: 0; left: 0; width: 8px; z-index: 31; }
+.app.rail-auto .rail-hot:hover + .rail,
+.app.rail-auto .rail:hover { transform: translateX(0); }
+
+.rail {
+  width: var(--rail-w); flex: 0 0 auto; background: var(--bg);
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; align-items: center; padding-top: 6px; gap: 2px;
+}
+.rail .i {
+  width: 26px; height: 26px; border-radius: 8px; display: flex; align-items: center;
+  justify-content: center; color: var(--text3); font-size: 13px; cursor: default;
+  transition: background 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
+}
+.rail .i:hover { background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text2); }
+.rail .i.on { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+/* Explorer is a toggleable panel, not a main view: a distinct outline state so
+   it never reads as a second "active view" alongside the real one. */
+.rail .i.panel.pinned { color: var(--accent); background: transparent; box-shadow: inset 0 0 0 1px var(--accent); }
+.rail .grow { margin-top: auto; margin-bottom: 8px; }
+
+.side {
+  width: var(--side-w); flex: 0 0 auto; background: var(--panel);
+  border-right: 1px solid var(--border); overflow-y: auto;
+}
+.sect {
+  padding: var(--sect-pt) var(--pad-x) 5px; font-size: 10px; letter-spacing: 0.09em;
+  text-transform: uppercase; font-weight: 600; color: var(--text3);
+  display: flex; align-items: center; gap: 6px;
+}
+.sect .n { margin-left: auto; }
+.sect .sect-x { margin-left: auto; border: 0; background: transparent; color: var(--text3);
+  cursor: default; display: inline-flex; align-items: center; padding: 2px; border-radius: 4px; }
+.sect .sect-x:hover { background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); }
+.row {
+  margin: 0 6px; padding: 0 calc(var(--pad-x) - 6px); height: var(--row-h); border-radius: 6px;
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12.5px; color: var(--text2); cursor: default;
+  transition: background 0.1s ease, color 0.1s ease;
+}
+.row:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
+.row.cur { color: var(--text); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.row .ic { width: 13px; color: var(--text3); font-size: 11px; flex: 0 0 auto; }
+.row .meta { margin-left: auto; color: var(--text3); font-size: 10.5px; }
+
+.content { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); }
+.pane-head {
+  height: var(--head-h); flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
+  padding: 0 var(--pad-x); color: var(--text2); font-size: 12px; border-bottom: 1px solid var(--hairline);
+}
+.pane-head .accent { color: var(--accent); }
+.term-wrap { flex: 1; min-height: 0; padding: 6px 8px; }
+
+.status {
+  height: var(--status-h); flex: 0 0 auto; display: flex; align-items: center; gap: 13px;
+  padding: 0 var(--pad-x); background: var(--panel); border-top: 1px solid var(--hairline);
+  color: var(--text3); font-size: 11px;
+}
+.status .r { margin-left: auto; display: flex; gap: 14px; align-items: center; }
+.status .ok { color: var(--green); }
+.status .accent { color: var(--accent); }

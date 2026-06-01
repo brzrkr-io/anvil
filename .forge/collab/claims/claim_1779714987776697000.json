@@ -1,0 +1,12 @@
+{
+  "agent": "hermes",
+  "claim_id": "claim_1779714987776697000",
+  "created_at": "2026-05-25T13:16:27Z",
+  "reason": "CLI claim",
+  "resource": "sketches/native-editor-directions",
+  "resource_type": "file",
+  "schema_version": "caldera.claim.v0",
+  "session_id": "",
+  "status": "active",
+  "updated_at": "2026-05-25T13:16:27Z"
+}

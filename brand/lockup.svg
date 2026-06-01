@@ -1,0 +1,7 @@
+<svg width="260" height="64" viewBox="0 0 260 64" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Anvil">
+  <g transform="translate(8 8) scale(2)">
+    <circle cx="12" cy="12" r="10" stroke="#0c0d0e" stroke-width="2" fill="none"/>
+    <path d="M 2 12 L 22 12 A 10 10 0 0 1 2 12 Z" fill="#0c0d0e"/>
+  </g>
+  <text x="72" y="43" fill="#0c0d0e" font-family="IBM Plex Sans, -apple-system, BlinkMacSystemFont, Segoe UI, system-ui, sans-serif" font-size="36" font-weight="500" letter-spacing="-0.65">Anvil</text>
+</svg>

@@ -1,0 +1,7 @@
+<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Anvil app icon">
+  <rect width="128" height="128" rx="28" fill="#0b0d0e"/>
+  <g transform="translate(32 32) scale(2.6666667)">
+    <circle cx="12" cy="12" r="10" stroke="#eef1f2" stroke-width="2" fill="none"/>
+    <path d="M 2 12 L 22 12 A 10 10 0 0 1 2 12 Z" fill="#eef1f2"/>
+  </g>
+</svg>

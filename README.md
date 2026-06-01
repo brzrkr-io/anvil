@@ -1,13 +1,7 @@
-# Anvil
+# Tauri + SvelteKit + TypeScript
 
-A native macOS control plane for software and devops work — Rust, Metal, AppKit.
-See `docs/product/console-rebuild-plan.md` for the full plan.
+This template should help get you started developing with Tauri, SvelteKit and TypeScript in Vite.
 
-## Build
+## Recommended IDE Setup
 
-```sh
-cargo run -p anvil     # build and launch
-cargo test --workspace # run unit tests
-```
-
-Requires Homebrew Rust (`cargo 1.95.0`) and macOS with Xcode Command Line Tools.
+[VS Code](https://code.visualstudio.com/) + [Svelte](https://marketplace.visualstudio.com/items?itemName=svelte.svelte-vscode) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer).

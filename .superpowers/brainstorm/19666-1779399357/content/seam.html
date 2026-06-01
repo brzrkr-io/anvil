@@ -1,0 +1,124 @@
+<h2>The Seam — one design, built to be extended</h2>
+<p class="subtitle">Converging. This is Cockpit + Halo done properly: a thin, Caldera-drawn context band that sits above a pristine input line — calm by default, alive when it matters. The point of the design is the <em>module system</em>: every piece of info is a small pluggable unit, so git today, CI / k8s / cloud / Docker / your coding agents tomorrow — all in the same calm row.</p>
+
+<style>
+  .wrap{display:flex;flex-direction:column;gap:26px;}
+  .term{border-radius:11px;padding:26px 28px;border:1px solid var(--bd);
+        font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;
+        font-size:13px;line-height:2.05;background:var(--bg);color:var(--fg);}
+  .d{--bg:#0b0d0e;--fg:#e6e4e0;--bd:#20262a;--dim:#79828a;--faint:#4a535a;
+     --val:#c6cbcf;--acc:#46a5ad;--ok:#5aa873;--warn:#c79a3e;--err:#c4564b;
+     --seam:#101518;--tick:#2f7f86;}
+  .l{--bg:#ece8e0;--fg:#2c3032;--bd:#d4cfc4;--dim:#7d827c;--faint:#aaa79d;
+     --val:#33383b;--acc:#2f7f86;--ok:#3f7d52;--warn:#8a6a18;--err:#a8362c;
+     --seam:#e4dfd3;--tick:#2f7f86;}
+  /* seam band */
+  .seam{background:var(--seam);border-left:2px solid var(--tick);
+        border-radius:0 5px 5px 0;padding:6px 14px;margin:5px 0;
+        display:flex;justify-content:space-between;gap:24px;align-items:center;}
+  .mods{display:flex;flex-wrap:wrap;gap:4px 16px;align-items:center;}
+  .mod{display:inline-flex;align-items:center;gap:6px;color:var(--dim);}
+  .anchor{color:var(--val);font-weight:600;}
+  .dot{width:5px;height:5px;border-radius:1.5px;background:var(--faint);flex:none;}
+  .dot.ok{background:var(--ok);} .dot.warn{background:var(--warn);}
+  .dot.run{background:var(--acc);} .dot.acc{background:var(--acc);}
+  .val{color:var(--val);}
+  .ok{color:var(--ok);} .warn{color:var(--warn);} .err{color:var(--err);} .acc{color:var(--acc);}
+  .clock{color:var(--faint);}
+  .pre{color:var(--faint);}
+  .gly{color:var(--acc);}
+  .glyErr{color:var(--err);}
+  .cur{display:inline-block;width:7px;height:14px;background:var(--acc);
+       vertical-align:-2px;border-radius:1px;}
+  .cmd{color:var(--val);}
+  .duo{display:flex;gap:14px;}
+  .duo .pane{flex:1;min-width:0;}
+  .plabel{font-size:10px;letter-spacing:.09em;text-transform:uppercase;
+          color:#5a636b;margin:0 0 5px 2px;}
+  .hbar{font-size:11px;letter-spacing:.08em;text-transform:uppercase;
+        color:#2f7f86;margin:4px 0 2px;}
+  .note{color:#8c949b;font-size:13px;margin:0;}
+  .pickcard{border:1px solid #2f7f86;border-radius:12px;padding:8px;
+            background:#0e1113;cursor:pointer;}
+  .anat{display:flex;gap:10px;flex-wrap:wrap;}
+  .src{flex:1;min-width:170px;background:#0e1214;border:1px solid #232a2e;
+       border-radius:9px;padding:12px 14px;}
+  .src h4{margin:0 0 5px;color:#d2d6da;font-size:13px;}
+  .src p{margin:0;color:#878f96;font-size:12px;line-height:1.55;}
+  .src .k{color:#46a5ad;}
+</style>
+
+<div class="wrap">
+
+  <!-- HERO: dark, loaded -->
+  <div class="pickcard" data-choice="seam" onclick="toggleSelect(this)">
+    <div class="hbar" style="padding-left:6px;">Loaded — a busy moment, lots of integrations live</div>
+    <div class="term d">
+      <div><span class="pre">◆ git push</span></div>
+      <div class="seam">
+        <div class="mods">
+          <span class="mod anchor">caldera-console</span>
+          <span class="mod"><span class="dot warn"></span><span>main</span> <span class="warn">●2</span> <span class="dim">↑1</span></span>
+          <span class="mod"><span class="dot"></span>zig <span class="val">0.16</span></span>
+          <span class="mod"><span class="dot ok"></span><span class="ok">✓</span> <span class="val">1.2s</span></span>
+          <span class="mod"><span class="dot run"></span>ci <span class="acc">⠋ building</span></span>
+          <span class="mod"><span class="dot"></span>k8s <span class="val">prod</span></span>
+          <span class="mod"><span class="dot acc"></span><span class="acc">◆</span> 2 agents</span>
+        </div>
+        <span class="clock">14:32</span>
+      </div>
+      <div><span class="gly">◆</span> <span class="cmd">zig build </span><span class="cur"></span></div>
+    </div>
+  </div>
+
+  <!-- CALM: dark + light -->
+  <div>
+    <div class="hbar">The calm default — what you see 90% of the time — in both themes</div>
+    <div class="duo">
+      <div class="pane"><div class="plabel">Mineral dark</div>
+        <div class="term d">
+          <div><span class="pre">◆ zig build test</span></div>
+          <div><span class="pre">&nbsp;&nbsp;210 passed</span></div>
+          <div class="seam">
+            <div class="mods">
+              <span class="mod anchor">caldera-console</span>
+              <span class="mod"><span class="dot"></span>main</span>
+              <span class="mod"><span class="dot"></span>zig <span class="val">0.16</span></span>
+            </div>
+            <span class="clock">14:34</span>
+          </div>
+          <div><span class="gly">◆</span> <span class="cur"></span></div>
+        </div>
+      </div>
+      <div class="pane"><div class="plabel">Bone light</div>
+        <div class="term l">
+          <div><span class="pre">◆ zig build test</span></div>
+          <div><span class="pre">&nbsp;&nbsp;210 passed</span></div>
+          <div class="seam">
+            <div class="mods">
+              <span class="mod anchor">caldera-console</span>
+              <span class="mod"><span class="dot"></span>main</span>
+              <span class="mod"><span class="dot"></span>zig <span class="val">0.16</span></span>
+            </div>
+            <span class="clock">14:34</span>
+          </div>
+          <div><span class="gly">◆</span> <span class="cur"></span></div>
+        </div>
+      </div>
+    </div>
+    <p class="note" style="margin-top:8px;">Calm = just the anchor (cwd) + git + toolchain. Modules stay silent until they have something to say. A failed command reddens the <span style="color:#c4564b">◆</span>; a long run shows its duration; CI only appears while a run exists.</p>
+  </div>
+
+  <!-- ANATOMY -->
+  <div>
+    <div class="hbar">Why it extends — anatomy of a module</div>
+    <p class="note" style="margin-bottom:10px;">Every item in the Seam is the same tiny unit: a <strong>state dot</strong> · a <strong>label</strong> · a <strong>value</strong>. One consistent shape means ten integrations still read as one calm row, never a sticker bomb. Three ways a module gets there:</p>
+    <div class="anat">
+      <div class="src"><h4>Core</h4><p>Shipped in Zig — <span class="k">cwd, git, exit, duration, toolchain</span>. Fast, always available, zero config.</p></div>
+      <div class="src"><h4>Declared</h4><p>You add one in <span class="k">config.zon</span>: a command to run + when to refresh. The Starship-custom-module idea, baked in.</p></div>
+      <div class="src"><h4>Integration</h4><p>A plugin pushes live values over Caldera's IPC bridge — <span class="k">CI, k8s, Docker, cloud, your coding agents</span>. Updates between keystrokes.</p></div>
+    </div>
+    <p class="note" style="margin-top:10px;">Order, visibility, and which theme color each state uses — all <span class="k" style="color:#46a5ad">config.zon</span>. The Seam is drawn by Caldera (not the shell), so it can refresh live, animate a spinner, and stay pixel-clean — while the <span style="color:#46a5ad">◆</span> input line below stays a pure, portable prompt.</p>
+  </div>
+
+</div>

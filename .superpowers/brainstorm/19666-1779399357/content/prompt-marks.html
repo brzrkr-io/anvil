@@ -1,0 +1,189 @@
+<h2>30 prompt marks — shapes & motion</h2>
+<p class="subtitle">The signature gesture, explored properly. Each is the Caldera prompt glyph: GPU-rendered, glowing, animated — what no ANSI prompt can do. Five families. <strong>Multi-select</strong> — click every one you like, even just for a detail, and I'll refine the favourites into the real thing.</p>
+
+<style>
+  svg{stroke:#4fb8c0;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;display:block;}
+  .fill{fill:#4fb8c0;stroke:none;}
+  .gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:13px;margin-bottom:10px;}
+  .cell{background:#0e1113;border:1px solid #242b2f;border-radius:12px;
+        padding:15px 10px 11px;cursor:pointer;text-align:center;
+        transition:border-color .14s,transform .14s,box-shadow .14s;}
+  .cell:hover{border-color:#2f7f86;transform:translateY(-2px);
+              box-shadow:0 6px 20px rgba(0,0,0,.4);}
+  .stage{background:#09 0b0c;background:#090b0c;border-radius:9px;height:66px;
+         display:flex;align-items:center;justify-content:center;gap:9px;margin-bottom:10px;}
+  .g{filter:drop-shadow(0 0 5px rgba(79,184,192,.5));}
+  .cur{width:6px;height:16px;background:#3f8f90;border-radius:1px;
+       animation:caret 1.1s steps(1) infinite;}
+  .cap b{color:#dfe2e4;font-size:12.5px;} .cap{color:#79828a;font-size:11px;}
+  .sec{color:#4fb8c0;font-size:11px;letter-spacing:.13em;text-transform:uppercase;
+       margin:22px 0 9px;font-weight:600;}
+  .sec:first-of-type{margin-top:6px;}
+  @keyframes caret{0%,50%{opacity:1}51%,100%{opacity:.15}}
+  @keyframes breathe{0%,100%{transform:scale(1);opacity:.8}50%{transform:scale(1.12);opacity:1}}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @keyframes spinr{to{transform:rotate(-360deg)}}
+  @keyframes glow{0%,100%{filter:drop-shadow(0 0 1px rgba(79,184,192,.25))}
+                  50%{filter:drop-shadow(0 0 10px rgba(79,184,192,.95))}}
+  @keyframes pdot{0%,100%{transform:scale(.45);opacity:.45}50%{transform:scale(1);opacity:1}}
+  @keyframes ripple{0%{transform:scale(.25);opacity:.95}100%{transform:scale(1.6);opacity:0}}
+  @keyframes twk{0%,100%{opacity:.2}50%{opacity:1}}
+  @keyframes slide{0%,100%{transform:translateX(-2.5px)}50%{transform:translateX(2.5px)}}
+  @keyframes draw{to{stroke-dashoffset:0}}
+  @keyframes drift{0%,100%{transform:translateX(-3px);opacity:.4}50%{transform:translateX(3px);opacity:1}}
+  .breathe{animation:breathe 3.6s ease-in-out infinite;transform-origin:center;}
+  .spin{animation:spin 11s linear infinite;transform-box:view-box;transform-origin:center;}
+  .spin-f{animation:spin 5s linear infinite;transform-box:view-box;transform-origin:center;}
+  .spinr{animation:spinr 14s linear infinite;transform-box:view-box;transform-origin:center;}
+  .glow{animation:glow 3s ease-in-out infinite;}
+  .orb{transform-box:view-box;transform-origin:center;animation:spin 3.8s linear infinite;}
+  .orbr{transform-box:view-box;transform-origin:center;animation:spinr 3.8s linear infinite;}
+  .rip{transform-box:view-box;transform-origin:center;animation:ripple 2.6s ease-out infinite;}
+  .rip2{animation-delay:1.3s;}
+  .pd{transform-box:view-box;transform-origin:center;animation:pdot 2.4s ease-in-out infinite;}
+  .slide{animation:slide 2.8s ease-in-out infinite;}
+  .tk1{animation:twk 2.4s ease-in-out infinite;}
+  .tk2{animation:twk 2.4s ease-in-out infinite .5s;}
+  .tk3{animation:twk 2.4s ease-in-out infinite 1s;}
+  .tk4{animation:twk 2.4s ease-in-out infinite 1.5s;}
+  .dr1{animation:drift 2.6s ease-in-out infinite;}
+  .dr2{animation:drift 2.6s ease-in-out infinite .3s;}
+  .dr3{animation:drift 2.6s ease-in-out infinite .6s;}
+  .drw{stroke-dasharray:34;stroke-dashoffset:34;animation:draw 2.4s ease-in-out infinite;}
+</style>
+
+<div class="gallery" data-multiselect>
+
+<div class="sec" style="grid-column:1/-1;">I · Rings &amp; apertures — the caldera rim</div>
+
+<div class="cell" data-choice="01-ring" onclick="toggleSelect(this)">
+  <div class="stage"><span class="g"><svg width="30" height="30" viewBox="0 0 24 24"><circle class="breathe" cx="12" cy="12" r="8"/></svg></span><span class="cur"></span></div>
+  <div class="cap"><b>01 Ring</b><br>breathe</div></div>
+
+<div class="cell" data-choice="02-notch" onclick="toggleSelect(this)">
+  <div class="stage"><span class="g"><svg width="30" height="30" viewBox="0 0 24 24"><circle class="spin" cx="12" cy="12" r="8" stroke-dasharray="40 10"/></svg></span><span class="cur"></span></div>
+  <div class="cap"><b>02 Notch</b><br>slow rotate</div></div>
+
+<div class="cell" data-choice="03-aperture" onclick="toggleSelect(this)">
+  <div class="stage"><span class="g"><svg width="30" height="30" viewBox="0 0 24 24"><circle class="spin-f" cx="12" cy="12" r="8" stroke-dasharray="2.6 4.3"/></svg></span><span class="cur"></span></div>
+  <div class="cap"><b>03 Aperture</b><br>segmented spin</div></div>
+
+<div class="cell" data-choice="04-halo" onclick="toggleSelect(this)">
+  <div class="stage"><span class="g glow"><svg width="30" height="30" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><circle class="spin-f" cx="12" cy="12" r="4.6" stroke-dasharray="3 3"/></svg></span><span class="cur"></span></div>
+  <div class="cap"><b>04 Halo</b><br>double ring</div></div>
+
+<div class="cell" data-choice="05-iris" onclick="toggleSelect(this)">
+  <div class="stage"><span class="g"><svg width="30" height="30" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle class="fill pd" cx="12" cy="12" r="3"/></svg></span><span class="cur"></span></div>
+  <div class="cap"><b>05 Iris</b><br>core pulse</div></div>
+
+<div class="cell" data-choice="06-eclipse" onclick="toggleSelect(this)">
+  <div class="stage"><span class="g glow"><svg width="30" height="30" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path class="fill" d="M12 4.2a7.8 7.8 0 0 1 0 15.6Z"/></svg></span><span class="cur"></span></div>
+  <div class="cap"><b>06 Eclipse</b><br>half-lit</div></div>
+
+<div class="sec" style="grid-column:1/-1;">II · Basin &amp; contour — topography</div>
+
+<div class="cell" data-choice="07-basin" onclick="toggleSelect(this)">
+  <div class="stage"><span class="g"><svg width="30" height="30" viewBox="0 0 24 24"><g class="breathe"><path d="M4 8Q12 16 20 8"/><path d="M7 10.5Q12 16 17 10.5"/><path d="M10 13Q12 15.5 14 13"/></g></svg></span><span class="cur"></span></div>
+  <div class="cap"><b>07 Basin</b><br>nested arcs</div></div>
+
+<div class="cell" data-choice="08-contour" onclick="toggleSelect(this)">
+  <div class="stage"><span class="g"><svg width="30" height="30" viewBox="0 0 24 24"><circle class="tk1" cx="12" cy="12" r="3"/><circle class="tk2" cx="12" cy="12" r="6"/><circle class="tk3" cx="12" cy="12" r="9"/></svg></span><span class="cur"></span></div>
+  <div class="cap"><b>08 Contour</b><br>lines ripple out</div></div>
+
+<div class="cell" data-choice="09-sonar" onclick="toggleSelect(this)">
+  <div class="stage"><span class="g"><svg width="30" height="30" viewBox="0 0 24 24"><circle class="fill" cx="12" cy="12" r="2.4"/><circle class="rip" cx="12" cy="12" r="6"/><circle class="rip rip2" cx="12" cy="12" r="6"/></svg></span><span class="cur"></span></div>
+  <div class="cap"><b>09 Sonar</b><br>expanding pings</div></div>
+
+<div class="cell" data-choice="10-wave" onclick="toggleSelect(this)">
+  <div class="stage"><span class="g glow"><svg width="30" height="30" viewBox="0 0 24 24"><path class="slide" d="M2 12Q7 5 12 12T22 12"/></svg></span><span class="cur"></span></div>
+  <div class="cap"><b>10 Wave</b><br>drifting sine</div></div>
+
+<div class="cell" data-choice="11-crescent" onclick="toggleSelect(this)">
+  <div class="stage"><span class="g glow"><svg width="30" height="30" viewBox="0 0 24 24"><path class="fill" d="M15 3.5a9 9 0 1 0 0 17 7 7 0 0 1 0-17Z"/></svg></span><span class="cur"></span></div>
+  <div class="cap"><b>11 Crescent</b><br>soft glow</div></div>
+
+<div class="cell" data-choice="12-well" onclick="toggleSelect(this)">
+  <div class="stage"><span class="g"><svg width="30" height="30" viewBox="0 0 24 24"><g class="breathe"><circle cx="12" cy="12" r="8.5"/><path d="M7.5 10Q12 16.5 16.5 10"/></g></svg></span><span class="cur"></span></div>
+  <div class="cap"><b>12 Well</b><br>ringed basin</div></div>
+
+<div class="sec" style="grid-column:1/-1;">III · Crystal &amp; facet — mineral</div>
+
+<div class="cell" data-choice="13-hexagon" onclick="toggleSelect(this)">
+  <div class="stage"><span class="g"><svg width="30" height="30" viewBox="0 0 24 24"><path class="breathe" d="M12 3 19 7.5 19 16.5 12 21 5 16.5 5 7.5Z"/></svg></span><span class="cur"></span></div>
+  <div class="cap"><b>13 Hexagon</b><br>breathe</div></div>
+
+<div class="cell" data-choice="14-facet" onclick="toggleSelect(this)">
+  <div class="stage"><span class="g"><svg width="30" height="30" viewBox="0 0 24 24"><g class="spin"><path d="M12 3 19 7.5 19 16.5 12 21 5 16.5 5 7.5Z"/><path d="M12 3v18M5 7.5l14 9M19 7.5l-14 9" stroke-width="1"/></g></svg></span><span class="cur"></span></div>
+  <div class="cap"><b>14 Facet</b><br>turning crystal</div></div>
+
+<div class="cell" data-choice="15-diamond" onclick="toggleSelect(this)">
+  <div class="stage"><span class="g glow"><svg width="30" height="30" viewBox="0 0 24 24"><path d="M12 3 20.5 12 12 21 3.5 12Z"/></svg></span><span class="cur"></span></div>
+  <div class="cap"><b>15 Diamond</b><br>glow</div></div>
+
+<div class="cell" data-choice="16-prism" onclick="toggleSelect(this)">
+  <div class="stage"><span class="g"><svg width="30" height="30" viewBox="0 0 24 24"><g class="breathe"><path d="M12 3.5 20.5 19H3.5Z"/><path d="M12 3.5V19" stroke-width="1"/></g></svg></span><span class="cur"></span></div>
+  <div class="cap"><b>16 Prism</b><br>split triangle</div></div>
+
+<div class="cell" data-choice="17-shard" onclick="toggleSelect(this)">
+  <div class="stage"><span class="g glow"><svg width="30" height="30" viewBox="0 0 24 24"><path class="fill" d="M12 2.5 15 12 12 21.5 9 12Z"/></svg></span><span class="cur"></span></div>
+  <div class="cap"><b>17 Shard</b><br>sliver</div></div>
+
+<div class="cell" data-choice="18-lattice" onclick="toggleSelect(this)">
+  <div class="stage"><span class="g"><svg width="30" height="30" viewBox="0 0 24 24"><path d="M12 5 17 12 12 19 7 12Z" stroke-width="1"/><circle class="fill tk1" cx="12" cy="5" r="1.8"/><circle class="fill tk2" cx="17" cy="12" r="1.8"/><circle class="fill tk3" cx="12" cy="19" r="1.8"/><circle class="fill tk4" cx="7" cy="12" r="1.8"/></svg></span><span class="cur"></span></div>
+  <div class="cap"><b>18 Lattice</b><br>nodes twinkle</div></div>
+
+<div class="sec" style="grid-column:1/-1;">IV · Orbit &amp; particle — motion</div>
+
+<div class="cell" data-choice="19-orbit" onclick="toggleSelect(this)">
+  <div class="stage"><span class="g"><svg width="30" height="30" viewBox="0 0 24 24"><circle class="fill" cx="12" cy="12" r="2.6"/><g class="orb"><circle class="fill" cx="12" cy="3.8" r="1.9"/></g></svg></span><span class="cur"></span></div>
+  <div class="cap"><b>19 Orbit</b><br>one moon</div></div>
+
+<div class="cell" data-choice="20-binary" onclick="toggleSelect(this)">
+  <div class="stage"><span class="g"><svg width="30" height="30" viewBox="0 0 24 24"><g class="orb"><circle class="fill" cx="12" cy="4.5" r="2"/></g><g class="orbr"><circle class="fill" cx="12" cy="19.5" r="2"/></g></svg></span><span class="cur"></span></div>
+  <div class="cap"><b>20 Binary</b><br>counter-orbit</div></div>
+
+<div class="cell" data-choice="21-comet" onclick="toggleSelect(this)">
+  <div class="stage"><span class="g"><svg width="30" height="30" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" stroke-width="1" stroke-dasharray="1 3"/><g class="orb"><path d="M12 4a8 8 0 0 1 5.6 2.4" stroke-width="2.4"/><circle class="fill" cx="12" cy="4" r="2"/></g></svg></span><span class="cur"></span></div>
+  <div class="cap"><b>21 Comet</b><br>tail on a track</div></div>
+
+<div class="cell" data-choice="22-constellation" onclick="toggleSelect(this)">
+  <div class="stage"><span class="g"><svg width="30" height="30" viewBox="0 0 24 24"><path d="M5 7 12 13 19 6 14 17" stroke-width="1"/><circle class="fill tk1" cx="5" cy="7" r="1.7"/><circle class="fill tk2" cx="12" cy="13" r="1.7"/><circle class="fill tk3" cx="19" cy="6" r="1.7"/><circle class="fill tk4" cx="14" cy="17" r="1.7"/></svg></span><span class="cur"></span></div>
+  <div class="cap"><b>22 Constellation</b><br>stars twinkle</div></div>
+
+<div class="cell" data-choice="23-pulse" onclick="toggleSelect(this)">
+  <div class="stage"><span class="g glow"><svg width="30" height="30" viewBox="0 0 24 24"><circle class="fill pd" cx="12" cy="12" r="5"/></svg></span><span class="cur"></span></div>
+  <div class="cap"><b>23 Pulse</b><br>beating point</div></div>
+
+<div class="cell" data-choice="24-drift" onclick="toggleSelect(this)">
+  <div class="stage"><span class="g"><svg width="30" height="30" viewBox="0 0 24 24"><circle class="fill dr1" cx="7" cy="12" r="2.2"/><circle class="fill dr2" cx="12" cy="12" r="2.2"/><circle class="fill dr3" cx="17" cy="12" r="2.2"/></svg></span><span class="cur"></span></div>
+  <div class="cap"><b>24 Drift</b><br>three-dot flow</div></div>
+
+<div class="sec" style="grid-column:1/-1;">V · Glyph — refined classics</div>
+
+<div class="cell" data-choice="25-chevron" onclick="toggleSelect(this)">
+  <div class="stage"><span class="g glow"><svg width="30" height="30" viewBox="0 0 24 24"><path d="M9 5.5 16.5 12 9 18.5"/></svg></span><span class="cur"></span></div>
+  <div class="cap"><b>25 Chevron</b><br>glow</div></div>
+
+<div class="cell" data-choice="26-double" onclick="toggleSelect(this)">
+  <div class="stage"><span class="g"><svg width="30" height="30" viewBox="0 0 24 24"><path class="slide" d="M6 6.5 12.5 12 6 17.5M13 6.5 19.5 12 13 17.5"/></svg></span><span class="cur"></span></div>
+  <div class="cap"><b>26 Double</b><br>sliding</div></div>
+
+<div class="cell" data-choice="27-arrow" onclick="toggleSelect(this)">
+  <div class="stage"><span class="g"><svg width="30" height="30" viewBox="0 0 24 24"><path class="drw" d="M4 12h13M13 7.5 18 12 13 16.5"/></svg></span><span class="cur"></span></div>
+  <div class="cap"><b>27 Arrow</b><br>draws itself</div></div>
+
+<div class="cell" data-choice="28-caret" onclick="toggleSelect(this)">
+  <div class="stage"><span class="g"><svg width="30" height="30" viewBox="0 0 24 24"><path class="fill breathe" d="M9 5.5 17 12 9 18.5Z"/></svg></span><span class="cur"></span></div>
+  <div class="cap"><b>28 Caret</b><br>solid, breathing</div></div>
+
+<div class="cell" data-choice="29-spark" onclick="toggleSelect(this)">
+  <div class="stage"><span class="g glow"><svg width="30" height="30" viewBox="0 0 24 24"><path class="spin-f" d="M12 4v16M4 12h16M6.5 6.5l11 11M17.5 6.5l-11 11" stroke-width="1.5"/></svg></span><span class="cur"></span></div>
+  <div class="cap"><b>29 Spark</b><br>turning star</div></div>
+
+<div class="cell" data-choice="30-quill" onclick="toggleSelect(this)">
+  <div class="stage"><span class="g glow"><svg width="30" height="30" viewBox="0 0 24 24"><path d="M5 19C9 11 14 7 20 5 16 11 13 15 8 17.5"/><circle class="fill pd" cx="8" cy="17.5" r="2"/></svg></span><span class="cur"></span></div>
+  <div class="cap"><b>30 Quill</b><br>nib + glow</div></div>
+
+</div>
+
+<p class="subtitle" style="margin-top:14px;">Click everything that catches your eye — favourites, or just a shape or a motion worth stealing. Tell me in the terminal what's resonating and I'll combine the best into 2–3 real prompt designs.</p>

@@ -1,0 +1,176 @@
+<h2>The HUD — give the devops state its own space</h2>
+<p class="subtitle">The prompt stops being a junk drawer. It goes clean — just <span style="color:#46a5ad">❯</span> — and a HUD, drawn by Caldera in the window's edge space, lays the integrations out properly: grouped, labelled, room to breathe. Four places it can live. Full-window views so you see the whole layout.</p>
+
+<style>
+  .stack{display:flex;flex-direction:column;gap:20px;}
+  .pick{border:1px solid #262d31;border-radius:13px;padding:9px;background:#0e1113;
+        cursor:pointer;transition:border-color .15s;}
+  .pick:hover{border-color:#2f7f86;}
+  .win{background:#0b0d0e;border:1px solid #262d31;border-radius:9px;overflow:hidden;}
+  .bar{background:#0e1214;border-bottom:1px solid #20262a;padding:7px 11px;
+       display:flex;align-items:center;gap:8px;}
+  .dot{width:8px;height:8px;border-radius:50%;background:#2b3236;}
+  .tab{color:#c2c6c9;font-size:11px;font-family:'IBM Plex Mono',monospace;
+       margin-left:6px;border-bottom:1.5px solid #46a5ad;padding-bottom:4px;}
+  .tabx{color:#4d565d;font-size:11px;font-family:'IBM Plex Mono',monospace;}
+  .mono{font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;}
+  .body{display:flex;}
+  .term{flex:1;padding:15px 17px;font-size:11.5px;line-height:2.0;color:#b8bdc0;min-height:170px;}
+  .pdim{color:#5a636a;} .out{color:#525b62;} .cwd{color:#dcdAd5;}
+  .gly{color:#46a5ad;}
+  .cur{display:inline-block;width:6px;height:13px;background:#46a5ad;vertical-align:-2px;border-radius:1px;}
+  /* HUD shared */
+  .lab{color:#525b63;font-size:9px;letter-spacing:.14em;font-family:'IBM Plex Mono',monospace;}
+  .val{color:#c6cacd;font-size:11px;font-family:'IBM Plex Mono',monospace;}
+  .vd{color:#79828a;font-size:11px;font-family:'IBM Plex Mono',monospace;}
+  .sdot{display:inline-block;width:5px;height:5px;border-radius:1.5px;background:#5a9a6e;
+        vertical-align:1px;margin-right:5px;}
+  .sd-warn{background:#bf9540;} .sd-run{background:#46a5ad;} .sd-err{background:#c4564b;}
+  /* right dock */
+  .dock{width:212px;background:#0c0f11;border-left:1px solid #20272b;padding:14px 15px;}
+  .dock .hd{color:#e2e0db;font-size:11.5px;font-family:'IBM Plex Mono',monospace;font-weight:600;}
+  .dgrp{margin-top:13px;}
+  .dgrp .lab{display:block;margin-bottom:3px;}
+  .drow{line-height:1.75;}
+  .dsep{height:1px;background:#1b2125;margin:12px 0;}
+  /* bottom bar */
+  .botbar{background:#0c0f11;border-top:1px solid #20272b;padding:8px 14px;
+          display:flex;gap:0;align-items:center;flex-wrap:wrap;}
+  .bseg{padding:0 14px;border-right:1px solid #1d2428;}
+  .bseg:last-child{border:0;margin-left:auto;}
+  .bseg .lab{display:block;margin-bottom:2px;}
+  /* corner */
+  .corner{position:absolute;top:13px;right:13px;width:166px;background:#0d1113ee;
+          border:1px solid #283034;border-radius:8px;padding:11px 12px;}
+  .corner .crow{line-height:1.95;}
+  /* summon */
+  .ov{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+      background:#05070899;}
+  .panel{width:74%;background:#0d1012;border:1px solid #2b3439;border-radius:10px;
+         padding:16px 18px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px 22px;}
+  .panel .hd2{grid-column:1/-1;color:#e2e0db;font-size:11.5px;font-family:'IBM Plex Mono',monospace;
+              border-bottom:1px solid #1f262a;padding-bottom:7px;}
+  .cap{padding:11px 8px 4px;}
+  .cap h3{margin:0 0 3px;font-size:15px;}
+  .cap p{margin:0;color:#878f96;font-size:13px;}
+  .rel{position:relative;}
+</style>
+
+<div class="stack">
+
+  <!-- 1 · RIGHT DOCK -->
+  <div class="pick" data-choice="dock" onclick="toggleSelect(this)">
+    <div class="win">
+      <div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+        <span class="tab">caldera-console</span><span class="tabx">&nbsp; api-gateway &nbsp; +</span></div>
+      <div class="body">
+        <div class="term mono">
+          <div class="pdim">❯ zig build test</div>
+          <div class="out">&nbsp;&nbsp;210 passed · 1.4s</div>
+          <div class="pdim">❯ git status</div>
+          <div class="out">&nbsp;&nbsp;3 files changed</div>
+          <div style="margin-top:6px"><span class="gly">❯</span> <span class="cur"></span></div>
+        </div>
+        <div class="dock">
+          <div class="hd">caldera-console</div>
+          <div class="dgrp"><span class="lab">REPO</span>
+            <div class="drow"><span class="sdot sd-warn"></span><span class="val">main</span> <span class="vd">·3 ↑1</span></div>
+            <div class="drow vd" style="font-size:10px">fix(webview): setOpaque</div></div>
+          <div class="dgrp"><span class="lab">TOOLCHAIN</span>
+            <div class="drow"><span class="sdot"></span><span class="val">zig 0.16.0</span></div></div>
+          <div class="dgrp"><span class="lab">CLUSTER</span>
+            <div class="drow"><span class="sdot"></span><span class="val">prod</span> <span class="vd">/ api</span></div></div>
+          <div class="dgrp"><span class="lab">CLOUD</span>
+            <div class="drow"><span class="sdot"></span><span class="val">acme-prod</span> <span class="vd">us-east-1</span></div></div>
+          <div class="dgrp"><span class="lab">INFRA</span>
+            <div class="drow"><span class="sdot"></span><span class="vd">terraform</span> <span class="val">staging</span></div>
+            <div class="drow"><span class="sdot"></span><span class="vd">docker</span> <span class="val">3 up</span></div></div>
+          <div class="dgrp"><span class="lab">CHECKS</span>
+            <div class="drow"><span class="sdot sd-run"></span><span class="val">CI building</span> <span class="vd">4m</span></div></div>
+          <div class="dsep"></div>
+          <div class="drow vd">14:32</div>
+        </div>
+      </div>
+    </div>
+    <div class="cap"><h3>1 · Right dock</h3><p>A vertical panel in the window's right edge — grouped sections, generous spacing, the most room. The terminal + a bare <span style="color:#46a5ad">❯</span> get the rest. IDE-like; this is the one I'd build.</p></div>
+  </div>
+
+  <!-- 2 · BOTTOM BAR -->
+  <div class="pick" data-choice="bottombar" onclick="toggleSelect(this)">
+    <div class="win">
+      <div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+        <span class="tab">caldera-console</span><span class="tabx">&nbsp; +</span></div>
+      <div class="body" style="flex-direction:column">
+        <div class="term mono">
+          <div class="pdim">❯ zig build test</div>
+          <div class="out">&nbsp;&nbsp;210 passed · 1.4s</div>
+          <div style="margin-top:6px"><span class="gly">❯</span> <span class="cur"></span></div>
+        </div>
+        <div class="botbar">
+          <div class="bseg"><span class="lab">REPO</span><span class="val"><span class="sdot sd-warn"></span>main ·3 ↑1</span></div>
+          <div class="bseg"><span class="lab">ZIG</span><span class="val">0.16.0</span></div>
+          <div class="bseg"><span class="lab">K8S</span><span class="val">prod/api</span></div>
+          <div class="bseg"><span class="lab">AWS</span><span class="val">acme-prod</span></div>
+          <div class="bseg"><span class="lab">TF</span><span class="val">staging</span></div>
+          <div class="bseg"><span class="lab">DOCKER</span><span class="val">3 up</span></div>
+          <div class="bseg"><span class="lab">CI</span><span class="val"><span class="sdot sd-run"></span>building</span></div>
+          <div class="bseg"><span class="lab">&nbsp;</span><span class="vd">14:32</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="cap"><h3>2 · Status bar</h3><p>A horizontal HUD pinned to the window's bottom edge — labelled segments spread across the full width. Low-profile, classic, always glanceable; less room than a dock.</p></div>
+  </div>
+
+  <!-- 3 · CORNER -->
+  <div class="pick" data-choice="corner" onclick="toggleSelect(this)">
+    <div class="win">
+      <div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+        <span class="tab">caldera-console</span><span class="tabx">&nbsp; +</span></div>
+      <div class="body rel">
+        <div class="term mono" style="min-height:188px">
+          <div class="pdim">❯ kubectl get pods</div>
+          <div class="out">&nbsp;&nbsp;api-7f4c   Running</div>
+          <div class="out">&nbsp;&nbsp;api-9b2d   Running</div>
+          <div style="margin-top:6px"><span class="gly">❯</span> <span class="cur"></span></div>
+        </div>
+        <div class="corner mono">
+          <div class="crow"><span class="sdot sd-warn"></span><span class="vd">main</span> <span class="val">·3 ↑1</span></div>
+          <div class="crow"><span class="sdot"></span><span class="vd">k8s</span> <span class="val">prod/api</span></div>
+          <div class="crow"><span class="sdot"></span><span class="vd">aws</span> <span class="val">acme-prod</span></div>
+          <div class="crow"><span class="sdot sd-run"></span><span class="vd">ci</span> <span class="val">building</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="cap"><h3>3 · Corner HUD</h3><p>A compact, semi-transparent panel floating in a corner — a true heads-up display. Glanceable, tiny footprint, never in the way; shows a curated few, not everything.</p></div>
+  </div>
+
+  <!-- 4 · SUMMONED -->
+  <div class="pick" data-choice="summon" onclick="toggleSelect(this)">
+    <div class="win">
+      <div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+        <span class="tab">caldera-console</span><span class="tabx">&nbsp; +</span></div>
+      <div class="body rel">
+        <div class="term mono" style="min-height:210px">
+          <div class="pdim">❯ zig build test</div>
+          <div class="out">&nbsp;&nbsp;210 passed · 1.4s</div>
+          <div style="margin-top:6px"><span class="gly">❯</span> <span class="cur"></span></div>
+        </div>
+        <div class="ov">
+          <div class="panel mono">
+            <div class="hd2">caldera-console &nbsp;·&nbsp; status &nbsp;<span class="vd" style="font-weight:400">⌘J to dismiss</span></div>
+            <div><span class="lab">REPO</span><br><span class="val"><span class="sdot sd-warn"></span>main ·3 ↑1</span></div>
+            <div><span class="lab">TOOLCHAIN</span><br><span class="val"><span class="sdot"></span>zig 0.16.0</span></div>
+            <div><span class="lab">CLUSTER</span><br><span class="val"><span class="sdot"></span>prod / api</span></div>
+            <div><span class="lab">CLOUD</span><br><span class="val"><span class="sdot"></span>acme-prod · us-east-1</span></div>
+            <div><span class="lab">INFRA</span><br><span class="val"><span class="sdot"></span>tf staging · docker 3</span></div>
+            <div><span class="lab">CHECKS</span><br><span class="val"><span class="sdot sd-run"></span>CI building 4m</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="cap"><h3>4 · Summoned board</h3><p>Hidden entirely until you call it (a key, like the ⌘K palette). The terminal stays pristine; the full status board appears laid out in a grid, then folds away. Zero ambient footprint.</p></div>
+  </div>
+
+</div>
+
+<p class="subtitle" style="margin-top:14px;">This is the real shift — prompt + HUD, not prompt-as-everything. Pick the placement (or two — e.g. a quiet corner HUD always-on <em>plus</em> a summoned full board). Then we design that HUD properly and the prompt becomes genuinely minimal.</p>

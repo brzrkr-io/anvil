@@ -1,0 +1,63 @@
+:root {
+  color-scheme: light dark;
+
+  --anvil-font-sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --anvil-font-mono: "IBM Plex Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+
+  --anvil-graphite: #0b0d0e;
+  --anvil-charcoal: #161a1c;
+  --anvil-ash: #374046;
+  --anvil-alloy: #86919a;
+  --anvil-mist: #d2d8db;
+  --anvil-bone: #eef1f2;
+  --anvil-white: #ffffff;
+  --anvil-ink: #0c0d0e;
+
+  --anvil-accent-mineral: #2f7f86;
+  --anvil-accent-ember: #c5462a;
+
+  --anvil-status-info: #2f7f86;
+  --anvil-status-verified: #3f8a5b;
+  --anvil-status-attention: #b07a14;
+  --anvil-status-failure: #b13a30;
+  --anvil-status-agent: #6a5fa3;
+  --anvil-status-risk: #a8623a;
+  --anvil-status-trace: #2f7f86;
+
+  --anvil-radius-sm: 4px;
+  --anvil-radius-md: 6px;
+  --anvil-radius-lg: 8px;
+
+  --anvil-space-1: 4px;
+  --anvil-space-2: 8px;
+  --anvil-space-3: 12px;
+  --anvil-space-4: 16px;
+  --anvil-space-6: 24px;
+  --anvil-space-8: 32px;
+  --anvil-space-12: 48px;
+  --anvil-space-16: 64px;
+}
+
+[data-anvil-theme="dark"] {
+  --anvil-bg: var(--anvil-graphite);
+  --anvil-panel: var(--anvil-charcoal);
+  --anvil-panel-raised: #181a1e;
+  --anvil-border: #23262b;
+  --anvil-border-strong: #2c3036;
+  --anvil-text: #e7e5df;
+  --anvil-text-muted: #a1a4a9;
+  --anvil-text-subtle: #6c6f74;
+  --anvil-accent: var(--anvil-accent-mineral);
+}
+
+[data-anvil-theme="light"] {
+  --anvil-bg: #fafafa;
+  --anvil-panel: #f8f9fa;
+  --anvil-panel-raised: var(--anvil-white);
+  --anvil-border: #c7d1d6;
+  --anvil-border-strong: #b7c4ca;
+  --anvil-text: #001934;
+  --anvil-text-muted: #395571;
+  --anvil-text-subtle: #526b7e;
+  --anvil-accent: #0e5f68;
+}

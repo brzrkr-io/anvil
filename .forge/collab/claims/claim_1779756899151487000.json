@@ -1,0 +1,12 @@
+{
+  "agent": "hermes",
+  "claim_id": "claim_1779756899151487000",
+  "created_at": "2026-05-26T00:54:59Z",
+  "reason": "CLI claim",
+  "resource": "crates/anvil-render/src/workspace.rs",
+  "resource_type": "file",
+  "schema_version": "caldera.claim.v0",
+  "session_id": "",
+  "status": "active",
+  "updated_at": "2026-05-26T00:54:59Z"
+}

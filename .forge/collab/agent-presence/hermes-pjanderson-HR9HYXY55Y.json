@@ -1,0 +1,21 @@
+{
+  "agent": "hermes",
+  "agent_id": "hermes-pjanderson-HR9HYXY55Y",
+  "capabilities": [],
+  "claimed_resources": [],
+  "created_at": "2026-05-24T22:35:00Z",
+  "last_event": "cli.heartbeat",
+  "last_seen_at": "2026-05-26T02:34:35Z",
+  "machine": "pjanderson-HR9HYXY55Y",
+  "model": "",
+  "pid": 60653,
+  "profile": "hermes",
+  "provider": "",
+  "schema_version": "caldera.agent_presence.v0",
+  "session_id": "",
+  "status": "active",
+  "task": "Anvil IDE explorer smoke and next 20 planning",
+  "updated_at": "2026-05-26T02:34:35Z",
+  "user": "",
+  "workspace_root": ""
+}

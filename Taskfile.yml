@@ -1,0 +1,78 @@
+# Anvil dev tasks.  Run `task` to list.
+# NOTE: the pnpm script wrapper is broken (deps-gate), so everything calls the
+# vendored binaries in node_modules/.bin directly.
+version: "3"
+
+vars:
+  VITE: node_modules/.bin/vite
+  TAURI: node_modules/.bin/tauri
+  SC: node_modules/.bin/svelte-check
+  VT: node_modules/.bin/vitest
+
+tasks:
+  default:
+    desc: List tasks
+    cmds:
+      - task --list
+    silent: true
+
+  dev:
+    desc: "Run the app locally with hot-reload + devtools (recommended)"
+    cmds:
+      - "{{.TAURI}} dev"
+
+  web:
+    desc: "Frontend only in a browser (no Tauri APIs) at http://localhost:1420"
+    cmds:
+      - "{{.VITE}} dev --port 1420"
+
+  preview:
+    desc: "Build then serve the production frontend in a browser"
+    cmds:
+      - "{{.VITE}} build"
+      - "{{.VITE}} preview --port 4173"
+
+  build:
+    desc: "Compile frontend + Rust (fast, no .app bundle)"
+    cmds:
+      - "{{.VITE}} build"
+      - "{{.TAURI}} build --debug --no-bundle"
+
+  bundle:
+    desc: "Build a debug Anvil.app bundle"
+    cmds:
+      - "{{.TAURI}} build --debug --bundles app"
+
+  install:
+    desc: "Bundle + install to /Applications (de-quarantined)"
+    deps: [bundle]
+    cmds:
+      - pkill -9 anvil || true
+      - rm -rf /Applications/Anvil.app
+      - cp -R src-tauri/target/debug/bundle/macos/Anvil.app /Applications/Anvil.app
+      - xattr -cr /Applications/Anvil.app
+      - open /Applications/Anvil.app
+
+  check:
+    desc: "Type-check (svelte-check) + Rust check"
+    cmds:
+      - "{{.SC}} --tsconfig ./tsconfig.json"
+      - cd src-tauri && cargo check
+
+  test:
+    desc: "Frontend (vitest) + Rust unit tests"
+    cmds:
+      - "{{.VT}} run"
+      - cd src-tauri && cargo test
+
+  fmt:
+    desc: "Format Rust"
+    cmds:
+      - cd src-tauri && cargo fmt
+
+  fix-app:
+    desc: "Recover a blank/poisoned local app (clears WKWebView state — then reboot)"
+    cmds:
+      - pkill -9 anvil || true
+      - rm -rf ~/Library/WebKit/com.pjanderson.anvil ~/Library/Caches/com.pjanderson.anvil ~/Library/HTTPStorages/com.pjanderson.anvil
+      - echo "Cleared WKWebView state. Reboot, then 'task install' for a clean bundle."

@@ -1,0 +1,99 @@
+<h2>Rethinking it — 5 ways, by mechanism not just looks</h2>
+<p class="subtitle">Each answers a different question: <em>where does the info live, and who draws it?</em> They run from "pure shell prompt" to "Caldera renders it." React to the idea you like — then we make it beautiful.</p>
+
+<style>
+  .scr{background:#0b0d0e;border-radius:9px;padding:20px 22px;
+       font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;
+       font-size:13px;color:#e8e6e3;line-height:2.0;}
+  .pc{border:1px solid #242a2e;border-radius:12px;padding:8px;background:#0e1113;
+      cursor:pointer;transition:border-color .15s;}
+  .pc:hover{border-color:#2f7f86;}
+  .meta{padding:12px 16px 8px;}
+  .meta h3{margin:0 0 3px;}
+  .how{color:#2f7f86;font-size:11px;letter-spacing:.06em;text-transform:uppercase;}
+  .meta p{margin:5px 0 0;color:#8a939b;font-size:13px;}
+  .cwd{color:#dcd9d4;} .br{color:#7d8791;} .dim{color:#6b757d;}
+  .faint{color:#414a51;} .ok{color:#3f8a5b;} .err{color:#b13a30;}
+  .acc{color:#2f7f86;} .cmd{color:#c9c6c1;}
+  .cur{display:inline-block;width:7px;height:14px;background:#2f7f86;vertical-align:-2px;border-radius:1px;}
+  .r{display:flex;justify-content:space-between;gap:28px;}
+  .strip{background:#141a1c;border-radius:5px;padding:5px 12px;display:flex;
+         justify-content:space-between;color:#8a939b;margin-bottom:6px;}
+  .blk{padding:4px 10px;border-radius:5px;margin:3px 0;}
+  .blk-a{background:#101618;border-left:2px solid #2f7f86;}
+  .blk-p{border-left:2px solid #1c2226;}
+  .led{color:#414a51;}
+  .hdr{background:linear-gradient(90deg,#13282b,#0e1416);border-radius:5px;
+       padding:6px 12px;display:flex;gap:10px;align-items:center;margin-bottom:4px;}
+</style>
+
+<div style="display:flex;flex-direction:column;gap:20px;">
+
+  <div class="pc" data-choice="1" onclick="toggleSelect(this)">
+    <div class="scr">
+      <div class="strip"><span><span class="cwd">caldera-console</span> &nbsp; <span class="br">main ●2</span></span><span><span class="ok">✓</span> &nbsp;1.2s &nbsp; 09:16</span></div>
+      <div><span class="acc">❯</span> <span class="cmd">zig build test</span></div>
+      <div><span class="dim">&nbsp;&nbsp;210 passed</span></div>
+      <div><span class="acc">❯</span> <span class="cur"></span></div>
+    </div>
+    <div class="meta">
+      <span class="how">Mechanism · info leaves the prompt</span>
+      <h3>1 · Status strip</h3>
+      <p>All telemetry moves to a thin persistent bar. The prompt itself becomes a single pure glyph — the input line is never cluttered again. Info is ambient, always glanceable.</p>
+    </div>
+  </div>
+
+  <div class="pc" data-choice="2" onclick="toggleSelect(this)">
+    <div class="scr">
+      <div class="blk blk-p"><div><span class="dim">❯ zig build test</span></div><div><span class="faint">210 passed · 1.4s</span></div></div>
+      <div class="blk blk-p"><div><span class="dim">❯ git status</span></div><div><span class="faint">working tree clean</span></div></div>
+      <div class="blk blk-a"><div class="r"><span><span class="acc">❯</span> <span class="cur"></span></span><span class="dim">caldera · main ●2 · 09:16</span></div></div>
+    </div>
+    <div class="meta">
+      <span class="how">Mechanism · the unit is a block, not a line</span>
+      <h3>2 · Command blocks</h3>
+      <p>Each command + its output is one quiet card; Caldera tints them using the OSC&nbsp;133 marks it already parses. The active block carries a mineral edge. Warp-like structure, but it still reads as a plain terminal.</p>
+    </div>
+  </div>
+
+  <div class="pc" data-choice="3" onclick="toggleSelect(this)">
+    <div class="scr">
+      <div class="r"><span><span class="cwd">caldera</span> <span class="acc">❯</span> <span class="cur"></span></span><span class="faint">quiet — clean repo, nothing to say</span></div>
+      <div class="r"><span><span class="cwd">caldera</span> <span class="br">main ●3</span> <span class="acc">❯</span> <span class="cur"></span></span><span class="faint">working — dirty, so it shows</span></div>
+      <div class="r"><span><span class="cwd">caldera</span> <span class="br">main</span> <span class="err">✗127 · 1.2s</span> <span class="err">❯</span> <span class="cur"></span></span><span class="faint">attention — last command failed</span></div>
+    </div>
+    <div class="meta">
+      <span class="how">Mechanism · the prompt content is dynamic</span>
+      <h3>3 · Adaptive</h3>
+      <p>No fixed template. The prompt shows <em>only</em> what's true right now and grows as needed — silent on a clean repo, surfacing dirty count, exit codes, durations exactly when they matter. Minimal becomes the default state, not a compromise.</p>
+    </div>
+  </div>
+
+  <div class="pc" data-choice="4" onclick="toggleSelect(this)">
+    <div class="scr">
+      <div class="r"><span><span class="acc">❯</span> <span class="dim">zig build test</span></span><span class="led">main &nbsp;·&nbsp; 09:14</span></div>
+      <div class="r"><span class="faint">&nbsp;&nbsp;210 passed</span><span class="led">&nbsp;&nbsp;&nbsp;·&nbsp; 1.4s</span></div>
+      <div class="r"><span><span class="acc">❯</span> <span class="dim">git status</span></span><span class="led">main &nbsp;·&nbsp; 09:15</span></div>
+      <div class="r"><span><span class="acc">❯</span> <span class="cur"></span></span><span class="led">main ●2 · 09:16</span></div>
+    </div>
+    <div class="meta">
+      <span class="how">Mechanism · telemetry locked to a column</span>
+      <h3>4 · Ledger</h3>
+      <p>Your input always starts at column 0; every prompt's context is right-aligned into the <em>same</em> vertical column. Scrollback gains a tidy data column you can scan straight down — like reading a ledger.</p>
+    </div>
+  </div>
+
+  <div class="pc" data-choice="5" onclick="toggleSelect(this)">
+    <div class="scr">
+      <div><span class="dim">❯ git status &nbsp;·&nbsp; clean</span></div>
+      <div class="hdr"><span class="acc">caldera-console</span><span class="br">⎇ main ●2</span><span class="acc">⠋</span><span class="dim">building…&nbsp;&nbsp;4.2s</span></div>
+      <div><span class="acc">❯</span> <span class="cur"></span></div>
+    </div>
+    <div class="meta">
+      <span class="how">Mechanism · Caldera draws it, not the shell</span>
+      <h3>5 · Live header</h3>
+      <p>The context strip is rendered by Caldera itself, so it isn't frozen text — it updates live: a spinner while a command runs, git state refreshing as files change, smooth color. The shell prompt below stays a pure <span class="acc">❯</span>. Leans hard into Caldera owning the renderer.</p>
+    </div>
+  </div>
+
+</div>

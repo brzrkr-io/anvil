@@ -1,29 +1,14 @@
 .DS_Store
-docs/superpowers/
-*.o
-.obsidian/
-.superpowers/
+node_modules
+/build
+/.svelte-kit
+/package
+.env
+.env.*
+!.env.example
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
 
-# tool state
-.forge/
-__pycache__/
-
-# Rust / Cargo (archived on tag rust-port-archive)
+# build + agent scratch
 /target
-
-# Zig
-.zig/
-.zig-cache/
-zig-out/
-zls.json
-
-# AI tooling — local only, not tracked
-.claude/
-CLAUDE.md
-AGENTS.md
-context/
-wiki/
-
-# Brand — local only, not tracked
-brand/
-BRAND.md
+.claude/worktrees/

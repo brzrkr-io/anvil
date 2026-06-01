@@ -1,0 +1,100 @@
+<h2>The prompt that evolves with you</h2>
+<p class="subtitle">One design, not a menu. The principle: tools churn, there's no clear winner, you hop — so the prompt is the constant. It reads your context, absorbs every tool you adopt, and stays calm. Sleek, modern, a real icon set — rendered crisp by Caldera, with a plain-text fallback anywhere else.</p>
+
+<style>
+  svg.ic{width:14px;height:14px;fill:none;stroke:#46a5ad;stroke-width:1.4;
+         stroke-linecap:round;stroke-linejoin:round;vertical-align:-2px;}
+  .icd svg.ic{stroke:#6c757c;}
+  .h3{font-size:13px;color:#dde0e1;margin:22px 0 9px;font-weight:600;}
+  .h3:first-of-type{margin-top:4px;}
+  /* icon set strip */
+  .iset{display:flex;gap:7px;flex-wrap:wrap;}
+  .icell{background:#0e1214;border:1px solid #232a2e;border-radius:8px;
+         padding:9px 12px;text-align:center;min-width:74px;}
+  .icell .nm{font-size:10px;color:#79828a;margin-top:5px;font-family:'IBM Plex Mono',monospace;}
+  /* prompt scenes */
+  .scr{background:#0b0d0e;border-radius:9px;padding:19px 21px;
+       font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;
+       font-size:12.5px;line-height:2.05;color:#bcc1c4;}
+  .pdim{color:#5b636a;} .out{color:#4f575e;}
+  .cwd{color:#dad8d3;} .dim{color:#727b82;} .git{color:#bf9540;}
+  .ok{color:#5a9a6e;} .err{color:#c4564b;} .run{color:#46a5ad;}
+  .blk{border-left:2px solid #46a5ad;padding-left:12px;margin-top:5px;}
+  .gly{color:#46a5ad;}
+  .seg{display:inline-flex;align-items:center;gap:5px;margin-right:16px;}
+  .cur{display:inline-block;width:6px;height:13px;background:#46a5ad;vertical-align:-2px;border-radius:1px;}
+  .r{display:flex;justify-content:space-between;gap:24px;}
+  .row{display:flex;gap:13px;} .row>div{flex:1;}
+  .lab{font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:#5a636b;margin:0 0 5px 2px;}
+  .note{color:#838b92;font-size:12.5px;}
+</style>
+
+<svg width="0" height="0" style="position:absolute"><defs>
+  <g id="i-repo"><path d="M2 4.6h4l1.3 1.8h6.5v7.4H2z"/></g>
+  <g id="i-branch"><circle cx="4.2" cy="4" r="1.7"/><circle cx="4.2" cy="12" r="1.7"/><circle cx="11.8" cy="6" r="1.7"/><path d="M4.2 5.7v4.6M4.2 10.6a6 6 0 0 1 6-4.4"/></g>
+  <g id="i-cluster"><path d="M8 2.3 13.5 5.4v5.3L8 13.8 2.5 10.7V5.4z"/><path d="M2.6 5.4 8 8.5l5.4-3.1M8 8.5v5.2"/></g>
+  <g id="i-cloud"><path d="M5.2 12.4h6a2.7 2.7 0 0 0 .4-5.4 3.9 3.9 0 0 0-7.4-1A2.9 2.9 0 0 0 5.2 12.4z"/></g>
+  <g id="i-box"><rect x="3" y="6.4" width="10" height="6.6" rx="1.2"/><path d="M5.2 6.4V5a1 1 0 0 1 1-1h5.6a1 1 0 0 1 1 1v4.2"/></g>
+  <g id="i-pulse"><path d="M2 8h3l2-4.2 3 8.4 1.7-4.2H14"/></g>
+  <g id="i-tag"><path d="M8.4 2.6 13.4 7.6 8 13 3 8V2.6z"/><circle cx="5.7" cy="5.4" r="1"/></g>
+  <g id="i-clock"><circle cx="8" cy="8" r="5.7"/><path d="M8 4.7V8l2.4 1.5"/></g>
+</defs></svg>
+
+<div class="h3">A real icon set — coherent, crisp, Caldera-rendered</div>
+<div class="iset">
+  <div class="icell"><svg class="ic" viewBox="0 0 16 16"><use href="#i-repo"/></svg><div class="nm">repo</div></div>
+  <div class="icell"><svg class="ic" viewBox="0 0 16 16"><use href="#i-branch"/></svg><div class="nm">branch</div></div>
+  <div class="icell"><svg class="ic" viewBox="0 0 16 16"><use href="#i-cluster"/></svg><div class="nm">cluster</div></div>
+  <div class="icell"><svg class="ic" viewBox="0 0 16 16"><use href="#i-cloud"/></svg><div class="nm">cloud</div></div>
+  <div class="icell"><svg class="ic" viewBox="0 0 16 16"><use href="#i-box"/></svg><div class="nm">container</div></div>
+  <div class="icell"><svg class="ic" viewBox="0 0 16 16"><use href="#i-pulse"/></svg><div class="nm">checks</div></div>
+  <div class="icell"><svg class="ic" viewBox="0 0 16 16"><use href="#i-tag"/></svg><div class="nm">version</div></div>
+  <div class="icell"><svg class="ic" viewBox="0 0 16 16"><use href="#i-clock"/></svg><div class="nm">time</div></div>
+</div>
+<p class="note" style="margin-top:8px">One drawn set — same weight, same corners — so ten integrations still look like one product. New tools ship new icons into the set.</p>
+
+<div class="h3">The prompt — live</div>
+<div class="scr">
+  <div class="pdim">❯ zig build test</div>
+  <div class="out">&nbsp;&nbsp;210 passed · 1.4s</div>
+  <div class="blk">
+    <div class="r">
+      <span>
+        <span class="seg"><svg class="ic" viewBox="0 0 16 16"><use href="#i-repo"/></svg><span class="cwd">caldera-console</span></span>
+        <span class="seg"><svg class="ic" viewBox="0 0 16 16"><use href="#i-branch"/></svg><span class="git">main ●3</span></span>
+        <span class="seg"><svg class="ic" viewBox="0 0 16 16"><use href="#i-pulse"/></svg><span class="ok">tests ✓</span></span>
+      </span>
+      <span class="seg dim"><svg class="ic icd" viewBox="0 0 16 16" style="display:none"></svg>14:32</span>
+    </div>
+    <div><span class="gly">❯</span> <span class="cur"></span></div>
+  </div>
+</div>
+<p class="note" style="margin-top:7px">Two lines while live — icons + segments, then a clean input line behind the mineral edge. Run a command and it collapses to a bare <span style="color:#5b636a">❯ command</span>; scrollback stays calm.</p>
+
+<div class="h3">It adapts — the segments follow what you're doing</div>
+<div class="row">
+  <div>
+    <div class="lab">working in k8s manifests</div>
+    <div class="scr"><div class="blk">
+      <div>
+        <span class="seg"><svg class="ic" viewBox="0 0 16 16"><use href="#i-repo"/></svg><span class="cwd">infra</span></span>
+        <span class="seg"><svg class="ic" viewBox="0 0 16 16"><use href="#i-cluster"/></svg><span class="dim">prod·api 8/8</span></span>
+      </div>
+      <div><span class="gly">❯</span> <span class="cur"></span></div>
+    </div></div>
+  </div>
+  <div>
+    <div class="lab">working in a node app</div>
+    <div class="scr"><div class="blk">
+      <div>
+        <span class="seg"><svg class="ic" viewBox="0 0 16 16"><use href="#i-repo"/></svg><span class="cwd">webapp</span></span>
+        <span class="seg"><svg class="ic" viewBox="0 0 16 16"><use href="#i-tag"/></svg><span class="dim">node 20</span></span>
+        <span class="seg"><svg class="ic" viewBox="0 0 16 16"><use href="#i-box"/></svg><span class="dim">docker 2</span></span>
+      </div>
+      <div><span class="gly">❯</span> <span class="cur"></span></div>
+    </div></div>
+  </div>
+</div>
+<p class="note" style="margin-top:7px">Same prompt, different room. It senses the context — a cluster manifest, a <code>package.json</code>, a Dockerfile — and surfaces the segments that matter, hides the rest. <strong>That's the "evolves with you":</strong> adopt a new tool, it gets an icon and a segment; the prompt absorbs your stack instead of you re-configuring a new one every year.</p>
+
+<p class="subtitle" style="margin-top:15px;">This is the design — one principle, one icon language, adaptive, extensible. Tell me if this finally lands, or which piece to push.</p>

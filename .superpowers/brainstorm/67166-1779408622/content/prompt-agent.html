@@ -1,0 +1,116 @@
+<h2>The prompt as a low-profile agent input</h2>
+<p class="subtitle">Real terminal scenes, stuff happening. The input borrows the feel of an AI-agent prompt — a quietly set-apart place to type — kept low-profile, with git / pipeline state woven into its frame instead of crowding a line. Six takes. Calm, static. Multi-select what works.</p>
+
+<style>
+  .gal{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px;}
+  .cell{background:#0e1113;border:1px solid #242b2f;border-radius:12px;padding:10px;
+        cursor:pointer;transition:border-color .14s,transform .14s;}
+  .cell:hover{border-color:#2f7f86;transform:translateY(-2px);}
+  .t{background:#0b0d0e;border-radius:8px;padding:16px 16px;
+     font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;
+     font-size:11.5px;line-height:1.95;color:#b8bdc0;}
+  .pdim{color:#5b636a;} .out{color:#4f575e;} .run{color:#46a5ad;}
+  .cwd{color:#d8d6d1;} .git{color:#bf9540;} .ok{color:#5a9a6e;} .err{color:#c4564b;}
+  .dim{color:#6c757c;} .faint{color:#434b52;} .gly{color:#46a5ad;}
+  .cur{display:inline-block;width:6px;height:13px;background:#46a5ad;vertical-align:-2px;border-radius:1px;}
+  .cap{padding:9px 7px 3px;color:#838b92;font-size:12px;}
+  .cap b{color:#dee1e3;}
+  /* prompt components */
+  .field{position:relative;border:1px solid #2a3239;border-radius:7px;
+         padding:8px 11px;margin-top:11px;}
+  .leg{position:absolute;top:-7px;left:11px;background:#0b0d0e;padding:0 6px;
+       font-size:10px;color:#6c757c;}
+  .foot{position:absolute;bottom:-7px;left:11px;background:#0b0d0e;padding:0 6px;
+        font-size:10px;color:#6c757c;}
+  .hrule{border-top:1px solid #222a2f;margin-top:13px;padding-top:7px;position:relative;}
+  .hlab{position:absolute;top:-7px;right:12px;background:#0b0d0e;padding:0 7px;
+        font-size:10px;color:#6c757c;}
+  .accent{border-left:2px solid #2f7f86;padding-left:11px;margin-top:11px;}
+  .soft{background:#0f1417;border-radius:6px;padding:7px 11px;margin-top:11px;
+        display:flex;justify-content:space-between;align-items:center;}
+</style>
+
+<div class="gal" data-multiselect>
+
+  <!-- 1 LEGEND FRAME -->
+  <div class="cell" data-choice="legend" onclick="toggleSelect(this)">
+    <div class="t">
+      <div class="pdim">❯ git push</div>
+      <div class="out">&nbsp;&nbsp;→ main pushed · pipeline #218 triggered</div>
+      <div class="field">
+        <div class="leg"><span class="git">main ●3 ↑1</span> &nbsp;·&nbsp; <span class="run">ci ● building 3/5</span></div>
+        <span class="gly">❯</span> <span class="cur"></span>
+      </div>
+    </div>
+    <div class="cap"><b>1 · Legend frame</b> — input boxed; git + pipeline ride the top border</div>
+  </div>
+
+  <!-- 2 HEADER HAIRLINE -->
+  <div class="cell" data-choice="hairline" onclick="toggleSelect(this)">
+    <div class="t">
+      <div class="pdim">❯ zig build test</div>
+      <div class="out">&nbsp;&nbsp;210 passed · 1.4s</div>
+      <div class="pdim">❯ git status</div>
+      <div class="out">&nbsp;&nbsp;3 files changed</div>
+      <div class="hrule">
+        <div class="hlab"><span class="git">main ●3</span> · <span class="run">ci ●</span> · <span class="ok">✓ 1.4s</span></div>
+        <span class="gly">❯</span> <span class="cur"></span>
+      </div>
+    </div>
+    <div class="cap"><b>2 · Header hairline</b> — just a thin rule above; lowest profile</div>
+  </div>
+
+  <!-- 3 ACCENT BAR -->
+  <div class="cell" data-choice="accent" onclick="toggleSelect(this)">
+    <div class="t">
+      <div class="pdim">❯ kubectl apply -f deploy/</div>
+      <div class="out">&nbsp;&nbsp;deployment "api" configured</div>
+      <div class="accent">
+        <div class="dim"><span class="git">main ●3</span> &nbsp; <span class="run">ci ● building</span> &nbsp; <span class="dim">k8s prod</span></div>
+        <div><span class="gly">❯</span> <span class="cur"></span></div>
+      </div>
+    </div>
+    <div class="cap"><b>3 · Accent bar</b> — a mineral edge marks the input block, agent-style</div>
+  </div>
+
+  <!-- 4 SOFT FIELD -->
+  <div class="cell" data-choice="soft" onclick="toggleSelect(this)">
+    <div class="t">
+      <div class="pdim">❯ zig build test</div>
+      <div class="out">&nbsp;&nbsp;210 passed · 1.4s</div>
+      <div class="soft">
+        <span><span class="gly">❯</span> <span class="cur"></span></span>
+        <span class="faint"><span class="git">main ●3</span> · <span class="run">ci ●</span></span>
+      </div>
+    </div>
+    <div class="cap"><b>4 · Soft field</b> — input on a barely-tinted strip, state tucked right</div>
+  </div>
+
+  <!-- 5 INLINE WEAVE -->
+  <div class="cell" data-choice="weave" onclick="toggleSelect(this)">
+    <div class="t">
+      <div class="pdim">❯ zig build</div>
+      <div class="out">&nbsp;&nbsp;built in 1.4s</div>
+      <div class="pdim">❯ git commit -m "fix"</div>
+      <div class="out">&nbsp;&nbsp;[main 8e2d0de]</div>
+      <div style="margin-top:9px"><span class="gly">❯</span> <span class="dim">main ●3</span> <span class="cur"></span> &nbsp;&nbsp;&nbsp;<span class="faint">ci ● building 3/5</span></div>
+    </div>
+    <div class="cap"><b>5 · Inline weave</b> — git by the cursor, pipeline faint to the right</div>
+  </div>
+
+  <!-- 6 FOOTER FRAME -->
+  <div class="cell" data-choice="footer" onclick="toggleSelect(this)">
+    <div class="t">
+      <div class="pdim">❯ terraform apply</div>
+      <div class="run">&nbsp;&nbsp;Apply complete · 4 changed</div>
+      <div class="field" style="margin-top:13px">
+        <span class="gly">❯</span> <span class="cur"></span>
+        <div class="foot"><span class="git">main ●3 ↑1</span> · <span class="run">ci ● 3/5</span> · <span class="ok">✓ last 1.2s</span></div>
+      </div>
+    </div>
+    <div class="cap"><b>6 · Footer frame</b> — boxed input; state rides the bottom border</div>
+  </div>
+
+</div>
+
+<p class="subtitle" style="margin-top:14px;">Multi-select the ones that feel right. Tell me how much "agent input" you want — barely-there (2, 4, 5) or a clear set-apart box (1, 6) — and whether the frame should carry git+pipeline or stay nearly empty.</p>
