@@ -12,3 +12,4 @@ vite.config.ts.timestamp-*
 # build + agent scratch
 /target
 .claude/worktrees/
+/coverage

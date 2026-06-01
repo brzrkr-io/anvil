@@ -19,7 +19,19 @@ export default defineConfig({
       provider: "v8",
       reporter: ["text", "json-summary", "html"],
       include: ["src/lib/**/*.ts"],
-      exclude: ["src/lib/**/*.test.ts", "src/lib/**/*.d.ts"],
+      exclude: [
+        "src/lib/**/*.test.ts",
+        "src/lib/**/*.d.ts",
+        // CodeMirror view-plugin / EditorView DOM glue — no extractable pure logic; covered by e2e, not unit-testable
+        "src/lib/cm-ghost.ts",
+        "src/lib/cm-lsp.ts",
+        "src/lib/cm-color.ts",
+        "src/lib/cm-theme.ts",
+        // Trivial single-line writable store re-exports — no testable logic
+        "src/lib/agent-seed.ts",
+        "src/lib/editor-live.ts",
+        "src/lib/terminal-open.ts",
+      ],
     },
   },
 });
