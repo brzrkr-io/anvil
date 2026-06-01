@@ -214,6 +214,11 @@
   const filtersActive = $derived(!!(fAuthor.trim() || fGrep.trim() || fPath.trim()));
   function clearFilters() { fAuthor = ""; fGrep = ""; fPath = ""; load(); }
 
+  // Section disclosure state.
+  let stashesOpen = $state(false);
+  let tagsOpen = $state(false);
+  let historyOpen = $state(true);
+
   async function load() {
     try {
       const log = await invoke<string>("git_log", { cwd, author: fAuthor || null, grep: fGrep || null, path: fPath || null });
@@ -259,16 +264,6 @@
     return code === "A" ? "var(--green)" : code === "D" ? "var(--red)"
       : code === "?" ? "var(--text3)" : "var(--yellow)";
   }
-  // Author avatar: initials + a stable hue derived from the name (Terax-style).
-  function initials(name: string) {
-    const p = name.trim().split(/\s+/);
-    return ((p[0]?.[0] ?? "") + (p.length > 1 ? p[p.length - 1][0] : "")).toUpperCase() || "?";
-  }
-  function avatarHue(name: string) {
-    let h = 0;
-    for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360;
-    return h;
-  }
 </script>
 
 <div class="scm">
@@ -281,8 +276,6 @@
     {:else}
       <span class="accent">{branch || "—"}</span>
     {/if}
-    <span class="muted">{commits.length} commits</span>
-    {#if changes.length}<span class="muted">· {changes.length} changed</span>{/if}
     {#each repoFeatures as f (f)}<button class="rfeat" title={f === "submodules" ? "git submodule update --init --recursive" : "git lfs pull"} disabled={busy} onclick={() => act(f === "submodules" ? "git_submodule_update" : "git_lfs_pull", {})}>{f}</button>{/each}
     <span class="sync">
       <button class="syncbtn" class:on={filtersActive || filtersOpen} title="Filter commits (author / message / path)" onclick={() => (filtersOpen = !filtersOpen)}><Icon name="search" size={13} /></button>
@@ -347,52 +340,72 @@
     {/if}
 
     {#if stashes.length}
-      <div class="sect">Stashes <span class="cnt">{stashes.length}</span></div>
-      <div class="changes">
-        {#each stashes as s, i (s)}
-          <div class="chg"><span class="path" style="margin-right:auto;cursor:default" onclick={() => onOpenDiff?.({ rev: `stash@{${i}}` })} role="button" tabindex="0">{s}</span><button class="op" title="Show diff" disabled={busy} onclick={() => onOpenDiff?.({ rev: `stash@{${i}}` })}><Icon name="search" size={12} /></button><button class="op" title="Apply" disabled={busy} onclick={() => stashApply(i)}><Icon name="stash" size={13} /></button></div>
-        {/each}
+      <div class="sect disclosure" onclick={() => (stashesOpen = !stashesOpen)} role="button" tabindex="0">
+        <svg class="caret {stashesOpen ? 'open' : ''}" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        Stashes <span class="cnt">{stashes.length}</span>
       </div>
+      {#if stashesOpen}
+        <div class="changes">
+          {#each stashes as s, i (s)}
+            <div class="chg"><span class="path" style="margin-right:auto;cursor:default" onclick={() => onOpenDiff?.({ rev: `stash@{${i}}` })} role="button" tabindex="0">{s}</span><button class="op" title="Show diff" disabled={busy} onclick={() => onOpenDiff?.({ rev: `stash@{${i}}` })}><Icon name="search" size={12} /></button><button class="op" title="Apply" disabled={busy} onclick={() => stashApply(i)}><Icon name="stash" size={13} /></button></div>
+          {/each}
+        </div>
+      {/if}
     {/if}
 
     {#if tags.length}
-      <div class="sect">Tags <span class="cnt">{tags.length}</span></div>
-      <div class="changes">
-        {#each tags as t (t)}
-          <div class="chg"><span class="bdg" style="color:var(--green);display:inline-flex"><Icon name="tag" size={12} /></span><span class="path">{t}</span></div>
-        {/each}
+      <div class="sect disclosure" onclick={() => (tagsOpen = !tagsOpen)} role="button" tabindex="0">
+        <svg class="caret {tagsOpen ? 'open' : ''}" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        Tags <span class="cnt">{tags.length}</span>
       </div>
+      {#if tagsOpen}
+        <div class="changes">
+          {#each tags as t (t)}
+            <div class="chg"><span class="bdg" style="color:var(--green);display:inline-flex"><Icon name="tag" size={12} /></span><span class="path">{t}</span></div>
+          {/each}
+        </div>
+      {/if}
     {/if}
 
-    <div class="sect">History</div>
-    <div class="log" bind:this={logViewport} onscroll={onLogScroll}>
-      <div class="logspace" style="height:{commits.length * ROW_H}px">
-        {#each commits.slice(visStart, visEnd) as c, ii (c.hash)}
-          {@const i = visStart + ii}
-          {@const cv = parseConventional(c.subject)}
-          {@const g = graph[i]}
-          {@const stat = commitStats[c.short]}
-          <div class="row {i === sel ? 'sel' : ''}" style="top:{i * ROW_H}px" onclick={(e) => openCommitPopover(c, e)} role="button" tabindex="0">
-            <svg class="graph" width={graphW} height={ROW_H} style="flex:0 0 {graphW}px">
-              {#each segPaths(g) as p}
-                <path d={p.d} stroke={laneColor(p.color)} fill="none" stroke-width="1.6" />
-              {/each}
-              <circle cx={laneX(g.col)} cy={ROW_H / 2} r={NODE_R} fill={laneColor(g.color)}
-                stroke="var(--bg)" stroke-width="1.5" />
-            </svg>
-            <span class="sha mono">{c.short}</span>
-            <span class="subj">
-              {#if i === 0 && c.refs}<span class="ref">{c.refs.split(",")[0].replace("HEAD -> ", "")}</span>{/if}
-              {#if cv}<span class="ctype" style="color:{typeColor[cv.kind] || 'var(--blue)'}">{cv.kind}{cv.scope ? `(${cv.scope})` : ""}:</span> {cv.rest}{:else}{c.subject}{/if}
-            </span>
-            <span class="avatar" style="background:hsl({avatarHue(c.author)} 45% 45%)" title={c.author}>{initials(c.author)}</span>
-            <span class="auth">{c.author}</span>
-            <span class="when mono">{relTime(c.ts, now)}</span>
-            <span class="cstat">{#if stat?.add}<span class="cadd">+{stat.add}</span>{/if}{#if stat?.del}<span class="cdel">−{stat.del}</span>{/if}</span>
-          </div>
-        {/each}
-      </div>
+    <div class="sect disclosure" onclick={() => (historyOpen = !historyOpen)} role="button" tabindex="0">
+      <svg class="caret {historyOpen ? 'open' : ''}" viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+      History
     </div>
+    {#if historyOpen}
+      <div class="log" bind:this={logViewport} onscroll={onLogScroll}>
+        <div class="logspace" style="height:{commits.length * ROW_H}px">
+          {#each commits.slice(visStart, visEnd) as c, ii (c.hash)}
+            {@const i = visStart + ii}
+            {@const cv = parseConventional(c.subject)}
+            {@const g = graph[i]}
+            {@const stat = commitStats[c.short]}
+            <div class="row {i === sel ? 'sel' : ''}" style="top:{i * ROW_H}px" onclick={(e) => openCommitPopover(c, e)} role="button" tabindex="0">
+              <svg class="graph" width={graphW} height={ROW_H} style="flex:0 0 {graphW}px">
+                {#each segPaths(g) as p}
+                  <path d={p.d} stroke={laneColor(p.color)} fill="none" stroke-width="1.6" />
+                {/each}
+                <circle cx={laneX(g.col)} cy={ROW_H / 2} r={NODE_R} fill={laneColor(g.color)}
+                  stroke="var(--bg)" stroke-width="1.5" />
+              </svg>
+              <span class="sha mono">{c.short}</span>
+              <span class="subj">
+                {#if i === 0 && c.refs}<span class="ref">{c.refs.split(",")[0].replace("HEAD -> ", "")}</span>{/if}
+                {#if cv}<span class="ctype" style="color:{typeColor[cv.kind] || 'var(--blue)'}">{cv.kind}{cv.scope ? `(${cv.scope})` : ""}:</span> {cv.rest}{:else}{c.subject}{/if}
+              </span>
+              <span class="auth">{c.author}</span>
+              <span class="when mono">{relTime(c.ts, now)}</span>
+              <span class="cstat">{#if stat?.add}<span class="cadd">+{stat.add}</span>{/if}{#if stat?.del}<span class="cdel">−{stat.del}</span>{/if}</span>
+            </div>
+          {/each}
+        </div>
+      </div>
+    {/if}
   {/if}
 
   {#if branch && !error}
@@ -405,27 +418,19 @@
           rows="2"
           spellcheck="false"
         ></textarea>
-        <button class="genmsg" title="Write a commit message from the staged diff (agent)" disabled={genBusy} onclick={genMessage}>{genBusy ? "…" : "✨"}</button>
-        {#if !commitMsg.trim()}<div class="ci-hint"><kbd>⌘↩</kbd> to commit</div>{/if}
-      </div>
-      <div class="ci-status">
-        <span class="ci-dot" class:on={staged.length > 0} class:warn={!staged.length && unstaged.length > 0}></span>
-        <span class="ci-stat">{amend ? "Amending last commit" : staged.length ? `${staged.length} staged` : unstaged.length ? `${unstaged.length} unstaged · commits all` : "Nothing to commit"}</span>
-        <span class="ci-up">{branch}</span>
+        <button class="genmsg" title="Write a commit message from the staged diff (agent)" disabled={genBusy} onclick={genMessage}>{genBusy ? "…" : "gen"}</button>
       </div>
       <div class="ci-actions">
-        <button class="cbtn primary" disabled={busy || (!commitMsg.trim() && !amend)} onclick={() => commit(false)}>
+        <button class="cbtn primary" title="Commit (⌘↩)" disabled={busy || (!commitMsg.trim() && !amend)} onclick={() => commit(false)}>
           {amend ? "Amend" : "Commit"}
         </button>
-        <button class="cbtn" title="Push committed work" disabled={busy} onclick={push}>
-          <Icon name="up" size={12} /> Push
-        </button>
+        <button class="cbtn amend-toggle" class:on={amend} disabled={busy} onclick={toggleAmend}>Amend</button>
+        <span style="flex:1"></span>
+        <button class="cbtn ghost" title="Push" disabled={busy} onclick={push}><Icon name="up" size={12} /> Push</button>
         <button class="more {moreOpen ? 'on' : ''}" title="More commit actions" onclick={() => (moreOpen = !moreOpen)} aria-label="More actions">⋯</button>
         {#if moreOpen}
           <div class="mscrim" onclick={() => (moreOpen = false)} role="presentation"></div>
           <div class="moremenu">
-            <button disabled={busy || (!commitMsg.trim() && !amend)} onclick={() => { commit(true); moreOpen = false; }}><Icon name="up" size={12} /> Commit &amp; Push</button>
-            <button class={amend ? "on" : ""} onclick={() => { toggleAmend(); moreOpen = false; }}>{amend ? "✓ " : ""}Amend last commit</button>
             <button onclick={() => { tplOpen = !tplOpen; moreOpen = false; }}>Templates…</button>
             {#if coAuthors.length}
               <div class="mm-label">Co-author</div>
@@ -443,7 +448,7 @@
         {#if tplOpen}
           <div class="mscrim" onclick={() => (tplOpen = false)} role="presentation"></div>
           <div class="tplmenu">
-            <button onclick={() => { saveTemplate(); tplOpen = false; }}>＋ Save current as template</button>
+            <button onclick={() => { saveTemplate(); tplOpen = false; }}>+ Save current as template</button>
             {#each templates as t (t)}
               <div class="tplrow">
                 <button class="tpluse" title={t} onclick={() => { commitMsg = t; tplOpen = false; }}>{t.split("\n")[0]}</button>
@@ -510,11 +515,10 @@
   .head { height: 28px; flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 0 12px;
     border-bottom: 1px solid var(--border); font-size: 11.5px; }
   .accent { color: var(--accent); font-weight: 600; }
-  .muted { color: var(--text3); }
-  .sect { padding: 7px 14px 3px; font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase;
-    font-weight: 600; color: var(--text3); }
-  .changes { padding-bottom: 4px; border-bottom: 1px solid var(--border); }
-  .chg { display: flex; align-items: center; gap: 8px; padding: 2px 14px; font-size: 12px;
+  .sect { padding: 4px 14px 2px; font-size: 11px; color: var(--text3); font-weight: 500; }
+  .sect.disclosure { display: flex; align-items: center; gap: 4px; cursor: default; }
+  .changes { padding-bottom: 4px; }
+  .chg { display: flex; align-items: center; height: 22px; padding: 0 8px 0 14px; gap: 6px; font-size: 12px;
     transition: background 0.1s ease; }
   .chg:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
   .chg.dir { cursor: default; }
@@ -531,11 +535,20 @@
   .fname:hover { color: var(--accent); }
   .fdir { flex: 1; min-width: 0; margin-left: 1px; color: var(--text3); font-size: 10.5px; font-family: var(--font-mono);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .stagetoggle { flex: 0 0 auto; width: 15px; height: 15px; border: 1.5px solid var(--text3); border-radius: 50%;
-    background: transparent; cursor: default; transition: background .1s ease, border-color .1s ease; }
+  .stagetoggle { flex: 0 0 auto; width: 14px; height: 14px; border: 1.5px solid var(--text3); border-radius: 3px;
+    background: transparent; cursor: default; position: relative; transition: background .1s ease, border-color .1s ease; }
   .chg:hover .stagetoggle { border-color: var(--accent); }
   .stagetoggle.on { background: var(--accent); border-color: var(--accent); }
+  .stagetoggle.on::after { content: ""; position: absolute; left: 4px; top: 1px; width: 3.5px; height: 7px;
+    border: solid var(--bg); border-width: 0 1.6px 1.6px 0; transform: rotate(45deg); }
   .stagetoggle:disabled { opacity: 0.5; }
+  .chg .op { display: none; width: 18px; height: 18px; border: 0; border-radius: 4px;
+    background: transparent; color: var(--text3); font-size: 14px; cursor: default;
+    align-items: center; justify-content: center; }
+  .chg:hover .op { display: inline-flex; background: var(--sel); color: var(--text); }
+  .chg .op.hk { margin-left: auto; }
+  .chg .op.hk + .op { margin-left: 0; }
+  .chg .op.hk.on { color: var(--accent); }
   .log { flex: 1; overflow-y: auto; position: relative; }
   .logspace { position: relative; width: 100%; }
   .row { position: absolute; left: 0; right: 0; display: flex; align-items: center; height: 22px; padding: 0 14px; gap: 0; cursor: default; }
@@ -545,12 +558,9 @@
   .sha { width: 54px; flex: 0 0 auto; color: var(--text3); font-size: 10.5px; }
   .subj { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); font-size: 12px; }
   .ctype { font-family: var(--font-mono); }
-  .ref { display: inline-block; font-size: 9.5px; padding: 0 5px; margin-right: 6px; border-radius: 9px;
+  .ref { display: inline-block; font-size: 9.5px; padding: 0 5px; margin-right: 6px; border-radius: 4px;
     background: var(--accent); color: var(--bg); font-family: var(--font-mono); }
-  .avatar { flex: 0 0 auto; width: 16px; height: 16px; border-radius: 50%; margin-right: 6px;
-    display: inline-flex; align-items: center; justify-content: center; color: #fff;
-    font-family: var(--font-ui); font-size: 8px; font-weight: 700; letter-spacing: -0.02em; }
-  .auth { width: 84px; flex: 0 0 auto; color: var(--text3); font-size: 10.5px; white-space: nowrap;
+  .auth { width: 64px; flex: 0 0 auto; color: var(--text3); font-size: 10.5px; white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis; }
   .when { width: 40px; flex: 0 0 auto; text-align: right; color: var(--text3); font-size: 10.5px; }
   .cstat { width: 66px; flex: 0 0 auto; text-align: right; font-family: var(--font-mono); font-size: 10px;
@@ -559,46 +569,33 @@
   .cdel { color: var(--red); margin-left: 5px; }
   .empty { padding: 24px 14px; color: var(--text3); }
   .cnt { margin-left: 4px; color: var(--text3); }
-  .chg .op { margin-left: auto; width: 20px; height: 20px; border: 0; border-radius: 6px;
-    background: transparent; color: var(--text3); font-size: 14px; cursor: default;
-    display: inline-flex; align-items: center; justify-content: center; }
-  .head .hd-ic { display: inline-flex; align-items: center; }
-  .chg:hover .op { background: var(--sel); color: var(--text); }
-  .chg .op.hk { margin-left: auto; }
-  .chg .op.hk + .op { margin-left: 0; }
-  .chg .op.hk.on { color: var(--accent); }
   .link { margin-left: auto; border: 0; background: transparent; color: var(--accent);
     font-size: 11px; cursor: default; }
   /* Bottom-docked commit composer (Terax-style): slim card pinned to the panel
      foot; secondary actions fold into the ⋯ menu so the footer stays small. */
-  .composer { flex: 0 0 auto; display: flex; flex-direction: column; gap: 8px;
-    padding: 10px 12px 11px; border-top: 1px solid var(--border); background: var(--panel); position: relative; }
+  .composer { flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px;
+    padding: 8px 10px 10px; border-top: 1px solid var(--border); background: var(--panel); position: relative; }
   .ci-card { position: relative; }
-  .composer textarea { width: 100%; box-sizing: border-box; resize: none; min-height: 52px; max-height: 160px;
-    padding: 8px 30px 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg);
+  .composer textarea { width: 100%; box-sizing: border-box; resize: none; min-height: 40px; max-height: 160px;
+    padding: 6px 28px 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg);
     color: var(--text); font-family: var(--font-ui); font-size: 12.5px; line-height: 1.45; outline: 0; }
   .composer textarea:focus { border-color: var(--accent); }
-  .ci-hint { position: absolute; left: 11px; bottom: 8px; pointer-events: none; color: var(--text3); font-size: 10.5px; }
-  .ci-hint kbd { font-family: var(--font-mono); font-size: 10px; color: var(--text2); background: var(--panel2);
-    border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; margin-right: 3px; }
-  .ci-status { display: flex; align-items: center; gap: 7px; font-size: 11px; }
-  .ci-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text3); flex: 0 0 auto; }
-  .ci-dot.on { background: var(--green); }
-  .ci-dot.warn { background: var(--yellow); }
-  .ci-stat { color: var(--text2); }
-  .ci-up { margin-left: auto; color: var(--text3); font-family: var(--font-mono); font-size: 10.5px;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 50%; }
-  .ci-actions { display: flex; align-items: center; gap: 7px; position: relative; }
-  .cbtn { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 5px;
-    border: 1px solid var(--border); border-radius: 8px; padding: 7px 12px; background: var(--panel2);
+  .ci-actions { display: flex; align-items: center; height: 28px; gap: 6px; position: relative; }
+  .cbtn { display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+    border: 1px solid var(--border); border-radius: 6px; background: var(--panel2);
     color: var(--text); font-size: 12px; font-weight: 500; cursor: default;
     transition: background .1s ease, border-color .1s ease, opacity .1s ease; }
   .cbtn:hover:not(:disabled) { border-color: var(--accent); }
   .cbtn:disabled { opacity: 0.45; }
-  .cbtn.primary { border-color: transparent; background: var(--accent); color: var(--bg); font-weight: 600; }
+  .cbtn.primary { flex: 0 0 auto; height: 24px; padding: 0 12px; border-radius: 6px; font-size: 12px; font-weight: 600;
+    border-color: transparent; background: var(--accent); color: var(--bg); }
   .cbtn.primary:hover:not(:disabled) { filter: brightness(1.05); }
-  .more { flex: 0 0 auto; width: 32px; height: 30px; display: inline-flex; align-items: center; justify-content: center;
-    border: 1px solid var(--border); border-radius: 7px; background: transparent; color: var(--text2);
+  .cbtn.amend-toggle { height: 24px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--border);
+    font-size: 11.5px; color: var(--text3); background: transparent; }
+  .cbtn.amend-toggle.on { border-color: var(--accent); color: var(--accent); }
+  .cbtn.ghost { height: 24px; padding: 0 8px; border: 1px solid var(--border); border-radius: 6px; color: var(--text2); background: transparent; }
+  .more { flex: 0 0 auto; width: 28px; height: 24px; display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--text2);
     font-size: 16px; line-height: 1; cursor: default; transition: border-color .1s ease, color .1s ease; }
   .more:hover, .more.on { border-color: var(--accent); color: var(--text); }
   .mscrim { position: fixed; inset: 0; z-index: 44; }
@@ -610,7 +607,6 @@
     color: var(--text); font-family: var(--font-ui); font-size: 12px; padding: 6px 9px; border-radius: 6px; cursor: default; }
   .moremenu > button:hover:not(:disabled) { background: var(--sel); }
   .moremenu > button:disabled { opacity: 0.45; }
-  .moremenu > button.on { color: var(--accent); }
   .moremenu .mm-sub { padding-left: 16px; color: var(--text2); font-size: 11.5px; }
   .mm-label { padding: 5px 9px 2px; font-size: 9.5px; letter-spacing: .07em; text-transform: uppercase;
     font-weight: 600; color: var(--text3); }
@@ -631,7 +627,8 @@
     border-radius: 5px; padding: 3px 7px; font-size: 11.5px; font-family: var(--font-mono); outline: 0; }
   .logfilters input:focus { border-color: var(--accent); }
   .genmsg { position: absolute; top: 6px; right: 6px; border: 1px solid var(--border); background: var(--panel2);
-    color: var(--text2); border-radius: 6px; padding: 1px 6px; font-size: 12px; cursor: default; }
+    color: var(--text2); border-radius: 4px; width: 18px; height: 18px; font-size: 10px; font-family: var(--font-mono);
+    cursor: default; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
   .genmsg:hover:not(:disabled) { border-color: var(--accent); color: var(--text); }
   .genmsg:disabled { opacity: 0.5; }
   .tplmenu { position: absolute; bottom: 38px; right: 0; z-index: 45; min-width: 220px; max-height: 320px; overflow-y: auto;
@@ -645,6 +642,7 @@
   .tplx { border: 0; background: transparent; color: var(--text3); cursor: default; padding: 0 6px; }
   .tplx:hover { color: var(--text); }
   .tplempty { color: var(--text3); font-size: 11px; padding: 6px 8px; }
-  .branchsel { background: var(--panel2); color: var(--accent); border: 1px solid var(--border);
-    border-radius: 6px; padding: 2px 6px; font-size: 12px; font-weight: 600; outline: 0; cursor: default; }
+  .branchsel { border: 0; background: transparent; appearance: none; padding: 0 2px;
+    font-size: 12px; font-weight: 600; color: var(--accent); border-radius: 6px; outline: 0; cursor: default; }
+  .head .hd-ic { display: inline-flex; align-items: center; }
 </style>
