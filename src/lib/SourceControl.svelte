@@ -13,6 +13,7 @@
 
   let branch = $state("");
   let commits = $state<Commit[]>([]);
+  let commitStats = $state<Record<string, { add: number; del: number }>>({});
   let changes = $state<Change[]>([]);
   let error = $state("");
   let sel = $state(0);
@@ -219,6 +220,18 @@
       const st = await invoke<string>("git_status", { cwd });
       const br = await invoke<string>("git_branches", { cwd });
       commits = parseLog(log);
+      try {
+        const raw = await invoke<string>("git_log_stats", { cwd, author: fAuthor || null, grep: fGrep || null, path: fPath || null });
+        const out: Record<string, { add: number; del: number }> = {};
+        let cur = "";
+        for (const line of raw.split("\n")) {
+          if (line.startsWith("\x01")) { cur = line.slice(1).trim(); continue; }
+          if (!cur) continue;
+          const ins = /(\d+) insertion/.exec(line), del = /(\d+) deletion/.exec(line);
+          if (ins || del) out[cur] = { add: ins ? +ins[1] : 0, del: del ? +del[1] : 0 };
+        }
+        commitStats = out;
+      } catch { commitStats = {}; }
       const s = parseStatus(st);
       branch = s.branch;
       changes = s.changes;
@@ -358,6 +371,7 @@
           {@const i = visStart + ii}
           {@const cv = parseConventional(c.subject)}
           {@const g = graph[i]}
+          {@const stat = commitStats[c.short]}
           <div class="row {i === sel ? 'sel' : ''}" style="top:{i * ROW_H}px" onclick={(e) => openCommitPopover(c, e)} role="button" tabindex="0">
             <svg class="graph" width={graphW} height={ROW_H} style="flex:0 0 {graphW}px">
               {#each segPaths(g) as p}
@@ -374,6 +388,7 @@
             <span class="avatar" style="background:hsl({avatarHue(c.author)} 45% 45%)" title={c.author}>{initials(c.author)}</span>
             <span class="auth">{c.author}</span>
             <span class="when mono">{relTime(c.ts, now)}</span>
+            <span class="cstat">{#if stat?.add}<span class="cadd">+{stat.add}</span>{/if}{#if stat?.del}<span class="cdel">−{stat.del}</span>{/if}</span>
           </div>
         {/each}
       </div>
@@ -538,6 +553,10 @@
   .auth { width: 84px; flex: 0 0 auto; color: var(--text3); font-size: 10.5px; white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis; }
   .when { width: 40px; flex: 0 0 auto; text-align: right; color: var(--text3); font-size: 10.5px; }
+  .cstat { width: 66px; flex: 0 0 auto; text-align: right; font-family: var(--font-mono); font-size: 10px;
+    margin-left: 10px; white-space: nowrap; }
+  .cadd { color: var(--green); }
+  .cdel { color: var(--red); margin-left: 5px; }
   .empty { padding: 24px 14px; color: var(--text3); }
   .cnt { margin-left: 4px; color: var(--text3); }
   .chg .op { margin-left: auto; width: 20px; height: 20px; border: 0; border-radius: 6px;

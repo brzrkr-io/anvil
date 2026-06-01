@@ -231,6 +231,39 @@ fn git_log(
     git(&cwd, &refs)
 }
 
+/// Per-commit insertion/deletion totals for the history view (Terax-style
+/// `+N -N` column). Mirrors git_log's filters so the commit set matches.
+/// Output is `--shortstat` interleaved with a `\x01<shorthash>` marker per
+/// commit; the frontend sums them by hash.
+#[tauri::command]
+fn git_log_stats(
+    cwd: String,
+    author: Option<String>,
+    grep: Option<String>,
+    path: Option<String>,
+) -> Result<String, String> {
+    let mut args: Vec<String> = vec![
+        "log".into(),
+        "--max-count=500".into(),
+        "--date-order".into(),
+        "--shortstat".into(),
+        "--pretty=format:\x01%h".into(),
+    ];
+    if let Some(a) = author.filter(|s| !s.trim().is_empty()) {
+        args.push(format!("--author={a}"));
+    }
+    if let Some(g) = grep.filter(|s| !s.trim().is_empty()) {
+        args.push(format!("--grep={g}"));
+        args.push("--regexp-ignore-case".into());
+    }
+    if let Some(p) = path.filter(|s| !s.trim().is_empty()) {
+        args.push("--".into());
+        args.push(p);
+    }
+    let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    git(&cwd, &refs)
+}
+
 #[tauri::command]
 fn git_status(cwd: String) -> Result<String, String> {
     git(&cwd, &["status", "--porcelain=v1", "-b"])
@@ -1927,6 +1960,7 @@ pub fn run() {
             check_update,
             caldera_snapshot,
             git_log,
+            git_log_stats,
             git_status,
             git_repo_features,
             git_stage,
