@@ -396,15 +396,15 @@
   .sic { display: inline-flex; align-items: center; width: 15px; color: currentColor; opacity: 0.75; }
 
   /* ── content pane ── */
-  .spane { flex: 1; min-width: 0; overflow-y: auto; padding: 22px 26px 40px; display: flex; flex-direction: column;
-    gap: 22px; }
-  h2 { margin: 0; font-size: 14px; font-weight: 650; letter-spacing: 0.01em; color: var(--text); }
+  .spane { flex: 1; min-width: 0; overflow-y: auto; padding: 14px 16px 18px; display: flex; flex-direction: column;
+    gap: 14px; }
+  h2 { margin: 0; font-size: 12px; font-weight: 600; letter-spacing: 0.01em; color: var(--text); }
 
   /* a group: label header + thin rule, rows below — no card chrome */
   section { display: flex; flex-direction: column; max-width: 620px; }
-  .section-header { display: flex; align-items: center; font-size: 9.5px; font-weight: 700; letter-spacing: 0.1em;
-    text-transform: uppercase; color: var(--text3); padding: 0 0 7px; margin-top: 4px;
-    border-bottom: 1px solid var(--border); margin-bottom: 8px; }
+  .section-header { display: flex; align-items: center; font-size: 11px; font-weight: 600;
+    color: var(--text3); padding: 0 0 5px; margin-top: 2px;
+    border-bottom: 1px solid var(--border); margin-bottom: 6px; }
   section > .theme-grid, section > .color-grid { margin-top: 2px; }
 
   /* theme cards — flat, small */
