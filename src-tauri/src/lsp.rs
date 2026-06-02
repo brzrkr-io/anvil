@@ -18,7 +18,10 @@ fn shell_path() -> &'static str {
     PATH.get_or_init(|| {
         let mut dirs: Vec<String> = Vec::new();
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-        if let Ok(out) = Command::new(&shell).args(["-lic", "printf %s \"$PATH\""]).output() {
+        if let Ok(out) = Command::new(&shell)
+            .args(["-lic", "printf %s \"$PATH\""])
+            .output()
+        {
             let p = String::from_utf8_lossy(&out.stdout);
             for d in p.trim().split(':').filter(|s| !s.is_empty()) {
                 dirs.push(d.to_string());
