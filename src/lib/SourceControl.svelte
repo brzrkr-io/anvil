@@ -454,10 +454,10 @@
               <div class="row {i === sel ? 'sel' : ''}" style="top:{i * ROW_H}px" onclick={() => openCommitDetail(c)} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), openCommitDetail(c))} role="button" tabindex="0">
                 <svg class="graph" width={graphW} height={ROW_H} style="flex:0 0 {graphW}px">
                   {#each segPaths(g) as p}
-                    <path d={p.d} stroke={laneColor(p.color)} fill="none" stroke-width="1.6" />
+                    <path d={p.d} stroke={laneColor(p.color)} fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
                   {/each}
                   <circle cx={laneX(g.col)} cy={ROW_H / 2} r={NODE_R} fill={laneColor(g.color)}
-                    stroke="var(--bg)" stroke-width="1.5" />
+                    stroke="var(--bg)" stroke-width="2" />
                 </svg>
                 <span class="sha mono">{c.short}</span>
                 <span class="subj">
@@ -579,20 +579,22 @@
   .chg .op.hk.on { color: var(--accent); }
   .log { flex: 1; overflow-y: auto; position: relative; }
   .logspace { position: relative; width: 100%; }
-  .row { position: absolute; left: 0; right: 0; display: flex; align-items: center; height: 22px; padding: 0 14px; gap: 0; cursor: default; }
-  .row:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
-  .row.sel { background: color-mix(in srgb, var(--accent) 14%, transparent); }
-  .graph { flex: 0 0 auto; height: 22px; overflow: visible; margin-right: 6px; }
-  .sha { width: 54px; flex: 0 0 auto; color: var(--text3); font-size: 10.5px; }
-  .subj { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); font-size: 12px; }
-  .ctype { font-family: var(--font-mono); }
-  .ref { display: inline-block; font-size: 9.5px; padding: 0 5px; margin-right: 6px; border-radius: 4px;
-    background: var(--accent); color: var(--bg); font-family: var(--font-mono); }
-  .auth { width: 64px; flex: 0 0 auto; color: var(--text3); font-size: 10.5px; white-space: nowrap;
+  .row { position: absolute; left: 0; right: 0; display: flex; align-items: center; height: 22px; padding: 0 16px; gap: 12px; cursor: default; }
+  .row:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+  .row.sel { background: color-mix(in srgb, var(--accent) 13%, transparent); box-shadow: inset 2px 0 0 var(--accent); }
+  .graph { flex: 0 0 auto; height: 22px; overflow: visible; }
+  .sha { flex: 0 0 auto; width: 66px; color: var(--text3); font-size: 11px; font-variant-numeric: tabular-nums;
+    letter-spacing: 0.01em; white-space: nowrap; overflow: hidden; }
+  .subj { flex: 1 1 auto; min-width: 0; max-width: 760px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    color: var(--text); font-size: 12.5px; }
+  .ctype { font-family: var(--font-mono); font-weight: 500; }
+  .ref { display: inline-block; font-size: 10px; line-height: 15px; padding: 0 6px; margin-right: 8px; border-radius: 4px;
+    background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent);
+    border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); font-family: var(--font-mono); vertical-align: 1px; }
+  .auth { flex: 0 0 auto; width: 128px; color: var(--text3); font-size: 11px; white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis; }
-  .when { width: 40px; flex: 0 0 auto; text-align: right; color: var(--text3); font-size: 10.5px; }
-  .cstat { width: 66px; flex: 0 0 auto; text-align: right; font-family: var(--font-mono); font-size: 10px;
-    margin-left: 10px; white-space: nowrap; }
+  .when { flex: 0 0 auto; width: 46px; color: var(--text3); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .cstat { flex: 0 0 auto; min-width: 56px; font-family: var(--font-mono); font-size: 10px; white-space: nowrap; }
   .cadd { color: var(--green); }
   .cdel { color: var(--red); margin-left: 5px; }
   .empty { padding: 24px 14px; color: var(--text3); }
