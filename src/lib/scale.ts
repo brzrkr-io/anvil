@@ -1,9 +1,11 @@
 import { writable, get } from "svelte/store";
 
 // Global UI zoom — scales the entire app (chrome, editor, terminal) at once.
-// Drives a `--scale` custom property; `.app` transforms by it and inverse-sizes
-// (width/height = 100dvw/dvh ÷ scale) so it still fills the viewport — `zoom`
-// would inflate 100vh and push the status bar off-screen.
+// Drives a `--scale` custom property; `.app` uses CSS `zoom` and inverse-sizes
+// (width/height = 100vw/vh ÷ scale) so it fills the viewport without overflow.
+// `zoom` (not `transform: scale`) is required so pointer coordinates stay in the
+// same CSS-pixel grid as the content — otherwise editor selection and click-
+// anchored popovers drift from the cursor.
 const MIN = 0.7, MAX = 1.8, STEP = 0.1;
 
 function load(): number {

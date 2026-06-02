@@ -238,13 +238,17 @@ body {
   font-size: 11px; color: var(--text3); background: transparent;
   border: 0; padding: 3px 10px; cursor: default; opacity: 0.5; }
 .zen-exit:hover { opacity: 1; color: var(--text); }
-/* Only when zoomed ≠ 100%: inverse-size + transform so the app still fills the
-   viewport. At 100% no transform → terminal canvas renders without GPU resample. */
+/* Only when zoomed ≠ 100%: use `zoom` (not `transform: scale`) so the CSS-pixel
+   grid itself rescales — pointer events, CodeMirror caret hit-testing, and
+   position:fixed popovers all stay aligned with the cursor. A `transform`
+   leaves clientX/Y in untransformed viewport space while visually scaling the
+   box, which makes selections and click-anchored menus drift. The inverse-size
+   keeps `zoom` from inflating 100vw/vh past the viewport. At 100% nothing
+   applies, so the terminal canvas still renders natively. */
 :root[data-scaled] .app {
   width: calc(100vw / var(--scale));
   height: calc(100vh / var(--scale));
-  transform: scale(var(--scale));
-  transform-origin: top left;
+  zoom: var(--scale);
 }
 
 .tabs {
