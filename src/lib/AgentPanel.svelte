@@ -11,6 +11,7 @@
   import Icon from "$lib/Icon.svelte";
   import DiffReview from "$lib/DiffReview.svelte";
   import { parseToolCalls, toolResultMessage, parseEditBlocks, riskyCommand, TOOL_SYSTEM_PROMPT, type ToolCall } from "$lib/agent-tools";
+  import { listRuns, archiveRun, loadRun, deleteRun, type RunMeta, type RunMsg } from "$lib/agent-history";
 
   let {
     cwd,
@@ -155,7 +156,27 @@
   $effect(() => {
     if (typeof localStorage !== "undefined") localStorage.setItem("anvil-agent-chat", JSON.stringify(messages));
   });
-  function newChat() { messages = []; }
+  // #8 Archive the finished conversation as a reopenable run before clearing.
+  let runs = $state<RunMeta[]>(listRuns());
+  let historyOpen = $state(false);
+  function newChat() {
+    if (messages.length) { archiveRun(messages as RunMsg[], String(Date.now()), Date.now()); runs = listRuns(); }
+    messages = [];
+  }
+  function openRun(id: string) {
+    if (messages.length) { archiveRun(messages as RunMsg[], String(Date.now()), Date.now()); }
+    messages = loadRun(id) as Message[];
+    runs = listRuns();
+    historyOpen = false;
+  }
+  function removeRun(id: string) { runs = deleteRun(id); }
+  function fmtAgo(ts: number): string {
+    const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+    if (s < 60) return "just now";
+    if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+    if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+    return `${Math.floor(s / 86400)}d ago`;
+  }
 
   async function send() {
     const text = input.trim();
@@ -333,7 +354,25 @@
     {#if lastIn > 0}<span class="meter" title="Last request: input / output tokens (est.)">{lastIn}→{lastOut}</span>{/if}
     {#if costPer1k > 0}<span class="meter" class:over={overBudget} title="Estimated session cost / budget">${sessionCost.toFixed(3)}{#if budget > 0}/${budget.toFixed(2)}{/if}</span>{/if}
     <button class="newchat" title="Set $ / 1k tokens and a session budget cap" onclick={() => { const c = prompt('Cost $ per 1k tokens (0 = off):', String(costPer1k)); if (c !== null) setCost(Number(c) || 0); const b = prompt('Session budget cap in $ (0 = off):', String(budget)); if (b !== null) setBudget(Number(b) || 0); }}>$</button>
-    {#if messages.length}<button class="newchat" onclick={newChat} title="New chat"><Icon name="plus" size={13} /> New</button>{/if}
+    {#if runs.length}
+      <button class="newchat" onclick={() => (historyOpen = !historyOpen)} title="Past agent runs"><Icon name="history" size={13} /></button>
+    {/if}
+    {#if messages.length}<button class="newchat" onclick={newChat} title="New chat (archives this one)"><Icon name="plus" size={13} /> New</button>{/if}
+    {#if historyOpen}
+      <div class="ap-histscrim" role="presentation" onclick={() => (historyOpen = false)}></div>
+      <div class="ap-hist">
+        <div class="ap-hist-h">Past runs</div>
+        {#each runs as r (r.id)}
+          <div class="ap-hist-row">
+            <button class="ap-hist-open" onclick={() => openRun(r.id)} title={r.title}>
+              <span class="ap-hist-title">{r.title}</span>
+              <span class="ap-hist-ago">{fmtAgo(r.ts)}</span>
+            </button>
+            <button class="ap-hist-x" onclick={() => removeRun(r.id)} title="Delete run"><Icon name="close" size={11} /></button>
+          </div>
+        {/each}
+      </div>
+    {/if}
     <button class="newchat agentmode {autoTools ? 'on' : ''}" onclick={() => (autoTools = !autoTools)} title="Agent mode: the agent runs commands & reads files via approval-gated tool calls">Agent {autoTools ? "on" : "off"}</button>
     <select bind:value={model} class="picker">
       {#if models.length === 0}<option value="">No local model</option>{/if}
@@ -493,7 +532,22 @@
     border-bottom: 1px solid var(--border);
     background: var(--panel);
     flex: 0 0 auto;
+    position: relative;
   }
+  /* #8 Past-runs dropdown. */
+  .ap-histscrim { position: fixed; inset: 0; z-index: 40; }
+  .ap-hist { position: absolute; top: 100%; right: 8px; z-index: 41; margin-top: 4px;
+    width: 280px; max-height: 320px; overflow-y: auto; background: var(--panel2, var(--panel));
+    border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--elev-2, 0 8px 24px rgba(0,0,0,0.4)); padding: 4px; }
+  .ap-hist-h { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text3); padding: 6px 8px 4px; }
+  .ap-hist-row { display: flex; align-items: center; gap: 2px; }
+  .ap-hist-open { flex: 1; display: flex; flex-direction: column; gap: 1px; align-items: flex-start; min-width: 0;
+    background: none; border: 0; border-radius: 6px; padding: 6px 8px; cursor: default; text-align: left; }
+  .ap-hist-open:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
+  .ap-hist-title { font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 230px; }
+  .ap-hist-ago { font-size: 10px; color: var(--text3); }
+  .ap-hist-x { background: none; border: 0; color: var(--text3); cursor: default; padding: 4px; display: inline-flex; flex: 0 0 auto; }
+  .ap-hist-x:hover { color: var(--status-failure, #e5484d); }
 
   .title {
     font-size: 12px;
