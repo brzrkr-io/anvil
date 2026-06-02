@@ -268,6 +268,7 @@
 </script>
 
 <div class="scm">
+  <div class="scm-col">
   <div class="head">
     <span class="accent hd-ic"><Icon name="branch" size={13} /></span>
     {#if branches.length}
@@ -463,6 +464,7 @@
       </div>
     </footer>
   {/if}
+  </div>
 
   {#if popover}
     <div class="pscrim" onclick={() => (popover = null)} role="presentation"></div>
@@ -489,10 +491,10 @@
 </div>
 
 <style>
-  .scm { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--bg); }
-  /* Center the body in a readable column on wide windows (GitHub/Linear-style)
-     instead of stretching lists + the commit bar edge-to-edge. Header stays full width. */
-  .sect, .changes, .log, .composer, .empty { width: 100%; max-width: 1080px; margin-left: auto; margin-right: auto; }
+  .scm { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--bg); align-items: center; }
+  /* Whole git view lives in a readable centered column on wide windows
+     (GitHub/Linear-style) instead of stretching edge-to-edge. */
+  .scm-col { width: 100%; max-width: 1040px; flex: 1; min-height: 0; display: flex; flex-direction: column; }
   .pscrim { position: fixed; inset: 0; z-index: 40; }
   .pop { position: fixed; z-index: 41; width: 400px; max-height: 320px; display: flex; flex-direction: column;
     background: var(--glass); backdrop-filter: blur(var(--blur)) saturate(1.3); -webkit-backdrop-filter: blur(var(--blur)) saturate(1.3);
