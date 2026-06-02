@@ -50,13 +50,9 @@ pub async fn kube_diff(path: String) -> Result<String, String> {
     .map_err(|e| e.to_string())?
 }
 
-/// #50 Apply a manifest after the user has approved the diff.
-#[tauri::command]
-pub async fn kube_apply(path: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || kubectl(&["apply", "-f", &path]))
-        .await
-        .map_err(|e| e.to_string())?
-}
+// Imperative `kubectl apply` removed by design: Anvil is strict GitOps —
+// cluster changes land via a git commit that Flux reconciles, never an ad-hoc
+// apply. `kube_diff` (read-only) stays for inspecting drift.
 
 #[tauri::command]
 pub async fn kube_current_context() -> Result<String, String> {

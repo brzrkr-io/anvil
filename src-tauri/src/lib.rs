@@ -497,7 +497,6 @@ pub fn run() {
             fs::file_mtime,
             kube::kube_contexts,
             kube::kube_diff,
-            kube::kube_apply,
             kube::kube_current_context,
             kube::kube_use_context,
             kube::kube_namespaces,
