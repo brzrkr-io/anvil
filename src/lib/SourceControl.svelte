@@ -490,6 +490,9 @@
 
 <style>
   .scm { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--bg); }
+  /* Center the body in a readable column on wide windows (GitHub/Linear-style)
+     instead of stretching lists + the commit bar edge-to-edge. Header stays full width. */
+  .sect, .changes, .log, .composer, .empty { width: 100%; max-width: 1080px; margin-left: auto; margin-right: auto; }
   .pscrim { position: fixed; inset: 0; z-index: 40; }
   .pop { position: fixed; z-index: 41; width: 400px; max-height: 320px; display: flex; flex-direction: column;
     background: var(--glass); backdrop-filter: blur(var(--blur)) saturate(1.3); -webkit-backdrop-filter: blur(var(--blur)) saturate(1.3);
