@@ -28,3 +28,11 @@ test("activity rail switches the main view", async ({ page }) => {
   await page.locator('.rail .i[title^="Source Control"]').click();
   await expect(page.locator(".pane-head")).toContainText(/Source Control/i);
 });
+
+test("the + menu opens with New… actions", async ({ page }) => {
+  await page.locator('.newtab[title="New…"]').click();
+  const menu = page.locator(".plusmenu");
+  await expect(menu).toBeVisible();
+  await expect(menu.getByText("New Terminal")).toBeVisible();
+  await expect(menu.getByText("Web Preview")).toBeVisible();
+});
