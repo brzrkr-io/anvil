@@ -485,7 +485,7 @@
   // ── External-change reload ──
   async function pollExternalChanges() {
     const p = loadedPath;
-    if (!p || dirtyPaths.has(p) || !view) return;
+    if (!p || dirtyPaths.has(p) || !view || document.hidden) return;
     let mt = 0;
     try { mt = await invoke<number>("file_mtime", { path: p }); } catch { return; }
     if (mt !== 0 && mt !== mtimes.get(p)) {

@@ -1,6 +1,4 @@
-# Anvil dev tasks.  Run `task` to list.
-# NOTE: the pnpm script wrapper is broken (deps-gate), so everything calls the
-# vendored binaries in node_modules/.bin directly.
+# Anvil — run `task` to list. Uses vendored binaries in node_modules/.bin.
 version: "3"
 
 vars:
@@ -12,67 +10,64 @@ vars:
 tasks:
   default:
     desc: List tasks
-    cmds:
-      - task --list
+    cmds: [task --list]
     silent: true
 
   dev:
-    desc: "Run the app locally with hot-reload + devtools (recommended)"
-    cmds:
-      - "{{.TAURI}} dev"
+    desc: Run the app (hot-reload, debug build — slower)
+    cmds: ["{{.TAURI}} dev"]
 
-  web:
-    desc: "Frontend only in a browser (no Tauri APIs) at http://localhost:1420"
-    cmds:
-      - "{{.VITE}} dev --port 1420"
+  run:
+    desc: Run the app on a RELEASE build (fast — judge perf with this)
+    cmds: ["{{.TAURI}} dev --release"]
 
-  preview:
-    desc: "Build then serve the production frontend in a browser"
+  app:
+    desc: Build + install a release Anvil.app to /Applications
     cmds:
       - "{{.VITE}} build"
-      - "{{.VITE}} preview --port 4173"
-
-  build:
-    desc: "Compile frontend + Rust (fast, no .app bundle)"
-    cmds:
-      - "{{.VITE}} build"
-      - "{{.TAURI}} build --debug --no-bundle"
-
-  bundle:
-    desc: "Build a debug Anvil.app bundle"
-    cmds:
-      - "{{.TAURI}} build --debug --bundles app"
-
-  install:
-    desc: "Bundle + install to /Applications (de-quarantined)"
-    deps: [bundle]
-    cmds:
+      - "{{.TAURI}} build --bundles app"
       - pkill -9 anvil || true
       - rm -rf /Applications/Anvil.app
-      - cp -R src-tauri/target/debug/bundle/macos/Anvil.app /Applications/Anvil.app
+      - cp -R src-tauri/target/release/bundle/macos/Anvil.app /Applications/Anvil.app
       - xattr -cr /Applications/Anvil.app
       - open /Applications/Anvil.app
 
   check:
-    desc: "Type-check (svelte-check) + Rust check"
+    desc: Type-check (svelte) + Rust check
     cmds:
       - "{{.SC}} --tsconfig ./tsconfig.json"
       - cd src-tauri && cargo check
 
   test:
-    desc: "Frontend (vitest) + Rust unit tests"
+    desc: Tests — vitest + cargo
     cmds:
       - "{{.VT}} run"
       - cd src-tauri && cargo test
 
-  fmt:
-    desc: "Format Rust"
-    cmds:
-      - cd src-tauri && cargo fmt
+  cover:
+    desc: Frontend coverage report
+    cmds: ["{{.VT}} run --coverage"]
 
-  fix-app:
-    desc: "Recover a blank/poisoned local app (clears WKWebView state — then reboot)"
+  fmt:
+    desc: Format Rust
+    cmds: [cd src-tauri && cargo fmt]
+
+  lint:
+    desc: Rust clippy
+    cmds: [cd src-tauri && cargo clippy]
+
+  clean:
+    desc: Kill stray dev servers, free port 1420, kill stale app windows
+    cmds:
+      - pkill -f "tauri.js dev" || true
+      - pkill -f vite || true
+      - lsof -tiTCP:1420 -sTCP:LISTEN | xargs -r kill -9 || true
+      - pkill -9 -f "target/debug/anvil" || true
+      - echo "clean — now 'task dev' or 'task run'"
+
+  fix:
+    desc: Recover a blank/poisoned local app (clears WKWebView state, then reboot)
     cmds:
       - pkill -9 anvil || true
       - rm -rf ~/Library/WebKit/com.pjanderson.anvil ~/Library/Caches/com.pjanderson.anvil ~/Library/HTTPStorages/com.pjanderson.anvil
-      - echo "Cleared WKWebView state. Reboot, then 'task install' for a clean bundle."
+      - echo "Cleared WKWebView state. Reboot, then 'task app'."
