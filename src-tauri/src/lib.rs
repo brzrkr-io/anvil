@@ -20,27 +20,41 @@ use tauri::Emitter;
 
 use pty::PtyState;
 
-fn state_path() -> std::path::PathBuf {
+// Per-window state file so multiple windows don't clobber each other's session.
+// The primary window ("main" or unset) keeps the legacy `state.json`; others get
+// `state-<label>.json`. The label is sanitized to a safe filename fragment.
+fn state_path(label: &str) -> std::path::PathBuf {
     let dir = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into()))
         .join(".config")
         .join("anvil");
     let _ = std::fs::create_dir_all(&dir);
-    dir.join("state.json")
+    let file = if label.is_empty() || label == "main" {
+        "state.json".to_string()
+    } else {
+        let safe: String = label
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            .collect();
+        format!("state-{safe}.json")
+    };
+    dir.join(file)
 }
 
 #[tauri::command]
-async fn read_state() -> String {
-    tauri::async_runtime::spawn_blocking(|| {
-        std::fs::read_to_string(state_path()).unwrap_or_else(|_| "{}".into())
+async fn read_state(label: Option<String>) -> String {
+    let label = label.unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::read_to_string(state_path(&label)).unwrap_or_else(|_| "{}".into())
     })
     .await
     .unwrap_or_else(|_| "{}".into())
 }
 
 #[tauri::command]
-async fn write_state(contents: String) -> Result<(), String> {
+async fn write_state(contents: String, label: Option<String>) -> Result<(), String> {
+    let label = label.unwrap_or_default();
     tauri::async_runtime::spawn_blocking(move || {
-        let path = state_path();
+        let path = state_path(&label);
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }

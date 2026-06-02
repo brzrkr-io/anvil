@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import Terminal from "$lib/Terminal.svelte";
   import Problems from "$lib/Problems.svelte";
   const SourceControl = () => import("$lib/SourceControl.svelte");
@@ -252,6 +253,14 @@
     try { return JSON.parse(decodeURIComponent(raw)); } catch { return null; }
   })();
   const isDetached = !!detachSeed;
+
+  // Per-window session keys so multiple windows (⌘N) don't clobber each other's
+  // layout in the shared (per-origin) localStorage or the state file. Primary
+  // window keeps the legacy key for back-compat.
+  const winLabel = (() => {
+    try { return (window as any).__TAURI_INTERNALS__ ? getCurrentWindow().label : "main"; } catch { return "main"; }
+  })();
+  const sessionKey = winLabel === "main" ? "anvil-session" : `anvil-session:${winLabel}`;
 
   let settingsOpen = $state(false);
   let zen = $state(false);
@@ -1116,8 +1125,8 @@
     const json = JSON.stringify({ cwd, rail, explorerOpen, openFiles, activeFile, terms, activeTerm, seq, recentFiles, recentWorkspaces, wsSettings, paneTree, activeLeaf });
     // Mirror to localStorage *synchronously* first: it survives an abrupt quit or
     // crash even if the async file write below gets cut off mid-exit.
-    try { localStorage.setItem("anvil-session", json); } catch { /* ignore */ }
-    try { await invoke("write_state", { contents: json }); } catch { /* ignore */ }
+    try { localStorage.setItem(sessionKey, json); } catch { /* ignore */ }
+    try { await invoke("write_state", { contents: json, label: winLabel }); } catch { /* ignore */ }
   }
 
   let restored = false;
@@ -1175,9 +1184,9 @@
     let st: any = {};
     // Prefer the synchronous localStorage mirror (freshest, crash-safe); fall back
     // to the on-disk state file (older sessions / before this mirror existed).
-    try { st = JSON.parse(localStorage.getItem("anvil-session") || ""); } catch { st = {}; }
+    try { st = JSON.parse(localStorage.getItem(sessionKey) || ""); } catch { st = {}; }
     if (!st || typeof st !== "object" || !st.cwd) {
-      try { st = JSON.parse(await invoke<string>("read_state")); } catch { st = {}; }
+      try { st = JSON.parse(await invoke<string>("read_state", { label: winLabel })); } catch { st = {}; }
     }
     cwd = st.cwd || (await invoke<string>("home_dir"));
     if (Array.isArray(st.terms) && st.terms.length) {
