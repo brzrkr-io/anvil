@@ -597,7 +597,8 @@
   .cbtn.primary { flex: 0 0 auto; height: 24px; padding: 0 12px; border-radius: 6px; font-size: 12px; font-weight: 600;
     border-color: transparent; background: var(--accent); color: var(--bg); }
   .cbtn.primary:hover:not(:disabled) { filter: brightness(1.05); }
-  .cbtn.primary.big { flex: 1; height: 26px; }
+  .cbtn.primary.big { flex: 0 0 auto; height: 26px; padding: 0 18px; }
+  .ci-actions .more { margin-left: auto; }
   .cbtn-n { margin-left: 2px; font-size: 10px; font-weight: 700; opacity: 0.85;
     background: color-mix(in srgb, var(--bg) 28%, transparent); border-radius: 8px; padding: 0 5px; }
   .cbtn.amend-toggle { height: 26px; padding: 0 9px; border-radius: 6px; border: 1px solid var(--border);
