@@ -10,7 +10,7 @@
   import { agentSeed } from "$lib/agent-seed";
   import Icon from "$lib/Icon.svelte";
   import DiffReview from "$lib/DiffReview.svelte";
-  import { parseToolCalls, toolResultMessage, parseEditBlocks, TOOL_SYSTEM_PROMPT, type ToolCall } from "$lib/agent-tools";
+  import { parseToolCalls, toolResultMessage, parseEditBlocks, riskyCommand, TOOL_SYSTEM_PROMPT, type ToolCall } from "$lib/agent-tools";
 
   let {
     cwd,
@@ -410,6 +410,12 @@
         <span class="tcstep">step {toolSteps + 1}/{MAX_TOOL_STEPS}</span>
       </div>
       <pre class="tcarg">{pendingTool.arg}</pre>
+      {#if pendingTool.kind === "run"}
+        {@const risk = riskyCommand(pendingTool.arg)}
+        {#if risk}
+          <div class="tcrisk"><Icon name="alert" size={12} /> Risk: {risk}. Review carefully before approving.</div>
+        {/if}
+      {/if}
       <div class="tcacts">
         <button class="tcapprove" disabled={busy} onclick={approveTool}>Approve</button>
         <button class="tcreject" disabled={busy} onclick={rejectTool}>Skip</button>
@@ -653,6 +659,9 @@
   .tcreject { border: 1px solid var(--border); border-radius: 6px; padding: 4px 12px; background: transparent;
     color: var(--text2); font-size: 11.5px; cursor: default; }
   .tcapprove:disabled, .tcreject:disabled { opacity: 0.5; }
+  .tcrisk { display: flex; align-items: center; gap: 6px; padding: 6px 10px; font-size: 11.5px;
+    color: var(--risk, #e5484d); background: color-mix(in srgb, var(--risk, #e5484d) 12%, transparent);
+    border-top: 1px solid color-mix(in srgb, var(--risk, #e5484d) 35%, transparent); }
   .newchat, .attach { display: inline-flex; align-items: center; gap: 5px; }
 
   .plan {
