@@ -42,7 +42,8 @@
   let pollInterval: ReturnType<typeof setInterval> | null = null;
   let jobPollInterval: ReturnType<typeof setInterval> | null = null;
   let logPollInterval: ReturnType<typeof setInterval> | null = null;
-  let logEl = $state<HTMLPreElement | null>(null);
+  let logEl = $state<HTMLDivElement | null>(null);
+  let logWrap = $state(false);
 
   const RUNNING_STATUSES = new Set(["running", "pending", "created", "waiting_for_resource", "preparing", "scheduled"]);
 
@@ -81,13 +82,37 @@
   // readable plain text.
   function cleanTrace(s: string): string {
     return s
-      .replace(/\[[0-9;]*m/g, "")
-      .replace(/\[\d*K/g, "")
-      .replace(/section_(?:start|end):\d+:[\w.-]+\r?/g, "")
-      .replace(/\r(?=[^\n])/g, "");
+      .replace(/\x1b\][^\x1b\x07]*(?:\x07|\x1b\\)/g, "")
+      .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")
+      .replace(/section_(?:start|end):\d+:[\w.-]+/g, "")
+      .replace(/\r(?=[^\n])/g, "")
+      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "");
   }
 
   const jobsDone = $derived(jobs.filter((j) => !isRunning(j.status)).length);
+
+  // GitLab "timestamps" trace prefixes each line with an RFC3339 stamp + a short
+  // stream code. Split it off into a dim gutter and classify the body by level.
+  const TS_RE = /^(\d{4}-\d\d-\d\dT[\d:.]+Z?)\s+(?:[0-9a-fA-F]{2,4}\s+)?/;
+  interface LogLine { ts: string; text: string; cls: string; }
+  const logLines = $derived.by<LogLine[]>(() => {
+    if (!logContent || logContent === "Loading…") return [];
+    const lines = logContent.replace(/\n+$/, "").split("\n");
+    const out: LogLine[] = [];
+    for (let line of lines) {
+      let ts = "";
+      const m = line.match(TS_RE);
+      if (m) { ts = m[1].slice(11, 19); line = line.slice(m[0].length); }
+      let cls = "";
+      if (/(^|\b)(ERROR|FATAL|error:|errors? occurred|failed|✗|✖)\b/i.test(line)) cls = "err";
+      else if (/(^|\b)(WARN(?:ING)?|skipp(?:ed|ing))\b/i.test(line)) cls = "warn";
+      else if (/(completed successfully|✓|✅|succeeded|passed|201 Created)\b/i.test(line)) cls = "ok";
+      else if (/(^|\b)INFO\b/.test(line)) cls = "info";
+      else if (/^\s*[$#] /.test(line)) cls = "cmd";
+      out.push({ ts, text: line, cls });
+    }
+    return out;
+  });
 
   const stageGroups = $derived.by<Map<string, Job[]>>(() => {
     const m = new Map<string, Job[]>();
@@ -393,12 +418,22 @@
         <div class="log-head">
           <span class="log-title">{selectedJob.name}</span>
           <span class="log-status" style="color:{statusColor(selectedJob.status)}">{selectedJob.status}</span>
+          <span class="log-lines">{logLines.length} lines</span>
           <span class="spacer"></span>
+          <button class="iconbtn" class:on={logWrap} onclick={() => (logWrap = !logWrap)} title="Toggle wrap">⤶</button>
           <button class="iconbtn" onclick={closeLog} title="Close">
             <Icon name="close" size={13} />
           </button>
         </div>
-        <pre class="log-out" bind:this={logEl}>{logContent}</pre>
+        {#if logContent === "Loading…"}
+          <div class="log-out empty">Loading…</div>
+        {:else}
+          <div class="log-out" class:wrap={logWrap} bind:this={logEl}>
+            {#each logLines as l}
+              <div class="lg {l.cls}">{#if l.ts}<span class="lg-ts">{l.ts}</span>{/if}<span class="lg-tx">{l.text || " "}</span></div>
+            {/each}
+          </div>
+        {/if}
       </div>
     {/if}
   </div>
@@ -544,9 +579,29 @@
   }
   .log-title { color: var(--text3); font-size: 11px; font-weight: 500; flex: 0 0 auto; }
   .log-status { font-size: 11px; flex: 0 0 auto; }
+  .log-lines { font-family: var(--font-mono); font-size: 10px; color: var(--text3); opacity: 0.6; flex: 0 0 auto; }
+  .iconbtn.on { background: var(--sel); color: var(--text); }
+
   .log-out {
-    flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 10px 12px;
-    font-family: var(--font-mono); font-size: 11px; line-height: 1.5;
-    color: var(--text2); white-space: pre; background: var(--bg);
+    flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 6px 0;
+    font-family: var(--font-mono); font-size: 11px; line-height: 1.55;
+    color: var(--text2); background: var(--bg);
   }
+  .log-out.empty { padding: 16px 12px; color: var(--text3); font-family: var(--font-ui); font-size: 12px; }
+
+  .lg {
+    display: flex; gap: 10px; padding: 0 12px; white-space: pre; min-width: max-content;
+  }
+  .log-out.wrap .lg { white-space: pre-wrap; min-width: 0; word-break: break-word; }
+  .lg:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
+  .lg-ts {
+    flex: 0 0 auto; color: var(--text3); opacity: 0.5; user-select: none;
+    -webkit-user-select: none;
+  }
+  .lg-tx { flex: 1 1 auto; min-width: 0; }
+  .lg.err .lg-tx { color: var(--red); }
+  .lg.warn .lg-tx { color: var(--yellow); }
+  .lg.ok .lg-tx { color: var(--green); }
+  .lg.info .lg-tx { color: var(--text2); }
+  .lg.cmd .lg-tx { color: var(--accent); font-weight: 600; }
 </style>
