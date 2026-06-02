@@ -173,6 +173,7 @@
       <span class="spacer"></span>
       {#if fails}<span class="fx-fail-chip" title="{fails} failing">{fails} failing</span>{/if}
       {#if loading}<span class="spin">…</span>{/if}
+      {#if onRunCommand}<button class="fx-refresh" title="Watch all Flux events in terminal" onclick={() => onRunCommand?.(`flux events --watch${nsFilter ? ` -n ${nsFilter}` : ""}`)}><Icon name="alert" size={12} /></button>{/if}
       <button class="fx-refresh" title="Refresh" onclick={load}><Icon name="refresh" size={12} /></button>
     </div>
 
