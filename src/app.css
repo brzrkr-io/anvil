@@ -309,10 +309,10 @@ body {
 }
 .rail .i {
   width: 26px; height: 26px; border-radius: 8px; display: flex; align-items: center;
-  justify-content: center; color: var(--text3); font-size: 13px; cursor: default;
+  justify-content: center; color: var(--text2); font-size: 13px; cursor: default;
   transition: background 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
 }
-.rail .i:hover { background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text2); }
+.rail .i:hover { background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text); }
 .rail .i.on { color: var(--accent); background: transparent; }
 /* Explorer is a toggleable panel, not a main view: a distinct outline state so
    it never reads as a second "active view" alongside the real one. */
@@ -325,7 +325,7 @@ body {
 }
 .sect {
   padding: var(--sect-pt) var(--pad-x) 5px; font-size: 10px;
-  font-weight: 500; color: var(--text3);
+  font-weight: 600; color: var(--text2); letter-spacing: 0.03em;
   display: flex; align-items: center; gap: 6px;
 }
 .sect .n { margin-left: auto; }
@@ -340,7 +340,7 @@ body {
 }
 .row:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
 .row.cur { color: var(--text); background: var(--sel); }
-.row .ic { width: 13px; color: var(--text3); font-size: 11px; flex: 0 0 auto; }
+.row .ic { width: 13px; color: var(--text2); font-size: 11px; flex: 0 0 auto; }
 .row .meta { margin-left: auto; color: var(--text3); font-size: 10.5px; }
 
 .content { flex: 1; min-width: 0; display: flex; flex-direction: column; background: color-mix(in srgb, var(--bg) calc(var(--win-alpha) * 100%), transparent); }
@@ -354,7 +354,7 @@ body {
 .status {
   height: var(--status-h); flex: 0 0 auto; display: flex; align-items: center; gap: 13px;
   padding: 0 var(--pad-x); background: color-mix(in srgb, var(--panel) calc(var(--win-alpha) * 100%), transparent); border-top: 1px solid var(--hairline);
-  color: var(--text3); font-size: 11px;
+  color: var(--text2); font-size: 11px;
 }
 .status .r { margin-left: auto; display: flex; gap: 14px; align-items: center; }
 .status .ok { color: var(--green); }
