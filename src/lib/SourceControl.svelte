@@ -149,7 +149,7 @@
     }
   }
   function onCommitKey(e: KeyboardEvent) {
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); commit(); }
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); commit(true); }
   }
   const pull = () => act("git_pull", {});
   const push = () => act("git_push", {});
@@ -422,16 +422,17 @@
         <button class="genmsg" title="Write a commit message from the staged diff (agent)" disabled={genBusy} onclick={genMessage}>{genBusy ? "…" : "gen"}</button>
       </div>
       <div class="ci-actions">
-        <button class="cbtn primary" title="Commit (⌘↩)" disabled={busy || (!commitMsg.trim() && !amend)} onclick={() => commit(false)}>
-          {amend ? "Amend" : "Commit"}
+        <button class="cbtn primary big" title="Commit all changes and push (⌘↩)" disabled={busy || (!commitMsg.trim() && !amend)} onclick={() => commit(true)}>
+          <Icon name="up" size={12} /> {amend ? "Amend & Push" : "Commit & Push"}{#if aheadBehind?.a}<span class="cbtn-n">{aheadBehind.a + 1}</span>{/if}
         </button>
-        <button class="cbtn amend-toggle" class:on={amend} disabled={busy} onclick={toggleAmend}>Amend</button>
-        <span style="flex:1"></span>
-        <button class="cbtn ghost" title="Push" disabled={busy} onclick={push}><Icon name="up" size={12} /> Push</button>
+        <button class="cbtn amend-toggle" class:on={amend} title="Amend last commit" disabled={busy} onclick={toggleAmend}>Amend</button>
         <button class="more {moreOpen ? 'on' : ''}" title="More commit actions" onclick={() => (moreOpen = !moreOpen)} aria-label="More actions">⋯</button>
         {#if moreOpen}
           <div class="mscrim" onclick={() => (moreOpen = false)} role="presentation"></div>
           <div class="moremenu">
+            <button disabled={busy || (!commitMsg.trim() && !amend)} onclick={() => { commit(false); moreOpen = false; }}>Commit only (no push)</button>
+            <button disabled={busy} onclick={() => { push(); moreOpen = false; }}><Icon name="up" size={12} /> Push only</button>
+            <div class="mm-sep"></div>
             <button onclick={() => { tplOpen = !tplOpen; moreOpen = false; }}>Templates…</button>
             {#if coAuthors.length}
               <div class="mm-label">Co-author</div>
@@ -591,10 +592,12 @@
   .cbtn.primary { flex: 0 0 auto; height: 24px; padding: 0 12px; border-radius: 6px; font-size: 12px; font-weight: 600;
     border-color: transparent; background: var(--accent); color: var(--bg); }
   .cbtn.primary:hover:not(:disabled) { filter: brightness(1.05); }
-  .cbtn.amend-toggle { height: 24px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--border);
+  .cbtn.primary.big { flex: 1; height: 26px; }
+  .cbtn-n { margin-left: 2px; font-size: 10px; font-weight: 700; opacity: 0.85;
+    background: color-mix(in srgb, var(--bg) 28%, transparent); border-radius: 8px; padding: 0 5px; }
+  .cbtn.amend-toggle { height: 26px; padding: 0 9px; border-radius: 6px; border: 1px solid var(--border);
     font-size: 11.5px; color: var(--text3); background: transparent; }
   .cbtn.amend-toggle.on { border-color: var(--accent); color: var(--accent); }
-  .cbtn.ghost { height: 24px; padding: 0 8px; border: 1px solid var(--border); border-radius: 6px; color: var(--text2); background: transparent; }
   .more { flex: 0 0 auto; width: 28px; height: 24px; display: inline-flex; align-items: center; justify-content: center;
     border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--text2);
     font-size: 16px; line-height: 1; cursor: default; transition: border-color .1s ease, color .1s ease; }
