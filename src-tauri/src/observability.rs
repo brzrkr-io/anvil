@@ -103,31 +103,35 @@ pub async fn signoz_query(base: String, api_key: String, body: String) -> Result
     Ok(text)
 }
 
-/// SigNoz services overview — GET `/api/v1/services` (last 5m). Simple, robust
-/// across SigNoz versions; good for a default landing view. no_proxy.
+/// SigNoz services overview — POST `/api/v1/services` with a `{start,end,tags}`
+/// window (last `mins`, epoch nanoseconds). Returns the raw JSON array of
+/// services (serviceName, p99, errorRate, callRate…). no_proxy.
 #[tauri::command]
-pub async fn signoz_services(base: String, api_key: String) -> Result<String, String> {
+pub async fn signoz_services(base: String, api_key: String, mins: u64) -> Result<String, String> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?
         .as_secs();
-    let url = format!(
-        "{}/api/v1/services?start={}&end={}",
-        base.trim_end_matches('/'),
-        (now.saturating_sub(300)) * 1_000_000_000,
-        now * 1_000_000_000,
-    );
-    let mut req = http_client()?.get(url);
+    let span = mins.max(1) * 60;
+    let body = serde_json::json!({
+        "start": (now.saturating_sub(span)) * 1_000_000_000u64,
+        "end": now * 1_000_000_000u64,
+        "tags": [],
+    })
+    .to_string();
+    let url = format!("{}/api/v1/services", base.trim_end_matches('/'));
+    let mut req = http_client()?
+        .post(url)
+        .header("Content-Type", "application/json")
+        .body(body);
     if !api_key.is_empty() {
         req = req.header("SIGNOZ-API-KEY", api_key);
     }
     let r = req.send().await.map_err(|e| e.to_string())?;
-    if !r.status().is_success() {
-        return Err(format!(
-            "signoz {}: {}",
-            r.status(),
-            r.text().await.unwrap_or_default()
-        ));
+    let status = r.status();
+    let text = r.text().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(format!("signoz {status}: {}", text.chars().take(300).collect::<String>()));
     }
-    r.text().await.map_err(|e| e.to_string())
+    Ok(text)
 }

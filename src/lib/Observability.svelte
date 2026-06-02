@@ -108,7 +108,7 @@
     lsSet("anvil-signoz-base", sigBase);
     sigErr = ""; sigBusy = true;
     try {
-      const raw = await invoke<string>("signoz_services", { base: sigBase, apiKey: sigKey });
+      const raw = await invoke<string>("signoz_services", { base: sigBase, apiKey: sigKey, mins: 30 });
       const arr = JSON.parse(raw);
       sigServices = (Array.isArray(arr) ? arr : []).map((s: any) => ({
         serviceName: s.serviceName ?? s.name ?? "",
@@ -214,7 +214,7 @@
           </div>
         {/each}
       {:else if !sigErr && !sigBusy}
-        <div class="empty">Services overview (last 5m). Use <b>Open SigNoz ↗</b> for logs &amp; traces.</div>
+        <div class="empty">Services overview (last 30m). Use <b>Open SigNoz ↗</b> for logs &amp; traces.</div>
       {/if}
     </div>
   {:else}
