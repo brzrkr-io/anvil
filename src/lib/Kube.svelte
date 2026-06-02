@@ -40,8 +40,15 @@
         restarts: c[4] ?? "0",
         age: c[5] ?? "",
       };
-    }).filter((p) => p.name);
+    }).filter((p) => p.name).sort((a, b) => podRank(a) - podRank(b) || restartNum(b.restarts) - restartNum(a.restarts) || a.name.localeCompare(b.name));
   });
+  // A6: surface broken workloads — not-running first, then high restart counts.
+  function restartNum(r: string): number { const n = parseInt(r, 10); return Number.isNaN(n) ? 0 : n; }
+  function podRank(p: Pod): number {
+    if (/Error|CrashLoop|Failed|Evicted|ImagePull|Pending|Unknown|Init:|Terminating/i.test(p.status)) return 0;
+    if (restartNum(p.restarts) > 0) return 1;
+    return 2; // Running / Completed
+  }
 
   // Filter + cap the rendered rows so a cluster with thousands of pods doesn't
   // build thousands of DOM nodes at once (the render-side freeze).
