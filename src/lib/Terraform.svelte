@@ -155,6 +155,37 @@
     }
   }
 
+  // B11: plan every inline-plannable stack (single root state) sequentially and
+  // cache each result, so the stacks list fills with drift badges in one pass.
+  // Stacks / run-all roots fan out over many units, so they're skipped here.
+  let sweeping = $state(0);
+  let sweepTotal = $state(0);
+  function inlinePlannable(s: Stack): boolean {
+    return s.kind === "terraform" || (s.kind === "tg-unit" && !s.runall);
+  }
+  async function planAll() {
+    if (sweeping > 0 || running) return;
+    const targets = stacks.filter(inlinePlannable);
+    if (!targets.length) { toast("No inline-plannable stacks (stacks/run-all fan out)", "info"); return; }
+    sweepTotal = targets.length;
+    for (let i = 0; i < targets.length; i++) {
+      sweeping = i + 1;
+      const s = targets[i];
+      const dir = s.path && s.path !== "." ? `${cwd}/${s.path}` : cwd;
+      const b: Bin = s.kind === "terraform" ? "terraform" : "terragrunt";
+      try {
+        const out = await invoke<string>("tf_plan", { cwd: dir, bin: b });
+        const sum = parsePlanSummary(out, true);
+        if (sum) {
+          planResults = { ...planResults, [s.path]: sum };
+          writeCache(`tf-plan:${dir}`, sum);
+        }
+      } catch { /* skip a stack that errors (no init, auth, etc.) */ }
+    }
+    sweeping = 0;
+    toast(`Planned ${targets.length} stack${targets.length === 1 ? "" : "s"}`, "success");
+  }
+
   // Read-only outputs: stacks aggregate across units via `stack output`.
   async function loadOutputs() {
     if (running || !activeStack) return;
@@ -253,6 +284,11 @@
       <span class="ws" title={activeDir}>{stackLabel(activeStack)}</span>
     {/if}
     <span class="spacer"></span>
+    {#if stacks.length}
+      <button class="act sweep" disabled={sweeping > 0 || !!running} onclick={planAll} title="Plan every inline-plannable stack and fill drift badges">
+        {sweeping > 0 ? `Planning ${sweeping}/${sweepTotal}…` : "Plan all"}
+      </button>
+    {/if}
     <button class="iconbtn" onclick={discover} title="Re-scan repo for stacks">
       <Icon name="refresh" size={13} />
     </button>
