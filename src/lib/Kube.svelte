@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
   import { readCache, writeCache } from "$lib/cache";
   import { invoke } from "@tauri-apps/api/core";
   import Icon from "$lib/Icon.svelte";
@@ -221,7 +221,23 @@
   }
 
   // Render last-known pods instantly from cache, then refresh in the background.
-  onMount(() => { pods = readCache<string>("kube-pods") ?? pods; load(); refreshPf(); });
+  // #9: auto-refresh the Workloads view while it's actually on-screen, so a
+  // rollout/crash-loop is watched live — gated on active + view + visibility so
+  // a backgrounded panel never spawns kubectl. Flux/Helm own their own polling.
+  const POLL_MS = 8000;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  function tick() {
+    if (!active || view !== "workloads" || busy) return;
+    if (typeof document !== "undefined" && document.hidden) return;
+    load();
+  }
+  onMount(() => {
+    pods = readCache<string>("kube-pods") ?? pods;
+    load();
+    refreshPf();
+    timer = setInterval(tick, POLL_MS);
+  });
+  onDestroy(() => clearInterval(timer));
 </script>
 
 <div class="kube">
