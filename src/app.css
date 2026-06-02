@@ -154,7 +154,7 @@ body {
   font-family: var(--font-ui); font-size: 12.5px; padding: 6px 10px; border-radius: 6px; cursor: default;
 }
 .cm-action-menu button:hover, .tabctx button:hover, .taboverflow button:hover, .plusmenu button:hover { background: var(--sel); }
-.plusmenu { z-index: 61; top: 40px; right: 12px; min-width: 220px; background: var(--glass-2); }
+.plusmenu { z-index: 61; min-width: 220px; background: var(--glass-2); }
 .plusmenu button { display: flex; align-items: center; gap: 9px; }
 .plusmenu button span { flex: 1; }
 .plusmenu button kbd { font-family: var(--font-ui); font-size: 10.5px; color: var(--text3); background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }

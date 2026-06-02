@@ -508,7 +508,7 @@
     return (tabGroups[a] || "~").localeCompare(tabGroups[b] || "~");
   }));
   let tabOverflow = $state(false);
-  let plusMenu = $state(false);
+  let plusMenu = $state<{ x: number; y: number } | null>(null);
   let recentFiles = $state<string[]>([]);
   let recentWorkspaces = $state<string[]>([]);
   let branch = $state("");
@@ -1269,18 +1269,18 @@
         <span class="x" onclick={(e) => { e.stopPropagation(); settingsOpen = false; if (rail === 'settings') rail = 'term'; }}>×</span>
       </div>
     {/if}
-    <div class="newtab" title="New…" onclick={() => (plusMenu = !plusMenu)}><Icon name="plus" size={15} /></div>
+    <div class="newtab" title="New…" onclick={(e) => { if (plusMenu) { plusMenu = null; return; } const r = e.currentTarget.getBoundingClientRect(); plusMenu = { x: r.left, y: r.bottom + 4 }; }}><Icon name="plus" size={15} /></div>
     <div class="spacer" data-tauri-drag-region></div>
   </div>
 
   {#if plusMenu}
-    <div class="ctxscrim" onclick={() => (plusMenu = false)} role="presentation"></div>
-    <div class="plusmenu">
-      <button onclick={() => { newTerm(); plusMenu = false; }}><Icon name="terminal" size={13} /><span>New Terminal</span><kbd>⌘T</kbd></button>
-      <button onclick={() => { openFileDialog(); plusMenu = false; }}><Icon name="pencil" size={13} /><span>Open File…</span><kbd>⌘E</kbd></button>
-      <button onclick={() => { rail = 'scm'; plusMenu = false; }}><Icon name="branch" size={13} /><span>Source Control</span></button>
-      <button onclick={() => { rail = 'search'; plusMenu = false; }}><Icon name="search" size={13} /><span>Search</span><kbd>⌘⇧F</kbd></button>
-      <button onclick={() => { rail = 'agent'; plusMenu = false; }}><Icon name="agent" size={13} /><span>AI Agent</span></button>
+    <div class="ctxscrim" onclick={() => (plusMenu = null)} role="presentation"></div>
+    <div class="plusmenu" style:left="{plusMenu.x}px" style:top="{plusMenu.y}px">
+      <button onclick={() => { newTerm(); plusMenu = null; }}><Icon name="terminal" size={13} /><span>New Terminal</span><kbd>⌘T</kbd></button>
+      <button onclick={() => { openFileDialog(); plusMenu = null; }}><Icon name="pencil" size={13} /><span>Open File…</span><kbd>⌘E</kbd></button>
+      <button onclick={() => { rail = 'scm'; plusMenu = null; }}><Icon name="branch" size={13} /><span>Source Control</span></button>
+      <button onclick={() => { rail = 'search'; plusMenu = null; }}><Icon name="search" size={13} /><span>Search</span><kbd>⌘⇧F</kbd></button>
+      <button onclick={() => { rail = 'agent'; plusMenu = null; }}><Icon name="agent" size={13} /><span>AI Agent</span></button>
     </div>
   {/if}
 
