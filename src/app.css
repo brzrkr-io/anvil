@@ -330,32 +330,6 @@ body {
 .row.cur { color: var(--text); background: var(--sel); }
 .row .ic { width: 13px; color: var(--text3); font-size: 11px; flex: 0 0 auto; }
 .row .meta { margin-left: auto; color: var(--text3); font-size: 10.5px; }
-.row.session { margin-left: 14px; }
-.row .ttl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.row .x { margin-left: auto; color: var(--text3); font-size: 13px; line-height: 1; padding: 0 3px; opacity: 0; flex: 0 0 auto; }
-.row:hover .x, .row.cur .x { opacity: 1; }
-.row .x:hover { color: var(--red); }
-
-/* Project rows */
-.prow {
-  margin: 0 6px; padding: 0 calc(var(--pad-x) - 6px); height: var(--row-h); border-radius: 6px;
-  display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 500;
-  color: var(--text); cursor: default; transition: background 0.1s ease;
-}
-.prow:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
-.prow.cur { background: color-mix(in srgb, var(--accent) 16%, transparent); }
-.prow .ic { color: var(--text3); flex: 0 0 auto; display: inline-flex; }
-.prow.cur .ic { color: var(--accent); }
-.pname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.prx { margin-left: auto; color: var(--text3); font-size: 13px; line-height: 1; padding: 0 3px; opacity: 0; flex: 0 0 auto; }
-.prow:hover .prx { opacity: 1; }
-.prx:hover { color: var(--red); }
-.addterm {
-  margin: 1px 6px 6px 20px; padding: 3px 8px; border: 1px dashed var(--border); border-radius: 6px;
-  background: transparent; color: var(--text3); font-size: 11.5px; font-family: var(--font-ui);
-  display: flex; align-items: center; gap: 5px; cursor: default; width: calc(100% - 26px);
-}
-.addterm:hover { color: var(--text2); border-color: var(--text3); }
 
 .content { flex: 1; min-width: 0; display: flex; flex-direction: column; background: color-mix(in srgb, var(--bg) calc(var(--win-alpha) * 100%), transparent); }
 .pane-head {
