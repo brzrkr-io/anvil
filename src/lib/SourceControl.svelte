@@ -85,9 +85,12 @@
 
   // Commit popover (click a history row → card with meta + changed files;
   // click a file → that file's diff at the commit).
-  let popover = $state<{ commit: Commit; x: number; y: number; files: { code: string; path: string }[] } | null>(null);
-  async function openCommitPopover(c: Commit, ev: MouseEvent | KeyboardEvent) {
+  // Commit detail = a docked panel in normal flow (no floating/positioning),
+  // so clicking a commit always lands correctly regardless of zoom/scroll.
+  let detail = $state<{ commit: Commit; files: { code: string; path: string }[] } | null>(null);
+  async function openCommitDetail(c: Commit) {
     sel = commits.indexOf(c);
+    if (detail?.commit.hash === c.hash) { detail = null; return; } // click again = close
     let files: { code: string; path: string }[] = [];
     try {
       const raw = await invoke<string>("git_commit_files", { cwd, rev: c.short });
@@ -96,17 +99,9 @@
         return { code: p[0][0] ?? "M", path: p[p.length - 1] };
       });
     } catch { /* ignore */ }
-    // Anchor the popover at the click point (Terax-style); for keyboard
-    // activation, anchor off the focused row instead.
-    const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
-    const cx = ev instanceof MouseEvent ? ev.clientX : r.left;
-    const cy = ev instanceof MouseEvent ? ev.clientY : r.bottom;
-    const x = Math.min(cx + 6, window.innerWidth - 420);
-    const y = Math.min(cy + 6, window.innerHeight - 332);
-    popover = { commit: c, x: Math.max(8, x), y: Math.max(8, y), files };
+    detail = { commit: c, files };
   }
   function openFileAt(rev: string, path: string) {
-    popover = null;
     onOpenDiff?.({ rev, path });
   }
   function copySha(sha: string) { try { navigator.clipboard?.writeText(sha); } catch (e) { console.warn("clipboard write failed", e); } }
@@ -391,7 +386,7 @@
             {@const cv = parseConventional(c.subject)}
             {@const g = graph[i]}
             {@const stat = commitStats[c.short]}
-            <div class="row {i === sel ? 'sel' : ''}" style="top:{i * ROW_H}px" onclick={(e) => openCommitPopover(c, e)} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), openCommitPopover(c, e))} role="button" tabindex="0">
+            <div class="row {i === sel ? 'sel' : ''}" style="top:{i * ROW_H}px" onclick={() => openCommitDetail(c)} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), openCommitDetail(c))} role="button" tabindex="0">
               <svg class="graph" width={graphW} height={ROW_H} style="flex:0 0 {graphW}px">
                 {#each segPaths(g) as p}
                   <path d={p.d} stroke={laneColor(p.color)} fill="none" stroke-width="1.6" />
@@ -414,6 +409,28 @@
     {/if}
   {/if}
 
+  {#if detail}
+    <div class="cdetail">
+      <div class="cd-head">
+        <span class="cd-sha mono">{detail.commit.short}</span>
+        <span class="cd-subj">{detail.commit.subject}</span>
+        <button class="cd-copy" title="Copy SHA" onclick={() => copySha(detail!.commit.hash)}><Icon name="paperclip" size={11} /></button>
+        <button class="cd-x" title="Close" onclick={() => (detail = null)} aria-label="Close">×</button>
+      </div>
+      <div class="cd-meta">{detail.commit.author} · {fullDate(detail.commit.ts)} · {detail.files.length} file{detail.files.length === 1 ? "" : "s"}</div>
+      <div class="cd-files">
+        {#each detail.files as f (f.path)}
+          <button class="cd-file" onclick={() => openFileAt(detail!.commit.short, f.path)}>
+            <span class="cd-fbdg" style="color:{badge(f.code)}">{f.code}</span>
+            <span class="cd-fname mono">{f.path.split("/").pop()}</span>
+            <span class="cd-fdir">{f.path.split("/").slice(0, -1).join("/")}</span>
+          </button>
+        {/each}
+        {#if !detail.files.length}<div class="cd-empty">No file changes</div>{/if}
+      </div>
+    </div>
+  {/if}
+
   {#if branch && !error}
     <footer class="composer">
       <div class="ci-card">
@@ -430,12 +447,12 @@
         <button class="cbtn primary big" title="Commit all changes and push (⌘↩)" disabled={busy || (!commitMsg.trim() && !amend)} onclick={() => commit(true)}>
           <Icon name="up" size={12} /> {amend ? "Amend & Push" : "Commit & Push"}{#if aheadBehind?.a}<span class="cbtn-n">{aheadBehind.a + 1}</span>{/if}
         </button>
-        <button class="cbtn amend-toggle" class:on={amend} title="Amend last commit" disabled={busy} onclick={toggleAmend}>Amend</button>
+        <button class="cbtn" title="Commit without pushing" disabled={busy || (!commitMsg.trim() && !amend)} onclick={() => commit(false)}>{amend ? "Amend" : "Commit"}</button>
+        <button class="cbtn amend-toggle" class:on={amend} title="Amend last commit instead of a new one" disabled={busy} onclick={toggleAmend} aria-label="Toggle amend">⤺</button>
         <button class="more {moreOpen ? 'on' : ''}" title="More commit actions" onclick={() => (moreOpen = !moreOpen)} aria-label="More actions">⋯</button>
         {#if moreOpen}
           <div class="mscrim" onclick={() => (moreOpen = false)} role="presentation"></div>
           <div class="moremenu">
-            <button disabled={busy || (!commitMsg.trim() && !amend)} onclick={() => { commit(false); moreOpen = false; }}>Commit only (no push)</button>
             <button disabled={busy} onclick={() => { push(); moreOpen = false; }}><Icon name="up" size={12} /> Push only</button>
             <div class="mm-sep"></div>
             <button onclick={() => { tplOpen = !tplOpen; moreOpen = false; }}>Templates…</button>
@@ -470,28 +487,6 @@
   {/if}
   </div>
 
-  {#if popover}
-    <div class="pscrim" onclick={() => (popover = null)} role="presentation"></div>
-    <div class="pop" style="left:{popover.x}px;top:{popover.y}px">
-      <div class="pmeta">
-        <div class="ptop"><span class="psha mono">{popover.commit.short}</span><span class="psub">{popover.commit.subject}</span></div>
-        <div class="pauth">{popover.commit.author} · {popover.commit.email} · {fullDate(popover.commit.ts)}</div>
-        <button class="pcopy" onclick={() => copySha(popover!.commit.hash)}><Icon name="paperclip" size={12} /> Copy SHA</button>
-      </div>
-      <div class="pfileshd">FILES <span class="pcnt">{popover.files.length}</span></div>
-      <div class="pfiles">
-        {#each popover.files as f (f.path)}
-          <button class="pfile" onclick={() => openFileAt(popover!.commit.short, f.path)}>
-            <span class="pfic"><Icon name="folder" size={12} /></span>
-            <span class="pfname mono">{f.path.split("/").pop()}</span>
-            <span class="pfdir">{f.path.split("/").slice(0, -1).join("/")}</span>
-            <span class="pfbdg" style="color:{badge(f.code)}">{f.code}</span>
-          </button>
-        {/each}
-        {#if !popover.files.length}<div class="pempty">No file changes</div>{/if}
-      </div>
-    </div>
-  {/if}
 </div>
 
 <style>
@@ -499,30 +494,25 @@
   /* Whole git view lives in a readable centered column on wide windows
      (GitHub/Linear-style) instead of stretching edge-to-edge. */
   .scm-col { width: 100%; max-width: 1040px; flex: 1; min-height: 0; display: flex; flex-direction: column; }
-  .pscrim { position: fixed; inset: 0; z-index: 40; }
-  .pop { position: fixed; z-index: 41; width: 400px; max-height: 320px; display: flex; flex-direction: column;
-    background: var(--glass); backdrop-filter: blur(var(--blur)) saturate(1.3); -webkit-backdrop-filter: blur(var(--blur)) saturate(1.3);
-    border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
-    box-shadow: var(--elev-3), inset 0 1px 0 var(--hairline); }
-  .pmeta { padding: 12px 14px; }
-  .ptop { display: flex; align-items: baseline; gap: 8px; }
-  .psha { font-size: 11px; color: var(--text3); background: var(--panel2); padding: 1px 6px; border-radius: 6px; flex: 0 0 auto; }
-  .psub { font-size: 13px; font-weight: 600; color: var(--text); }
-  .pauth { margin-top: 7px; font-size: 11.5px; color: var(--text3); }
-  .pcopy { margin-top: 9px; display: inline-flex; align-items: center; gap: 5px; border: 0; background: transparent;
-    color: var(--accent); font-size: 11.5px; cursor: default; padding: 0; }
-  .pfileshd { display: flex; align-items: center; padding: 7px 14px; border-top: 1px solid var(--border);
-    font-size: 10px; letter-spacing: .08em; text-transform: uppercase; font-weight: 600; color: var(--text3); }
-  .pcnt { margin-left: auto; color: var(--text3); }
-  .pfiles { overflow-y: auto; padding-bottom: 6px; }
-  .pfile { display: flex; align-items: center; gap: 8px; width: 100%; padding: 4px 14px; border: 0;
-    background: transparent; cursor: default; text-align: left; }
-  .pfile:hover { background: var(--panel2); }
-  .pfic { display: inline-flex; color: var(--blue); flex: 0 0 auto; }
-  .pfname { font-size: 12.5px; color: var(--text); flex: 0 0 auto; }
-  .pfdir { font-size: 11px; color: var(--text3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .pfbdg { margin-left: auto; font-family: var(--font-mono); font-weight: 700; font-size: 11px; flex: 0 0 auto; }
-  .pempty { padding: 8px 14px; color: var(--text3); font-size: 11.5px; }
+
+  /* Commit detail — docked panel between history and composer (no floating). */
+  .cdetail { flex: 0 0 auto; max-height: 42%; display: flex; flex-direction: column;
+    border-top: 1px solid var(--border); background: var(--panel); }
+  .cd-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px 4px; flex: 0 0 auto; }
+  .cd-sha { font-size: 10.5px; color: var(--text3); background: var(--panel2); padding: 1px 6px; border-radius: 5px; flex: 0 0 auto; }
+  .cd-subj { font-size: 12.5px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+  .cd-copy { border: 0; background: transparent; color: var(--text3); cursor: default; display: inline-flex; padding: 2px; flex: 0 0 auto; }
+  .cd-copy:hover { color: var(--accent); }
+  .cd-x { border: 0; background: transparent; color: var(--text3); cursor: default; font-size: 16px; line-height: 1; padding: 0 4px; flex: 0 0 auto; }
+  .cd-x:hover { color: var(--text); }
+  .cd-meta { padding: 0 12px 6px; font-size: 11px; color: var(--text3); flex: 0 0 auto; }
+  .cd-files { overflow-y: auto; padding-bottom: 6px; }
+  .cd-file { display: flex; align-items: center; gap: 8px; width: 100%; padding: 3px 12px; border: 0; background: transparent; cursor: default; text-align: left; }
+  .cd-file:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
+  .cd-fbdg { font-family: var(--font-mono); font-weight: 700; font-size: 11px; width: 14px; flex: 0 0 auto; }
+  .cd-fname { font-size: 12px; color: var(--text); flex: 0 0 auto; }
+  .cd-fdir { font-size: 10.5px; color: var(--text3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cd-empty { padding: 8px 12px; color: var(--text3); font-size: 11.5px; }
   .head { height: 28px; flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 0 12px;
     border-bottom: 1px solid var(--border); font-size: 11.5px; }
   .accent { color: var(--accent); font-weight: 600; }
