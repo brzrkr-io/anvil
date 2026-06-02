@@ -135,6 +135,7 @@
   import Welcome from "$lib/Welcome.svelte";
   import WhatsNew from "$lib/WhatsNew.svelte";
   import Keymap from "$lib/Keymap.svelte";
+  import Doctor from "$lib/Doctor.svelte";
   import MergeView3 from "$lib/MergeView3.svelte";
   import RebasePlan from "$lib/RebasePlan.svelte";
   import { toast } from "$lib/toast";
@@ -380,6 +381,7 @@
   ];
   let whatsNew = $state(false);
   let keymapOpen = $state(false);
+  let doctorOpen = $state(false);
   let mergeView = $state<string | null>(null); // #25 path under 3-pane merge
   let rebaseTarget = $state<string | null>(null); // #21 interactive rebase editor
   let quakeOpen = $state(false); // #18 drop-down terminal overlay
@@ -955,6 +957,7 @@
       { label: "Help: Report a Problem (copy diagnostics)", run: async () => { const report = diagnosticsReport(WHATS_NEW_VERSION); try { await navigator.clipboard.writeText(report); toast("Diagnostics copied — paste into your bug report", "success"); } catch { toast("Could not copy diagnostics", "error"); } } },
       { label: `Help: View Crash Log (${getCrashes().length})`, run: () => { const cr = getCrashes(); if (!cr.length) { toast("No crashes recorded 🎉", "success"); return; } palettePlaceholder = `${cr.length} crash${cr.length === 1 ? "" : "es"} (local)`; paletteItems = [...cr].reverse().slice(0, 100).map((c) => ({ label: `${c.kind}: ${c.message}`, hint: new Date(c.ts).toLocaleString(), run: () => {} })); paletteItems.push({ label: "Clear crash log", hint: "irreversible", run: () => { clearCrashes(); toast("Crash log cleared", "success"); } }); paletteOpen = true; } },
       { label: "Help: Keyboard Shortcuts", hint: "⌘/", run: () => (keymapOpen = true) },
+      { label: "Connections: Check tools & auth", hint: "k8s · aws · gh · glab · docker", run: () => (doctorOpen = true) },
       { label: "Editor: Font Larger", run: () => bumpEditorFontSize(1) },
       { label: "Editor: Font Smaller", run: () => bumpEditorFontSize(-1) },
       { label: "Import Theme (JSON)…", run: importThemeJson },
@@ -1878,6 +1881,9 @@
 
   {#if keymapOpen}
     <Keymap onClose={() => (keymapOpen = false)} />
+  {/if}
+  {#if doctorOpen}
+    <Doctor onClose={() => (doctorOpen = false)} onRunCommand={sendToTerm} />
   {/if}
 
   {#if mergeView}

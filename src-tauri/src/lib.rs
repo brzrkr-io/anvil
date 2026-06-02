@@ -7,6 +7,7 @@ use tauri::Manager;
 mod ci;
 mod cloud;
 mod docker;
+mod doctor;
 mod flux;
 mod fs;
 mod git;
@@ -453,6 +454,7 @@ pub fn run() {
             repo_import_graph,
             read_state,
             write_state,
+            doctor::doctor_check,
             cloud::secret_set,
             cloud::secret_read,
             cloud::aws_list,
