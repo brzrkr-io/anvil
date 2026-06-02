@@ -420,6 +420,7 @@ pub fn run() {
             iac::tf_plan,
             iac::tf_state_list,
             iac::tf_output,
+            iac::tg_stack_output,
             window::new_window,
             window::open_url_window,
             window::open_named_window,

@@ -111,7 +111,7 @@ pub fn pty_spawn(
         const WINDOW_ACTIVE: std::time::Duration = std::time::Duration::from_millis(4);
         const WINDOW_BG: std::time::Duration = std::time::Duration::from_millis(200);
         const FLUSH_CAP: usize = 262_144; // 256 KiB: bound latency/memory under flood.
-        // Block for the first chunk of a burst; Err means reader gone → child exited.
+                                          // Block for the first chunk of a burst; Err means reader gone → child exited.
         while let Ok(mut pending) = rx.recv() {
             let window = if pty_inactive().lock().unwrap().contains(&rid) {
                 WINDOW_BG

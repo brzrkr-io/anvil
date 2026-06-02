@@ -62,7 +62,11 @@ pub fn open_named_window(app: tauri::AppHandle, url: String, label: String) -> R
 #[tauri::command]
 pub fn set_vibrancy(app: tauri::AppHandle, dark: bool) -> Result<(), String> {
     use tauri::window::{Effect, EffectsBuilder};
-    let effect = if dark { Effect::HudWindow } else { Effect::Sidebar };
+    let effect = if dark {
+        Effect::HudWindow
+    } else {
+        Effect::Sidebar
+    };
     for w in app.webview_windows().values() {
         let _ = w.set_effects(EffectsBuilder::new().effect(effect).build());
     }

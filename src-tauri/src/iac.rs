@@ -29,12 +29,17 @@ fn tf_exec(bin: &str, cwd: &str, args: &[&str]) -> Result<String, String> {
 }
 
 // Walk a repo for directories that contain IaC code so the UI can offer them as
-// pickable stacks (TF code usually lives in subdirs, not the repo root).
+// pickable stacks (TF code usually lives in subdirs, not the repo root). Each dir
+// is classified by what it holds, because the right command differs per kind:
+//   "terraform"  — *.tf / *.tf.json   → terraform|tofu plan/apply
+//   "tg-unit"    — terragrunt.hcl      → terragrunt plan/apply (single unit)
+//   "tg-stack"   — terragrunt.stack.hcl→ terragrunt stack run plan/apply
+//   "tg-runall"  — root.hcl (a TG root)→ terragrunt run --all plan/apply
 fn scan_iac(
     dir: &std::path::Path,
     base: &std::path::Path,
     depth: usize,
-    out: &mut Vec<(String, bool)>,
+    out: &mut Vec<(String, String)>,
 ) {
     if depth > 6 || out.len() > 400 {
         return;
@@ -43,36 +48,53 @@ fn scan_iac(
         Ok(e) => e,
         Err(_) => return,
     };
-    let mut has_tf = false;
-    let mut has_tg = false;
+    let (mut has_tf, mut has_tg_unit, mut has_tg_stack, mut has_root) =
+        (false, false, false, false);
     let mut subdirs: Vec<std::path::PathBuf> = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
         if path.is_dir() {
-            // Skip noise: VCS, caches, vendored modules, hidden dirs.
+            // Skip noise: VCS, caches, vendored modules, generated stack output.
             if name.starts_with('.')
                 || matches!(
                     name.as_str(),
-                    "node_modules" | "vendor" | "target" | ".terraform"
+                    "node_modules" | "vendor" | "target" | ".terraform" | ".terragrunt-stack"
                 )
             {
                 continue;
             }
             subdirs.push(path);
+        } else if name == "terragrunt.stack.hcl" {
+            has_tg_stack = true;
         } else if name == "terragrunt.hcl" {
-            has_tg = true;
+            has_tg_unit = true;
+        } else if name == "root.hcl" {
+            has_root = true;
         } else if name.ends_with(".tf") || name.ends_with(".tf.json") {
             has_tf = true;
         }
     }
-    if has_tf || has_tg {
+    // A dir holding terraform source AND a terragrunt.hcl is still a TG unit
+    // (terragrunt wraps the local terraform); stacks win over plain units.
+    let kind = if has_tg_stack {
+        "tg-stack"
+    } else if has_tg_unit {
+        "tg-unit"
+    } else if has_root {
+        "tg-runall"
+    } else if has_tf {
+        "terraform"
+    } else {
+        ""
+    };
+    if !kind.is_empty() {
         let rel = dir
             .strip_prefix(base)
             .unwrap_or(dir)
             .to_string_lossy()
             .into_owned();
-        out.push((if rel.is_empty() { ".".into() } else { rel }, has_tg));
+        out.push((if rel.is_empty() { ".".into() } else { rel }, kind.into()));
     }
     for sub in subdirs {
         scan_iac(&sub, base, depth + 1, out);
@@ -127,18 +149,38 @@ pub async fn terraform_apply(cwd: String) -> Result<String, String> {
     .map_err(|e| e.to_string())?
 }
 
-/// Find IaC stacks under `cwd` (#dirs holding *.tf or terragrunt.hcl). Returns
-/// JSON `[{"path":"infra/prod","terragrunt":true}, ...]`, relative to cwd.
+/// Find IaC stacks under `cwd`, each classified by kind so the UI can pick the
+/// right command. Returns JSON
+/// `[{"path":"infra/prod","kind":"tg-unit","runall":true}, ...]`, relative to cwd.
+/// `runall` = this terragrunt dir has descendant units, so `run --all` applies.
 #[tauri::command]
 pub async fn tf_discover(cwd: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let base = std::path::Path::new(&cwd);
-        let mut out: Vec<(String, bool)> = Vec::new();
+        let mut out: Vec<(String, String)> = Vec::new();
         scan_iac(base, base, 0, &mut out);
         out.sort_by(|a, b| a.0.cmp(&b.0));
+        // run --all only makes sense for terragrunt dirs that have descendant units.
+        let runall: Vec<bool> = out
+            .iter()
+            .map(|(pi, ki)| {
+                if ki == "terraform" || ki == "tg-stack" {
+                    return false;
+                }
+                let prefix = if pi == "." {
+                    String::new()
+                } else {
+                    format!("{pi}/")
+                };
+                out.iter().any(|(pj, _)| {
+                    pj != pi && pj != "." && (prefix.is_empty() || pj.starts_with(&prefix))
+                })
+            })
+            .collect();
         let items: Vec<String> = out
             .iter()
-            .map(|(p, tg)| format!("{{\"path\":{:?},\"terragrunt\":{}}}", p, tg))
+            .zip(runall)
+            .map(|((p, k), ra)| format!("{{\"path\":{p:?},\"kind\":{k:?},\"runall\":{ra}}}"))
             .collect();
         Ok(format!("[{}]", items.join(",")))
     })
@@ -151,8 +193,10 @@ pub async fn tf_discover(cwd: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn tf_detect(cwd: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let has_tg = std::path::Path::new(&cwd).join("terragrunt.hcl").exists()
-            || std::path::Path::new(&cwd).join("root.hcl").exists();
+        let here = std::path::Path::new(&cwd);
+        let has_tg = here.join("terragrunt.hcl").exists()
+            || here.join("terragrunt.stack.hcl").exists()
+            || here.join("root.hcl").exists();
         let on_path = |p: &str| {
             std::process::Command::new(p)
                 .arg("version")
@@ -215,6 +259,17 @@ pub async fn tf_state_list(cwd: String, bin: String) -> Result<String, String> {
 pub async fn tf_output(cwd: String, bin: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         tf_exec(&bin, &cwd, &["output", "-json", "-no-color"])
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// `terragrunt stack output` — aggregated outputs across a stack's units. A stack
+/// dir has no single root state, so the per-unit `output` above doesn't apply.
+#[tauri::command]
+pub async fn tg_stack_output(cwd: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        tf_exec("terragrunt", &cwd, &["stack", "output", "--no-color"])
     })
     .await
     .map_err(|e| e.to_string())?
@@ -288,4 +343,35 @@ pub async fn helm_manifest(name: String, namespace: String) -> Result<String, St
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scan_iac;
+    use std::fs;
+
+    // The classifier must distinguish plain Terraform, Terragrunt units, a
+    // Terragrunt root (run --all), and Terragrunt stacks — the whole point of the
+    // smart TF/TG page.
+    #[test]
+    fn classifies_iac_kinds() {
+        let tmp = std::env::temp_dir().join(format!("anvil-iac-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("tf")).unwrap();
+        fs::write(tmp.join("tf/main.tf"), "").unwrap();
+        fs::create_dir_all(tmp.join("tg/app")).unwrap();
+        fs::write(tmp.join("tg/app/terragrunt.hcl"), "").unwrap();
+        fs::write(tmp.join("tg/root.hcl"), "").unwrap();
+        fs::create_dir_all(tmp.join("stk")).unwrap();
+        fs::write(tmp.join("stk/terragrunt.stack.hcl"), "").unwrap();
+
+        let mut out: Vec<(String, String)> = Vec::new();
+        scan_iac(&tmp, &tmp, 0, &mut out);
+        let kind = |p: &str| out.iter().find(|(x, _)| x == p).map(|(_, k)| k.as_str());
+        assert_eq!(kind("tf"), Some("terraform"));
+        assert_eq!(kind("tg/app"), Some("tg-unit"));
+        assert_eq!(kind("tg"), Some("tg-runall"));
+        assert_eq!(kind("stk"), Some("tg-stack"));
+        let _ = fs::remove_dir_all(&tmp);
+    }
 }

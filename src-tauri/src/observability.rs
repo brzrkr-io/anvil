@@ -146,7 +146,10 @@ pub async fn signoz_services(base: String, api_key: String, mins: u64) -> Result
     let status = r.status();
     let text = r.text().await.map_err(|e| e.to_string())?;
     if !status.is_success() {
-        return Err(format!("signoz {status}: {}", text.chars().take(300).collect::<String>()));
+        return Err(format!(
+            "signoz {status}: {}",
+            text.chars().take(300).collect::<String>()
+        ));
     }
     Ok(text)
 }

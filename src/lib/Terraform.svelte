@@ -8,7 +8,14 @@
   let { cwd, onRunCommand }: { cwd: string; onRunCommand?: (cmd: string) => void } = $props();
 
   type Bin = "terraform" | "terragrunt" | "tofu";
-  interface Stack { path: string; terragrunt: boolean; }
+  type TgKind = "terraform" | "tg-unit" | "tg-stack" | "tg-runall";
+  interface Stack { path: string; kind: TgKind; runall: boolean; }
+  const KIND_LABEL: Record<TgKind, string> = {
+    terraform: "TF",
+    "tg-unit": "TG",
+    "tg-stack": "STACK",
+    "tg-runall": "RUN-ALL",
+  };
 
   let stacks = $state<Stack[]>([]);
   let activeStack = $state<string | null>(null);
@@ -29,6 +36,25 @@
   const activeDir = $derived(
     activeStack && activeStack !== "." ? `${cwd}/${activeStack}` : cwd,
   );
+
+  const activeMeta = $derived(stacks.find((s) => s.path === activeStack));
+  // Inline-capturable = a single root state we can `<bin> plan` and colorize.
+  // Stacks and run-all roots fan out over many units (and prompt for auth / order
+  // dependencies), so those run in a real terminal instead.
+  const capturable = $derived(
+    (activeMeta?.kind ?? "terraform") === "terraform" ||
+      ((activeMeta?.kind ?? "") === "tg-unit" && !activeMeta?.runall),
+  );
+  // Suffix on Init/Validate/Plan labels when the verb runs in a terminal (not captured).
+  const ext = $derived(capturable ? "" : " ↗");
+  // The exact CLI command for a verb, matched to the detected kind.
+  function cmdFor(verb: string): string {
+    const k = activeMeta?.kind ?? "terraform";
+    if (k === "tg-stack") return `terragrunt stack run ${verb}`;
+    if (k === "tg-runall") return `terragrunt run --all ${verb}`;
+    if (k === "tg-unit") return activeMeta?.runall ? `terragrunt run --all ${verb}` : `terragrunt ${verb}`;
+    return `${bin} ${verb}`;
+  }
 
   async function discover() {
     scanning = true;
@@ -59,7 +85,7 @@
     resources = readCache<string[]>(`tf-state:${dir}`) ?? [];
     const st = stacks.find((s) => s.path === path);
     // Bias the binary toggle to what the stack actually uses.
-    if (st?.terragrunt && available.terragrunt) bin = "terragrunt";
+    if (st && st.kind !== "terraform" && available.terragrunt) bin = "terragrunt";
     await detect();
     await loadState();
   }
@@ -78,6 +104,9 @@
 
   async function loadState() {
     if (!activeStack) return;
+    // Stacks / run-all roots have no single root state — `state list` is per-unit.
+    const k = activeMeta?.kind;
+    if (k === "tg-stack" || k === "tg-runall") { resources = []; return; }
     err = "";
     try {
       const raw = await invoke<string>("tf_state_list", { cwd: activeDir, bin });
@@ -92,8 +121,11 @@
     }
   }
 
+  // Init / Validate / Plan: capture inline when it's a single unit, else run the
+  // correct command (run --all / stack run) in a terminal pane.
   async function run(cmd: "init" | "validate" | "plan", kind: typeof outKind) {
     if (running || !activeStack) return;
+    if (!capturable) { sendCmd(cmd); return; }
     running = cmd;
     output = "";
     outKind = kind;
@@ -110,10 +142,43 @@
     }
   }
 
-  function sendTerminal(verb: "apply" | "destroy") {
+  // Read-only outputs: stacks aggregate across units via `stack output`.
+  async function loadOutputs() {
+    if (running || !activeStack) return;
+    running = "output";
+    output = "";
+    outKind = "";
+    err = "";
+    try {
+      output =
+        activeMeta?.kind === "tg-stack"
+          ? await invoke<string>("tg_stack_output", { cwd: activeDir })
+          : await invoke<string>("tf_output", { cwd: activeDir, bin });
+    } catch (e) {
+      err = String(e);
+    } finally {
+      running = "";
+    }
+  }
+
+  // Send the kind-correct command to a terminal pane (full interactivity: auth
+  // prompts, confirmations, dependency-ordered streaming).
+  function sendCmd(verb: string) {
     const cd = activeStack && activeStack !== "." ? `cd ${activeDir} && ` : "";
-    onRunCommand?.(`${cd}${bin} ${verb}`);
-    toast(`Sent "${bin} ${verb}" to terminal`, "info");
+    const c = cmdFor(verb);
+    onRunCommand?.(`${cd}${c}`);
+    toast(`Sent "${c}" to terminal`, "info");
+  }
+
+  function applyAction() {
+    const c = cmdFor("apply");
+    if (!confirm(`Run apply on "${stackLabel(activeStack ?? "")}"?\n\n  ${c}\n\nThis can modify real infrastructure.`)) return;
+    sendCmd("apply");
+  }
+  function destroyAction() {
+    const c = cmdFor("destroy");
+    if (!confirm(`DESTROY infrastructure for "${stackLabel(activeStack ?? "")}"?\n\n  ${c}\n\nThis is destructive and irreversible.`)) return;
+    sendCmd("destroy");
   }
 
   // Group state addresses by module path so big states stay scannable.
@@ -196,18 +261,25 @@
 
   {#if activeStack}
     <div class="actions">
-      <button class="act" disabled={!!running} onclick={() => run("init", "init")}>
-        {running === "init" ? "Init…" : "Init"}
+      <button class="act" disabled={!!running} onclick={() => run("init", "init")} title={cmdFor("init")}>
+        {running === "init" ? "Init…" : `Init${ext}`}
       </button>
-      <button class="act" disabled={!!running} onclick={() => run("validate", "validate")}>
-        {running === "validate" ? "Validate…" : "Validate"}
+      <button class="act" disabled={!!running} onclick={() => run("validate", "validate")} title={cmdFor("validate")}>
+        {running === "validate" ? "Validate…" : `Validate${ext}`}
       </button>
-      <button class="act primary" disabled={!!running} onclick={() => run("plan", "plan")}>
-        {running === "plan" ? "Planning…" : "Plan"}
+      <button class="act primary" disabled={!!running} onclick={() => run("plan", "plan")} title={cmdFor("plan")}>
+        {running === "plan" ? "Planning…" : `Plan${ext}`}
+      </button>
+      <button class="act" disabled={!!running} onclick={loadOutputs} title="Show outputs">
+        {running === "output" ? "Outputs…" : "Outputs"}
       </button>
       <span class="spacer"></span>
-      <button class="act ext" onclick={() => sendTerminal("apply")} title="Run apply in terminal">Apply ↗</button>
-      <button class="act ext danger" onclick={() => sendTerminal("destroy")} title="Run destroy in terminal">Destroy ↗</button>
+      <button class="act ext" onclick={applyAction} title={cmdFor("apply")}>Apply ↗</button>
+      <button class="act ext danger" onclick={destroyAction} title={cmdFor("destroy")}>Destroy ↗</button>
+    </div>
+    <div class="cmdline" title="Resolved command for this stack">
+      <span class="kind-pill k-{activeMeta?.kind ?? 'terraform'}">{KIND_LABEL[activeMeta?.kind ?? "terraform"]}</span>
+      <code>{cmdFor("plan")}</code>
     </div>
   {/if}
 
@@ -225,7 +297,7 @@
         {:else if stacks.length === 0}
           <div class="empty">
             No Terraform / Terragrunt found in this repo.<br /><br />
-            Open a repo that contains <code>*.tf</code> or <code>terragrunt.hcl</code> files.
+            Open a repo with <code>*.tf</code>, <code>terragrunt.hcl</code>, or <code>terragrunt.stack.hcl</code> files.
           </div>
         {:else}
           {#each stacks as s (s.path)}
@@ -239,7 +311,7 @@
               onkeydown={(e) => e.key === "Enter" && selectStack(s.path)}
             >
               <span class="stack-name">{stackLabel(s.path)}</span>
-              {#if s.terragrunt}<span class="tag tg">TG</span>{:else}<span class="tag tf">TF</span>{/if}
+              <span class="tag k-{s.kind}">{s.runall && s.kind === "tg-unit" ? "RUN-ALL" : KIND_LABEL[s.kind]}</span>
             </div>
           {/each}
         {/if}
@@ -380,8 +452,25 @@
     font-family: var(--font-mono); font-size: 8.5px; font-weight: 600; padding: 1px 4px;
     border-radius: 3px; flex: 0 0 auto; letter-spacing: 0.02em;
   }
-  .tag.tg { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
-  .tag.tf { color: var(--text3); background: color-mix(in srgb, var(--text) 8%, transparent); }
+  .tag.k-terraform { color: var(--text3); background: color-mix(in srgb, var(--text) 8%, transparent); }
+  .tag.k-tg-unit { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+  .tag.k-tg-stack { color: var(--purple); background: color-mix(in srgb, var(--purple) 16%, transparent); }
+  .tag.k-tg-runall { color: var(--teal); background: color-mix(in srgb, var(--teal) 16%, transparent); }
+
+  /* Resolved-command line under the actions. */
+  .cmdline {
+    display: flex; align-items: center; gap: 7px; padding: 4px var(--pad-x, 10px) 7px;
+    font-size: 11px; color: var(--text2); border-bottom: 1px solid var(--border); overflow: hidden;
+  }
+  .cmdline code { font-family: var(--font-mono); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .kind-pill {
+    font-family: var(--font-mono); font-size: 8.5px; font-weight: 600; padding: 1px 5px;
+    border-radius: 3px; flex: 0 0 auto; letter-spacing: 0.02em;
+  }
+  .kind-pill.k-terraform { color: var(--text3); background: color-mix(in srgb, var(--text) 8%, transparent); }
+  .kind-pill.k-tg-unit { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+  .kind-pill.k-tg-stack { color: var(--purple); background: color-mix(in srgb, var(--purple) 16%, transparent); }
+  .kind-pill.k-tg-runall { color: var(--teal); background: color-mix(in srgb, var(--teal) 16%, transparent); }
 
   /* State */
   .state {
