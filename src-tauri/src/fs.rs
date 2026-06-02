@@ -8,35 +8,47 @@ pub struct Entry {
 /// List a directory: directories first, then files, both alphabetical.
 /// Hidden entries (dot-prefixed) are skipped.
 #[tauri::command]
-pub fn list_dir(path: String) -> Result<Vec<Entry>, String> {
-    let mut out = Vec::new();
-    for ent in std::fs::read_dir(&path)
-        .map_err(|e| e.to_string())?
-        .flatten()
-    {
-        let name = ent.file_name().to_string_lossy().into_owned();
-        if name.starts_with('.') {
-            continue;
+pub async fn list_dir(path: String) -> Result<Vec<Entry>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut out = Vec::new();
+        for ent in std::fs::read_dir(&path)
+            .map_err(|e| e.to_string())?
+            .flatten()
+        {
+            let name = ent.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                continue;
+            }
+            let is_dir = ent.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            out.push(Entry {
+                path: ent.path().to_string_lossy().into_owned(),
+                name,
+                is_dir,
+            });
         }
-        let is_dir = ent.file_type().map(|t| t.is_dir()).unwrap_or(false);
-        out.push(Entry {
-            path: ent.path().to_string_lossy().into_owned(),
-            name,
-            is_dir,
-        });
-    }
-    out.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
-    Ok(out)
+        out.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
+        Ok(out)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn read_file(path: String) -> Result<String, String> {
-    std::fs::read_to_string(&path).map_err(|e| e.to_string())
+pub async fn read_file(path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::read_to_string(&path).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn write_file(path: String, contents: String) -> Result<(), String> {
-    std::fs::write(&path, contents).map_err(|e| e.to_string())
+pub async fn write_file(path: String, contents: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::write(&path, contents).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 const SKIP_DIRS: &[&str] = &[
@@ -87,35 +99,47 @@ fn walk(root: &std::path::Path, base: &std::path::Path, out: &mut Vec<String>, c
 /// Recursively list workspace files (relative paths) for the fuzzy finder,
 /// skipping VCS/build dirs. Capped to keep it snappy on huge trees.
 #[tauri::command]
-pub fn walk_dir(root: String) -> Vec<String> {
-    let base = std::path::PathBuf::from(&root);
-    let mut out = Vec::new();
-    walk(&base, &base, &mut out, 20000);
-    out
+pub async fn walk_dir(root: String) -> Vec<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let base = std::path::PathBuf::from(&root);
+        let mut out = Vec::new();
+        walk(&base, &base, &mut out, 20000);
+        out
+    })
+    .await
+    .unwrap_or_default()
 }
 
 #[tauri::command]
-pub fn create_path(path: String, is_dir: bool) -> Result<(), String> {
-    if is_dir {
-        std::fs::create_dir_all(&path).map_err(|e| e.to_string())
-    } else {
-        if let Some(p) = std::path::Path::new(&path).parent() {
-            let _ = std::fs::create_dir_all(p);
+pub async fn create_path(path: String, is_dir: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if is_dir {
+            std::fs::create_dir_all(&path).map_err(|e| e.to_string())
+        } else {
+            if let Some(p) = std::path::Path::new(&path).parent() {
+                let _ = std::fs::create_dir_all(p);
+            }
+            std::fs::write(&path, "").map_err(|e| e.to_string())
         }
-        std::fs::write(&path, "").map_err(|e| e.to_string())
-    }
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Last-modified time (unix seconds) for an open editor file's external-change
 /// polling. Errors (missing file) map to 0.
 #[tauri::command]
-pub fn file_mtime(path: String) -> u64 {
-    std::fs::metadata(&path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+pub async fn file_mtime(path: String) -> u64 {
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    })
+    .await
+    .unwrap_or(0)
 }
 
 #[tauri::command]
@@ -124,6 +148,8 @@ pub fn home_dir() -> String {
 }
 
 /// Native folder picker (File ▸ Open Folder…). Returns the chosen path or null.
+/// Left synchronous: rfd::FileDialog dispatches to AppKit's NSOpenPanel, which
+/// must run on the main thread. Moving it into spawn_blocking would panic.
 #[tauri::command]
 pub fn pick_folder(start: Option<String>) -> Option<String> {
     let mut d = rfd::FileDialog::new();
@@ -134,6 +160,7 @@ pub fn pick_folder(start: Option<String>) -> Option<String> {
 }
 
 /// Native file picker (File ▸ Open File…). Returns the chosen path or null.
+/// Left synchronous: same main-thread requirement as pick_folder.
 #[tauri::command]
 pub fn pick_file(start: Option<String>) -> Option<String> {
     let mut d = rfd::FileDialog::new();

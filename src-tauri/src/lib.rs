@@ -28,123 +28,155 @@ fn state_path() -> std::path::PathBuf {
 }
 
 #[tauri::command]
-fn read_state() -> String {
-    std::fs::read_to_string(state_path()).unwrap_or_else(|_| "{}".into())
+async fn read_state() -> String {
+    tauri::async_runtime::spawn_blocking(|| {
+        std::fs::read_to_string(state_path()).unwrap_or_else(|_| "{}".into())
+    })
+    .await
+    .unwrap_or_else(|_| "{}".into())
 }
 
 #[tauri::command]
-fn write_state(contents: String) -> Result<(), String> {
-    let path = state_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    std::fs::write(&path, contents).map_err(|e| e.to_string())
+async fn write_state(contents: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = state_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(&path, contents).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Run a shell command in `cwd` and capture combined stdout+stderr for the agent
 /// tool-use loop (#53). Always approval-gated in the UI. Output is truncated to
 /// keep the captured text out of the model's way.
 #[tauri::command]
-fn run_capture(cwd: String, command: String) -> Result<String, String> {
-    let out = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(&command)
-        .current_dir(&cwd)
-        .output()
-        .map_err(|e| e.to_string())?;
-    let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
-    s.push_str(&String::from_utf8_lossy(&out.stderr));
-    const CAP: usize = 16_384;
-    if s.len() > CAP {
-        s.truncate(CAP);
-        s.push_str("\n…(truncated)");
-    }
-    let code = out.status.code().unwrap_or(-1);
-    Ok(format!("[exit {code}]\n{s}"))
+async fn run_capture(cwd: String, command: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&command)
+            .current_dir(&cwd)
+            .output()
+            .map_err(|e| e.to_string())?;
+        let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+        s.push_str(&String::from_utf8_lossy(&out.stderr));
+        const CAP: usize = 16_384;
+        if s.len() > CAP {
+            s.truncate(CAP);
+            s.push_str("\n…(truncated)");
+        }
+        let code = out.status.code().unwrap_or(-1);
+        Ok(format!("[exit {code}]\n{s}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// #33 Lightweight import graph — greps import/from/require/use/include lines
 /// across the workspace (via ripgrep) so the agent's repo-map carries module
 /// edges, not just a file list. Returns `path: imported` lines (capped).
 #[tauri::command]
-fn repo_import_graph(root: String) -> Result<String, String> {
-    let out = std::process::Command::new("rg")
-        .args([
-            "--no-heading",
-            "--color=never",
-            "--max-count=8",
-            "-N",
-            "-o",
-            r#"^\s*(?:import .*|from \S+ import.*|.*require\(['"][^'"]+['"]\)|use [\w:]+;|#include [<"][^>"]+[>"])"#,
-            "-g",
-            "*.{ts,tsx,js,jsx,py,rs,go,c,cc,cpp,h,hpp,java,rb,svelte}",
-            "--with-filename",
-        ])
-        .arg(&root)
-        .output()
-        .map_err(|_| "ripgrep (rg) not found".to_string())?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    // Trim absolute prefix to keep edges relative + cap size.
-    let rel = text.replace(&format!("{}/", root.trim_end_matches('/')), "");
-    Ok(rel.lines().take(2000).collect::<Vec<_>>().join("\n"))
+async fn repo_import_graph(root: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let out = std::process::Command::new("rg")
+            .args([
+                "--no-heading",
+                "--color=never",
+                "--max-count=8",
+                "-N",
+                "-o",
+                r#"^\s*(?:import .*|from \S+ import.*|.*require\(['"][^'"]+['"]\)|use [\w:]+;|#include [<"][^>"]+[>"])"#,
+                "-g",
+                "*.{ts,tsx,js,jsx,py,rs,go,c,cc,cpp,h,hpp,java,rb,svelte}",
+                "--with-filename",
+            ])
+            .arg(&root)
+            .output()
+            .map_err(|_| "ripgrep (rg) not found".to_string())?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        // Trim absolute prefix to keep edges relative + cap size.
+        let rel = text.replace(&format!("{}/", root.trim_end_matches('/')), "");
+        Ok(rel.lines().take(2000).collect::<Vec<_>>().join("\n"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Content search across the workspace via ripgrep (falls back to an error if
 /// `rg` is missing). Returns raw `path:line:col:text` lines.
 #[tauri::command]
-fn grep(root: String, query: String) -> Result<String, String> {
-    if query.trim().is_empty() {
-        return Ok(String::new());
-    }
-    let out = std::process::Command::new("rg")
-        .args([
-            "--line-number",
-            "--column",
-            "--no-heading",
-            "--color=never",
-            "--max-count=200",
-            "-S",
-            &query,
-        ])
-        .arg(&root)
-        .output()
-        .map_err(|_| "ripgrep (rg) not found".to_string())?;
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+async fn grep(root: String, query: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if query.trim().is_empty() {
+            return Ok(String::new());
+        }
+        let out = std::process::Command::new("rg")
+            .args([
+                "--line-number",
+                "--column",
+                "--no-heading",
+                "--color=never",
+                "--max-count=200",
+                "-S",
+                &query,
+            ])
+            .arg(&root)
+            .output()
+            .map_err(|_| "ripgrep (rg) not found".to_string())?;
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Host aliases from ~/.ssh/config (#17). One per line, wildcards skipped.
 #[tauri::command]
-fn ssh_hosts() -> Result<String, String> {
-    let home = std::env::var("HOME").map_err(|e| e.to_string())?;
-    let text = std::fs::read_to_string(format!("{home}/.ssh/config")).unwrap_or_default();
-    let mut hosts = Vec::new();
-    for line in text.lines() {
-        let l = line.trim();
-        if let Some(rest) = l.strip_prefix("Host ").or_else(|| l.strip_prefix("host ")) {
-            for h in rest.split_whitespace() {
-                if !h.contains('*') && !h.contains('?') && !hosts.contains(&h.to_string()) {
-                    hosts.push(h.to_string());
+async fn ssh_hosts() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let home = std::env::var("HOME").map_err(|e| e.to_string())?;
+        let text = std::fs::read_to_string(format!("{home}/.ssh/config")).unwrap_or_default();
+        let mut hosts = Vec::new();
+        for line in text.lines() {
+            let l = line.trim();
+            if let Some(rest) = l.strip_prefix("Host ").or_else(|| l.strip_prefix("host ")) {
+                for h in rest.split_whitespace() {
+                    if !h.contains('*') && !h.contains('?') && !hosts.contains(&h.to_string()) {
+                        hosts.push(h.to_string());
+                    }
                 }
             }
         }
-    }
-    Ok(hosts.join("\n"))
+        Ok(hosts.join("\n"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn rename_path(from: String, to: String) -> Result<(), String> {
-    std::fs::rename(&from, &to).map_err(|e| e.to_string())
+async fn rename_path(from: String, to: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::rename(&from, &to).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn delete_path(path: String) -> Result<(), String> {
-    let p = std::path::Path::new(&path);
-    if p.is_dir() {
-        std::fs::remove_dir_all(p)
-    } else {
-        std::fs::remove_file(p)
-    }
-    .map_err(|e| e.to_string())
+async fn delete_path(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = std::path::Path::new(&path);
+        if p.is_dir() {
+            std::fs::remove_dir_all(p)
+        } else {
+            std::fs::remove_file(p)
+        }
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // ── Caldera bridge (#53) ──────────────────────────────────────────────────
@@ -562,6 +594,10 @@ mod git_integration_tests {
         name.to_string()
     }
 
+    fn block<F: std::future::Future>(f: F) -> F::Output {
+        tauri::async_runtime::block_on(f)
+    }
+
     #[test]
     fn status_shows_untracked_file() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -569,7 +605,7 @@ mod git_integration_tests {
         let cwd = tmp.path().to_str().unwrap().to_string();
         write(tmp.path(), "hello.txt", "hi");
 
-        let out = git::git_status(cwd).unwrap();
+        let out = block(git::git_status(cwd)).unwrap();
         // Untracked files appear as "?? <name>" in porcelain output.
         assert!(
             out.contains("hello.txt"),
@@ -588,10 +624,10 @@ mod git_integration_tests {
         let cwd = tmp.path().to_str().unwrap().to_string();
         write(tmp.path(), "readme.md", "# Anvil");
 
-        git::git_stage(cwd.clone(), "readme.md".into()).unwrap();
-        git::git_commit(cwd.clone(), "initial commit".into(), None).unwrap();
+        block(git::git_stage(cwd.clone(), "readme.md".into())).unwrap();
+        block(git::git_commit(cwd.clone(), "initial commit".into(), None)).unwrap();
 
-        let status = git::git_status(cwd).unwrap();
+        let status = block(git::git_status(cwd)).unwrap();
         // After a clean commit the file must not appear as untracked or modified.
         assert!(
             !status.contains("readme.md"),
@@ -606,16 +642,21 @@ mod git_integration_tests {
         let cwd = tmp.path().to_str().unwrap().to_string();
         write(tmp.path(), "a.txt", "a");
 
-        git::git_stage(cwd.clone(), "a.txt".into()).unwrap();
-        git::git_commit(cwd.clone(), "feat: log round-trip".into(), None).unwrap();
+        block(git::git_stage(cwd.clone(), "a.txt".into())).unwrap();
+        block(git::git_commit(
+            cwd.clone(),
+            "feat: log round-trip".into(),
+            None,
+        ))
+        .unwrap();
 
-        let log = git::git_log(cwd.clone(), None, None, None).unwrap();
+        let log = block(git::git_log(cwd.clone(), None, None, None)).unwrap();
         assert!(
             log.contains("feat: log round-trip"),
             "log should contain the commit message: {log}"
         );
 
-        let last = git::git_last_message(cwd).unwrap();
+        let last = block(git::git_last_message(cwd)).unwrap();
         assert!(
             last.contains("feat: log round-trip"),
             "last message should match: {last}"
@@ -630,13 +671,13 @@ mod git_integration_tests {
 
         // Need at least one commit before creating a branch.
         write(tmp.path(), "seed.txt", "seed");
-        git::git_stage(cwd.clone(), "seed.txt".into()).unwrap();
-        git::git_commit(cwd.clone(), "seed".into(), None).unwrap();
+        block(git::git_stage(cwd.clone(), "seed.txt".into())).unwrap();
+        block(git::git_commit(cwd.clone(), "seed".into(), None)).unwrap();
 
-        git::git_create_branch(cwd.clone(), "feature".into()).unwrap();
+        block(git::git_create_branch(cwd.clone(), "feature".into())).unwrap();
         // create_branch uses `checkout -b` so we're already on it; no need to checkout again.
 
-        let branches = git::git_branches(cwd).unwrap();
+        let branches = block(git::git_branches(cwd)).unwrap();
         // The current branch is prefixed with '*' in the format string %(HEAD).
         assert!(
             branches.contains("feature"),
@@ -656,14 +697,14 @@ mod git_integration_tests {
         let cwd = tmp.path().to_str().unwrap().to_string();
 
         write(tmp.path(), "seed.txt", "seed");
-        git::git_stage(cwd.clone(), "seed.txt".into()).unwrap();
-        git::git_commit(cwd.clone(), "seed".into(), None).unwrap();
+        block(git::git_stage(cwd.clone(), "seed.txt".into())).unwrap();
+        block(git::git_commit(cwd.clone(), "seed".into(), None)).unwrap();
 
-        git::git_create_branch(cwd.clone(), "other".into()).unwrap();
+        block(git::git_create_branch(cwd.clone(), "other".into())).unwrap();
         // Switch back to main to verify checkout works.
-        git::git_checkout(cwd.clone(), "main".into()).unwrap();
+        block(git::git_checkout(cwd.clone(), "main".into())).unwrap();
 
-        let branches = git::git_branches(cwd).unwrap();
+        let branches = block(git::git_branches(cwd)).unwrap();
         let current_line = branches.lines().find(|l| l.starts_with('*'));
         assert!(
             current_line.map(|l| l.contains("main")).unwrap_or(false),
@@ -678,13 +719,13 @@ mod git_integration_tests {
         let cwd = tmp.path().to_str().unwrap().to_string();
 
         write(tmp.path(), "file.txt", "original\n");
-        git::git_stage(cwd.clone(), "file.txt".into()).unwrap();
-        git::git_commit(cwd.clone(), "add file".into(), None).unwrap();
+        block(git::git_stage(cwd.clone(), "file.txt".into())).unwrap();
+        block(git::git_commit(cwd.clone(), "add file".into(), None)).unwrap();
 
         // Modify the tracked file.
         write(tmp.path(), "file.txt", "original\nchanged\n");
 
-        let diff = git::git_diff(cwd, "file.txt".into(), false).unwrap();
+        let diff = block(git::git_diff(cwd, "file.txt".into(), false)).unwrap();
         // A hunk line added should appear as '+changed'.
         assert!(
             diff.contains("+changed"),
@@ -700,13 +741,13 @@ mod git_integration_tests {
         // A commit attempt that uses combined stdout+stderr returns Err on failure.
         let cwd = tmp.path().to_str().unwrap().to_string();
         // git_status returns Ok("") — no useful output, proving no status data leaks.
-        let status = git::git_status(cwd.clone()).unwrap_or_default();
+        let status = block(git::git_status(cwd.clone())).unwrap_or_default();
         assert!(
             status.is_empty(),
             "non-repo status should produce no output: {status:?}"
         );
         // git_commit explicitly returns Err on non-zero exit.
-        let commit = git::git_commit(cwd, "msg".into(), None);
+        let commit = block(git::git_commit(cwd, "msg".into(), None));
         assert!(
             commit.is_err(),
             "commit on a non-repo should fail: {commit:?}"

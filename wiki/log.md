@@ -9,6 +9,27 @@ confidence: high
 
 # Wiki Log
 
+- 2026-06-02 — Converted all blocking Tauri commands to `async fn` with `spawn_blocking`.
+  Modules changed: `git.rs` (38 commands), `kube.rs` (15 commands), `iac.rs` (15 commands),
+  `ci.rs` (15 commands), `cloud.rs` (7 commands; `set_aws_profile`/`set_github_token` left sync
+  — they only write to a Mutex with no I/O, and changing their return type would break the API),
+  `fs.rs` (7 commands; `pick_folder`/`pick_file` left sync — rfd::FileDialog requires main thread),
+  `lib.rs` top-level (8 commands). Tests in `lib.rs` updated to use
+  `tauri::async_runtime::block_on`. `cargo build` clean; 9 tests pass; 3 pre-existing clippy
+  warnings only (lsp.rs/pty.rs); `cargo fmt` applied.
+
+- 2026-06-02 — Refactored `src-tauri/src/lib.rs` (2640 lines) into 10 domain modules.
+  `lib.rs` is now a thin entry point (715 lines). New modules under `src-tauri/src/`:
+  `git.rs` (470 lines, 39 commands), `pty.rs` (185 lines, 5 commands + PtyState struct),
+  `llm.rs` (117 lines, 3 commands), `iac.rs` (243 lines, terraform + helm commands),
+  `kube.rs` (236 lines, 17 commands), `observability.rs` (64 lines, 3 commands),
+  `cloud.rs` (173 lines, 8 commands + gh_cmd helper), `ci.rs` (293 lines, glab + gh commands),
+  `fs.rs` (144 lines, 10 commands + Entry struct), `window.rs` (34 lines, 2 commands),
+  `shared.rs` (8 lines, aws_profile() helper used by kube/iac/cloud).
+  Pure structural move: zero behavior changes. All 9 tests pass; cargo build clean;
+  clippy warnings match pre-existing baseline (3 in lsp.rs and pty.rs); cargo fmt applied.
+  Handler list identical: all commands remain registered under same names.
+
 - 2026-06-01 — De-gimmick pass: removed 13+ decorative accent uses. Accent now only on cursor +
   selected/active item. Changes: `--radius` 8→6px; `.onboard` solid panel bg, no backdrop-filter,
   4px radius; `.ob-wm`/`.ob-dot`/`.ob-dots`/`.ob-d` CSS removed; dot-nav replaced with `ob-step`
