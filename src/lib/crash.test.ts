@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { getCrashes, clearCrashes, installCrashHandlers, diagnosticsReport } from "./crash";
+import { getCrashes, clearCrashes, installCrashHandlers, diagnosticsReport, originFrame } from "./crash";
 
 beforeEach(() => {
   localStorage.clear();
@@ -69,6 +69,25 @@ describe("installCrashHandlers", () => {
     const last = crashes[crashes.length - 1];
     expect(last.kind).toBe("promise");
     expect(last.message).toBe("async failure");
+  });
+});
+
+describe("originFrame", () => {
+  it("returns empty for no stack", () => {
+    expect(originFrame(undefined)).toBe("");
+    expect(originFrame("")).toBe("");
+  });
+  it("skips the error header and picks the first app frame", () => {
+    const stack = [
+      "SyntaxError: Invalid flags supplied to RegExp constructor.",
+      "    at applyRedaction (http://localhost/_app/redaction.ts:38:20)",
+      "    at send (http://localhost/_app/AgentPanel.svelte:120:5)",
+    ].join("\n");
+    expect(originFrame(stack)).toContain("redaction.ts:38");
+  });
+  it("handles WebKit-style fn@file:line frames", () => {
+    const stack = "applyRedaction@http://localhost/src/lib/redaction.ts:38:20\nsend@.../AgentPanel.svelte:1:1";
+    expect(originFrame(stack)).toContain("redaction.ts:38");
   });
 });
 

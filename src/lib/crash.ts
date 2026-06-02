@@ -22,20 +22,31 @@ function record(kind: string, message: string, stack?: string) {
   } catch { /* ignore */ }
 }
 
+// First stack frame, so a surfaced error can name where it came from.
+export function originFrame(stack?: string): string {
+  if (!stack) return "";
+  const lines = stack.split("\n").map((l) => l.trim()).filter(Boolean);
+  const frame = lines.find((l) => /\.svelte|\/src\/|\/_app\/|\.ts:|\.js:|@/.test(l) && !/^[A-Za-z]*Error\b/.test(l)) ?? "";
+  return frame.replace(/^at\s+/, "").slice(0, 120);
+}
+
 let installed = false;
-export function installCrashHandlers(onCapture?: (kind: string, message: string) => void) {
+export function installCrashHandlers(onCapture?: (kind: string, message: string, origin: string) => void) {
   if (installed || typeof window === "undefined") return;
   installed = true;
   window.addEventListener("error", (e) => {
     const msg = e.message || "unknown error";
-    record("error", msg, (e.error as Error | undefined)?.stack);
-    onCapture?.("error", msg);
+    const stack = (e.error as Error | undefined)?.stack;
+    record("error", msg, stack);
+    console.error("[anvil] uncaught error:", msg, "\n", stack ?? "(no stack)");
+    onCapture?.("error", msg, originFrame(stack));
   });
   window.addEventListener("unhandledrejection", (e) => {
     const r = e.reason;
     const msg = typeof r === "string" ? r : (r?.message ?? String(r));
     record("promise", msg, r?.stack);
-    onCapture?.("promise", msg);
+    console.error("[anvil] unhandled rejection:", msg, "\n", r?.stack ?? "(no stack)");
+    onCapture?.("promise", msg, originFrame(r?.stack));
   });
 }
 
