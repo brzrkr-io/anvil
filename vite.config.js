@@ -12,6 +12,7 @@ export default defineConfig(async () => ({
   build: {
     rollupOptions: {
       output: {
+        /** @param {string} id */
         manualChunks(id) {
           if (id.includes("node_modules")) {
             if (/@?codemirror|@lezer|@replit\/codemirror/.test(id)) return "vendor-codemirror";

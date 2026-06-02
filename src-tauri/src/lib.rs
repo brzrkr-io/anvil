@@ -6,6 +6,7 @@ use tauri::Manager;
 
 mod ci;
 mod cloud;
+mod docker;
 mod flux;
 mod fs;
 mod git;
@@ -542,6 +543,8 @@ pub fn run() {
             ci::gh_pr_diff,
             ci::gh_pr_create,
             ci::gh_pr_merge,
+            docker::docker_ps,
+            docker::docker_action,
             ci::gh_pr_web,
             git::git_tags,
             git::git_show_file

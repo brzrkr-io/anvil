@@ -11,10 +11,11 @@
   import { parsePrRows, type PrRow } from "$lib/pr-checks";
   import { githubInvestigation, actionsInvestigation } from "$lib/agent-ops";
   import { parseRuns, failingRuns, type RunRow } from "$lib/actions-runs";
+  import Docker from "$lib/Docker.svelte";
 
   let { cwd, onRunCommand, onInvestigate }: { cwd: string; onRunCommand?: (cmd: string) => void; onInvestigate?: (prompt: string) => void } = $props();
 
-  let tab = $state<"prs" | "actions" | "gitlab" | "aws" | "inc">("prs");
+  let tab = $state<"prs" | "actions" | "gitlab" | "docker" | "aws" | "inc">("prs");
   // #59 AWS in-pane resource browser.
   let awsSvc = $state<"ec2" | "s3" | "lambda" | "rds">("ec2");
   let awsOut = $state("");
@@ -267,6 +268,7 @@
     <button class:on={tab === "prs"} onclick={() => (tab = "prs")}><Icon name="pr" size={14} /> Pull Requests</button>
     <button class:on={tab === "actions"} onclick={() => { tab = "actions"; if (!runs.length) loadActions(); }}><Icon name="ci" size={14} /> Actions{#if runFails}<span class="tabbadge">{runFails}</span>{/if}</button>
     <button class:on={tab === "gitlab"} onclick={() => { tab = "gitlab"; if (!glabOut) loadGlab(); }}><Icon name="ci" size={14} /> GitLab CI</button>
+    <button class:on={tab === "docker"} onclick={() => (tab = "docker")}><Icon name="kube" size={14} /> Docker</button>
     <button class:on={tab === "aws"} onclick={() => { tab = "aws"; if (!awsOut) loadAws(); }}><Icon name="devops" size={14} /> AWS</button>
     <button class:on={tab === "inc"} onclick={() => (tab = "inc")}><Icon name="alert" size={14} /> Incident</button>
     <span class="sp"></span>
@@ -351,6 +353,8 @@
       <button class="refresh" title="Retry pipeline in terminal" onclick={() => runCmd("glab ci retry")}>retry</button>
     </div>
     <pre class="out">{glabOut || "Loading… (needs glab + a GitLab remote)"}</pre>
+  {:else if tab === "docker"}
+    <Docker {onRunCommand} />
   {:else if tab === "aws"}
     <div class="bar">
       <span class="lbl">AWS</span>
