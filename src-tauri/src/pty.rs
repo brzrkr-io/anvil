@@ -43,6 +43,7 @@ struct PtyExit {
 /// as raw bytes over the per-terminal `on_data` channel (no base64); process
 /// exit is signalled via the `pty://exit` event tagged with the same id.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn pty_spawn(
     app: tauri::AppHandle,
     state: State<PtyState>,
@@ -110,12 +111,8 @@ pub fn pty_spawn(
         const WINDOW_ACTIVE: std::time::Duration = std::time::Duration::from_millis(4);
         const WINDOW_BG: std::time::Duration = std::time::Duration::from_millis(200);
         const FLUSH_CAP: usize = 262_144; // 256 KiB: bound latency/memory under flood.
-        loop {
-            // Block for the first chunk of a burst.
-            let mut pending = match rx.recv() {
-                Ok(c) => c,
-                Err(_) => break, // reader gone → child exited.
-            };
+        // Block for the first chunk of a burst; Err means reader gone → child exited.
+        while let Ok(mut pending) = rx.recv() {
             let window = if pty_inactive().lock().unwrap().contains(&rid) {
                 WINDOW_BG
             } else {

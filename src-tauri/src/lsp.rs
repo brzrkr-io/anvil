@@ -45,7 +45,7 @@ fn shell_path() -> &'static str {
             format!("/etc/profiles/per-user/{user}/bin"),
             "/run/current-system/sw/bin".into(),
         ] {
-            if !d.contains("//") && !dirs.iter().any(|x| *x == d) {
+            if !d.contains("//") && !dirs.contains(&d) {
                 dirs.push(d);
             }
         }
