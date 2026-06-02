@@ -127,9 +127,10 @@ pub async fn signoz_services(base: String, api_key: String, mins: u64) -> Result
         .map_err(|e| e.to_string())?
         .as_secs();
     let span = mins.max(1) * 60;
+    // SigNoz's GetServicesParams wants start/end as STRING epoch nanoseconds.
     let body = serde_json::json!({
-        "start": (now.saturating_sub(span)) * 1_000_000_000u64,
-        "end": now * 1_000_000_000u64,
+        "start": ((now.saturating_sub(span)) * 1_000_000_000u64).to_string(),
+        "end": (now * 1_000_000_000u64).to_string(),
         "tags": [],
     })
     .to_string();
