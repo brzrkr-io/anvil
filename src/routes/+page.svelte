@@ -447,6 +447,7 @@
   let paneDrag = $state<{ id: string | null }>({ id: null });
   // A top-strip tab being dragged into a workspace pane quadrant (#4/#5).
   let tabDragView = $state<{ view: ViewKind; ref?: string } | null>(null);
+  let dockEdge = $state<Edge | null>(null); // which content edge is hovered during a tab drag
   function wsDropTab(targetId: string, edge: Edge) {
     if (!tabDragView) return;
     if (edge === "center") {
@@ -455,6 +456,29 @@
       wsSplit(targetId, edge, tabDragView.view, tabDragView.ref);
     }
     tabDragView = null;
+  }
+
+  // Map the current single-pane main view to a workspace ViewKind + ref, so a
+  // tab dragged to a screen edge can seed a split that keeps what's on screen.
+  function currentMainView(): { view: ViewKind; ref?: string } {
+    if (rail === "editor" && activeFile) return { view: "editor", ref: activeFile };
+    if (rail === "term") return { view: "term" };
+    if (["scm", "search", "agent", "settings"].includes(rail)) return { view: rail as ViewKind };
+    if (["devops", "k8s", "ci", "terraform", "obs"].includes(rail)) return { view: "devops" };
+    return { view: "term" };
+  }
+  // Drag a top-strip tab to a content edge → enter the multipane workspace with a
+  // split: the current view on one side, the dragged tab on the other.
+  function dockDraggedTab(edge: Edge) {
+    if (!tabDragView || edge === "center") { tabDragView = null; dragTab = null; return; }
+    const cur = currentMainView();
+    const base = leaf(cur.view, paneRef(cur.view, cur.ref), paneId("wt"));
+    const res = splitLeaf(base, base.id, edge, tabDragView.view, paneRef(tabDragView.view, tabDragView.ref));
+    paneTree = res.tree;
+    activeLeaf = res.newLeafId;
+    rail = "workspace";
+    tabDragView = null;
+    dragTab = null;
   }
 
   // Named workspace layout presets (#12), persisted in localStorage.
@@ -1536,6 +1560,18 @@
 
     <svelte:boundary onerror={(e) => { console.error("view crashed", e); toast("This view hit an error — use Reload view", "error"); }}>
     <section class="content">
+      {#if tabDragView && rail !== "workspace"}
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div class="dockzones">
+          {#each (["left", "right", "top", "bottom"] as const) as edge}
+            <div class="dz dz-{edge}" class:hot={dockEdge === edge}
+              ondragenter={(e) => { e.preventDefault(); dockEdge = edge; }}
+              ondragover={(e) => e.preventDefault()}
+              ondragleave={() => { if (dockEdge === edge) dockEdge = null; }}
+              ondrop={(e) => { e.preventDefault(); dockEdge = null; dockDraggedTab(edge); }}></div>
+          {/each}
+        </div>
+      {/if}
       <div class="pane-head">
         {#if rail === "scm"}<span class="ph-ic accent"><Icon name="branch" /></span> Source Control — {baseName(cwd)}
         {:else if rail === "diff"}<span class="accent">±</span> Diff — {diffTarget?.rev ?? diffTarget?.path}
