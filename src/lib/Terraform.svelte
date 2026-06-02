@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { readCache, writeCache } from "$lib/cache";
   import { invoke } from "@tauri-apps/api/core";
   import Icon from "$lib/Icon.svelte";
   import { toast } from "$lib/toast";
@@ -53,7 +54,9 @@
     activeStack = path;
     output = "";
     outKind = "";
-    resources = [];
+    // Show last-known state for this stack instantly, then refresh.
+    const dir = path && path !== "." ? `${cwd}/${path}` : cwd;
+    resources = readCache<string[]>(`tf-state:${dir}`) ?? [];
     const st = stacks.find((s) => s.path === path);
     // Bias the binary toggle to what the stack actually uses.
     if (st?.terragrunt && available.terragrunt) bin = "terragrunt";
@@ -83,9 +86,9 @@
         return;
       }
       resources = raw.split("\n").map((l) => l.trim()).filter(Boolean);
+      writeCache(`tf-state:${activeDir}`, resources);
     } catch (e) {
       err = String(e);
-      resources = [];
     }
   }
 
