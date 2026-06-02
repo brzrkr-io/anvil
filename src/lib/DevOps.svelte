@@ -7,6 +7,7 @@
   import { ACCOUNTS, getValue } from "$lib/accounts";
   import Icon from "$lib/Icon.svelte";
   import { toast } from "$lib/toast";
+  import { askText, askConfirm } from "$lib/dialog";
 
   let { cwd, onRunCommand }: { cwd: string; onRunCommand?: (cmd: string) => void } = $props();
 
@@ -37,7 +38,7 @@
   }
   async function runTfApply() {
     // Approval gate (#52): irreversible infra change — explicit confirm required.
-    if (!confirm(`Run terraform apply -auto-approve in ${cwd.split("/").pop()}?\n\nThis applies the plan and may create/destroy real infrastructure.`)) return;
+    if (!await askConfirm({ title: "Terraform apply", message: `Run terraform apply -auto-approve in ${cwd.split("/").pop()}?\n\nThis applies the plan and may create/destroy real infrastructure.`, danger: true })) return;
     tfBusy = true;
     try { tfPlan = await invoke<string>("terraform_apply", { cwd }); }
     catch (e) { tfPlan = String(e); }
@@ -91,13 +92,13 @@
     catch (e) { logs = String(e); }
   }
   async function deletePod(p: Pod) {
-    if (!confirm(`Delete pod ${p.name}? (its controller will recreate it)`)) return;
+    if (!await askConfirm({ title: "Delete pod", message: `Delete pod ${p.name}? (its controller will recreate it)`, danger: true })) return;
     try { logs = await invoke<string>("kube_delete_pod", { context: current, namespace: p.ns, pod: p.name }); logPod = { ns: p.ns, name: p.name }; await loadK8s(); }
     catch (e) { logs = String(e); }
   }
   async function restartPod(p: Pod) {
     const dep = p.name.replace(/-[a-z0-9]+-[a-z0-9]+$/, "");
-    if (!confirm(`kubectl rollout restart deployment/${dep} in ${p.ns}?`)) return;
+    if (!await askConfirm({ title: "Rollout restart", message: `kubectl rollout restart deployment/${dep} in ${p.ns}?`, danger: true })) return;
     try { logs = await invoke<string>("kube_restart", { context: current, namespace: p.ns, deployment: dep }); logPod = { ns: p.ns, name: p.name }; }
     catch (e) { logs = String(e); }
   }
@@ -113,9 +114,9 @@
   }
   let savedDashboards = $state<{ name: string; url: string }[]>(typeof localStorage !== "undefined" ? loadDash() : []);
   function persistDash() { if (typeof localStorage !== "undefined") localStorage.setItem("anvil-dashboards", JSON.stringify(savedDashboards)); }
-  function saveDash() {
+  async function saveDash() {
     if (!obsUrl) return;
-    const name = prompt("Name this dashboard:", obsUrl.split("/").pop() || "dashboard");
+    const name = await askText({ title: "Save dashboard", value: obsUrl.split("/").pop() || "dashboard" });
     if (!name) return;
     savedDashboards = [...savedDashboards.filter((d) => d.url !== obsUrl), { name, url: obsUrl }];
     persistDash();
@@ -149,9 +150,9 @@
   let savedPromQs = $state<{ name: string; q: string }[]>(typeof localStorage !== "undefined" ? loadPromQs() : []);
   let sparks = $state<Record<string, number[]>>({});
   function persistPromQs() { if (typeof localStorage !== "undefined") localStorage.setItem("anvil-prom-queries", JSON.stringify(savedPromQs)); }
-  function savePromQuery() {
+  async function savePromQuery() {
     if (!promQuery.trim()) return;
-    const name = prompt("Name this query:", promQuery.slice(0, 40));
+    const name = await askText({ title: "Save query", value: promQuery.slice(0, 40) });
     if (!name) return;
     savedPromQs = [...savedPromQs.filter((x) => x.q !== promQuery), { name, q: promQuery }];
     persistPromQs();
@@ -268,7 +269,7 @@
     catch { pfList = []; }
   }
   async function portForwardPod(p: { ns: string; name: string }) {
-    const ports = prompt(`Port-forward ${p.name} (local:remote, e.g. 8080:80):`);
+    const ports = await askText({ title: "Port-forward", message: "local:remote, e.g. 8080:80", placeholder: "8080:80" });
     if (!ports || !/^\d+:\d+$/.test(ports.trim())) return;
     try { await invoke("kube_pf_start", { context: current, namespace: p.ns, pod: p.name, ports: ports.trim() }); await refreshPf(); }
     catch (e) { k8sErr = String(e); }

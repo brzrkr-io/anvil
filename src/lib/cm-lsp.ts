@@ -7,6 +7,7 @@ import { hoverTooltip, EditorView, ViewPlugin, keymap, Decoration, WidgetType, s
 import { linter, forceLinting, type Diagnostic } from "@codemirror/lint";
 import { Prec, StateField, StateEffect, type Extension, type Text } from "@codemirror/state";
 import { req, fileUri, uriToPath, diagByPath, onDiagnostics, type RawDiag } from "$lib/lsp";
+import { askText } from "$lib/dialog";
 
 export interface RefLoc { path: string; line: number; col: number; }
 export interface LspNav {
@@ -126,9 +127,9 @@ export function cmLsp(lang: string, path: string, nav: LspNav): Extension {
     const pos = view.state.selection.main.head;
     const w = view.state.wordAt(pos);
     const cur = w ? view.state.sliceDoc(w.from, w.to) : "";
-    const next = window.prompt("Rename symbol:", cur);
-    if (next == null || next === cur) return true;
     (async () => {
+      const next = await askText({ title: "Rename symbol", value: cur });
+      if (next == null || next === cur) return;
       const line = view.state.doc.lineAt(pos);
       const r = await req(lang, "textDocument/rename", {
         textDocument: { uri }, position: { line: line.number - 1, character: pos - line.from }, newName: next,

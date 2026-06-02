@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import TreeNode from "./TreeNode.svelte";
   import Icon from "./Icon.svelte";
+  import { askText } from "$lib/dialog";
 
   let { path = $bindable(""), onOpenFile }: { path: string; onOpenFile?: (p: string) => void } = $props();
 
@@ -30,7 +31,7 @@
 
   async function newFile() {
     closeMenu();
-    const name = prompt("New file name:");
+    const name = await askText({ title: "New file", placeholder: "name.ext" });
     if (!name) return;
     await invoke("create_path", { path: path + "/" + name, isDir: false });
     await load(path);
@@ -38,7 +39,7 @@
 
   async function newFolder() {
     closeMenu();
-    const name = prompt("New folder name:");
+    const name = await askText({ title: "New folder" });
     if (!name) return;
     await invoke("create_path", { path: path + "/" + name, isDir: true });
     await load(path);

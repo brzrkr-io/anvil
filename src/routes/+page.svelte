@@ -76,6 +76,7 @@
   import { leaf, splitLeaf, closeLeaf, resizeSplit, dockLeaf, setView as setLeafView, paneId, remapTermRefs, firstLeaf, findLeaf, balanceTree, closeOthers as closeOtherPanes, leafIds, addTab, setActiveTab, closeTab, type PaneNode, type Leaf, type ViewKind, type Edge } from "$lib/panes";
   import Palette, { type Item } from "$lib/Palette.svelte";
   import Toasts from "$lib/Toasts.svelte";
+  import Dialog from "$lib/Dialog.svelte";
   import Welcome from "$lib/Welcome.svelte";
   import WhatsNew from "$lib/WhatsNew.svelte";
   import Keymap from "$lib/Keymap.svelte";
@@ -1403,6 +1404,7 @@
 
   {#if zen}<div class="zen-exit" onclick={() => (zen = false)} role="button" tabindex="-1" title="Exit zen mode (⌘.)">⌘. exit zen</div>{/if}
   <Palette bind:open={paletteOpen} items={paletteItems} placeholder={palettePlaceholder} />
+  <Dialog />
   <Toasts />
 
   {#if !onboarded}

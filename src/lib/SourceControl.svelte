@@ -5,6 +5,7 @@
   import Icon from "$lib/Icon.svelte";
   import HunkStage from "$lib/HunkStage.svelte";
   import { llmCreds } from "$lib/accounts";
+  import { askText } from "$lib/dialog";
 
   let { cwd, onOpenDiff }: {
     cwd: string;
@@ -192,8 +193,8 @@
   }
   const stashSave = () => act("git_stash_save", { message: "WIP" });
   const stashApply = (i: number) => act("git_stash_apply", { index: `stash@{${i}}` });
-  function stashWithMessage() {
-    const m = prompt("Stash message:", "WIP");
+  async function stashWithMessage() {
+    const m = await askText({ title: "Stash", value: "WIP" });
     if (m === null) return;
     act("git_stash_push", { message: m || null });
   }
