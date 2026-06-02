@@ -4,7 +4,7 @@
   import { listen } from "@tauri-apps/api/event";
   import Terminal from "$lib/Terminal.svelte";
   import Problems from "$lib/Problems.svelte";
-  import SourceControl from "$lib/SourceControl.svelte";
+  const SourceControl = () => import("$lib/SourceControl.svelte");
   import FileBrowser from "$lib/FileBrowser.svelte";
   // Editor + DiffView pull in Monaco (~4 MB); load them lazily on first use
   // so app startup stays fast (#90).
@@ -18,9 +18,9 @@
   const NONTEXT = new Set(["png","jpg","jpeg","gif","webp","bmp","ico","svg","avif","pdf","zip","tar","gz","mp4","mov","mp3","wav","woff","woff2","ttf","otf","exe","bin","wasm","so","dylib","o","a"]);
   const isNonText = (p: string) => NONTEXT.has(p.split(".").pop()?.toLowerCase() ?? "");
   const DiffView = () => import("$lib/DiffView.svelte");
-  import SearchPanel from "$lib/SearchPanel.svelte";
+  const SearchPanel = () => import("$lib/SearchPanel.svelte");
   import CommitDetail from "$lib/CommitDetail.svelte";
-  import AgentPanel from "$lib/AgentPanel.svelte";
+  const AgentPanel = () => import("$lib/AgentPanel.svelte");
   import { readTerminal, broadcastInput } from "$lib/term-registry";
   import { telemetryEnabled, toggleTelemetry, getEvents, clearEvents, logEvent } from "$lib/telemetry";
   import { online } from "$lib/offline";
@@ -1325,7 +1325,7 @@
       </div>
 
       {#if rail === "scm"}
-        <div class="view">{#key cwd}<SourceControl {cwd} onOpenDiff={(t) => { diffTarget = t; rail = "diff"; }} />{/key}</div>
+        <div class="view">{#key cwd}{#await SourceControl() then M}<M.default {cwd} onOpenDiff={(t) => { diffTarget = t; rail = "diff"; }} />{/await}{/key}</div>
       {:else if rail === "diff" && diffTarget}
         <div class="view">
           <div class="difftop"><button class="back" onclick={() => (rail = "scm")}>← Source Control</button></div>
@@ -1350,7 +1350,7 @@
           {/if}
         </div>
       {:else if rail === "search"}
-        <div class="view">{#key cwd}<SearchPanel root={cwd} onOpen={(p) => openInEditor(p)} />{/key}</div>
+        <div class="view">{#key cwd}{#await SearchPanel() then M}<M.default root={cwd} onOpen={(p) => openInEditor(p)} />{/await}{/key}</div>
       {:else if rail === "k8s"}
         <div class="view">{#key cwd}{#await Kube() then M}<M.default {cwd} onRunCommand={(cmd) => { invoke("pty_write", { id: activeTerm, data: cmd + "\n" }); rail = "term"; toast("Sent to terminal", "info"); }} />{/await}{/key}</div>
       {:else if rail === "ci"}
@@ -1374,16 +1374,16 @@
             {:else if lf.view === "files"}
               {#key cwd}<FileBrowser bind:path={cwd} onOpenFile={openInEditor} />{/key}
             {:else if lf.view === "scm"}
-              {#key cwd}<SourceControl {cwd} onOpenDiff={(t) => { diffTarget = t; }} />{/key}
+              {#key cwd}{#await SourceControl() then M}<M.default {cwd} onOpenDiff={(t) => { diffTarget = t; }} />{/await}{/key}
             {:else if lf.view === "search"}
-              {#key cwd}<SearchPanel root={cwd} onOpen={(p) => openInEditor(p)} />{/key}
+              {#key cwd}{#await SearchPanel() then M}<M.default root={cwd} onOpen={(p) => openInEditor(p)} />{/await}{/key}
             {:else if lf.view === "agent"}
-              <AgentPanel {cwd} attachPath={activeFile}
+              {#await AgentPanel() then M}<M.default {cwd} attachPath={activeFile}
                 listFiles={() => invoke<string[]>("walk_dir", { root: cwd.replace(/\/$/, "") })}
                 onReadFile={(p) => invoke<string>("read_file", { path: p })}
                 onApplyFile={(path, content) => { invoke("write_file", { path, contents: content }); }}
                 getTerminalText={() => readTerminal(activeTerm)}
-                onRunCommand={(c) => invoke("pty_write", { id: activeTerm, data: c + "\n" })} />
+                onRunCommand={(c) => invoke("pty_write", { id: activeTerm, data: c + "\n" })} />{/await}
             {:else if lf.view === "devops"}
               {#key cwd}{#await DevOps() then M}<M.default {cwd} onRunCommand={(c) => invoke("pty_write", { id: activeTerm, data: c + "\n" })} />{/await}{/key}
             {:else if lf.view === "caldera"}
@@ -1415,7 +1415,7 @@
 
       <!-- Agent stays mounted so a request keeps running after you switch views. -->
       <div class="view" style:display={rail === "agent" ? "block" : "none"}>
-        <AgentPanel
+        {#await AgentPanel() then M}<M.default
           {cwd}
           attachPath={activeFile}
           listFiles={() => invoke<string[]>("walk_dir", { root: cwd.replace(/\/$/, "") })}
@@ -1424,7 +1424,7 @@
           getTerminalText={() => readTerminal(activeTerm)}
           onRunCommand={(cmd) => { invoke("pty_write", { id: activeTerm, data: cmd + "\n" }); rail = "term"; toast("Command sent to terminal", "success"); }}
           onReply={(summary) => { if (rail !== "agent" || document.hidden) notifyAgent(summary); }}
-        />
+        />{/await}
       </div>
 
       {#if bottomDock}
