@@ -33,3 +33,4 @@ vite.config.ts.timestamp-*
 /docs/superpowers
 /editors
 /.vscode
+/SHIPPING.txt
