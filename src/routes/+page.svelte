@@ -77,6 +77,18 @@
   const Terraform = () => import("$lib/Terraform.svelte");
   const Helm = () => import("$lib/Helm.svelte");
   const Observability = () => import("$lib/Observability.svelte");
+
+  // Keep-alive for the DevOps rail views: mount each once visited, then toggle
+  // with display instead of unmount/remount. Re-mounting re-ran kubectl/glab/etc
+  // on every page switch — that round-trip was the switching lag.
+  const KEEPALIVE_RAILS = ["k8s", "ci", "terraform", "helm", "obs", "devops", "scm", "search"];
+  let mountedRails = $state<Record<string, boolean>>({});
+  $effect(() => { if (KEEPALIVE_RAILS.includes(rail) && !mountedRails[rail]) mountedRails = { ...mountedRails, [rail]: true }; });
+  function sendToTerm(cmd: string) {
+    invoke("pty_write", { id: activeTerm, data: cmd + "\n" });
+    rail = "term";
+    toast("Sent to terminal", "info");
+  }
   const Caldera = () => import("$lib/Caldera.svelte");
   import PaneGrid from "$lib/PaneGrid.svelte";
   import { leaf, splitLeaf, closeLeaf, resizeSplit, dockLeaf, setView as setLeafView, paneId, remapTermRefs, firstLeaf, findLeaf, balanceTree, closeOthers as closeOtherPanes, leafIds, addTab, setActiveTab, closeTab, type PaneNode, type Leaf, type ViewKind, type Edge } from "$lib/panes";
@@ -1326,9 +1338,7 @@
         {/each}
       </div>
 
-      {#if rail === "scm"}
-        <div class="view">{#key cwd}{#await SourceControl() then M}<M.default {cwd} onOpenDiff={(t) => { diffTarget = t; rail = "diff"; }} />{/await}{/key}</div>
-      {:else if rail === "diff" && diffTarget}
+      {#if rail === "diff" && diffTarget}
         <div class="view">
           <div class="difftop"><button class="back" onclick={() => (rail = "scm")}>← Source Control</button></div>
           {#key JSON.stringify(diffTarget)}
@@ -1351,20 +1361,6 @@
             {/await}
           {/if}
         </div>
-      {:else if rail === "search"}
-        <div class="view">{#key cwd}{#await SearchPanel() then M}<M.default root={cwd} onOpen={(p) => openInEditor(p)} />{/await}{/key}</div>
-      {:else if rail === "k8s"}
-        <div class="view">{#key cwd}{#await Kube() then M}<M.default {cwd} onRunCommand={(cmd) => { invoke("pty_write", { id: activeTerm, data: cmd + "\n" }); rail = "term"; toast("Sent to terminal", "info"); }} />{/await}{/key}</div>
-      {:else if rail === "ci"}
-        <div class="view">{#key cwd}{#await CI() then M}<M.default {cwd} onRunCommand={(cmd) => { invoke("pty_write", { id: activeTerm, data: cmd + "\n" }); rail = "term"; toast("Sent to terminal", "info"); }} />{/await}{/key}</div>
-      {:else if rail === "terraform"}
-        <div class="view">{#key cwd}{#await Terraform() then M}<M.default {cwd} onRunCommand={(cmd) => { invoke("pty_write", { id: activeTerm, data: cmd + "\n" }); rail = "term"; toast("Sent to terminal", "info"); }} />{/await}{/key}</div>
-      {:else if rail === "helm"}
-        <div class="view">{#await Helm() then M}<M.default />{/await}</div>
-      {:else if rail === "obs"}
-        <div class="view">{#await Observability() then M}<M.default />{/await}</div>
-      {:else if rail === "devops"}
-        <div class="view">{#key cwd}{#await DevOps() then M}<M.default {cwd} onRunCommand={(cmd) => { invoke("pty_write", { id: activeTerm, data: cmd + "\n" }); rail = "term"; toast("Sent to terminal", "info"); }} />{/await}{/key}</div>
       {:else if rail === "caldera"}
         <div class="view">{#await Caldera() then M}<M.default />{/await}</div>
       {:else if rail === "workspace"}
@@ -1413,6 +1409,32 @@
         <div class="view">{#await Settings() then M}<M.default />{/await}</div>
       {:else if rail === "editor" || rail === "files"}
         <div class="view"><Welcome recent={recentFiles} onOpenRecent={openInEditor} onNewTerminal={newTerm} onCommandPalette={openCommands} /></div>
+      {/if}
+
+      <!-- Heavy rail views: mounted on first visit, then shown/hidden (no re-fetch on switch). -->
+      {#if mountedRails.scm}
+        <div class="view" style:display={rail === "scm" ? "block" : "none"}>{#key cwd}{#await SourceControl() then M}<M.default {cwd} onOpenDiff={(t) => { diffTarget = t; rail = "diff"; }} />{/await}{/key}</div>
+      {/if}
+      {#if mountedRails.search}
+        <div class="view" style:display={rail === "search" ? "block" : "none"}>{#key cwd}{#await SearchPanel() then M}<M.default root={cwd} onOpen={(p) => openInEditor(p)} />{/await}{/key}</div>
+      {/if}
+      {#if mountedRails.k8s}
+        <div class="view" style:display={rail === "k8s" ? "block" : "none"}>{#key cwd}{#await Kube() then M}<M.default {cwd} onRunCommand={sendToTerm} />{/await}{/key}</div>
+      {/if}
+      {#if mountedRails.ci}
+        <div class="view" style:display={rail === "ci" ? "block" : "none"}>{#key cwd}{#await CI() then M}<M.default {cwd} onRunCommand={sendToTerm} />{/await}{/key}</div>
+      {/if}
+      {#if mountedRails.terraform}
+        <div class="view" style:display={rail === "terraform" ? "block" : "none"}>{#key cwd}{#await Terraform() then M}<M.default {cwd} onRunCommand={sendToTerm} />{/await}{/key}</div>
+      {/if}
+      {#if mountedRails.helm}
+        <div class="view" style:display={rail === "helm" ? "block" : "none"}>{#await Helm() then M}<M.default />{/await}</div>
+      {/if}
+      {#if mountedRails.obs}
+        <div class="view" style:display={rail === "obs" ? "block" : "none"}>{#await Observability() then M}<M.default />{/await}</div>
+      {/if}
+      {#if mountedRails.devops}
+        <div class="view" style:display={rail === "devops" ? "block" : "none"}>{#key cwd}{#await DevOps() then M}<M.default {cwd} onRunCommand={sendToTerm} />{/await}{/key}</div>
       {/if}
 
       <!-- Agent stays mounted so a request keeps running after you switch views. -->
