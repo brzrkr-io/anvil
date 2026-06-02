@@ -76,6 +76,7 @@ Allowed `confidence`: `high`, `medium`, `low`. Dates use `YYYY-MM-DD`.
 - [[concepts/block-model|Block Model]] — OSC 133 block structure, header row, running-block pulse (CB6), completion pulse, Opt+click copy (CB5), diff colorization.
 - [[concepts/agent-actions|Agent Actions]] — caldera approve/start keybindings (AG3), `anvil-caldera` action helpers.
 - [[concepts/native-editor|Native Editor]] — Buffer/rope model (NE1), file IO (NE2), undo/redo (NE3), EditorPane + registry (NE4), render path (NE5).
+- [[concepts/security-boundary|Security Boundary]] — CSP + IPC audit: locked CSP (local-only, unsafe-inline required by hydration), scoped capabilities, no shell plugin, allow-listed verbs; agent `run_capture` is the live surface.
 - [../BRAND](../BRAND.md) — Anvil brand contract for all user-facing work.
 
 ## Current State

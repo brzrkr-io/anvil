@@ -2417,3 +2417,14 @@ Tests updated: `build_section_*` tests replaced with `context_section_*` tests; 
   with no testable surface without full IPC mocks.
 
 - 2026-05-31 — Unified UI Scale Task 4: ui_scale config field + DPI-auto resolution + persist. Added `ui_scale: f32 = 0` to Config struct (0 = auto, >0 = pinned). Added applyKey branch for ui_scale (valid: 0 or 0.5-4.0). Extracted `persistKey` helper from persistTheme body; both persistTheme and new persistUiScale delegate to it. In app.zig: anvil_set_backing_scale now resolves DPI-auto (g_backing < 2.0 → 2.0, else 1.0) or honours cfg.ui_scale pin, sets default_ui_scale. Added persistUiScale() wrapper that calls config.persistUiScale and refreshes cfg_mtime. setUiScale now calls persistUiScale(). 5 new tests all pass. Gates: build clean, test exit 0, DUMP_OK, fmt clean. Files: src/config.zig, src/app.zig.
+
+- 2026-06-02 — Security boundary audit (#45). New concept page
+  `wiki/concepts/security-boundary.md` + index link. CSP is locked
+  (default-src 'self', object-src none, frame-ancestors none, connect-src local
+  ipc only); `'unsafe-inline'` confirmed *required* — SvelteKit hydration emits
+  one inline bootstrap `<script>` and xterm/CodeMirror inject inline styles;
+  accepted because all origins are local. Capabilities scoped, no shell plugin,
+  no withGlobalTauri / dangerousRemoteDomainIpcAccess. ~150 commands build
+  Command via explicit .arg() (no shell interpolation); verb-reaching commands
+  allow-list the verb. Single shell exec is `run_capture` (agent tool, UI-gated)
+  → that is #46's surface, not this boundary's. Finding: boundary sound.
