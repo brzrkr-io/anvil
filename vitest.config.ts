@@ -19,6 +19,9 @@ export default defineConfig({
       provider: "v8",
       reporter: ["text", "json-summary", "html"],
       include: ["src/lib/**/*.ts"],
+      // #9 coverage target. Gate at 90% lines/statements so it can't regress;
+      // branch is left ungated (DOM-glue branches inflate the denominator).
+      thresholds: { lines: 90, statements: 90 },
       exclude: [
         "src/lib/**/*.test.ts",
         "src/lib/**/*.d.ts",
