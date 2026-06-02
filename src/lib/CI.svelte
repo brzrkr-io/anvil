@@ -5,7 +5,7 @@
   import { toast } from "$lib/toast";
   import { askConfirm } from "$lib/dialog";
 
-  let { cwd, onRunCommand }: { cwd: string; onRunCommand?: (cmd: string) => void } = $props();
+  let { cwd, onRunCommand, active = true }: { cwd: string; onRunCommand?: (cmd: string) => void; active?: boolean } = $props();
 
   interface Pipeline {
     id: number;
@@ -125,7 +125,7 @@
   });
 
   async function loadPipelines() {
-    if (document.hidden) return;
+    if (document.hidden || !active) return;
     try {
       const raw = await invoke<string>("glab_pipelines_json", { cwd });
       pipelines = JSON.parse(raw) as Pipeline[];
@@ -141,7 +141,7 @@
   }
 
   async function loadJobs(pipelineId: number) {
-    if (document.hidden) return;
+    if (document.hidden || !active) return;
     try {
       const raw = await invoke<string>("glab_pipeline_jobs", { cwd, pipeline: String(pipelineId) });
       // glab returns jobs newest-first; ascending id = pipeline stage order (validate→build→deploy).
@@ -152,7 +152,7 @@
   }
 
   async function loadTrace(jobId: number) {
-    if (document.hidden) return;
+    if (document.hidden || !active) return;
     try {
       const raw = await invoke<string>("glab_job_trace", { cwd, job: String(jobId) });
       logContent = cleanTrace(raw);

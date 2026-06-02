@@ -1422,7 +1422,7 @@
         <div class="view" style:display={rail === "k8s" ? "block" : "none"}>{#key cwd}{#await Kube() then M}<M.default {cwd} onRunCommand={sendToTerm} />{/await}{/key}</div>
       {/if}
       {#if mountedRails.ci}
-        <div class="view" style:display={rail === "ci" ? "block" : "none"}>{#key cwd}{#await CI() then M}<M.default {cwd} onRunCommand={sendToTerm} />{/await}{/key}</div>
+        <div class="view" style:display={rail === "ci" ? "block" : "none"}>{#key cwd}{#await CI() then M}<M.default {cwd} active={rail === "ci"} onRunCommand={sendToTerm} />{/await}{/key}</div>
       {/if}
       {#if mountedRails.terraform}
         <div class="view" style:display={rail === "terraform" ? "block" : "none"}>{#key cwd}{#await Terraform() then M}<M.default {cwd} onRunCommand={sendToTerm} />{/await}{/key}</div>
@@ -1431,7 +1431,7 @@
         <div class="view" style:display={rail === "helm" ? "block" : "none"}>{#await Helm() then M}<M.default />{/await}</div>
       {/if}
       {#if mountedRails.obs}
-        <div class="view" style:display={rail === "obs" ? "block" : "none"}>{#await Observability() then M}<M.default />{/await}</div>
+        <div class="view" style:display={rail === "obs" ? "block" : "none"}>{#await Observability() then M}<M.default active={rail === "obs"} />{/await}</div>
       {/if}
       {#if mountedRails.devops}
         <div class="view" style:display={rail === "devops" ? "block" : "none"}>{#key cwd}{#await DevOps() then M}<M.default {cwd} onRunCommand={sendToTerm} />{/await}{/key}</div>

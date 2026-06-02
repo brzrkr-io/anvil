@@ -83,7 +83,9 @@
       cursorBlink: get(termCursorBlink),
       cursorStyle: get(termCursorStyle),
       allowProposedApi: true,
-      allowTransparency: true,
+      // Only pay the alpha-blend cost when the window is actually translucent;
+      // at full opacity (the common case) keep the WebGL renderer opaque/fast.
+      allowTransparency: get(windowOpacity) < 1,
       scrollback: get(termScrollback),
     });
 

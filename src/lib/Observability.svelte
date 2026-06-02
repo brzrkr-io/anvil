@@ -4,6 +4,8 @@
   import Icon from "$lib/Icon.svelte";
   import { askText } from "$lib/dialog";
 
+  let { active = true }: { active?: boolean } = $props();
+
   const ls = typeof localStorage !== "undefined" ? localStorage : null;
   let view = $state<"metrics" | "logs">("metrics");
 
@@ -97,7 +99,7 @@
   let lokiTimer: ReturnType<typeof setInterval> | null = null;
 
   async function runLoki() {
-    if (!lokiBase || !lokiQuery) return;
+    if (!lokiBase || !lokiQuery || !active) return;
     ls?.setItem("anvil-loki-base", lokiBase);
     lokiErr = "";
     try {
