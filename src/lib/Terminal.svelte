@@ -5,6 +5,7 @@
   import { SearchAddon } from "@xterm/addon-search";
   import { WebLinksAddon } from "@xterm/addon-web-links";
   import { WebglAddon } from "@xterm/addon-webgl";
+  import { CanvasAddon } from "@xterm/addon-canvas";
   import { ImageAddon } from "@xterm/addon-image";
   import "@xterm/xterm/css/xterm.css";
   import { invoke, Channel } from "@tauri-apps/api/core";
@@ -34,6 +35,7 @@
   let lastCols = 0, lastRows = 0;
   let unsubTheme: () => void;
   let unsubOpacity: () => void;
+  let selTimer: ReturnType<typeof setTimeout> | undefined;
 
   // Build an xterm theme whose background is mixed toward transparent by the
   // window-opacity value (a). At a=1 the background is the theme's solid color;
@@ -135,15 +137,28 @@
       terminalOpenPath.set({ path: p, line });
     }, { urlRegex: PATH_RE }));
     // Copy-on-select (#20): mirror the X11/iTerm convention — selecting copies.
-    term.onSelectionChange(() => { const sel = term.getSelection(); if (sel) navigator.clipboard.writeText(sel).catch((e) => console.warn("clipboard write failed", e)); });
+    // Debounced so a drag-select doesn't fire a clipboard write on every change.
+    term.onSelectionChange(() => {
+      clearTimeout(selTimer);
+      selTimer = setTimeout(() => {
+        const sel = term.getSelection();
+        if (sel) navigator.clipboard.writeText(sel).catch((e) => console.warn("clipboard write failed", e));
+      }, 150);
+    });
     term.open(host);
     fit.fit();
-    // GPU renderer for crisp, fast text; fall back silently if WebGL is lost.
+    // GPU renderer for crisp, fast text. If WebGL is unavailable/lost, fall back
+    // to the CANVAS renderer (still far faster than xterm's default DOM renderer).
+    let webglOk = false;
     try {
       const webgl = new WebglAddon();
-      webgl.onContextLoss(() => webgl.dispose());
+      webgl.onContextLoss(() => { webgl.dispose(); try { term.loadAddon(new CanvasAddon()); } catch { /* DOM */ } });
       term.loadAddon(webgl);
-    } catch { /* no WebGL — canvas renderer stays */ }
+      webglOk = true;
+    } catch { /* no WebGL */ }
+    if (!webglOk) {
+      try { term.loadAddon(new CanvasAddon()); } catch { /* DOM renderer — slowest, last resort */ }
+    }
 
     // ⌘F opens the terminal search box (intercept before the key reaches the PTY).
     term.attachCustomKeyEventHandler((e) => {
@@ -269,6 +284,7 @@
   onDestroy(() => {
     unsubTheme?.();
     unsubOpacity?.();
+    clearTimeout(selTimer);
     if (resizeRaf) cancelAnimationFrame(resizeRaf);
     ro?.disconnect();
     unlisten.forEach((u) => u());
