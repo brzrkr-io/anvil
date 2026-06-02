@@ -115,7 +115,12 @@
     onRunCommand?.(`flux events --for ${it.apiKind}/${it.name} -n ${it.ns}`);
   }
 
-  let fails = $derived(failingCount(items)); // active tab only (drives the in-panel chip)
+  // A2: client-side namespace filter (read-only; no extra cluster calls).
+  let nsFilter = $state("");
+  const namespaces = $derived([...new Set(items.map((i) => i.ns).filter(Boolean))].sort());
+  const shown = $derived(nsFilter ? items.filter((i) => i.ns === nsFilter) : items);
+
+  let fails = $derived(failingCount(shown)); // shown set (drives the in-panel chip)
 
   // A1: cluster-wide failing count — Kustomizations + HelmReleases, regardless of
   // the active tab — so the rail badge reflects the whole cluster's health.
@@ -159,6 +164,12 @@
       {#each TABS as t (t.id)}
         <button class:on={tab === t.id} onclick={() => { tab = t.id; load(); }}>{t.label}</button>
       {/each}
+      {#if namespaces.length > 1}
+        <select class="fx-ns-sel" bind:value={nsFilter} title="Filter by namespace">
+          <option value="">all namespaces</option>
+          {#each namespaces as ns (ns)}<option value={ns}>{ns}</option>{/each}
+        </select>
+      {/if}
       <span class="spacer"></span>
       {#if fails}<span class="fx-fail-chip" title="{fails} failing">{fails} failing</span>{/if}
       {#if loading}<span class="spin">…</span>{/if}
@@ -170,10 +181,10 @@
     <div class="fx-body">
         {#if loading && !items.length}
           <div class="fx-empty">Loading…</div>
-        {:else if !items.length}
-          <div class="fx-empty">No {tab} found.</div>
+        {:else if !shown.length}
+          <div class="fx-empty">No {nsFilter ? `${tab} in ${nsFilter}` : tab} found.</div>
         {:else}
-          {#each items as it (it.ns + "/" + it.apiKind + "/" + it.name)}
+          {#each shown as it (it.ns + "/" + it.apiKind + "/" + it.name)}
             <div class="fx-row" class:busy={busyRow === it.ns + "/" + it.name}>
               <span class="fx-dot {it.suspended ? 'susp' : it.ready}" title={it.suspended ? "Suspended" : it.ready}></span>
               <span class="fx-name" title={it.message}>{it.name}</span>
@@ -215,6 +226,7 @@
     font-family: var(--font-ui); font-size: 11.5px; padding: 3px 10px; border-radius: 5px; cursor: default; }
   .fx-tabs button:hover { color: var(--text2); }
   .fx-tabs button.on { color: var(--text); background: var(--panel2); border-color: var(--border); }
+  .fx-ns-sel { background: var(--panel2); color: var(--text2); border: 1px solid var(--border); border-radius: 5px; font-size: 11px; padding: 1px 4px; max-width: 150px; }
   .fx-refresh { color: var(--text3); display: inline-flex; align-items: center; padding: 3px; border: 0; background: transparent; border-radius: 4px; cursor: default; }
   .fx-refresh:hover { color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); }
   .fx-err { margin: 6px var(--pad-x, 10px); color: var(--red); font-size: 11px; font-family: var(--font-mono); }
