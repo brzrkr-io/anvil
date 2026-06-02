@@ -61,6 +61,18 @@ struct LspHandle {
     pending: Pending,
 }
 
+impl LspHandle {
+    /// Cheap clone of the shared channels so a request can run without holding
+    /// the LspState map lock for the whole round-trip.
+    fn share(&self) -> LspHandle {
+        LspHandle {
+            stdin: self.stdin.clone(),
+            next_id: self.next_id.clone(),
+            pending: self.pending.clone(),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct LspState(Mutex<HashMap<String, LspHandle>>);
 
@@ -235,9 +247,14 @@ pub fn lsp_request(
     method: String,
     params: Value,
 ) -> Result<Value, String> {
-    let map = state.0.lock().unwrap();
-    let h = map.get(&lang).ok_or("lsp server not started")?;
-    request_blocking(h, &method, params, 10)
+    // Clone the handle's Arcs and release the map lock BEFORE waiting on the
+    // server, so a slow request (cold gopls can take seconds) doesn't block
+    // every other LSP call behind the global mutex.
+    let h = {
+        let map = state.0.lock().unwrap();
+        map.get(&lang).ok_or("lsp server not started")?.share()
+    };
+    request_blocking(&h, &method, params, 10)
 }
 
 #[tauri::command]
@@ -247,9 +264,11 @@ pub fn lsp_notify(
     method: String,
     params: Value,
 ) -> Result<(), String> {
-    let map = state.0.lock().unwrap();
-    let h = map.get(&lang).ok_or("lsp server not started")?;
-    notify(h, &method, params)
+    let h = {
+        let map = state.0.lock().unwrap();
+        map.get(&lang).ok_or("lsp server not started")?.share()
+    };
+    notify(&h, &method, params)
 }
 
 /// Drop the handle for `lang`, closing its stdin so the server exits. Used by
