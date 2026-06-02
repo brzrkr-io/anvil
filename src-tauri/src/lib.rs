@@ -506,6 +506,8 @@ pub fn run() {
             ci::gh_prs,
             ci::gh_pr_view,
             ci::gh_pr_comment,
+            ci::gh_pr_review,
+            ci::gh_pr_diff,
             ci::gh_pr_create,
             ci::gh_pr_web,
             git::git_tags,

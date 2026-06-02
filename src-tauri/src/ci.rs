@@ -132,6 +132,58 @@ pub async fn gh_pr_comment(cwd: String, num: String, body: String) -> Result<Str
     .map_err(|e| e.to_string())?
 }
 
+/// Submit a PR review: `gh pr review <num> --approve|--request-changes|--comment`
+/// with an optional body. `action` is allow-listed so it can't inject flags.
+#[tauri::command]
+pub async fn gh_pr_review(
+    cwd: String,
+    num: String,
+    action: String,
+    body: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let flag = match action.as_str() {
+            "approve" => "--approve",
+            "request-changes" => "--request-changes",
+            "comment" => "--comment",
+            _ => return Err(format!("unsupported review action: {action}")),
+        };
+        let mut cmd = gh_cmd(&cwd);
+        cmd.args(["pr", "review", &num, flag]);
+        if !body.trim().is_empty() {
+            cmd.args(["--body", &body]);
+        }
+        let out = crate::shared::exec_capture(cmd, 30).map_err(|e| e.to_string())?;
+        let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+        s.push_str(&String::from_utf8_lossy(&out.stderr));
+        if out.status.success() {
+            Ok(s)
+        } else {
+            Err(s)
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The unified diff of a PR via `gh pr diff <num>` (no color so the UI colorizes).
+#[tauri::command]
+pub async fn gh_pr_diff(cwd: String, num: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut cmd = gh_cmd(&cwd);
+        cmd.args(["pr", "diff", &num]);
+        let out = crate::shared::exec_capture(cmd, 30).map_err(|e| e.to_string())?;
+        let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if !out.status.success() && !stderr.is_empty() {
+            s.push_str(&stderr);
+        }
+        Ok(s)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Open a PR for the current branch via `gh pr create --fill` (#66).
 #[tauri::command]
 pub async fn gh_pr_create(cwd: String) -> Result<String, String> {

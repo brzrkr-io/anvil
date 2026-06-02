@@ -158,6 +158,18 @@
     try { await invoke("gh_pr_comment", { cwd, num: prSel, body: prComment }); prComment = ""; await openPr(prSel); } catch (e) { prDetail = String(e) + "\n\n" + prDetail; }
     prBusy = false;
   }
+  async function reviewPr(action: "approve" | "request-changes") {
+    if (!prSel || prBusy) return;
+    if (action === "request-changes" && !prComment.trim()) { prDetail = "Add a comment before requesting changes.\n\n" + prDetail; return; }
+    prBusy = true;
+    try { await invoke("gh_pr_review", { cwd, num: prSel, action, body: prComment }); prComment = ""; await openPr(prSel); }
+    catch (e) { prDetail = String(e) + "\n\n" + prDetail; } finally { prBusy = false; }
+  }
+  async function diffPr() {
+    if (!prSel) return;
+    prDetail = "Loading diff…";
+    try { prDetail = await invoke<string>("gh_pr_diff", { cwd, num: prSel }); } catch (e) { prDetail = String(e); }
+  }
   async function loadPRs() {
     busy = true;
     try { prs = await invoke<string>("gh_prs", { cwd }); } catch (e) { prs = String(e); }
@@ -216,9 +228,16 @@
         {/each}
       </div>
       {#if prSel}
+        <div class="pr-acts">
+          <button class="pr-btn" disabled={prBusy} onclick={diffPr} title="Show the PR diff">Diff</button>
+          <button class="pr-btn" disabled={prBusy} onclick={() => openPr(prSel)} title="Back to conversation">Conversation</button>
+          <span class="grow"></span>
+          <button class="pr-btn ok" disabled={prBusy} onclick={() => reviewPr("approve")} title="Approve (optionally with the comment below)">Approve</button>
+          <button class="pr-btn warn" disabled={prBusy} onclick={() => reviewPr("request-changes")} title="Request changes (needs a comment)">Request changes</button>
+        </div>
         <pre class="out">{prDetail}</pre>
         <div class="bar">
-          <input class="url" bind:value={prComment} onkeydown={(e) => e.key === "Enter" && postPrComment()} placeholder={`Comment on #${prSel} (Enter to post)`} spellcheck="false" />
+          <input class="url" bind:value={prComment} onkeydown={(e) => e.key === "Enter" && postPrComment()} placeholder={`Comment / review body for #${prSel} (Enter to comment)`} spellcheck="false" />
           <button class="refresh" disabled={prBusy || !prComment.trim()} onclick={postPrComment} title="Post comment"><Icon name="play" size={13} /></button>
         </div>
       {/if}
@@ -298,6 +317,14 @@
   .tabs .refresh { color: var(--text3); }
   .tabs .sp { flex: 1; }
   .tabs .busy { color: var(--accent); }
+  .pr-acts { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--hairline); }
+  .pr-acts .grow { flex: 1; }
+  .pr-btn { border: 1px solid var(--border); background: var(--panel2); color: var(--text2); font-family: var(--font-ui);
+    font-size: 11px; padding: 3px 9px; border-radius: 5px; cursor: default; }
+  .pr-btn:hover:not(:disabled) { color: var(--text); border-color: var(--text3); }
+  .pr-btn.ok:hover:not(:disabled) { color: var(--green); border-color: var(--green); }
+  .pr-btn.warn:hover:not(:disabled) { color: var(--accent2); border-color: var(--accent2); }
+  .pr-btn:disabled { opacity: 0.45; }
   .bar { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-bottom: 1px solid var(--border); }
   .lbl { color: var(--text3); font-size: 11px; font-weight: 500; }
   .bar select { background: var(--panel2); color: var(--accent); border: 1px solid var(--border);
