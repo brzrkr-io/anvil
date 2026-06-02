@@ -98,6 +98,15 @@
         .map((s) => ({ text: view!.state.doc.line(Math.min(s.line, view!.state.doc.lines)).text, line: s.line }));
     } else stickyRows = [];
   }
+  // Coalesce scope recomputes to one per animation frame. recomputeScope reads
+  // layout (lineBlockAtHeight) and rebuilds sticky rows; running it on every
+  // scroll/selection event was the main cause of scroll jank.
+  let scopeQueued = false;
+  function queueScope() {
+    if (scopeQueued) return;
+    scopeQueued = true;
+    requestAnimationFrame(() => { scopeQueued = false; recomputeScope(); });
+  }
   function jumpLine(line: number) {
     if (!view) return;
     const l = view.state.doc.line(Math.min(line, view.state.doc.lines));
@@ -243,7 +252,7 @@
         { key: "Mod-Alt-Shift-j", preventDefault: true, run: () => { jumpBookmark(-1); return true; } },
       ]),
       EditorView.updateListener.of((u) => {
-        if (u.selectionSet || u.docChanged) recomputeScope();
+        if (u.selectionSet || u.docChanged) queueScope();
         if (!u.docChanged) return;
         const p2 = loadedPath;
         dirtyPaths.add(p2);
@@ -253,7 +262,7 @@
         pushChange(p2);
         if (/\.(md|markdown)$/i.test(p2)) editorLive.set({ path: p2, text: u.state.doc.toString() }); // #6
       }),
-      EditorView.domEventHandlers({ scroll() { recomputeScope(); return false; } }),
+      EditorView.domEventHandlers({ scroll() { queueScope(); return false; } }),
     ];
   }
 
@@ -351,7 +360,9 @@
     }
     // Parse the visible viewport synchronously so syntax is colored on the first
     // paint instead of "popping in" a frame later (Lezer parses async by default).
-    forceParsing(view, view.viewport.to, 80);
+    // Parse just the visible viewport with a small budget so the first paint is
+    // colored without a long synchronous stall on open. The rest streams in.
+    forceParsing(view, view.viewport.to, 25);
     if (fresh) { restoreFolds(p); restoreViewPos(p); }
     scanConflicts();
     refreshGutter();

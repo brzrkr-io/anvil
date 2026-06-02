@@ -6,8 +6,49 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{ChildStdin, Command, Stdio};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
+
+/// Resolve the user's real PATH once. A GUI app launched from Finder/Dock does
+/// not inherit the login-shell PATH, so language servers in ~/.cargo/bin, Nix
+/// profiles, Homebrew, or $GOPATH/bin would be invisible. Ask the login shell
+/// for its PATH and union in the common locations as a fallback.
+fn shell_path() -> &'static str {
+    static PATH: OnceLock<String> = OnceLock::new();
+    PATH.get_or_init(|| {
+        let mut dirs: Vec<String> = Vec::new();
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+        if let Ok(out) = Command::new(&shell).args(["-lic", "printf %s \"$PATH\""]).output() {
+            let p = String::from_utf8_lossy(&out.stdout);
+            for d in p.trim().split(':').filter(|s| !s.is_empty()) {
+                dirs.push(d.to_string());
+            }
+        }
+        if let Ok(cur) = std::env::var("PATH") {
+            for d in cur.split(':').filter(|s| !s.is_empty()) {
+                if !dirs.iter().any(|x| x == d) {
+                    dirs.push(d.to_string());
+                }
+            }
+        }
+        let home = std::env::var("HOME").unwrap_or_default();
+        let user = std::env::var("USER").unwrap_or_default();
+        for d in [
+            format!("{home}/.cargo/bin"),
+            format!("{home}/go/bin"),
+            format!("{home}/.local/bin"),
+            "/opt/homebrew/bin".into(),
+            "/usr/local/bin".into(),
+            format!("/etc/profiles/per-user/{user}/bin"),
+            "/run/current-system/sw/bin".into(),
+        ] {
+            if !d.contains("//") && !dirs.iter().any(|x| *x == d) {
+                dirs.push(d);
+            }
+        }
+        dirs.join(":")
+    })
+}
 
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, State};
@@ -121,6 +162,7 @@ pub fn lsp_start(
         Some(c) => c,
         None => return Ok(false),
     };
+    cmd.env("PATH", shell_path());
     let mut child = match cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
