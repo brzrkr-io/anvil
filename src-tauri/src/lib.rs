@@ -1546,6 +1546,24 @@ fn helm_values_all(name: String, namespace: String) -> Result<String, String> {
     helm(&["get", "values", &name, "-n", &namespace, "-a"])
 }
 
+/// Revision history for one release as JSON.
+#[tauri::command]
+fn helm_history(name: String, namespace: String) -> Result<String, String> {
+    helm(&["history", &name, "-n", &namespace, "-o", "json"])
+}
+
+/// `helm status` summary (notes + resources) for one release.
+#[tauri::command]
+fn helm_status(name: String, namespace: String) -> Result<String, String> {
+    helm(&["status", &name, "-n", &namespace])
+}
+
+/// Rendered Kubernetes manifest for one release.
+#[tauri::command]
+fn helm_manifest(name: String, namespace: String) -> Result<String, String> {
+    helm(&["get", "manifest", &name, "-n", &namespace])
+}
+
 #[tauri::command]
 fn kube_pods(context: String) -> Result<String, String> {
     if context.is_empty() {
@@ -2315,6 +2333,9 @@ pub fn run() {
             helm_list,
             helm_values,
             helm_values_all,
+            helm_history,
+            helm_status,
+            helm_manifest,
             kube_pods,
             kube_logs,
             kube_logs_selector,
