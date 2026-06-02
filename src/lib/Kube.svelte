@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { readCache, writeCache } from "$lib/cache";
   import { invoke } from "@tauri-apps/api/core";
   import Icon from "$lib/Icon.svelte";
   import { toast } from "$lib/toast";
@@ -86,8 +87,8 @@
     current = cur.status === "fulfilled" ? cur.value.trim() : "";
     currentNs = curNs.status === "fulfilled" ? curNs.value.trim() || "default" : "default";
     namespaces = nss.status === "fulfilled" ? nss.value.split("\n").filter(Boolean) : [];
-    if (podsOut.status === "fulfilled") pods = podsOut.value;
-    else { k8sErr = String(podsOut.reason); pods = ""; }
+    if (podsOut.status === "fulfilled") { pods = podsOut.value; writeCache("kube-pods", pods); }
+    else { k8sErr = String(podsOut.reason); }
     busy = false;
   }
 
@@ -170,7 +171,8 @@
     onRunCommand?.(`kubectl exec -it -n ${p.ns} ${p.name} -- sh -c 'command -v bash >/dev/null && exec bash || exec sh'`);
   }
 
-  onMount(() => { load(); refreshPf(); });
+  // Render last-known pods instantly from cache, then refresh in the background.
+  onMount(() => { pods = readCache<string>("kube-pods") ?? pods; load(); refreshPf(); });
 </script>
 
 <div class="kube">

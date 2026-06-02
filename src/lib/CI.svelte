@@ -4,6 +4,7 @@
   import Icon from "$lib/Icon.svelte";
   import { toast } from "$lib/toast";
   import { askConfirm } from "$lib/dialog";
+  import { readCache, writeCache } from "$lib/cache";
 
   let { cwd, onRunCommand, active = true }: { cwd: string; onRunCommand?: (cmd: string) => void; active?: boolean } = $props();
 
@@ -129,6 +130,7 @@
     try {
       const raw = await invoke<string>("glab_pipelines_json", { cwd });
       pipelines = JSON.parse(raw) as Pipeline[];
+      writeCache(`ci-pipelines:${cwd}`, pipelines);
       ciErr = "";
       lastUpdated = Date.now();
       if (selectedPipeline) {
@@ -265,7 +267,9 @@
   }
 
   onMount(async () => {
-    busy = true;
+    // Show last-known pipelines instantly from cache, then refresh.
+    pipelines = readCache<Pipeline[]>(`ci-pipelines:${cwd}`) ?? pipelines;
+    busy = pipelines.length === 0;
     await loadPipelines();
     busy = false;
     startPipelinePoll();

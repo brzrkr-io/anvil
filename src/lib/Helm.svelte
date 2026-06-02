@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import Icon from "$lib/Icon.svelte";
+  import { readCache, writeCache } from "$lib/cache";
 
   interface Release {
     name: string; namespace: string; revision: string;
@@ -24,8 +25,9 @@
       releases = (JSON.parse(raw || "[]") as Release[]).sort(
         (a, b) => a.namespace.localeCompare(b.namespace) || a.name.localeCompare(b.name),
       );
+      writeCache("helm-releases", releases);
     } catch (e) {
-      err = String(e); releases = [];
+      err = String(e);
     } finally {
       loading = false;
     }
@@ -74,7 +76,8 @@
     return [...m.entries()].map(([ns, items]) => ({ ns, items }));
   });
 
-  onMount(load);
+  // Show last-known releases instantly, then refresh in the background.
+  onMount(() => { releases = readCache<Release[]>("helm-releases") ?? releases; load(); });
 </script>
 
 <div class="helm">
