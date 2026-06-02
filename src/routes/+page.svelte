@@ -219,6 +219,21 @@
 
   let settingsOpen = $state(false);
   let zen = $state(false);
+  let zenPrevRail = "term";
+  // Zen is always a distraction-free terminal: entering forces the terminal view
+  // (creating one if none exists) regardless of the current page; exiting restores
+  // wherever you were.
+  function toggleZen() {
+    if (zen) {
+      zen = false;
+      rail = zenPrevRail;
+    } else {
+      zenPrevRail = rail;
+      rail = "term";
+      if (!activeTerm) newTerm();
+      zen = true;
+    }
+  }
   function openSettings() { settingsOpen = true; rail = "settings"; }
   // Explorer is a persistent left panel, independent of the main view (#74): it
   // stays open while you're in the editor/terminal instead of being a `rail`
@@ -349,7 +364,7 @@
       case "palette": openCommands(); break;
       case "goto-file": openFilesPalette(); break;
       case "toggle-sidebar": toggleSide(); break;
-      case "zen": zen = !zen; break;
+      case "zen": toggleZen(); break;
       case "zoom-in": bumpScale(1); break;
       case "zoom-out": bumpScale(-1); break;
       case "zoom-reset": resetScale(); break;
@@ -828,7 +843,7 @@
       { label: "Workspace: Export Layout (copy)", run: exportLayout },
       { label: "Workspace: Import Layout (paste)", run: importLayout },
       { label: "View: Settings", run: openSettings },
-      { label: "Toggle Zen / Terminal Mode", hint: "⌘.", run: () => (zen = !zen) },
+      { label: "Toggle Zen / Terminal Mode", hint: "⌘.", run: () => toggleZen() },
     ];
     paletteOpen = true;
   }
@@ -888,7 +903,7 @@
     "split-terminal": toggleSplit,
     "bottom-dock": () => { bottomDock = !bottomDock; },
     "explorer": toggleSide,
-    "zen": () => { zen = !zen; },
+    "zen": () => { toggleZen(); },
     "search": () => { rail = "search"; },
   };
   function onCustomKey(e: KeyboardEvent) {
@@ -950,7 +965,7 @@
     else if (e.key === "=" || e.key === "+") { e.preventDefault(); bumpScale(1); }
     else if (e.key === "-" || e.key === "_") { e.preventDefault(); bumpScale(-1); }
     else if (e.key === "0") { e.preventDefault(); resetScale(); }
-    else if (e.key === ".") { e.preventDefault(); zen = !zen; }
+    else if (e.key === ".") { e.preventDefault(); toggleZen(); }
     else if (e.key >= "1" && e.key <= "9") {
       e.preventDefault();
       // ⌘1–9 jumps to the Nth tab across the strip (terminals, then files).
@@ -1437,7 +1452,7 @@
     </div>
   </div>
 
-  {#if zen}<div class="zen-exit" onclick={() => (zen = false)} role="button" tabindex="-1" title="Exit zen mode (⌘.)">⌘. exit zen</div>{/if}
+  {#if zen}<div class="zen-exit" onclick={() => toggleZen()} role="button" tabindex="-1" title="Exit zen mode (⌘.)">⌘. exit zen</div>{/if}
   <Palette bind:open={paletteOpen} items={paletteItems} placeholder={palettePlaceholder} />
   <Dialog />
   <Toasts />
