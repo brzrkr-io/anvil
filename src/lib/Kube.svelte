@@ -8,7 +8,7 @@
   import Flux from "$lib/Flux.svelte";
   import Helm from "$lib/Helm.svelte";
 
-  let { cwd, onRunCommand, onHealth, onInvestigate }: { cwd: string; onRunCommand?: (cmd: string) => void; onHealth?: (failing: number) => void; onInvestigate?: (prompt: string) => void } = $props();
+  let { cwd, onRunCommand, onHealth, onInvestigate, active = true }: { cwd: string; onRunCommand?: (cmd: string) => void; onHealth?: (failing: number) => void; onInvestigate?: (prompt: string) => void; active?: boolean } = $props();
 
   let contexts = $state<string[]>([]);
   let current = $state("");
@@ -269,7 +269,7 @@
   <!-- FluxCD (GitOps) view. Always mounted (to detect Flux CRDs), shown only in
        the Flux view. Self-hides if the cluster has no Flux. -->
   <div class="kpane" style:display={view === "flux" && fluxPresent ? "flex" : "none"}>
-    <Flux {onRunCommand} onPresence={onFluxPresence} {onHealth} {onInvestigate} />
+    <Flux {onRunCommand} onPresence={onFluxPresence} {onHealth} {onInvestigate} {active} visible={active && view === "flux"} />
   </div>
 
   <!-- Helm releases view. -->

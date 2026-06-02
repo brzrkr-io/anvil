@@ -3,10 +3,15 @@
   import { invoke } from "@tauri-apps/api/core";
   import Icon from "$lib/Icon.svelte";
   import { toast } from "$lib/toast";
+  import { askConfirm } from "$lib/dialog";
   import { byHealth, failingCount, oneLine, shortRev } from "$lib/flux-health";
   import { fluxInvestigation } from "$lib/agent-ops";
 
-  let { onRunCommand, onPresence, onHealth, onInvestigate }: { onRunCommand?: (cmd: string) => void; onPresence?: (present: boolean) => void; onHealth?: (failing: number) => void; onInvestigate?: (prompt: string) => void } = $props();
+  let { onRunCommand, onPresence, onHealth, onInvestigate, active = true, visible = true }:
+    { onRunCommand?: (cmd: string) => void; onPresence?: (present: boolean) => void; onHealth?: (failing: number) => void; onInvestigate?: (prompt: string) => void;
+      // active = the Kubernetes view is open; visible = the Flux list is the shown
+      // sub-view. Polling is gated on these so a backgrounded panel does no work.
+      active?: boolean; visible?: boolean } = $props();
 
   type Tab = "kustomizations" | "helmreleases" | "sources" | "images";
   interface FluxItem {
@@ -96,7 +101,7 @@
   async function act(it: FluxItem, cmd: "flux_reconcile" | "flux_suspend" | "flux_resume", withSource = false) {
     const kind = fluxKind(it.apiKind);
     if (!kind) return;
-    if (cmd === "flux_suspend" && !confirm(`Suspend reconciliation of ${it.apiKind} ${it.ns}/${it.name}?`)) return;
+    if (cmd === "flux_suspend" && !(await askConfirm({ title: "Suspend reconciliation?", message: `${it.apiKind} ${it.ns}/${it.name} will stop reconciling until resumed.`, okLabel: "Suspend", danger: true }))) return;
     busyRow = `${it.ns}/${it.name}`;
     try {
       const args: Record<string, unknown> = { kind, name: it.name, namespace: it.ns };
@@ -149,22 +154,38 @@
   }
   $effect(() => { onHealth?.(present ? clusterFails : 0); });
 
-  // Auto-poll while the panel is visible so a reconcile is watched to green
-  // without hammering the refresh button. Skip ticks while a load is in flight
-  // or the window/tab is hidden, to avoid piling up kubectl calls.
+  // Auto-poll so a reconcile is watched to green without hammering refresh — but
+  // ONLY while the panel is actually on-screen. The Kubernetes view is kept-alive
+  // (display:none) once opened, so without these gates Flux would fire 3 cluster-
+  // wide kubectl calls every 6s for the whole session, even from a terminal.
+  //   - list refresh: every POLL_MS, only when `visible` (Flux list shown)
+  //   - cluster-health (rail badge): every HEALTH_EVERY ticks, only when `active`
+  //     (Kubernetes view open) — much cheaper than the old 6s cadence.
   const POLL_MS = 6000;
+  const HEALTH_EVERY = 3; // 3 × 6s = ~18s between health sweeps
+  let healthTick = 0;
   let timer: ReturnType<typeof setInterval> | undefined;
   function tick() {
-    if (loading || busyRow || (typeof document !== "undefined" && document.hidden)) return;
-    load();
-    refreshClusterHealth();
+    if (!active || loading || busyRow || (typeof document !== "undefined" && document.hidden)) return;
+    if (visible) load();
+    if (++healthTick % HEALTH_EVERY === 0) refreshClusterHealth();
   }
   onMount(() => {
-    load();
-    refreshClusterHealth();
     timer = setInterval(tick, POLL_MS);
   });
   onDestroy(() => clearInterval(timer));
+  // (Re)load when the panel becomes active or its list is shown. Reading both
+  // `active` and `visible` makes this re-run on k8s open, on return to the view,
+  // and when switching to the Flux sub-view (instant refresh instead of waiting a
+  // poll tick). `load()` always runs while active so Flux-CRD presence is detected
+  // even before the list is shown (drives onPresence → the Flux tab appears). It
+  // doesn't read `loading`, so it can't loop on its own state changes.
+  $effect(() => {
+    const a = active; void visible;
+    if (!a) return;
+    load();
+    refreshClusterHealth();
+  });
 </script>
 
 {#if present}
