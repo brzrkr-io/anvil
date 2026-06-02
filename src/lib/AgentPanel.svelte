@@ -334,8 +334,9 @@
       </div>
     {:else}
       {#each messages as msg (msg)}
-        <div class="bubble-row {msg.role}">
-          <div class="bubble">
+        <div class="msg-row {msg.role}">
+          <div class="msg-label">{msg.role === "assistant" ? "agent" : "you"}</div>
+          <div class="msg-body">
             {#if msg.role === "assistant"}
               {#each parseBlocks(msg.text) as seg}
                 {#if seg.code && seg.lang.toLowerCase() === "plan"}
@@ -516,10 +517,9 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    padding: 10px 12px;
+    padding: 8px 0;
     display: flex;
     flex-direction: column;
-    gap: 6px;
   }
 
   .empty {
@@ -559,37 +559,33 @@
     color: var(--text);
   }
 
-  .bubble-row {
-    display: flex;
+  .msg-row {
+    display: grid;
+    grid-template-columns: 42px 1fr;
+    padding: 7px 12px;
+    border-bottom: 1px solid var(--hairline);
   }
+  .msg-row:last-child { border-bottom: 0; }
 
-  .bubble-row.user {
-    justify-content: flex-end;
+  .msg-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    line-height: 1.9;
+    color: var(--text3);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    user-select: none;
+    flex: 0 0 auto;
   }
+  .msg-row.assistant .msg-label { color: var(--purple); }
 
-  .bubble-row.assistant {
-    justify-content: flex-start;
-  }
-
-  .bubble-row.user .bubble {
-    background: var(--accent);
-    color: var(--bg);
-    border-radius: 14px 14px 4px 14px;
-  }
-
-  .bubble-row.assistant .bubble {
-    background: var(--panel2);
+  .msg-body {
+    font-size: 12.5px;
+    line-height: 1.5;
     color: var(--text);
-    border-radius: 14px 14px 14px 4px;
-  }
-
-  .bubble {
-    max-width: 80%;
-    padding: 7px 11px;
-    font-size: 13px;
-    line-height: 1.45;
     white-space: pre-wrap;
     word-break: break-word;
+    min-width: 0;
   }
 
   .code {
