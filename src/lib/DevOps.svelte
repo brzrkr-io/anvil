@@ -354,7 +354,7 @@
     </div>
     <pre class="out">{glabOut || "Loading… (needs glab + a GitLab remote)"}</pre>
   {:else if tab === "docker"}
-    <Docker {onRunCommand} />
+    <Docker {cwd} {onRunCommand} />
   {:else if tab === "aws"}
     <div class="bar">
       <span class="lbl">AWS</span>

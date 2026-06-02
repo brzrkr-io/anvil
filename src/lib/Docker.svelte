@@ -5,7 +5,13 @@
   import { toast } from "$lib/toast";
   import { parseContainers, runningCount, type Container } from "$lib/docker-ps";
 
-  let { onRunCommand }: { onRunCommand?: (cmd: string) => void } = $props();
+  let { cwd, onRunCommand }: { cwd?: string; onRunCommand?: (cmd: string) => void } = $props();
+
+  // docker compose actions run in a terminal (interactive build output / logs).
+  function compose(sub: string) {
+    const cd = cwd ? `cd ${cwd} && ` : "";
+    onRunCommand?.(`${cd}docker compose ${sub}`);
+  }
 
   let items = $state<Container[]>([]);
   let all = $state(false);
@@ -56,6 +62,17 @@
     <button class="t" onclick={load} title="Refresh (docker ps)" disabled={loading}><Icon name="refresh" size={13} /></button>
   </div>
 
+  {#if onRunCommand}
+    <div class="compose">
+      <span class="cl">compose</span>
+      <button class="t" onclick={() => compose("up -d")} title="docker compose up -d">up</button>
+      <button class="t" onclick={() => compose("down")} title="docker compose down">down</button>
+      <button class="t" onclick={() => compose("ps")} title="docker compose ps">ps</button>
+      <button class="t" onclick={() => compose("logs -f --tail=200")} title="docker compose logs -f">logs</button>
+      <button class="t" onclick={() => compose("build")} title="docker compose build">build</button>
+    </div>
+  {/if}
+
   {#if err}
     <pre class="out">{daemonErr ? "Docker not running or not installed." : err.slice(0, 200)}</pre>
   {:else if items.length}
@@ -87,6 +104,8 @@
 <style>
   .dk { display: flex; flex-direction: column; flex: 1; min-height: 0; }
   .bar { display: flex; align-items: center; gap: 8px; height: 32px; flex: 0 0 auto; padding: 0 12px; border-bottom: 1px solid var(--border); }
+  .compose { display: flex; align-items: center; gap: 6px; padding: 5px 12px; border-bottom: 1px solid var(--border); }
+  .cl { font-size: 10px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.05em; margin-right: 2px; }
   .lbl { font-size: 11.5px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.04em; }
   .grow { flex: 1; }
   .t { background: transparent; border: 1px solid var(--border); color: var(--text3); border-radius: 5px; padding: 2px 8px; font-size: 11px; cursor: default; display: inline-flex; align-items: center; }
