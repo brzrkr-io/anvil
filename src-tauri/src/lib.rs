@@ -55,12 +55,9 @@ async fn write_state(contents: String) -> Result<(), String> {
 #[tauri::command]
 async fn run_capture(cwd: String, command: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let out = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(&command)
-            .current_dir(&cwd)
-            .output()
-            .map_err(|e| e.to_string())?;
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg(&command).current_dir(&cwd);
+        let out = shared::exec_capture(cmd, 120).map_err(|e| e.to_string())?;
         let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
         s.push_str(&String::from_utf8_lossy(&out.stderr));
         const CAP: usize = 16_384;
@@ -81,20 +78,20 @@ async fn run_capture(cwd: String, command: String) -> Result<String, String> {
 #[tauri::command]
 async fn repo_import_graph(root: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let out = std::process::Command::new("rg")
-            .args([
-                "--no-heading",
-                "--color=never",
-                "--max-count=8",
-                "-N",
-                "-o",
-                r#"^\s*(?:import .*|from \S+ import.*|.*require\(['"][^'"]+['"]\)|use [\w:]+;|#include [<"][^>"]+[>"])"#,
-                "-g",
-                "*.{ts,tsx,js,jsx,py,rs,go,c,cc,cpp,h,hpp,java,rb,svelte}",
-                "--with-filename",
-            ])
-            .arg(&root)
-            .output()
+        let mut cmd = std::process::Command::new("rg");
+        cmd.args([
+            "--no-heading",
+            "--color=never",
+            "--max-count=8",
+            "-N",
+            "-o",
+            r#"^\s*(?:import .*|from \S+ import.*|.*require\(['"][^'"]+['"]\)|use [\w:]+;|#include [<"][^>"]+[>"])"#,
+            "-g",
+            "*.{ts,tsx,js,jsx,py,rs,go,c,cc,cpp,h,hpp,java,rb,svelte}",
+            "--with-filename",
+        ])
+        .arg(&root);
+        let out = shared::exec_capture(cmd, 25)
             .map_err(|_| "ripgrep (rg) not found".to_string())?;
         let text = String::from_utf8_lossy(&out.stdout);
         // Trim absolute prefix to keep edges relative + cap size.
@@ -113,19 +110,19 @@ async fn grep(root: String, query: String) -> Result<String, String> {
         if query.trim().is_empty() {
             return Ok(String::new());
         }
-        let out = std::process::Command::new("rg")
-            .args([
-                "--line-number",
-                "--column",
-                "--no-heading",
-                "--color=never",
-                "--max-count=200",
-                "-S",
-                &query,
-            ])
-            .arg(&root)
-            .output()
-            .map_err(|_| "ripgrep (rg) not found".to_string())?;
+        let mut cmd = std::process::Command::new("rg");
+        cmd.args([
+            "--line-number",
+            "--column",
+            "--no-heading",
+            "--color=never",
+            "--max-count=200",
+            "-S",
+            &query,
+        ])
+        .arg(&root);
+        let out =
+            shared::exec_capture(cmd, 25).map_err(|_| "ripgrep (rg) not found".to_string())?;
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     })
     .await

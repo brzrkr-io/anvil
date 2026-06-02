@@ -3,10 +3,9 @@ use crate::cloud::gh_cmd;
 #[tauri::command]
 pub async fn gh_runs(cwd: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let out = gh_cmd(&cwd)
-            .args(["run", "list", "-L", "20"])
-            .output()
-            .map_err(|e| e.to_string())?;
+        let mut cmd = gh_cmd(&cwd);
+        cmd.args(["run", "list", "-L", "20"]);
+        let out = crate::shared::exec_capture(cmd, 25).map_err(|e| e.to_string())?;
         let mut combined = String::from_utf8_lossy(&out.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&out.stderr);
         if !out.status.success() && !stderr.is_empty() {
@@ -21,17 +20,16 @@ pub async fn gh_runs(cwd: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn gh_runs_json(cwd: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let out = gh_cmd(&cwd)
-            .args([
-                "run",
-                "list",
-                "-L",
-                "20",
-                "--json",
-                "databaseId,status,conclusion,displayTitle,workflowName,headBranch,event",
-            ])
-            .output()
-            .map_err(|e| e.to_string())?;
+        let mut cmd = gh_cmd(&cwd);
+        cmd.args([
+            "run",
+            "list",
+            "-L",
+            "20",
+            "--json",
+            "databaseId,status,conclusion,displayTitle,workflowName,headBranch,event",
+        ]);
+        let out = crate::shared::exec_capture(cmd, 25).map_err(|e| e.to_string())?;
         if !out.status.success() {
             return Err(String::from_utf8_lossy(&out.stderr).into_owned());
         }
@@ -44,10 +42,9 @@ pub async fn gh_runs_json(cwd: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn gh_rerun(cwd: String, id: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let out = gh_cmd(&cwd)
-            .args(["run", "rerun", &id])
-            .output()
-            .map_err(|e| e.to_string())?;
+        let mut cmd = gh_cmd(&cwd);
+        cmd.args(["run", "rerun", &id]);
+        let out = crate::shared::exec_capture(cmd, 30).map_err(|e| e.to_string())?;
         if out.status.success() {
             Ok("re-run queued".into())
         } else {
@@ -62,15 +59,16 @@ pub async fn gh_rerun(cwd: String, id: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn gh_run_log(cwd: String, id: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let out = gh_cmd(&cwd)
-            .args(["run", "view", &id, "--log"])
-            .output()
-            .map_err(|e| e.to_string())?;
+        let mut cmd = gh_cmd(&cwd);
+        cmd.args(["run", "view", &id, "--log"]);
+        let out = crate::shared::exec_capture(cmd, 25).map_err(|e| e.to_string())?;
         let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
         if !out.status.success() {
             s.push_str(&String::from_utf8_lossy(&out.stderr));
             // Logs may be unavailable mid-run — fall back to the job summary.
-            if let Ok(v) = gh_cmd(&cwd).args(["run", "view", &id]).output() {
+            let mut fallback = gh_cmd(&cwd);
+            fallback.args(["run", "view", &id]);
+            if let Ok(v) = crate::shared::exec_capture(fallback, 25) {
                 s = String::from_utf8_lossy(&v.stdout).into_owned();
             }
         }
@@ -83,10 +81,9 @@ pub async fn gh_run_log(cwd: String, id: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn gh_prs(cwd: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let out = gh_cmd(&cwd)
-            .args(["pr", "list", "-L", "20"])
-            .output()
-            .map_err(|e| e.to_string())?;
+        let mut cmd = gh_cmd(&cwd);
+        cmd.args(["pr", "list", "-L", "20"]);
+        let out = crate::shared::exec_capture(cmd, 25).map_err(|e| e.to_string())?;
         let mut combined = String::from_utf8_lossy(&out.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&out.stderr);
         if !out.status.success() && !stderr.is_empty() {
@@ -102,10 +99,9 @@ pub async fn gh_prs(cwd: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn gh_pr_view(cwd: String, num: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let out = gh_cmd(&cwd)
-            .args(["pr", "view", &num, "--comments"])
-            .output()
-            .map_err(|e| e.to_string())?;
+        let mut cmd = gh_cmd(&cwd);
+        cmd.args(["pr", "view", &num, "--comments"]);
+        let out = crate::shared::exec_capture(cmd, 25).map_err(|e| e.to_string())?;
         let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&out.stderr);
         if !out.status.success() && !stderr.is_empty() {
@@ -121,10 +117,9 @@ pub async fn gh_pr_view(cwd: String, num: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn gh_pr_comment(cwd: String, num: String, body: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let out = gh_cmd(&cwd)
-            .args(["pr", "comment", &num, "--body", &body])
-            .output()
-            .map_err(|e| e.to_string())?;
+        let mut cmd = gh_cmd(&cwd);
+        cmd.args(["pr", "comment", &num, "--body", &body]);
+        let out = crate::shared::exec_capture(cmd, 30).map_err(|e| e.to_string())?;
         let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
         s.push_str(&String::from_utf8_lossy(&out.stderr));
         if out.status.success() {
@@ -141,10 +136,9 @@ pub async fn gh_pr_comment(cwd: String, num: String, body: String) -> Result<Str
 #[tauri::command]
 pub async fn gh_pr_create(cwd: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let out = gh_cmd(&cwd)
-            .args(["pr", "create", "--fill"])
-            .output()
-            .map_err(|e| e.to_string())?;
+        let mut cmd = gh_cmd(&cwd);
+        cmd.args(["pr", "create", "--fill"]);
+        let out = crate::shared::exec_capture(cmd, 30).map_err(|e| e.to_string())?;
         let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
         s.push_str(&String::from_utf8_lossy(&out.stderr));
         if out.status.success() {
@@ -161,9 +155,9 @@ pub async fn gh_pr_create(cwd: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn gh_pr_web(cwd: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        gh_cmd(&cwd)
-            .args(["pr", "view", "--web"])
-            .output()
+        let mut cmd = gh_cmd(&cwd);
+        cmd.args(["pr", "view", "--web"]);
+        crate::shared::exec_capture(cmd, 25)
             .map_err(|e| e.to_string())
             .map(|o| String::from_utf8_lossy(&o.stderr).into_owned())
     })
@@ -175,11 +169,10 @@ pub async fn gh_pr_web(cwd: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn glab_pipelines(cwd: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let out = std::process::Command::new("glab")
-            .current_dir(&cwd)
-            .args(["ci", "list"])
-            .output()
-            .map_err(|e| format!("glab not found: {e}"))?;
+        let mut cmd = std::process::Command::new("glab");
+        cmd.current_dir(&cwd).args(["ci", "list"]);
+        let out =
+            crate::shared::exec_capture(cmd, 25).map_err(|e| format!("glab not found: {e}"))?;
         let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
         if !out.status.success() {
             s.push_str(&String::from_utf8_lossy(&out.stderr));
@@ -194,11 +187,10 @@ pub async fn glab_pipelines(cwd: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn glab_pipeline_get(cwd: String, id: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let out = std::process::Command::new("glab")
-            .current_dir(&cwd)
-            .args(["ci", "get", "-p", &id])
-            .output()
-            .map_err(|e| format!("glab not found: {e}"))?;
+        let mut cmd = std::process::Command::new("glab");
+        cmd.current_dir(&cwd).args(["ci", "get", "-p", &id]);
+        let out =
+            crate::shared::exec_capture(cmd, 25).map_err(|e| format!("glab not found: {e}"))?;
         let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
         if !out.status.success() {
             s.push_str(&String::from_utf8_lossy(&out.stderr));
@@ -213,14 +205,13 @@ pub async fn glab_pipeline_get(cwd: String, id: String) -> Result<String, String
 #[tauri::command]
 pub async fn glab_pipelines_json(cwd: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let out = std::process::Command::new("glab")
-            .current_dir(&cwd)
-            .args([
-                "api",
-                "projects/:id/pipelines?per_page=25&order_by=updated_at&sort=desc",
-            ])
-            .output()
-            .map_err(|e| format!("glab not found: {e}"))?;
+        let mut cmd = std::process::Command::new("glab");
+        cmd.current_dir(&cwd).args([
+            "api",
+            "projects/:id/pipelines?per_page=25&order_by=updated_at&sort=desc",
+        ]);
+        let out =
+            crate::shared::exec_capture(cmd, 25).map_err(|e| format!("glab not found: {e}"))?;
         if out.status.success() {
             Ok(String::from_utf8_lossy(&out.stdout).into_owned())
         } else {
@@ -238,11 +229,10 @@ pub async fn glab_pipelines_json(cwd: String) -> Result<String, String> {
 pub async fn glab_pipeline_jobs(cwd: String, pipeline: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let path = format!("projects/:id/pipelines/{pipeline}/jobs?per_page=100");
-        let out = std::process::Command::new("glab")
-            .current_dir(&cwd)
-            .args(["api", &path])
-            .output()
-            .map_err(|e| format!("glab not found: {e}"))?;
+        let mut cmd = std::process::Command::new("glab");
+        cmd.current_dir(&cwd).args(["api", &path]);
+        let out =
+            crate::shared::exec_capture(cmd, 25).map_err(|e| format!("glab not found: {e}"))?;
         if out.status.success() {
             Ok(String::from_utf8_lossy(&out.stdout).into_owned())
         } else {
@@ -260,11 +250,10 @@ pub async fn glab_pipeline_jobs(cwd: String, pipeline: String) -> Result<String,
 pub async fn glab_job_trace(cwd: String, job: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let path = format!("projects/:id/jobs/{job}/trace");
-        let out = std::process::Command::new("glab")
-            .current_dir(&cwd)
-            .args(["api", &path])
-            .output()
-            .map_err(|e| format!("glab not found: {e}"))?;
+        let mut cmd = std::process::Command::new("glab");
+        cmd.current_dir(&cwd).args(["api", &path]);
+        let out =
+            crate::shared::exec_capture(cmd, 25).map_err(|e| format!("glab not found: {e}"))?;
         let s = String::from_utf8_lossy(&out.stdout).into_owned();
         if out.status.success() || !s.is_empty() {
             Ok(s)
@@ -281,11 +270,10 @@ pub async fn glab_job_trace(cwd: String, job: String) -> Result<String, String> 
 pub async fn glab_pipeline_retry(cwd: String, pipeline: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let path = format!("projects/:id/pipelines/{pipeline}/retry");
-        let out = std::process::Command::new("glab")
-            .current_dir(&cwd)
-            .args(["api", "-X", "POST", &path])
-            .output()
-            .map_err(|e| format!("glab not found: {e}"))?;
+        let mut cmd = std::process::Command::new("glab");
+        cmd.current_dir(&cwd).args(["api", "-X", "POST", &path]);
+        let out =
+            crate::shared::exec_capture(cmd, 30).map_err(|e| format!("glab not found: {e}"))?;
         if out.status.success() {
             Ok(String::from_utf8_lossy(&out.stdout).into_owned())
         } else {
@@ -303,11 +291,10 @@ pub async fn glab_pipeline_retry(cwd: String, pipeline: String) -> Result<String
 pub async fn glab_job_retry(cwd: String, job: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let path = format!("projects/:id/jobs/{job}/retry");
-        let out = std::process::Command::new("glab")
-            .current_dir(&cwd)
-            .args(["api", "-X", "POST", &path])
-            .output()
-            .map_err(|e| format!("glab not found: {e}"))?;
+        let mut cmd = std::process::Command::new("glab");
+        cmd.current_dir(&cwd).args(["api", "-X", "POST", &path]);
+        let out =
+            crate::shared::exec_capture(cmd, 30).map_err(|e| format!("glab not found: {e}"))?;
         if out.status.success() {
             Ok(String::from_utf8_lossy(&out.stdout).into_owned())
         } else {
@@ -325,11 +312,10 @@ pub async fn glab_job_retry(cwd: String, job: String) -> Result<String, String> 
 pub async fn glab_job_play(cwd: String, job: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let path = format!("projects/:id/jobs/{job}/play");
-        let out = std::process::Command::new("glab")
-            .current_dir(&cwd)
-            .args(["api", "-X", "POST", &path])
-            .output()
-            .map_err(|e| format!("glab not found: {e}"))?;
+        let mut cmd = std::process::Command::new("glab");
+        cmd.current_dir(&cwd).args(["api", "-X", "POST", &path]);
+        let out =
+            crate::shared::exec_capture(cmd, 30).map_err(|e| format!("glab not found: {e}"))?;
         if out.status.success() {
             Ok(String::from_utf8_lossy(&out.stdout).into_owned())
         } else {
@@ -347,11 +333,10 @@ pub async fn glab_job_play(cwd: String, job: String) -> Result<String, String> {
 pub async fn glab_pipeline_cancel(cwd: String, pipeline: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let path = format!("projects/:id/pipelines/{pipeline}/cancel");
-        let out = std::process::Command::new("glab")
-            .current_dir(&cwd)
-            .args(["api", "-X", "POST", &path])
-            .output()
-            .map_err(|e| format!("glab not found: {e}"))?;
+        let mut cmd = std::process::Command::new("glab");
+        cmd.current_dir(&cwd).args(["api", "-X", "POST", &path]);
+        let out =
+            crate::shared::exec_capture(cmd, 30).map_err(|e| format!("glab not found: {e}"))?;
         if out.status.success() {
             Ok(String::from_utf8_lossy(&out.stdout).into_owned())
         } else {

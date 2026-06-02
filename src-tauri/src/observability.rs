@@ -59,14 +59,21 @@ fn http_client() -> Result<reqwest::Client, String> {
 /// (title, uid, url, folderTitle, tags…). no_proxy.
 #[tauri::command]
 pub async fn grafana_dashboards(base: String, token: String) -> Result<String, String> {
-    let url = format!("{}/api/search?type=dash-db&limit=1000", base.trim_end_matches('/'));
+    let url = format!(
+        "{}/api/search?type=dash-db&limit=1000",
+        base.trim_end_matches('/')
+    );
     let mut req = http_client()?.get(url);
     if !token.is_empty() {
         req = req.bearer_auth(token);
     }
     let r = req.send().await.map_err(|e| e.to_string())?;
     if !r.status().is_success() {
-        return Err(format!("grafana {}: {}", r.status(), r.text().await.unwrap_or_default()));
+        return Err(format!(
+            "grafana {}: {}",
+            r.status(),
+            r.text().await.unwrap_or_default()
+        ));
     }
     r.text().await.map_err(|e| e.to_string())
 }
@@ -88,7 +95,10 @@ pub async fn signoz_query(base: String, api_key: String, body: String) -> Result
     let status = r.status();
     let text = r.text().await.map_err(|e| e.to_string())?;
     if !status.is_success() {
-        return Err(format!("signoz {status}: {}", text.chars().take(300).collect::<String>()));
+        return Err(format!(
+            "signoz {status}: {}",
+            text.chars().take(300).collect::<String>()
+        ));
     }
     Ok(text)
 }
@@ -113,7 +123,11 @@ pub async fn signoz_services(base: String, api_key: String) -> Result<String, St
     }
     let r = req.send().await.map_err(|e| e.to_string())?;
     if !r.status().is_success() {
-        return Err(format!("signoz {}: {}", r.status(), r.text().await.unwrap_or_default()));
+        return Err(format!(
+            "signoz {}: {}",
+            r.status(),
+            r.text().await.unwrap_or_default()
+        ));
     }
     r.text().await.map_err(|e| e.to_string())
 }

@@ -1,12 +1,9 @@
 use std::io::Write;
 
 fn git(cwd: &str, args: &[&str]) -> Result<String, String> {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(args)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("-C").arg(cwd).args(args);
+    let out = crate::shared::exec_capture(cmd, 25).map_err(|e| e.to_string())?;
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
@@ -110,13 +107,12 @@ pub async fn git_rebase_run(cwd: String, target: String, todo: String) -> Result
         tmp.push(format!("anvil-rebase-{}.txt", std::process::id()));
         std::fs::write(&tmp, todo).map_err(|e| e.to_string())?;
         let editor = format!("cp '{}'", tmp.display());
-        let out = std::process::Command::new("git")
-            .current_dir(&cwd)
+        let mut rcmd = std::process::Command::new("git");
+        rcmd.current_dir(&cwd)
             .env("GIT_SEQUENCE_EDITOR", &editor)
             .env("GIT_EDITOR", "true")
-            .args(["rebase", "-i", &target])
-            .output()
-            .map_err(|e| e.to_string())?;
+            .args(["rebase", "-i", &target]);
+        let out = crate::shared::exec_capture(rcmd, 30).map_err(|e| e.to_string())?;
         let _ = std::fs::remove_file(&tmp);
         let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
         s.push_str(&String::from_utf8_lossy(&out.stderr));
@@ -165,11 +161,9 @@ pub async fn git_submodule_update(cwd: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn git_lfs_pull(cwd: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let out = std::process::Command::new("git")
-            .current_dir(&cwd)
-            .args(["lfs", "pull"])
-            .output()
-            .map_err(|e| e.to_string())?;
+        let mut cmd = std::process::Command::new("git");
+        cmd.current_dir(&cwd).args(["lfs", "pull"]);
+        let out = crate::shared::exec_capture(cmd, 180).map_err(|e| e.to_string())?;
         let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
         s.push_str(&String::from_utf8_lossy(&out.stderr));
         if out.status.success() {
@@ -276,10 +270,9 @@ pub async fn git_commit(
             args.push("--amend");
         }
         args.extend(["-m", &message]);
-        let out = std::process::Command::new("git")
-            .args(&args)
-            .output()
-            .map_err(|e| e.to_string())?;
+        let mut cmd = std::process::Command::new("git");
+        cmd.args(&args);
+        let out = crate::shared::exec_capture(cmd, 25).map_err(|e| e.to_string())?;
         let mut combined = String::from_utf8_lossy(&out.stdout).into_owned();
         combined.push_str(&String::from_utf8_lossy(&out.stderr));
         if out.status.success() {
@@ -489,12 +482,9 @@ pub async fn git_stash_push(
 #[tauri::command]
 pub async fn git_fetch(cwd: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&cwd)
-            .args(["fetch", "--all"])
-            .output()
-            .map_err(|e| e.to_string())?;
+        let mut cmd = std::process::Command::new("git");
+        cmd.arg("-C").arg(&cwd).args(["fetch", "--all"]);
+        let out = crate::shared::exec_capture(cmd, 180).map_err(|e| e.to_string())?;
         let mut combined = String::from_utf8_lossy(&out.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&out.stderr);
         if !stderr.is_empty() {
@@ -510,12 +500,9 @@ pub async fn git_fetch(cwd: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn git_pull(cwd: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&cwd)
-            .args(["pull", "--ff-only"])
-            .output()
-            .map_err(|e| e.to_string())?;
+        let mut cmd = std::process::Command::new("git");
+        cmd.arg("-C").arg(&cwd).args(["pull", "--ff-only"]);
+        let out = crate::shared::exec_capture(cmd, 180).map_err(|e| e.to_string())?;
         let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
         s.push_str(&String::from_utf8_lossy(&out.stderr));
         if out.status.success() {
@@ -532,12 +519,9 @@ pub async fn git_pull(cwd: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn git_push(cwd: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&cwd)
-            .args(["push"])
-            .output()
-            .map_err(|e| e.to_string())?;
+        let mut cmd = std::process::Command::new("git");
+        cmd.arg("-C").arg(&cwd).args(["push"]);
+        let out = crate::shared::exec_capture(cmd, 180).map_err(|e| e.to_string())?;
         let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
         s.push_str(&String::from_utf8_lossy(&out.stderr));
         if out.status.success() {

@@ -18,7 +18,7 @@ pub(crate) fn kubectl(args: &[&str]) -> Result<String, String> {
     if !profile.is_empty() {
         cmd.env("AWS_PROFILE", &profile);
     }
-    let out = cmd.output().map_err(|e| e.to_string())?;
+    let out = crate::shared::exec_capture(cmd, 25).map_err(|e| e.to_string())?;
     let mut combined = String::from_utf8_lossy(&out.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&out.stderr);
     if !out.status.success() && !stderr.is_empty() {

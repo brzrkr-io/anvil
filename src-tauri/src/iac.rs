@@ -14,17 +14,15 @@ fn tf_bin(bin: &str) -> Result<&'static str, String> {
 
 fn tf_exec(bin: &str, cwd: &str, args: &[&str]) -> Result<String, String> {
     let prog = tf_bin(bin)?;
-    let out = std::process::Command::new(prog)
-        .current_dir(cwd)
-        .args(args)
-        .output()
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                format!("{prog} not found in PATH")
-            } else {
-                e.to_string()
-            }
-        })?;
+    let mut cmd = std::process::Command::new(prog);
+    cmd.current_dir(cwd).args(args);
+    let out = crate::shared::exec_capture(cmd, 180).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            format!("{prog} not found in PATH")
+        } else {
+            e.to_string()
+        }
+    })?;
     let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
     s.push_str(&String::from_utf8_lossy(&out.stderr));
     Ok(s)
@@ -85,11 +83,10 @@ fn scan_iac(
 #[tauri::command]
 pub async fn terraform_plan(cwd: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let out = std::process::Command::new("terraform")
-            .current_dir(&cwd)
-            .args(["plan", "-no-color", "-input=false"])
-            .output()
-            .map_err(|e| e.to_string())?;
+        let mut cmd = std::process::Command::new("terraform");
+        cmd.current_dir(&cwd)
+            .args(["plan", "-no-color", "-input=false"]);
+        let out = crate::shared::exec_capture(cmd, 180).map_err(|e| e.to_string())?;
         let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
         s.push_str(&String::from_utf8_lossy(&out.stderr));
         Ok(s)
@@ -102,11 +99,9 @@ pub async fn terraform_plan(cwd: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn terraform_state(cwd: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let out = std::process::Command::new("terraform")
-            .current_dir(&cwd)
-            .args(["state", "list"])
-            .output()
-            .map_err(|e| e.to_string())?;
+        let mut cmd = std::process::Command::new("terraform");
+        cmd.current_dir(&cwd).args(["state", "list"]);
+        let out = crate::shared::exec_capture(cmd, 25).map_err(|e| e.to_string())?;
         let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
         s.push_str(&String::from_utf8_lossy(&out.stderr));
         Ok(s)
@@ -120,11 +115,10 @@ pub async fn terraform_state(cwd: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn terraform_apply(cwd: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let out = std::process::Command::new("terraform")
-            .current_dir(&cwd)
-            .args(["apply", "-no-color", "-input=false", "-auto-approve"])
-            .output()
-            .map_err(|e| e.to_string())?;
+        let mut cmd = std::process::Command::new("terraform");
+        cmd.current_dir(&cwd)
+            .args(["apply", "-no-color", "-input=false", "-auto-approve"]);
+        let out = crate::shared::exec_capture(cmd, 180).map_err(|e| e.to_string())?;
         let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
         s.push_str(&String::from_utf8_lossy(&out.stderr));
         Ok(s)
@@ -233,7 +227,7 @@ fn helm(args: &[&str]) -> Result<String, String> {
     if !profile.is_empty() {
         cmd.env("AWS_PROFILE", &profile);
     }
-    let out = cmd.output().map_err(|e| e.to_string())?;
+    let out = crate::shared::exec_capture(cmd, 60).map_err(|e| e.to_string())?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
