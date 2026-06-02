@@ -6,6 +6,7 @@
   import Problems from "$lib/Problems.svelte";
   const SourceControl = () => import("$lib/SourceControl.svelte");
   import FileBrowser from "$lib/FileBrowser.svelte";
+  import { projects, activeProject, addProject, setActiveProject, removeProject, activeProjectPath } from "$lib/projects";
   // Editor + DiffView pull in Monaco (~4 MB); load them lazily on first use
   // so app startup stays fast (#90).
   const Editor = () => import("$lib/Editor.svelte");
@@ -515,8 +516,9 @@
   async function openFolder() {
     const p = await invoke<string | null>("pick_folder", { start: cwd }).catch(() => null);
     if (!p) return;
-    cwd = p.replace(/\/$/, "");
-    recentWorkspaces = [cwd, ...recentWorkspaces.filter((w) => w !== cwd)].slice(0, 12);
+    addProject(p); // becomes active → $effect sets cwd
+    const clean = p.replace(/\/$/, "");
+    recentWorkspaces = [clean, ...recentWorkspaces.filter((w) => w !== clean)].slice(0, 12);
     explorerOpen = true;
   }
   async function openFileDialog() {
@@ -556,8 +558,20 @@
     paletteOpen = true;
   }
 
-  let terms = $state<{ id: string; title: string; shell?: string }[]>([{ id: "t1", title: "zsh" }]);
+  let terms = $state<{ id: string; title: string; shell?: string; project?: string }[]>([{ id: "t1", title: "zsh" }]);
   let activeTerm = $state("t1");
+  // Switching the active project drives cwd → SCM/Explorer/k8s/CI all follow it.
+  // Guard on project CHANGE only (don't read cwd reactively, or Explorer
+  // navigation would get snapped back to the project root).
+  let lastProj = "";
+  $effect(() => {
+    const id = $activeProject;
+    if (id && id !== lastProj) {
+      lastProj = id;
+      const path = activeProjectPath();
+      if (path) cwd = path;
+    }
+  });
   let splitTerm = $state<string | null>(null);
   let seq = 1;
 
@@ -616,7 +630,7 @@
     logEvent("terminal.new");
     seq += 1;
     const id = `t${seq}`;
-    terms = [...terms, { id, title: "zsh" }];
+    terms = [...terms, { id, title: "zsh", project: $activeProject }];
     activeTerm = id;
     rail = "term";
   }
@@ -624,7 +638,7 @@
   function newTermProfile(shell: string, title: string) {
     seq += 1;
     const id = `t${seq}`;
-    terms = [...terms, { id, title, shell }];
+    terms = [...terms, { id, title, shell, project: $activeProject }];
     activeTerm = id;
     rail = "term";
   }
@@ -637,6 +651,11 @@
   function selectTerm(id: string) {
     activeTerm = id;
     rail = "term";
+  }
+  function selectProject(id: string) {
+    setActiveProject(id); // → $effect sets cwd → SCM/Explorer/k8s/CI follow
+    const t = terms.find((t) => t.project === id);
+    if (t) activeTerm = t.id;
   }
 
   // Editor navigation history (#13): back/forward through visited files (⌘⌥←/→).
@@ -1147,6 +1166,10 @@
     let st: any = {};
     try { st = JSON.parse(await invoke<string>("read_state")); } catch { st = {}; }
     cwd = st.cwd || (await invoke<string>("home_dir"));
+    // Seed a project from the startup folder if none are persisted; tag the
+    // initial terminal with the active project so it groups correctly.
+    if (!$projects.length && cwd) addProject(cwd);
+    if (terms[0] && !terms[0].project) terms = terms.map((t, i) => (i === 0 ? { ...t, project: $activeProject } : t));
     if (Array.isArray(st.terms) && st.terms.length) {
       terms = st.terms;
       activeTerm = st.activeTerm || terms[0].id;
@@ -1318,11 +1341,28 @@
 
     {#if explorerOpen}
     <aside class="side">
-      <div class="sect">Sessions <span class="n">{terms.length}</span></div>
-      {#each terms as t (t.id)}
-        <div class="row {activeTerm === t.id ? 'cur' : ''}" onclick={() => selectTerm(t.id)}>
-          <span class="ic">›_</span>{t.title}
+      <div class="sect">Projects <span class="n">{$projects.length}</span>
+        <button class="sect-x" title="Add project" onclick={openFolder}><Icon name="plus" size={11} /></button>
+      </div>
+      {#each $projects as p (p.id)}
+        <div class="prow {$activeProject === p.id ? 'cur' : ''}" role="button" tabindex="0" title={p.path}
+          onclick={() => selectProject(p.id)} onkeydown={(e) => e.key === "Enter" && selectProject(p.id)}>
+          <span class="ic"><Icon name="folder" size={12} /></span>
+          <span class="pname">{p.name}</span>
+          {#if $projects.length > 1}<span class="prx" title="Remove project" role="button" tabindex="-1"
+            onclick={(e) => { e.stopPropagation(); removeProject(p.id); }} onkeydown={() => {}}>×</span>{/if}
         </div>
+        {#if $activeProject === p.id}
+          {#each terms.filter((t) => (t.project ?? $activeProject) === p.id) as t (t.id)}
+            <div class="row session {activeTerm === t.id ? 'cur' : ''}" role="button" tabindex="0"
+              onclick={() => selectTerm(t.id)} onkeydown={(e) => e.key === "Enter" && selectTerm(t.id)}>
+              <span class="ic">›_</span><span class="ttl">{t.title}</span>
+              {#if terms.length > 1}<span class="x" role="button" tabindex="-1" title="Close"
+                onclick={(e) => { e.stopPropagation(); closeTerm(t.id); }} onkeydown={() => {}}>×</span>{/if}
+            </div>
+          {/each}
+          <button class="addterm" onclick={newTerm}><Icon name="plus" size={10} /> New terminal</button>
+        {/if}
       {/each}
       <div class="sect">Explorer <button class="sect-x" title="Hide explorer (⌘B)" onclick={() => (explorerOpen = false)}><Icon name="close" size={11} /></button></div>
       {#if cwd}<FileBrowser bind:path={cwd} onOpenFile={openInEditor} />{/if}
