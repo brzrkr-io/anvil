@@ -86,7 +86,7 @@
   // Commit popover (click a history row → card with meta + changed files;
   // click a file → that file's diff at the commit).
   let popover = $state<{ commit: Commit; x: number; y: number; files: { code: string; path: string }[] } | null>(null);
-  async function openCommitPopover(c: Commit, ev: MouseEvent) {
+  async function openCommitPopover(c: Commit, ev: MouseEvent | KeyboardEvent) {
     sel = commits.indexOf(c);
     let files: { code: string; path: string }[] = [];
     try {
@@ -96,9 +96,13 @@
         return { code: p[0][0] ?? "M", path: p[p.length - 1] };
       });
     } catch { /* ignore */ }
-    // Anchor the popover at the click point (Terax-style).
-    const x = Math.min(ev.clientX + 6, window.innerWidth - 420);
-    const y = Math.min(ev.clientY + 6, window.innerHeight - 332);
+    // Anchor the popover at the click point (Terax-style); for keyboard
+    // activation, anchor off the focused row instead.
+    const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
+    const cx = ev instanceof MouseEvent ? ev.clientX : r.left;
+    const cy = ev instanceof MouseEvent ? ev.clientY : r.bottom;
+    const x = Math.min(cx + 6, window.innerWidth - 420);
+    const y = Math.min(cy + 6, window.innerHeight - 332);
     popover = { commit: c, x: Math.max(8, x), y: Math.max(8, y), files };
   }
   function openFileAt(rev: string, path: string) {
@@ -303,7 +307,7 @@
     {#snippet tree(nodes: FileNode[], isStaged: boolean, depth: number)}
       {#each nodes as n (n.path)}
         {#if n.dir}
-          <div class="chg dir" style="padding-left:{14 + depth * 12}px" onclick={() => toggleDir(n.path)} role="button" tabindex="0">
+          <div class="chg dir" style="padding-left:{14 + depth * 12}px" onclick={() => toggleDir(n.path)} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), toggleDir(n.path))} role="button" tabindex="0">
             <svg class="caret {collapsed.has(n.path) ? '' : 'open'}" viewBox="0 0 16 16" aria-hidden="true">
               <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
             </svg>
@@ -314,7 +318,7 @@
           {@const hk = `${isStaged}:${n.change.path}`}
           <div class="chg" style="padding-left:{14 + depth * 12}px">
             <span class="sdot" style="background:{badge(n.change.code)}" title={n.change.code}></span>
-            <span class="fname" onclick={() => onOpenDiff?.({ path: n.change!.path, staged: isStaged })} role="button" tabindex="0">{n.name}</span>
+            <span class="fname" onclick={() => onOpenDiff?.({ path: n.change!.path, staged: isStaged })} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onOpenDiff?.({ path: n.change!.path, staged: isStaged }))} role="button" tabindex="0">{n.name}</span>
             {#if n.change.path.includes("/")}<span class="fdir">{n.change.path.split("/").slice(0, -1).join("/")}</span>{/if}
             {#if n.change.code !== "?"}
               <button class="op hk {expandedHunks.has(hk) ? 'on' : ''}" title="Stage by hunk" disabled={busy} onclick={() => toggleHunks(hk)}><Icon name="density" size={13} /></button>
@@ -342,7 +346,7 @@
     {/if}
 
     {#if stashes.length}
-      <div class="sect disclosure" onclick={() => (stashesOpen = !stashesOpen)} role="button" tabindex="0">
+      <div class="sect disclosure" onclick={() => (stashesOpen = !stashesOpen)} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), (stashesOpen = !stashesOpen))} role="button" tabindex="0">
         <svg class="caret {stashesOpen ? 'open' : ''}" viewBox="0 0 16 16" aria-hidden="true">
           <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
         </svg>
@@ -351,14 +355,14 @@
       {#if stashesOpen}
         <div class="changes">
           {#each stashes as s, i (s)}
-            <div class="chg"><span class="path" style="margin-right:auto;cursor:default" onclick={() => onOpenDiff?.({ rev: `stash@{${i}}` })} role="button" tabindex="0">{s}</span><button class="op" title="Show diff" disabled={busy} onclick={() => onOpenDiff?.({ rev: `stash@{${i}}` })}><Icon name="search" size={12} /></button><button class="op" title="Apply" disabled={busy} onclick={() => stashApply(i)}><Icon name="stash" size={13} /></button></div>
+            <div class="chg"><span class="path" style="margin-right:auto;cursor:default" onclick={() => onOpenDiff?.({ rev: `stash@{${i}}` })} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onOpenDiff?.({ rev: `stash@{${i}}` }))} role="button" tabindex="0">{s}</span><button class="op" title="Show diff" disabled={busy} onclick={() => onOpenDiff?.({ rev: `stash@{${i}}` })}><Icon name="search" size={12} /></button><button class="op" title="Apply" disabled={busy} onclick={() => stashApply(i)}><Icon name="stash" size={13} /></button></div>
           {/each}
         </div>
       {/if}
     {/if}
 
     {#if tags.length}
-      <div class="sect disclosure" onclick={() => (tagsOpen = !tagsOpen)} role="button" tabindex="0">
+      <div class="sect disclosure" onclick={() => (tagsOpen = !tagsOpen)} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), (tagsOpen = !tagsOpen))} role="button" tabindex="0">
         <svg class="caret {tagsOpen ? 'open' : ''}" viewBox="0 0 16 16" aria-hidden="true">
           <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
         </svg>
@@ -373,7 +377,7 @@
       {/if}
     {/if}
 
-    <div class="sect disclosure" onclick={() => (historyOpen = !historyOpen)} role="button" tabindex="0">
+    <div class="sect disclosure" onclick={() => (historyOpen = !historyOpen)} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), (historyOpen = !historyOpen))} role="button" tabindex="0">
       <svg class="caret {historyOpen ? 'open' : ''}" viewBox="0 0 16 16" aria-hidden="true">
         <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
       </svg>
@@ -387,7 +391,7 @@
             {@const cv = parseConventional(c.subject)}
             {@const g = graph[i]}
             {@const stat = commitStats[c.short]}
-            <div class="row {i === sel ? 'sel' : ''}" style="top:{i * ROW_H}px" onclick={(e) => openCommitPopover(c, e)} role="button" tabindex="0">
+            <div class="row {i === sel ? 'sel' : ''}" style="top:{i * ROW_H}px" onclick={(e) => openCommitPopover(c, e)} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), openCommitPopover(c, e))} role="button" tabindex="0">
               <svg class="graph" width={graphW} height={ROW_H} style="flex:0 0 {graphW}px">
                 {#each segPaths(g) as p}
                   <path d={p.d} stroke={laneColor(p.color)} fill="none" stroke-width="1.6" />

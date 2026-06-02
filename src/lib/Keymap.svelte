@@ -18,7 +18,8 @@
 </script>
 
 <div class="km-scrim" role="presentation" onclick={onClose}>
-  <div class="km" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" onclick={(e) => e.stopPropagation()}>
+  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+  <div class="km" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" tabindex="-1" onclick={(e) => e.stopPropagation()}>
     <header class="km-head">
       <h2>Keyboard shortcuts</h2>
       <!-- svelte-ignore a11y_autofocus -->

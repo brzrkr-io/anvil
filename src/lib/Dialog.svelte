@@ -40,7 +40,7 @@
 
 {#if req}
   <div class="dlg-scrim" role="presentation" onclick={cancel} onkeydown={onKeydown}>
-    <div class="dlg" role="dialog" aria-modal="true" aria-label={req.title} onclick={(e) => e.stopPropagation()} onkeydown={onKeydown}>
+    <div class="dlg" role="dialog" aria-modal="true" aria-label={req.title} tabindex="-1" onclick={(e) => e.stopPropagation()} onkeydown={onKeydown}>
       <div class="dlg-title">{req.title}</div>
       {#if req.message}<div class="dlg-msg">{req.message}</div>{/if}
       {#if req.kind === "text"}

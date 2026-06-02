@@ -210,7 +210,7 @@
     {#if prRows.length}
       <div class="podlist">
         {#each prRows as r (r.num)}
-          <div class="podrow" class:cur={prSel === r.num} role="button" tabindex="0" onclick={() => openPr(r.num)}>
+          <div class="podrow" class:cur={prSel === r.num} role="button" tabindex="0" onclick={() => openPr(r.num)} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), openPr(r.num))}>
             <span class="bdg" style="color:var(--accent)">#{r.num}</span><span class="pnm">{r.title}</span>
           </div>
         {/each}
@@ -335,6 +335,4 @@
   .podrow:hover { background: var(--panel); }
   .pnm { flex: 1; min-width: 0; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pst { flex: 0 0 auto; width: 92px; text-align: right; }
-  .back { border: 1px solid var(--border); background: var(--panel2); color: var(--accent);
-    font-size: 11px; padding: 2px 8px; border-radius: 6px; cursor: default; margin-left: auto; }
 </style>

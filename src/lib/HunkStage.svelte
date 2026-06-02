@@ -99,7 +99,8 @@
           <button class="op" disabled={busy} title="Stage hunk" onclick={() => apply(i, "stage")}><Icon name="plus" size={12} /></button>
         {/if}
       </div>
-      <pre class="code">{#each h.body.split("\n").slice(1) as l, li}<span class="ln {lineClass(l)} {!staged && (l[0] === '+' || l[0] === '-') ? 'sel-able' : ''} {sel[i]?.has(li + 1) ? 'picked' : ''}" onclick={() => !staged && toggleLine(i, li + 1, l)}>{l || " "}</span>{/each}</pre>
+      <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+      <pre class="code">{#each h.body.split("\n").slice(1) as l, li}<span class="ln {lineClass(l)} {!staged && (l[0] === '+' || l[0] === '-') ? 'sel-able' : ''} {sel[i]?.has(li + 1) ? 'picked' : ''}" role="button" tabindex="-1" onclick={() => !staged && toggleLine(i, li + 1, l)}>{l || " "}</span>{/each}</pre>
     </div>
   {/each}
 </div>

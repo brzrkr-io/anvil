@@ -6,7 +6,8 @@
 </script>
 
 <div class="wn-scrim" role="presentation" onclick={onClose}>
-  <div class="wn" role="dialog" aria-modal="true" aria-label="What's new" onclick={(e) => e.stopPropagation()}>
+  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+  <div class="wn" role="dialog" aria-modal="true" aria-label="What's new" tabindex="-1" onclick={(e) => e.stopPropagation()}>
     <header class="wn-head">
       <span class="wn-badge">v{version}</span>
       <h2>What's new</h2>

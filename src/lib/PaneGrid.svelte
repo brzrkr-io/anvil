@@ -60,7 +60,7 @@
   const labelOf = (k: ViewKind) => VIEWS.find((v) => v.k === k)?.label ?? k;
 
   // ── splitter drag (resize) ──
-  let splitEl: HTMLDivElement | undefined;
+  let splitEl = $state<HTMLDivElement | undefined>(undefined);
   function startResize(e: PointerEvent, sp: SplitNode, index: number) {
     e.preventDefault();
     const rect = splitEl!.getBoundingClientRect();
@@ -115,6 +115,7 @@
 {:else}
   {@const lf = node}
   <div class="leaf {lf.id === activeId ? 'active' : ''}" class:dimmed={dim && lf.id !== activeId} onpointerdowncapture={() => onFocusLeaf?.(lf.id)}>
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       class="phead"
       draggable="true"
@@ -126,6 +127,7 @@
         {#each lf.tabs as t, i (t.id)}
           <button class="ptab {i === lf.active ? 'on' : ''}" onclick={() => onSetActiveTab?.(lf.id, i)} title={labelOf(t.view)}>
             {t.view === "editor" && t.ref ? t.ref.split("/").pop() : labelOf(t.view)}
+            <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
             {#if lf.tabs.length > 1}<span class="ptx" onclick={(e) => { e.stopPropagation(); onCloseTab?.(lf.id, i); }}>×</span>{/if}
           </button>
         {/each}

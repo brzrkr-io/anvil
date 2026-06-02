@@ -9,6 +9,74 @@ confidence: high
 
 # Wiki Log
 
+- 2026-06-01 — De-gimmick pass: removed 13+ decorative accent uses. Accent now only on cursor +
+  selected/active item. Changes: `--radius` 8→6px; `.onboard` solid panel bg, no backdrop-filter,
+  4px radius; `.ob-wm`/`.ob-dot`/`.ob-dots`/`.ob-d` CSS removed; dot-nav replaced with `ob-step`
+  text; `.ob-go` flat outlined button; `.quake` solid panel bg; `agentq-chip` solid panel bg;
+  `zen-exit` border removed; `.tab .dot` markup + style removed; `📌` emoji → `<Icon name="pin">`;
+  `.rail .i.on` background cleared; `.row.cur` → `var(--sel)`; `.pane-head .accent` already
+  `var(--text3)`; Workspace pane-head hint string removed; branch status span `accent` class
+  removed; `FileBrowser.cwd` uppercase/letter-spacing removed; `FileBrowser .ic.folder` →
+  `var(--text3)`; `SearchPanel .loc` → `var(--text3)`; search input `border-radius` 8→4px;
+  `Palette.svelte` backdrop-filter removed, solid panel bg, 6px radius. Build: vite clean,
+  svelte-check 1 pre-existing error (vite.config.js), vitest 486/486 pass.
+
+- 2026-06-01 — Added `src/lib/Kube.svelte`: standalone Kubernetes dashboard component extracted
+  from the k8s tab in `DevOps.svelte`. Props: `cwd`, `onRunCommand`. Wires all 15 existing Tauri
+  commands verbatim (`kube_contexts`, `kube_current_context`, `kube_use_context`, `kube_namespaces`,
+  `kube_current_namespace`, `kube_set_namespace`, `kube_pods`, `kube_logs`, `kube_logs_selector`
+  unused pending selector UI, `kube_describe`, `kube_delete_pod`, `kube_restart`, `kube_pf_list`,
+  `kube_pf_start`, `kube_pf_stop`). Layout: 28px topbar (context+namespace selects, refresh),
+  collapsible port-forwards strip, sticky-header pod table (status dot, name mono, ready, restarts
+  red if >0, status, age), hover-revealed per-row action buttons (logs/describe/exec/port-forward/
+  restart/delete), inline 40% split panel for log+describe output with close button, auth-error bar
+  with suggested fix commands. DevOps.svelte left unchanged. Build: vite green; svelte-check 1
+  pre-existing error (vite.config.js), vitest 486/486.
+
+- 2026-06-01 — Added GitLab CI page: 5 new Rust commands in `src-tauri/src/lib.rs`
+  (`glab_pipelines_json`, `glab_pipeline_jobs`, `glab_job_trace`, `glab_pipeline_retry`,
+  `glab_pipeline_cancel`) using `glab api` with `current_dir(cwd)` so glab resolves `:id`
+  from the repo remote. All 5 registered in `tauri::generate_handler!`. New component
+  `src/lib/CI.svelte`: three-level layout matching Kube.svelte conventions (22px rows,
+  CSS-grid columns, `color-mix` hover, `var(--sel)` selection, 5px/4px radius buttons).
+  Pipeline list polls every 5s; jobs poll while pipeline is running; job trace polls every
+  4s and scrolls to bottom. Actions: retry / cancel (with `askConfirm`) / open-in-GitLab.
+  Error state shows `var(--text3)` hint with `glab auth login` suggestion. `document.hidden`
+  guard on all poll fetches. Build: cargo build green; vite build green; svelte-check 1
+  pre-existing error (vite.config.js); vitest 486/486 passed.
+
+- 2026-06-01 — DevOps.svelte trimmed: removed k8s, ci, tf, helm, and obs tabs (each now has a
+  dedicated page). Kept prs, gitlab, aws, inc. Removed state/functions: `contexts`, `current`,
+  `namespaces`, `currentNs`, `logSelector`, `pods`, `logPod`, `logs`, `podRows`, `openLogs`,
+  `multiplexLogs`, `describePod`, `deletePod`, `restartPod`, `statusColor`, `k8sAuthErr`, `execPod`,
+  `pfList`, `k8sErr`, `refreshPf`, `portForwardPod`, `stopPf`, `loadK8s`, `useCtx`, `useNs`,
+  `runs`, `runRows`, `loadCI`, `rerun`, `runLog`, `runLogText`, `viewRunLog`, `runColor`, `ciAuthErr`
+  (rebuilt as prs-only), `tfPlan`, `tfBusy`, `runTfPlan`, `runTfState`, `runTfApply`, `tfClass`,
+  `helmRows`, `helmErr`, `helmValues`, `loadHelm`, `helmAllValues`, `helmCur`, `showValues`,
+  `toggleHelmAll`, `obsUrl`, `savedDashboards`, `loadDash`, `persistDash`, `saveDash`, `removeDash`,
+  `saveObs`, `secSource`, `secKey`, `secVal`, `secErr`, `secReveal`, `readSecret`, obs-specific
+  `$effect`s (lines 182–183). Kept inc tab intact with full prom/loki engine. `onMount` now only
+  calls `applyCreds()`. `cwd` prop retained (used by prs bar labels, `loadPRs`, `openPr`,
+  `postPrComment`, `loadGlab`). 794→340 lines. Build: vite green; svelte-check 1 pre-existing
+  error (vite.config.js); vitest 486/486 passed; cargo build green.
+
+- 2026-06-01 — Perf: lazy-loaded SourceControl, AgentPanel, SearchPanel in `src/routes/+page.svelte`.
+  Converted 3 static imports to `const X = () => import(...)` and wrapped all 6 render sites in
+  `{#await X() then M}<M.default ... />{/await}`. Render sites changed: line 1328 (scm rail),
+  1353 (search rail), 1377 (pane scm), 1379 (pane search), 1381 (pane agent), 1418 (agent drawer).
+  Main startup chunk: 1,166,961 → 1,110,150 bytes (−56,811 bytes, ~4.9%). New split-out chunks:
+  SourceControl (~31.5 kB), AgentPanel (~12.9 kB), SearchPanel (~3.9 kB + 3.1 kB shared).
+  svelte-check: 1 pre-existing error (vite.config.js), 84 pre-existing warnings (unchanged).
+  vitest 486/486 passed.
+
+- 2026-06-01 — AgentPanel.svelte: converted chat-bubble message list to flat operator log.
+  Removed `.bubble-row`, `.bubble-row.user`, `.bubble-row.assistant`, `.bubble-row.user .bubble`,
+  `.bubble-row.assistant .bubble`, and `.bubble` CSS (asymmetric `border-radius: 14px 14px 4px 14px`
+  bubble style). Replaced with `.msg-row` (grid, `hairline` rule separator), `.msg-label` (mono 10px
+  uppercase `you`/`agent` prefix; agent label tinted `--purple`), and `.msg-body` (full-width, 12.5px,
+  line-height 1.5). No logic changes. Build: vite build green; svelte-check 1 pre-existing error
+  (unchanged); vitest 486/486 passed.
+
 - 2026-06-01 — Replaced all blocking browser `prompt()`/`confirm()` calls in FileBrowser,
   DevOps, SourceControl, and cm-lsp with a themed in-app modal system. New files:
   `src/lib/dialog.ts` (store-driven `askText`/`askConfirm` API) and `src/lib/Dialog.svelte`

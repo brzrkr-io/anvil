@@ -43,7 +43,8 @@
 </script>
 
 <div class="rb-scrim" role="presentation" onclick={onClose}>
-  <div class="rb" role="dialog" aria-modal="true" aria-label="Interactive rebase" onclick={(e) => e.stopPropagation()}>
+  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+  <div class="rb" role="dialog" aria-modal="true" aria-label="Interactive rebase" tabindex="-1" onclick={(e) => e.stopPropagation()}>
     <header class="rb-head"><h2>Interactive rebase onto <code>{target}</code></h2><button class="rb-x" onclick={onClose}>✕</button></header>
     {#if err}<div class="rb-err">{err}</div>{/if}
     <div class="rb-rows">

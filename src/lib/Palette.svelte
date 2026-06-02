@@ -65,7 +65,7 @@
     <input bind:this={inputEl} bind:value={query} {placeholder} onkeydown={onKey} spellcheck="false" />
     <div class="list">
       {#each filtered as it, i (it.label + i)}
-        <div class="pi {i === sel ? 'sel' : ''}" onclick={() => choose(it)} onmouseenter={() => (sel = i)} role="button" tabindex="-1">
+        <div class="pi {i === sel ? 'sel' : ''}" onclick={() => choose(it)} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), choose(it))} onmouseenter={() => (sel = i)} role="button" tabindex="-1">
           <span class="lbl">{it.label}</span>
           {#if it.hint}<span class="hint">{it.hint}</span>{/if}
         </div>

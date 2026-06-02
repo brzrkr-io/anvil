@@ -139,7 +139,7 @@
       <div class="spacer" style="height:{results.length * ROW_H}px">
         {#each slice as r, i (r.path + r.line + r.text + (start + i))}
           <div class="hit" style="top:{(start + i) * ROW_H}px;height:{ROW_H}px"
-               onclick={() => !editMode && onOpen(r.path, r.line)} role="button" tabindex="0">
+               onclick={() => !editMode && onOpen(r.path, r.line)} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), !editMode && onOpen(r.path, r.line))} role="button" tabindex="0">
             <span class="loc mono">{rel(r.path)}:{r.line}{#if editMode && edits[editKey(r)] !== undefined && edits[editKey(r)] !== r.text}<span class="dot">●</span>{/if}</span>
             {#if editMode}
               <input class="edit mono" value={edits[editKey(r)] ?? r.text} spellcheck="false"

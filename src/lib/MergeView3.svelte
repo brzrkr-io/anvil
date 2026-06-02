@@ -40,7 +40,8 @@
 </script>
 
 <div class="mv-scrim" role="presentation" onclick={onClose}>
-  <div class="mv" role="dialog" aria-modal="true" aria-label="3-pane merge" onclick={(e) => e.stopPropagation()}>
+  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+  <div class="mv" role="dialog" aria-modal="true" aria-label="3-pane merge" tabindex="-1" onclick={(e) => e.stopPropagation()}>
     <header class="mv-head">
       <h2>3-Pane Merge · {path.split("/").pop()}</h2>
       <button class="mv-x" onclick={onClose}>✕</button>
