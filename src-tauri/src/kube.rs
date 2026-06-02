@@ -12,7 +12,7 @@ fn port_forwards() -> &'static Mutex<HashMap<u32, (std::process::Child, String)>
 }
 
 pub(crate) fn kubectl(args: &[&str]) -> Result<String, String> {
-    let mut cmd = std::process::Command::new("kubectl");
+    let mut cmd = crate::shared::command("kubectl");
     cmd.args(args);
     let profile = aws_profile().lock().unwrap().clone();
     if !profile.is_empty() {
@@ -244,7 +244,7 @@ pub async fn kube_pf_start(
     ports: String,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let mut cmd = std::process::Command::new("kubectl");
+        let mut cmd = crate::shared::command("kubectl");
         if !context.is_empty() {
             cmd.args(["--context", &context]);
         }

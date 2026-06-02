@@ -4,7 +4,7 @@
 use crate::kube::kubectl;
 
 fn flux(args: &[&str]) -> Result<String, String> {
-    let mut cmd = std::process::Command::new("flux");
+    let mut cmd = crate::shared::command("flux");
     cmd.args(args);
     let profile = crate::shared::aws_profile().lock().unwrap().clone();
     if !profile.is_empty() {

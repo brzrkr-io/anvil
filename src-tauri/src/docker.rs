@@ -3,7 +3,7 @@
 // they aren't here.
 
 fn docker(args: &[&str]) -> Result<String, String> {
-    let mut cmd = std::process::Command::new("docker");
+    let mut cmd = crate::shared::command("docker");
     cmd.args(args);
     let out = crate::shared::exec_capture(cmd, 25).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {

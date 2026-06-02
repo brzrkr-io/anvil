@@ -12,7 +12,7 @@ pub async fn secret_read(source: String, key: String) -> Result<String, String> 
     tauri::async_runtime::spawn_blocking(move || {
         let out = match source.as_str() {
             "ssm" => {
-                let mut cmd = std::process::Command::new("aws");
+                let mut cmd = crate::shared::command("aws");
                 cmd.args([
                     "ssm",
                     "get-parameter",
@@ -30,13 +30,11 @@ pub async fn secret_read(source: String, key: String) -> Result<String, String> 
                 }
                 cmd.output()
             }
-            "vault" => std::process::Command::new("vault")
+            "vault" => crate::shared::command("vault")
                 .args(["kv", "get", &key])
                 .output(),
             // 1Password CLI: key is a secret reference, e.g. op://vault/item/field
-            "op" => std::process::Command::new("op")
-                .args(["read", &key])
-                .output(),
+            "op" => crate::shared::command("op").args(["read", &key]).output(),
             "keychain" => std::process::Command::new("security")
                 .args(["find-generic-password", "-s", &key, "-w"])
                 .output(),
@@ -111,7 +109,7 @@ pub async fn aws_list(service: String) -> Result<String, String> {
             "eks" => vec!["eks", "list-clusters", "--query", "clusters", "--output", "table"],
             other => return Err(format!("unknown aws service: {other}")),
         };
-        let mut cmd = std::process::Command::new("aws");
+        let mut cmd = crate::shared::command("aws");
         cmd.args(&args);
         let profile = aws_profile().lock().unwrap().clone();
         if !profile.is_empty() {
@@ -197,7 +195,7 @@ pub fn set_github_token(token: String) {
 }
 
 pub(crate) fn gh_cmd(cwd: &str) -> std::process::Command {
-    let mut c = std::process::Command::new("gh");
+    let mut c = crate::shared::command("gh");
     c.current_dir(cwd);
     let t = github_token().lock().unwrap().clone();
     if !t.is_empty() {

@@ -14,7 +14,7 @@ fn tf_bin(bin: &str) -> Result<&'static str, String> {
 
 fn tf_exec(bin: &str, cwd: &str, args: &[&str]) -> Result<String, String> {
     let prog = tf_bin(bin)?;
-    let mut cmd = std::process::Command::new(prog);
+    let mut cmd = crate::shared::command(prog);
     cmd.current_dir(cwd).args(args);
     let out = crate::shared::exec_capture(cmd, 180).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
@@ -105,7 +105,7 @@ fn scan_iac(
 #[tauri::command]
 pub async fn terraform_plan(cwd: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let mut cmd = std::process::Command::new("terraform");
+        let mut cmd = crate::shared::command("terraform");
         cmd.current_dir(&cwd)
             .args(["plan", "-no-color", "-input=false"]);
         let out = crate::shared::exec_capture(cmd, 180).map_err(|e| e.to_string())?;
@@ -121,7 +121,7 @@ pub async fn terraform_plan(cwd: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn terraform_state(cwd: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let mut cmd = std::process::Command::new("terraform");
+        let mut cmd = crate::shared::command("terraform");
         cmd.current_dir(&cwd).args(["state", "list"]);
         let out = crate::shared::exec_capture(cmd, 25).map_err(|e| e.to_string())?;
         let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -137,7 +137,7 @@ pub async fn terraform_state(cwd: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn terraform_apply(cwd: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let mut cmd = std::process::Command::new("terraform");
+        let mut cmd = crate::shared::command("terraform");
         cmd.current_dir(&cwd)
             .args(["apply", "-no-color", "-input=false", "-auto-approve"]);
         let out = crate::shared::exec_capture(cmd, 180).map_err(|e| e.to_string())?;
@@ -198,7 +198,7 @@ pub async fn tf_detect(cwd: String) -> Result<String, String> {
             || here.join("terragrunt.stack.hcl").exists()
             || here.join("root.hcl").exists();
         let on_path = |p: &str| {
-            std::process::Command::new(p)
+            crate::shared::command(p)
                 .arg("version")
                 .output()
                 .map(|o| o.status.success() || !o.stdout.is_empty())
@@ -276,7 +276,7 @@ pub async fn tg_stack_output(cwd: String) -> Result<String, String> {
 }
 
 fn helm(args: &[&str]) -> Result<String, String> {
-    let mut cmd = std::process::Command::new("helm");
+    let mut cmd = crate::shared::command("helm");
     cmd.args(args);
     let profile = aws_profile().lock().unwrap().clone();
     if !profile.is_empty() {
