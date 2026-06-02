@@ -89,6 +89,27 @@
     rail = "term";
     toast("Sent to terminal", "info");
   }
+
+  // Prewarm the language server when a project folder opens, so the server
+  // (gopls especially) indexes in the background instead of cold-starting on the
+  // first file open. Detect the project type by its root marker file.
+  const LSP_MARKERS: Record<string, string> = {
+    "go.mod": "go", "Cargo.toml": "rust", "tsconfig.json": "typescript",
+    "package.json": "typescript", "pyproject.toml": "python", "setup.py": "python",
+    "requirements.txt": "python", "CMakeLists.txt": "cpp", "compile_commands.json": "cpp",
+  };
+  let prewarmedCwd = "";
+  async function prewarmLsp(dir: string) {
+    if (!dir || dir === prewarmedCwd) return;
+    prewarmedCwd = dir;
+    let entries: { name: string }[] = [];
+    try { entries = await invoke("list_dir", { path: dir }); } catch { return; }
+    const names = new Set(entries.map((e) => e.name));
+    const langs = new Set<string>();
+    for (const [marker, lang] of Object.entries(LSP_MARKERS)) if (names.has(marker)) langs.add(lang);
+    for (const lang of langs) ensureLsp(lang, dir).catch(() => {});
+  }
+  $effect(() => { if (cwd) prewarmLsp(cwd); });
   const Caldera = () => import("$lib/Caldera.svelte");
   import PaneGrid from "$lib/PaneGrid.svelte";
   import { leaf, splitLeaf, closeLeaf, resizeSplit, dockLeaf, setView as setLeafView, paneId, remapTermRefs, firstLeaf, findLeaf, balanceTree, closeOthers as closeOtherPanes, leafIds, addTab, setActiveTab, closeTab, type PaneNode, type Leaf, type ViewKind, type Edge } from "$lib/panes";
@@ -110,7 +131,7 @@
   import { autoHideRail, focusDimming, toggleFocusDimming, terminalAutoCd, toggleTerminalAutoCd } from "$lib/layout-settings";
   import Icon from "$lib/Icon.svelte";
   import { bumpEditorFontSize, setEditorFontSize, editorGoto, editorFormatOnSave, editorTabSize, editorWordWrap, editorGhostText, toggleGhostText, editorGhostSource, setGhostSource } from "$lib/editor-settings";
-  import { lspLang } from "$lib/lsp";
+  import { lspLang, ensureLsp } from "$lib/lsp";
   import { fetchSymbols, searchWorkspaceSymbols } from "$lib/cm-lsp";
   import { problems } from "$lib/diagnostics";
   import { railEnabled, extEnabled } from "$lib/extensions";
