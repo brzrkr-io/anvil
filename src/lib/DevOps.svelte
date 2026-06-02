@@ -6,6 +6,7 @@
   const offlineMsg = "Offline — reconnect to query cluster / observability.";
   import { ACCOUNTS, getValue } from "$lib/accounts";
   import Icon from "$lib/Icon.svelte";
+  import { toast } from "$lib/toast";
 
   let { cwd, onRunCommand }: { cwd: string; onRunCommand?: (cmd: string) => void } = $props();
 
@@ -272,7 +273,7 @@
     try { await invoke("kube_pf_start", { context: current, namespace: p.ns, pod: p.name, ports: ports.trim() }); await refreshPf(); }
     catch (e) { k8sErr = String(e); }
   }
-  async function stopPf(pid: string) { try { await invoke("kube_pf_stop", { pid: Number(pid) }); } catch { /* ignore */ } await refreshPf(); }
+  async function stopPf(pid: string) { try { await invoke("kube_pf_stop", { pid: Number(pid) }); } catch (e) { console.warn("kube_pf_stop failed", e); } await refreshPf(); }
 
   async function loadK8s() {
     busy = true;
@@ -392,8 +393,8 @@
   async function applyCreds() {
     const aws = ACCOUNTS.find((a) => a.key === "aws-profile");
     const gh = ACCOUNTS.find((a) => a.key === "github-token");
-    try { if (aws) await invoke("set_aws_profile", { profile: await getValue(aws) }); } catch { /* ignore */ }
-    try { if (gh) await invoke("set_github_token", { token: await getValue(gh) }); } catch { /* ignore */ }
+    try { if (aws) await invoke("set_aws_profile", { profile: await getValue(aws) }); } catch (e) { console.warn("set_aws_profile failed", e); }
+    try { if (gh) await invoke("set_github_token", { token: await getValue(gh) }); } catch (e) { console.warn("set_github_token failed", e); }
   }
   onMount(async () => { await applyCreds(); loadK8s(); loadCI(); });
   $effect(() => { if (tab === "prs" && !prs) loadPRs(); });
@@ -673,7 +674,7 @@
         <span class="lbl">Value</span>
         <code class="secval">{secReveal ? secVal : "•".repeat(Math.min(secVal.length, 24))}</code>
         <button class="refresh" onclick={() => (secReveal = !secReveal)} title="Reveal / hide">{secReveal ? "hide" : "show"}</button>
-        <button class="refresh" onclick={() => navigator.clipboard.writeText(secVal).catch(() => {})} title="Copy">copy</button>
+        <button class="refresh" onclick={() => navigator.clipboard.writeText(secVal).catch((e) => console.warn("clipboard write failed", e))} title="Copy">copy</button>
       </div>
     {/if}
     {#if promBase}
@@ -690,7 +691,7 @@
       <span class="lbl">Dashboard URL</span>
       <input class="url" bind:value={obsUrl} onchange={saveObs} placeholder="https://grafana…/d/…" spellcheck="false" />
       {#if obsUrl}<button class="refresh" title="Save dashboard" onclick={saveDash}>★</button>
-      <button class="refresh" title="Open in a window (bypasses X-Frame-Options)" onclick={() => invoke('open_url_window', { url: obsUrl }).catch(() => {})}>↗</button>{/if}
+      <button class="refresh" title="Open in a window (bypasses X-Frame-Options)" onclick={() => invoke('open_url_window', { url: obsUrl }).catch((e) => toast("Could not open window: " + String(e).slice(0, 60), "error"))}>↗</button>{/if}
     </div>
     {#if savedDashboards.length}
       <div class="podlist">
@@ -699,7 +700,7 @@
             <span class="pdot" style="background:var(--accent)"></span>
             <span class="pnm">{d.name}</span>
             <span class="pacts">
-              <button class="pact" title="Open in window" onclick={(e) => { e.stopPropagation(); invoke('open_url_window', { url: d.url }).catch(() => {}); }}>↗</button>
+              <button class="pact" title="Open in window" onclick={(e) => { e.stopPropagation(); invoke('open_url_window', { url: d.url }).catch((err) => toast("Could not open window: " + String(err).slice(0, 60), "error")); }}>↗</button>
               <button class="pact danger" title="Remove" onclick={(e) => { e.stopPropagation(); removeDash(d.url); }}>✕</button>
             </span>
           </div>

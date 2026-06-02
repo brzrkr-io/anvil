@@ -104,7 +104,7 @@
     popover = null;
     onOpenDiff?.({ rev, path });
   }
-  function copySha(sha: string) { try { navigator.clipboard?.writeText(sha); } catch { /* ignore */ } }
+  function copySha(sha: string) { try { navigator.clipboard?.writeText(sha); } catch (e) { console.warn("clipboard write failed", e); } }
   function fullDate(ts: number): string {
     return new Date(ts * 1000).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
   }
@@ -144,7 +144,7 @@
   async function toggleAmend() {
     amend = !amend;
     if (amend && !commitMsg.trim()) {
-      try { commitMsg = (await invoke<string>("git_last_message", { cwd })).replace(/\s+$/, ""); } catch { /* ignore */ }
+      try { commitMsg = (await invoke<string>("git_last_message", { cwd })).replace(/\s+$/, ""); } catch (e) { console.warn("git_last_message failed", e); }
     }
   }
   function onCommitKey(e: KeyboardEvent) {

@@ -29,7 +29,7 @@
 
   async function loadChildren() {
     try { children = await invoke<Entry[]>("list_dir", { path: entry.path }); }
-    catch { children = []; }
+    catch (e) { children = []; console.warn("list_dir failed", e); }
     shown = MORE_STEP;
     loaded = true;
   }

@@ -103,7 +103,7 @@
       if (r) matchInfo = { idx: r.resultIndex, count: r.resultCount };
       else matchInfo = { idx: -1, count: 0 };
     });
-    term.loadAddon(new WebLinksAddon((_e, uri) => { openUrl(uri).catch(() => {}); }));
+    term.loadAddon(new WebLinksAddon((_e, uri) => { openUrl(uri).catch((e) => console.warn("openUrl failed", e)); }));
     // File/path smart links (#20): click a file path → open it in the editor.
     const PATH_RE = /(?:[~.]{0,2}\/)?[\w.\-/]+\.[A-Za-z][\w]*(?::\d+)?/g;
     term.loadAddon(new WebLinksAddon((_e, uri) => {
@@ -114,7 +114,7 @@
       terminalOpenPath.set({ path: p, line });
     }, { urlRegex: PATH_RE }));
     // Copy-on-select (#20): mirror the X11/iTerm convention — selecting copies.
-    term.onSelectionChange(() => { const sel = term.getSelection(); if (sel) navigator.clipboard.writeText(sel).catch(() => {}); });
+    term.onSelectionChange(() => { const sel = term.getSelection(); if (sel) navigator.clipboard.writeText(sel).catch((e) => console.warn("clipboard write failed", e)); });
     term.open(host);
     fit.fit();
     // GPU renderer for crisp, fast text; fall back silently if WebGL is lost.
@@ -181,7 +181,7 @@
   });
 
   // #78 Tell the backend to throttle this PTY's coalescer while off-screen.
-  $effect(() => { invoke("pty_set_active", { id, active }).catch(() => {}); });
+  $effect(() => { invoke("pty_set_active", { id, active }).catch((e) => console.warn("pty_set_active failed", e)); });
 
   // Re-fit + restore on becoming visible (rail switch). Two RAFs so layout has
   // flushed before measuring.
@@ -259,8 +259,8 @@
   // Right-click context menu.
   let menu = $state<{ x: number; y: number } | null>(null);
   function ctx(e: MouseEvent) { e.preventDefault(); menu = { x: e.clientX, y: e.clientY }; }
-  async function copySel() { const s = term?.getSelection(); if (s) await navigator.clipboard.writeText(s).catch(() => {}); menu = null; }
-  async function pasteClip() { try { const t = await navigator.clipboard.readText(); if (t) invoke("pty_write", { id, data: t }); } catch {} menu = null; term?.focus(); }
+  async function copySel() { const s = term?.getSelection(); if (s) await navigator.clipboard.writeText(s).catch((e) => console.warn("clipboard write failed", e)); menu = null; }
+  async function pasteClip() { try { const t = await navigator.clipboard.readText(); if (t) invoke("pty_write", { id, data: t }); } catch (e) { console.warn("clipboard read failed", e); } menu = null; term?.focus(); }
   function selectAllTerm() { term?.selectAll(); menu = null; }
   function clearTerm() { term?.clear(); menu = null; term?.focus(); }
   function runSel() {

@@ -23,6 +23,7 @@
   import { cmLsp, formatDoc, cmInlayHints, fetchSymbols, enclosingSymbols, type RefLoc, type OutlineSym } from "$lib/cm-lsp";
   import { editorStickyScroll } from "$lib/editor-settings";
   import { editorLive } from "$lib/editor-live";
+  import { toast } from "$lib/toast";
 
   let { path, onDirty, onOpen, onReferences, onExplain }: {
     path: string;
@@ -319,7 +320,7 @@
     if (!state) {
       fresh = true;
       let text = "";
-      try { text = await invoke<string>("read_file", { path: p }); } catch { text = ""; }
+      try { text = await invoke<string>("read_file", { path: p }); } catch (e) { text = ""; toast("Could not open file: " + String(e).slice(0, 80), "error"); }
       if (loadedPath !== p) return; // a newer load() superseded this one mid-await
       state = EditorState.create({ doc: text, extensions: baseExtensions(p, text.length > BIG_FILE) });
       states.set(p, state);
@@ -375,7 +376,7 @@
       onDirty?.(false);
       refreshGutter();
       loadSymbols(p);
-    } catch (e) { console.error(e); }
+    } catch (e) { toast("Save failed: " + String(e).slice(0, 80), "error"); }
   }
 
   // ── Merge-conflict resolver (#34) ──

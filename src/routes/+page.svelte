@@ -35,7 +35,7 @@
     floodArmed = true;
     floodT0 = performance.now();
     toast("Flooding terminal (seq 1 1000000)…", "info");
-    invoke("pty_write", { id: activeTerm, data: "seq 1 1000000\r" }).catch(() => {});
+    invoke("pty_write", { id: activeTerm, data: "seq 1 1000000\r" }).catch((e) => console.warn("ptyFloodBench pty_write failed", e));
     rail = "term";
   }
   import { getHistory, clearHistory } from "$lib/command-history";
@@ -45,10 +45,10 @@
   // #42 Agent-written PR body from the branch's commits + diff → clipboard.
   async function generatePrBody() {
     let commits = "";
-    try { commits = await invoke<string>("git_log_range", { cwd, range: "origin/main..HEAD" }); } catch { /* ignore */ }
+    try { commits = await invoke<string>("git_log_range", { cwd, range: "origin/main..HEAD" }); } catch (e) { console.warn("git_log_range failed", e); }
     if (!commits.trim()) { toast("No commits ahead of origin/main", "info"); return; }
     let diff = "";
-    try { diff = await invoke<string>("git_diff", { cwd, path: ".", staged: false }); } catch { /* ignore */ }
+    try { diff = await invoke<string>("git_diff", { cwd, path: ".", staged: false }); } catch (e) { console.warn("git_diff failed", e); }
     toast("Drafting PR body…", "info");
     try {
       const { base, apiKey } = await llmCreds();
@@ -332,7 +332,7 @@
   function onMenu(action: string) {
     switch (action) {
       case "new-term": newTerm(); break;
-      case "new-window": invoke("new_window").catch(() => {}); break;
+      case "new-window": invoke("new_window").catch((e) => toast("Could not open new window: " + String(e).slice(0, 60), "error")); break;
       case "open-file": openFileDialog(); break;
       case "open-folder": openFolder(); break;
       case "close-tab":
@@ -513,7 +513,7 @@
     const seedObj: { view: string; file?: string; cwd: string } = { view, cwd };
     if (view === "editor" && ref) seedObj.file = ref;
     const seed = encodeURIComponent(JSON.stringify(seedObj));
-    invoke("new_window", { seed }).catch(() => {});
+    invoke("new_window", { seed }).catch((e) => toast("Could not open new window: " + String(e).slice(0, 60), "error"));
   }
 
   function toggleSplit() {
@@ -800,7 +800,7 @@
         if (!profiles.length) { toast("No AWS profiles in ~/.aws/config", "info"); return; }
         palettePlaceholder = "AWS profile…";
         paletteItems = profiles.map((p) => ({ label: p, run: async () => {
-          await invoke("set_aws_profile", { profile: p }).catch(() => {});
+          await invoke("set_aws_profile", { profile: p }).catch((e) => toast("Failed to set AWS profile: " + String(e).slice(0, 60), "error"));
           invoke("pty_write", { id: activeTerm, data: `export AWS_PROFILE=${p}\n` });
           toast(`AWS_PROFILE=${p}`, "success");
         } }));
@@ -877,7 +877,7 @@
     "recent-files": openRecent,
     "open-file": openFileDialog,
     "open-folder": openFolder,
-    "new-window": () => { invoke("new_window").catch(() => {}); },
+    "new-window": () => { invoke("new_window").catch((e) => toast("Could not open new window: " + String(e).slice(0, 60), "error")); },
     "split-terminal": toggleSplit,
     "bottom-dock": () => { bottomDock = !bottomDock; },
     "explorer": toggleSide,
@@ -909,7 +909,7 @@
     else if (e.key === "k") { e.preventDefault(); openCommands(); }
     else if (e.key === "p") { e.preventDefault(); openFilesPalette(); }
     else if (e.key === "e") { e.preventDefault(); openRecent(); }
-    else if (e.key === "n") { e.preventDefault(); invoke("new_window").catch(() => {}); }
+    else if (e.key === "n") { e.preventDefault(); invoke("new_window").catch((e) => toast("Could not open new window: " + String(e).slice(0, 60), "error")); }
     else if (e.key === "o") { e.preventDefault(); openFolder(); }
     else if (e.key === "d") { e.preventDefault(); toggleSplit(); }
     else if (e.key === "j") { e.preventDefault(); bottomDock = !bottomDock; }
@@ -962,7 +962,7 @@
     const dir = activeFile.replace(/\/[^/]*$/, "") || "/";
     if (dir === lastAutoCdDir) return;
     lastAutoCdDir = dir;
-    invoke("pty_write", { id: activeTerm, data: `cd ${dir.includes(" ") ? `'${dir}'` : dir}\r` }).catch(() => {});
+    invoke("pty_write", { id: activeTerm, data: `cd ${dir.includes(" ") ? `'${dir}'` : dir}\r` }).catch((e) => console.warn("pty_write cd failed", e));
   });
 
   // Apply a workspace's pinned theme/density when its folder becomes active.
@@ -1154,7 +1154,7 @@
   }
   function copyTabPath(kind: TabKind, id: string) {
     const txt = kind === "file" ? id : (terms.find((t) => t.id === id)?.title ?? id);
-    navigator.clipboard.writeText(txt).catch(() => {});
+    navigator.clipboard.writeText(txt).catch((e) => console.warn("clipboard write failed", e));
     tabMenu = null;
   }
 </script>

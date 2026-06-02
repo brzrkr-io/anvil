@@ -12,7 +12,7 @@
 
   async function load(p: string) {
     try { entries = await invoke<Entry[]>("list_dir", { path: p }); }
-    catch { entries = []; }
+    catch (e) { entries = []; console.warn("list_dir failed", e); }
   }
   $effect(() => { if (path) load(path); });
 
