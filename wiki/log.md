@@ -2471,3 +2471,12 @@ Tests updated: `build_section_*` tests replaced with `context_section_*` tests; 
   status dot, log/-failed, re-run, investigate-with-agent, red tab badge. Pure
   parse/sort in actions-runs.ts + 12 tests. Loop 3 (PR+CI triage) now covers PRs
   AND Actions runs.
+
+- 2026-06-02 — Ship it (distribution). install_update command (download+verify+
+  install+relaunch) added alongside check_update. Frontend: Check for Updates
+  offers Install & Restart; quiet autoCheckUpdate ~8s post-launch prompts only
+  when an update exists. Onboarding tour refreshed for the wedge (failing-first
+  surfaces + one-click agent Investigate). New SHIP.md release runbook: updater
+  keypair, Apple notarization secrets + exact GitHub secret names, tag→release
+  flow, end-to-end auto-update verification. Credential/secrets/tag steps remain
+  the maintainer's (never entered by the agent).
