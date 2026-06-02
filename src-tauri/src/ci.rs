@@ -228,6 +228,45 @@ pub async fn gh_pr_create(cwd: String) -> Result<String, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// List dispatchable GitHub Actions workflows: "name\tID\tstate" lines.
+#[tauri::command]
+pub async fn gh_workflow_list(cwd: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut cmd = gh_cmd(&cwd);
+        cmd.args(["workflow", "list", "--all"]);
+        let out = crate::shared::exec_capture(cmd, 25).map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Trigger a workflow_dispatch run for `workflow` (name or file) on `git_ref`.
+#[tauri::command]
+pub async fn gh_workflow_run(
+    cwd: String,
+    workflow: String,
+    git_ref: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut cmd = gh_cmd(&cwd);
+        cmd.args(["workflow", "run", &workflow, "--ref", &git_ref]);
+        let out = crate::shared::exec_capture(cmd, 25).map_err(|e| e.to_string())?;
+        let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+        s.push_str(&String::from_utf8_lossy(&out.stderr));
+        if out.status.success() {
+            Ok(s)
+        } else {
+            Err(s)
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Merge a PR with an allow-listed strategy, deleting the branch after.
 /// `method` is one of merge | squash | rebase.
 #[tauri::command]

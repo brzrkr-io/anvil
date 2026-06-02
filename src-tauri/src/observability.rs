@@ -153,3 +153,56 @@ pub async fn signoz_services(base: String, api_key: String, mins: u64) -> Result
     }
     Ok(text)
 }
+
+/// I85 Sentry — recent unresolved issues for a project. Returns raw JSON from the
+/// Sentry API. Token + org/project supplied by the caller (stored in Keychain).
+#[tauri::command]
+pub async fn sentry_issues(
+    base: String,
+    org: String,
+    project: String,
+    token: String,
+) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .map_err(|e| e.to_string())?;
+    let host = if base.trim().is_empty() {
+        "https://sentry.io".to_string()
+    } else {
+        base.trim_end_matches('/').to_string()
+    };
+    let url = format!(
+        "{host}/api/0/projects/{org}/{project}/issues/?query=is:unresolved&statsPeriod=14d"
+    );
+    let r = client
+        .get(url)
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !r.status().is_success() {
+        return Err(format!("sentry {}", r.status()));
+    }
+    r.text().await.map_err(|e| e.to_string())
+}
+
+/// I88 Slack — post a plain-text message to an incoming-webhook URL.
+#[tauri::command]
+pub async fn slack_post(webhook: String, text: String) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .map_err(|e| e.to_string())?;
+    let r = client
+        .post(webhook)
+        .json(&serde_json::json!({ "text": text }))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if r.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("slack {}", r.status()))
+    }
+}

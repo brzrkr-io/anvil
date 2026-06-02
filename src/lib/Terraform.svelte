@@ -380,7 +380,10 @@
             </div>
             {#if !collapsed[g.module]}
               {#each g.items as r (r)}
-                <div class="res" title={r}>{r}</div>
+                {@const addr = g.module === "(root)" ? r : `${g.module}.${r}`}
+                <div class="res" role="button" tabindex="0" title="{addr} — click to plan -target"
+                  onclick={() => sendCmd(`plan -target='${addr}'`)}
+                  onkeydown={(e) => e.key === "Enter" && sendCmd(`plan -target='${addr}'`)}>{r}</div>
               {/each}
             {/if}
           {/each}

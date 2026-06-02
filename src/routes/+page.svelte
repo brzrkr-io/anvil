@@ -981,6 +981,9 @@
         { label: "1Password", hint: "op", run: () => readSecret("op", "Secret reference (op://vault/item/field):") },
         { label: "macOS Keychain", hint: "keychain", run: () => readSecret("keychain", "Keychain service name:") },
       ]; paletteOpen = true; } },
+      { label: "GitHub: Run Workflow…", hint: "workflow_dispatch", run: runWorkflow },
+      { label: "Sentry: Recent Issues…", hint: "unresolved · 14d", run: sentryIssues },
+      { label: "Slack: Post Message…", hint: "incoming webhook", run: slackPost },
       { label: "AWS: RDS Instances", run: () => { invoke("pty_write", { id: activeTerm, data: "aws rds describe-db-instances --query 'DBInstances[].{ID:DBInstanceIdentifier,Engine:Engine,Class:DBInstanceClass,Status:DBInstanceStatus}' --output table\n" }); rail = "term"; } },
       { label: "Secrets: SSM Get Parameter…", run: () => { const k = prompt("SSM parameter name (e.g. /app/db/password):"); if (k) { invoke("pty_write", { id: activeTerm, data: `aws ssm get-parameter --name '${k}' --with-decryption --query Parameter.Value --output text\n` }); rail = "term"; } } },
       { label: "Secrets: Vault Read…", run: () => { const k = prompt("Vault path (e.g. secret/data/app):"); if (k) { invoke("pty_write", { id: activeTerm, data: `vault kv get '${k}'\n` }); rail = "term"; } } },
@@ -1055,6 +1058,47 @@
       run: () => { diffTarget = { rev }; rail = "diff"; },
     }));
     paletteOpen = true;
+  }
+
+  function cfg(k: string): string { try { return localStorage.getItem(k) || ""; } catch { return ""; } }
+  function setCfg(k: string, v: string): void { try { localStorage.setItem(k, v); } catch { /* ignore */ } }
+
+  // C24 workflow dispatch — pick a workflow, trigger it on the current branch.
+  async function runWorkflow() {
+    let raw = "";
+    try { raw = await invoke<string>("gh_workflow_list", { cwd }); } catch { toast("gh workflow list failed", "error"); return; }
+    const wfs = raw.split("\n").filter(Boolean).map((l) => l.split("\t")[0]).filter(Boolean);
+    if (!wfs.length) { toast("No workflows found", "info"); return; }
+    let gitRef = "HEAD";
+    try { const b = await invoke<string>("git_branches", { cwd }); const head = b.split("\n").find((l) => l.startsWith("*")); if (head) gitRef = head.split("\t")[1] || "HEAD"; } catch { /* ignore */ }
+    palettePlaceholder = `Run workflow on ${gitRef}`;
+    paletteItems = wfs.map((w) => ({ label: w, hint: "dispatch", run: async () => { try { await invoke("gh_workflow_run", { cwd, workflow: w, gitRef }); toast(`Triggered "${w}" on ${gitRef}`, "success"); } catch (e) { toast(String(e).slice(0, 120) || "dispatch failed", "error"); } } }));
+    paletteOpen = true;
+  }
+
+  // I85 Sentry — list recent unresolved issues; pick to copy the permalink.
+  async function sentryIssues() {
+    let org = cfg("anvil-sentry-org"), proj = cfg("anvil-sentry-project"), token = cfg("anvil-sentry-token");
+    const baseUrl = cfg("anvil-sentry-base");
+    if (!org) { org = prompt("Sentry org slug:") || ""; if (!org) return; setCfg("anvil-sentry-org", org); }
+    if (!proj) { proj = prompt("Sentry project slug:") || ""; if (!proj) return; setCfg("anvil-sentry-project", proj); }
+    if (!token) { token = prompt("Sentry auth token:") || ""; if (!token) return; setCfg("anvil-sentry-token", token); }
+    try {
+      const raw = await invoke<string>("sentry_issues", { base: baseUrl, org, project: proj, token });
+      const issues = JSON.parse(raw);
+      if (!Array.isArray(issues) || !issues.length) { toast("No unresolved Sentry issues 🎉", "success"); return; }
+      palettePlaceholder = `${issues.length} unresolved Sentry issue${issues.length === 1 ? "" : "s"}`;
+      paletteItems = issues.slice(0, 100).map((i: { title?: string; metadata?: { value?: string }; count?: string; culprit?: string; permalink?: string }) => ({ label: i.title || i.metadata?.value || "issue", hint: `${i.count ?? "?"}× · ${i.culprit ?? ""}`.slice(0, 60), run: () => { if (i.permalink) { navigator.clipboard?.writeText(i.permalink).catch(() => {}); toast("Issue link copied", "success"); } } }));
+      paletteOpen = true;
+    } catch (e) { toast("Sentry: " + String(e).slice(0, 100), "error"); }
+  }
+
+  // I88 Slack — post a message to a stored incoming-webhook.
+  async function slackPost() {
+    let wh = cfg("anvil-slack-webhook");
+    if (!wh) { wh = prompt("Slack incoming-webhook URL:") || ""; if (!wh) return; setCfg("anvil-slack-webhook", wh); }
+    const text = prompt("Message to post:"); if (!text) return;
+    try { await invoke("slack_post", { webhook: wh, text }); toast("Posted to Slack", "success"); } catch (e) { toast("Slack: " + String(e).slice(0, 100), "error"); }
   }
 
   // I83 read-only secret fetch — copy to clipboard, never display or persist.
