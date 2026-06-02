@@ -19,7 +19,8 @@
   import { editorVimMode } from "$lib/editor-settings";
   import { monoFont, editorBold } from "$lib/fonts";
   import { parseConflicts, resolvedLines, resolveAll, type MergeChoice } from "$lib/merge";
-  import { lspLang, ensureLsp, didOpen, didChange } from "$lib/lsp";
+  import { lspLang, ensureLsp, didOpen, didChange, lspStatus, restartLsp } from "$lib/lsp";
+  import { problems } from "$lib/diagnostics";
   import { cmLsp, formatDoc, cmInlayHints, fetchSymbols, enclosingSymbols, type RefLoc, type OutlineSym } from "$lib/cm-lsp";
   import { editorStickyScroll } from "$lib/editor-settings";
   import { editorLive } from "$lib/editor-live";
@@ -76,6 +77,14 @@
   const symbolsCache = new Map<string, OutlineSym[]>();
   let crumbs = $state<{ name: string; line: number }[]>([]);
   let crumbFile = $state("");
+  // Reactive mirror of loadedPath for the LSP status + problem-count chip.
+  let curPath = $state("");
+  const curLang = $derived(lspLang(curPath));
+  const LANG_LABEL: Record<string, string> = { rust: "rust-analyzer", go: "gopls", typescript: "tsserver", python: "pyright", cpp: "clangd" };
+  const lspState = $derived(curLang ? ($lspStatus[curLang] ?? "down") : null);
+  const fileProblems = $derived(curPath ? $problems.filter((d) => d.path === curPath) : []);
+  const errCount = $derived(fileProblems.filter((d) => d.severity === 1).length);
+  const warnCount = $derived(fileProblems.filter((d) => d.severity === 2).length);
   let stickyRows = $state<{ text: string; line: number }[]>([]);
 
   async function loadSymbols(p: string) {
@@ -112,6 +121,21 @@
     const l = view.state.doc.line(Math.min(line, view.state.doc.lines));
     view.dispatch({ selection: { anchor: l.from }, effects: EditorView.scrollIntoView(l.from, { y: "start", yMargin: 36 }) });
     view.focus();
+  }
+
+  function restartCurrentLsp() {
+    if (!curLang || !curPath || !view) return;
+    const lang = curLang, path = curPath, text = view.state.doc.toString();
+    const dir = path.slice(0, path.lastIndexOf("/")) || "/";
+    restartLsp(lang, dir).then((ok) => { if (ok) { versions.set(path, 1); didOpen(lang, path, text, 1); } });
+  }
+  // Cycle to the next diagnostic below the cursor (wraps). Errors first, then warns.
+  function jumpToProblem() {
+    if (!view || !fileProblems.length) return;
+    const cur = view.state.doc.lineAt(view.state.selection.main.head).number;
+    const sorted = [...fileProblems].sort((a, b) => (a.severity - b.severity) || (a.line - b.line));
+    const next = sorted.find((p) => p.line > cur) ?? sorted[0];
+    jumpLine(next.line);
   }
 
   function fontTheme(): Extension {
@@ -324,6 +348,7 @@
     // Stash the outgoing doc so unsaved edits survive a tab switch.
     if (loadedPath) { saveFolds(loadedPath, view.state); saveViewPos(loadedPath); states.set(loadedPath, view.state); }
     loadedPath = p;
+    curPath = p;
     let state = states.get(p);
     let fresh = false;
     if (!state) {
@@ -333,7 +358,9 @@
       if (loadedPath !== p) return; // a newer load() superseded this one mid-await
       state = EditorState.create({ doc: text, extensions: baseExtensions(p, text.length > BIG_FILE) });
       states.set(p, state);
-      try { mtimes.set(p, await invoke<number>("file_mtime", { path: p })); } catch { /* ignore */ }
+      // mtime is only used for stale-on-disk detection — fetch it off the open
+      // path so it never delays first paint.
+      invoke<number>("file_mtime", { path: p }).then((m) => mtimes.set(p, m)).catch(() => {});
       const lang = lspLang(p);
       if (lang) {
         const dir = p.slice(0, p.lastIndexOf("/")) || "/";
@@ -364,13 +391,19 @@
     // colored without a long synchronous stall on open. The rest streams in.
     forceParsing(view, view.viewport.to, 25);
     if (fresh) { restoreFolds(p); restoreViewPos(p); }
-    scanConflicts();
-    refreshGutter();
-    if ($editorBlameAlways) renderBlame(); else clearBlame();
     crumbs = []; stickyRows = [];
-    refreshMarks();
-    if (symbolsCache.has(p)) recomputeScope(); else loadSymbols(p);
     onDirty?.(dirtyPaths.has(p));
+    // Everything below is decoration/analysis, not needed for the first paint of
+    // the text. Defer one frame so the document shows instantly; gutter, blame,
+    // conflict markers, bookmarks and symbols stream in right after.
+    requestAnimationFrame(() => {
+      if (!view || loadedPath !== p) return;
+      scanConflicts();
+      refreshGutter();
+      if ($editorBlameAlways) renderBlame(); else clearBlame();
+      refreshMarks();
+      if (symbolsCache.has(p)) recomputeScope(); else loadSymbols(p);
+    });
   }
 
   async function save() {
@@ -396,6 +429,12 @@
   const hasConflicts = $derived(conflictCount > 0);
   function docLines(): string[] { return view ? view.state.doc.toString().split("\n") : []; }
   function scanConflicts() {
+    if (!view) return;
+    // Fast path: a git conflict always contains a "<<<<<<<" marker. Skip the
+    // full line-split + parse on the overwhelming majority of files that don't.
+    if (!view.state.doc.toString().includes("<<<<<<<")) {
+      conflictCount = 0; hasBase = false; return;
+    }
     const conflicts = parseConflicts(docLines());
     conflictCount = conflicts.length;
     hasBase = conflicts.some((c) => c.base.length > 0);
@@ -568,6 +607,22 @@
         <span class="sep">›</span>
         <button class="crumb sym" onclick={() => jumpLine(c.line)}>{c.name}</button>
       {/each}
+      <span class="bc-spacer"></span>
+      {#if errCount || warnCount}
+        <button class="diag-chip" onclick={jumpToProblem} title="Jump to next problem">
+          {#if errCount}<span class="diag err">✕ {errCount}</span>{/if}
+          {#if warnCount}<span class="diag warn">▲ {warnCount}</span>{/if}
+        </button>
+      {/if}
+      {#if curLang}
+        <button
+          class="lsp-chip {lspState}"
+          onclick={restartCurrentLsp}
+          title={lspState === "up" ? `${LANG_LABEL[curLang]} connected — click to restart` : lspState === "starting" ? `${LANG_LABEL[curLang]} starting…` : `${LANG_LABEL[curLang]} not running — click to start`}
+        >
+          <span class="lsp-dot"></span>{LANG_LABEL[curLang]}
+        </button>
+      {/if}
     </div>
   {/if}
   <div class="ed-host">
@@ -595,6 +650,26 @@
     color: var(--text2); cursor: default; padding: 1px 3px; border-radius: 4px; }
   .breadcrumb .crumb.file { color: var(--text2); font-weight: 500; }
   .breadcrumb .crumb.sym:hover { background: var(--sel); color: var(--text); }
+  .bc-spacer { flex: 1; }
+  .diag-chip {
+    display: inline-flex; align-items: center; gap: 7px; border: 0; background: transparent;
+    cursor: default; padding: 1px 6px; border-radius: 4px; font-family: var(--font-mono); font-size: 10.5px;
+  }
+  .diag-chip:hover { background: var(--sel); }
+  .diag.err { color: var(--red); }
+  .diag.warn { color: var(--yellow); }
+  .lsp-chip {
+    display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border);
+    background: var(--panel2); color: var(--text3); cursor: default;
+    padding: 1px 7px 1px 6px; border-radius: 4px; font-family: var(--font-mono); font-size: 10px;
+  }
+  .lsp-chip:hover { color: var(--text2); border-color: var(--text3); }
+  .lsp-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text3); flex: 0 0 auto; }
+  .lsp-chip.up .lsp-dot { background: var(--green); }
+  .lsp-chip.up { color: var(--text2); }
+  .lsp-chip.starting .lsp-dot { background: var(--yellow); animation: lsp-pulse 1s ease-in-out infinite; }
+  .lsp-chip.down .lsp-dot { background: var(--red); }
+  @keyframes lsp-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
   .sticky {
     position: absolute; top: 0; left: 0; right: 0; z-index: 4; pointer-events: auto;
     background: var(--panel); border-bottom: 1px solid var(--border); box-shadow: 0 4px 8px rgba(0,0,0,0.18);

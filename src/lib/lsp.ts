@@ -5,10 +5,18 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { writable } from "svelte/store";
 import { setFileProblems } from "$lib/diagnostics";
 
 const started = new Map<string, boolean>(); // lang -> available
 let diagWired = false;
+
+// Reactive per-language server state for the status indicator.
+export type LspState = "down" | "starting" | "up";
+export const lspStatus = writable<Record<string, LspState>>({});
+function setStatus(lang: string, s: LspState) {
+  lspStatus.update((m) => ({ ...m, [lang]: s }));
+}
 
 export function lspLang(path: string): string | null {
   const ext = path.split(".").pop()?.toLowerCase();
@@ -44,11 +52,20 @@ async function notify(lang: string, method: string, params: unknown): Promise<vo
 /// Returns false when no usable server is installed — caller just carries on.
 export async function ensureLsp(lang: string, rootDir: string): Promise<boolean> {
   if (started.has(lang)) return started.get(lang)!;
+  setStatus(lang, "starting");
   let ok = false;
   try { ok = await invoke<boolean>("lsp_start", { lang, rootUri: fileUri(rootDir) }); } catch { ok = false; }
   started.set(lang, ok);
+  setStatus(lang, ok ? "up" : "down");
   if (ok) wireDiagnostics();
   return ok;
+}
+
+/// Restart the server for `lang` (used by the status indicator's click action).
+export async function restartLsp(lang: string, rootDir: string): Promise<boolean> {
+  started.delete(lang);
+  try { await invoke("lsp_stop", { lang }); } catch { /* may not be running */ }
+  return ensureLsp(lang, rootDir);
 }
 
 export function didOpen(lang: string, path: string, text: string, version: number) {

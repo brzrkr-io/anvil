@@ -252,6 +252,14 @@ pub fn lsp_notify(
     notify(h, &method, params)
 }
 
+/// Drop the handle for `lang`, closing its stdin so the server exits. Used by
+/// the status indicator's restart action.
+#[tauri::command]
+pub fn lsp_stop(state: State<LspState>, lang: String) -> Result<(), String> {
+    state.0.lock().unwrap().remove(&lang);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

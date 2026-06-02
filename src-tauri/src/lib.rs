@@ -2220,6 +2220,7 @@ pub fn run() {
             pty_resize,
             pty_kill,
             lsp::lsp_start,
+            lsp::lsp_stop,
             lsp::lsp_request,
             lsp::lsp_notify,
             check_update,
