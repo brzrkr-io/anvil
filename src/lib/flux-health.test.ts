@@ -75,3 +75,19 @@ describe("shortRev", () => {
     expect(shortRev("v1.2.3-some-very-long-tag-name-here")).toBe("v1.2.3-some-very-long-ta…");
   });
 });
+
+import { parseFluxItems } from "./flux-health.js";
+describe("parseFluxItems", () => {
+  it("maps Ready condition + kind, and returns [] for non-JSON", () => {
+    expect(parseFluxItems("the server doesn't have a resource type")).toEqual([]);
+    const raw = JSON.stringify({ items: [
+      { kind: "Kustomization", metadata: { name: "api", namespace: "prod" },
+        status: { conditions: [{ type: "Ready", status: "False", message: "build failed" }] }, spec: {} },
+      { kind: "HelmRelease", metadata: { name: "cache", namespace: "prod" },
+        status: { conditions: [{ type: "Ready", status: "True", message: "ok" }] }, spec: { suspend: true } },
+    ] });
+    const out = parseFluxItems(raw);
+    expect(out[0]).toMatchObject({ name: "api", apiKind: "Kustomization", ready: "fail" });
+    expect(out[1]).toMatchObject({ ready: "ok", suspended: true });
+  });
+});

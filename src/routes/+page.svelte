@@ -138,6 +138,7 @@
   import WhatsNew from "$lib/WhatsNew.svelte";
   import Keymap from "$lib/Keymap.svelte";
   import Doctor from "$lib/Doctor.svelte";
+  import Attention from "$lib/Attention.svelte";
   import MergeView3 from "$lib/MergeView3.svelte";
   import RebasePlan from "$lib/RebasePlan.svelte";
   import { toast } from "$lib/toast";
@@ -450,6 +451,7 @@
   let whatsNew = $state(false);
   let keymapOpen = $state(false);
   let doctorOpen = $state(false);
+  let attentionOpen = $state(false);
   let mergeView = $state<string | null>(null); // #25 path under 3-pane merge
   let rebaseTarget = $state<string | null>(null); // #21 interactive rebase editor
   let quakeOpen = $state(false); // #18 drop-down terminal overlay
@@ -1025,6 +1027,7 @@
       { label: "Help: Report a Problem (copy diagnostics)", run: async () => { const report = diagnosticsReport(WHATS_NEW_VERSION); try { await navigator.clipboard.writeText(report); toast("Diagnostics copied — paste into your bug report", "success"); } catch { toast("Could not copy diagnostics", "error"); } } },
       { label: `Help: View Crash Log (${getCrashes().length})`, run: () => { const cr = getCrashes(); if (!cr.length) { toast("No crashes recorded 🎉", "success"); return; } palettePlaceholder = `${cr.length} crash${cr.length === 1 ? "" : "es"} (local)`; paletteItems = [...cr].reverse().slice(0, 100).map((c) => ({ label: `${c.kind}: ${c.message}`, hint: new Date(c.ts).toLocaleString(), run: () => {} })); paletteItems.push({ label: "Clear crash log", hint: "irreversible", run: () => { clearCrashes(); toast("Crash log cleared", "success"); } }); paletteOpen = true; } },
       { label: "Help: Keyboard Shortcuts", hint: "⌘/", run: () => (keymapOpen = true) },
+      { label: "What needs attention", hint: "⌘⇧A · failing GitOps / pods / CI", run: () => (attentionOpen = true) },
       { label: "Connections: Check tools & auth", hint: "k8s · aws · gh · glab · docker", run: () => (doctorOpen = true) },
       { label: "Environment: Switch Profile…", hint: "ctx + ns + aws in one move", run: switchProfilePalette },
       { label: "Environment: Save Current as Profile…", hint: "snapshot ctx/ns/aws", run: saveCurrentProfile },
@@ -1287,6 +1290,7 @@
     else if (e.key === "o") { e.preventDefault(); openFolder(); }
     else if (e.key === "d") { e.preventDefault(); toggleSplit(); }
     else if (e.key === "j") { e.preventDefault(); bottomDock = !bottomDock; }
+    else if (e.shiftKey && (e.key === "a" || e.key === "A")) { e.preventDefault(); attentionOpen = true; }
     else if (e.shiftKey && (e.key === "f" || e.key === "F")) { e.preventDefault(); rail = "search"; }
     else if (e.shiftKey && (e.key === "b" || e.key === "B")) { e.preventDefault(); toggleRail(); }
     else if (e.shiftKey && (e.key === "o" || e.key === "O")) { e.preventDefault(); goToSymbol(); }
@@ -1954,6 +1958,9 @@
   {/if}
   {#if doctorOpen}
     <Doctor onClose={() => (doctorOpen = false)} onRunCommand={sendToTerm} />
+  {/if}
+  {#if attentionOpen}
+    <Attention {cwd} onClose={() => (attentionOpen = false)} onOpenView={openView} onInvestigate={investigate} />
   {/if}
 
   {#if mergeView}

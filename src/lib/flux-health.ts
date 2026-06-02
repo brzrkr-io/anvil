@@ -10,6 +10,35 @@ export interface FluxLike {
   suspended: boolean;
   message: string;
   revision: string;
+  apiKind?: string; // Kustomization | HelmRelease | … (present when parsed from JSON)
+}
+
+// Parse `kubectl get <flux-crd> -A -o json` into FluxLike rows. Tolerant: returns
+// [] for non-JSON (e.g. a "no resource type" error string) so callers can probe
+// for Flux without special-casing absence.
+export function parseFluxItems(raw: string): FluxLike[] {
+  let j: { items?: unknown[] };
+  try {
+    j = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  const list = Array.isArray(j?.items) ? j.items : [];
+  return list.map((itu): FluxLike => {
+    const it = itu as Record<string, any>;
+    const conds = it?.status?.conditions ?? [];
+    const ready = conds.find((c: { type?: string }) => c.type === "Ready");
+    const st = it?.status ?? {};
+    return {
+      name: it?.metadata?.name ?? "?",
+      ns: it?.metadata?.namespace ?? "",
+      apiKind: it?.kind ?? "",
+      ready: !ready ? "unknown" : ready.status === "True" ? "ok" : "fail",
+      suspended: it?.spec?.suspend === true,
+      revision: st.lastAppliedRevision || st.lastAttemptedRevision || st.artifact?.revision || "",
+      message: ready?.message ?? "",
+    };
+  });
 }
 
 // Sort rank: broken things first so the eye lands on what needs attention.
