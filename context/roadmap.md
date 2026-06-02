@@ -13,19 +13,19 @@ don't rebuild what exists.
 - [x] Clean `svelte-check` to 0 errors / 0 warnings (a11y, deprecations, unused CSS)
 - [x] CI fails on warnings (svelte-check `--threshold warning`, clippy `-D warnings`)
 
-## P0 — stability & quality (the app reads as flaky; fix that first)
-1. Translucency: make frost work in Tauri **or** default to a clean solid. Current
-   native vibrancy (`hudWindow`) + semi-transparent surfaces does not read as true
-   frosted glass. Decide and finish — don't leave it half-working.
-2. Rust panic → surfaced + recovered in UI, never white-screen.
-3. Session/layout/cwd/terminal restore — reliable across relaunch AND crash.
-4. PTY robustness pass: child-death respawn, EAGAIN backpressure, output-flood (mostly done — verify under load).
-5. Long-session memory audit (xterm buffers, listeners, SWR eviction).
-6. Multi-window state isolation — no cross-window bleed.
-7. Close/focus edge cases (last tab, empty states, split focus).
-8. Local opt-in crash/error telemetry to actually find bugs.
-9. Raise test coverage toward 90% (unit + Playwright e2e on key flows).
-10. Add Playwright e2e to CI (headless display).
+## P0 — stability & quality ✅ (largely done)
+1. [x] Translucency: terminal/editor stay solid; only chrome is translucent (frost via native vibrancy only). No more white/zen bleed.
+2. [x] Rust panic / uncaught error → surfaced as a toast (installCrashHandlers + crash.ts ring buffer), never silent white-screen.
+3. [x] Session/layout/cwd/terminal restore across relaunch AND crash (sync localStorage mirror + quit-flush).
+4. [x] PTY robustness: child-death respawn, EAGAIN backpressure, output-flood coalescing.
+5. [x] Long-session memory audit: Terminal/Editor/CI/DevOps clean up listeners+intervals; capped agent chat (was the one unbounded store).
+6. [x] Multi-window state isolation — per-window session keys (no clobber).
+7. [x] Close/focus edge cases (close-all terminals → empty state, etc.).
+8. [x] Local crash/telemetry ring buffers (capped).
+9. [ ] Raise unit coverage toward 90% (ongoing).
+10. [x] Playwright functional e2e in CI (fails on regressions; visual snapshots stay local).
+- Window size/position persists across relaunch (tauri-plugin-window-state).
+- CI fails on any svelte-check or clippy warning.
 
 ## P1 — AI agent depth (the differentiator)
 11. Tool-approval cards: read auto, write/exec confirm (verify the existing flow is solid).
