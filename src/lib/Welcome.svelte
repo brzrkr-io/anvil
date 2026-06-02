@@ -4,11 +4,19 @@
     onOpenRecent,
     onNewTerminal,
     onCommandPalette,
+    onNewFile,
+    onNewFolder,
+    onOpenFile,
+    onOpenFolder,
   }: {
     recent?: string[];
     onOpenRecent?: (path: string) => void;
     onNewTerminal?: () => void;
     onCommandPalette?: () => void;
+    onNewFile?: () => void;
+    onNewFolder?: () => void;
+    onOpenFile?: () => void;
+    onOpenFolder?: () => void;
   } = $props();
 
   function basename(p: string): string {
@@ -35,8 +43,14 @@
     <section class="start">
       <div class="section-label">Start</div>
       <div class="action-row">
-        <button class="pill" onclick={onNewTerminal}>New Terminal <kbd>⌘T</kbd></button>
-        <button class="pill" onclick={onCommandPalette}>Command Palette <kbd>⌘K</kbd></button>
+        <button class="pill" onclick={onNewFile}>New File</button>
+        <button class="pill" onclick={onNewFolder}>New Folder</button>
+        <button class="pill" onclick={onOpenFile}>Open File… <kbd>⌘O</kbd></button>
+        <button class="pill" onclick={onOpenFolder}>Open Folder…</button>
+      </div>
+      <div class="action-row">
+        <button class="pill ghost" onclick={onNewTerminal}>New Terminal <kbd>⌘T</kbd></button>
+        <button class="pill ghost" onclick={onCommandPalette}>Command Palette <kbd>⌘K</kbd></button>
       </div>
     </section>
 
@@ -128,6 +142,17 @@
     display: flex;
     flex-wrap: wrap;
     gap: 10px;
+  }
+  .action-row + .action-row {
+    margin-top: 10px;
+  }
+  /* Primary actions (file/folder) read solid; secondary (terminal/palette) ghost. */
+  .pill:not(.ghost) {
+    border-color: var(--accent);
+    color: var(--text);
+  }
+  .pill.ghost {
+    color: var(--text3);
   }
 
   .pill {

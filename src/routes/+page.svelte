@@ -133,6 +133,7 @@
   import Toasts from "$lib/Toasts.svelte";
   import Dialog from "$lib/Dialog.svelte";
   import Welcome from "$lib/Welcome.svelte";
+  import { askText } from "$lib/dialog";
   import WhatsNew from "$lib/WhatsNew.svelte";
   import Keymap from "$lib/Keymap.svelte";
   import Doctor from "$lib/Doctor.svelte";
@@ -309,6 +310,32 @@
   // mode that other views replace.
   let explorerOpen = $state(false);
   function toggleSide() { explorerOpen = !explorerOpen; }
+  // Explorer is the doorway into IDE mode: the first click shows the file tree +
+  // the editor surface (Welcome with open/create actions when nothing's open),
+  // instead of leaving whatever non-file view was up. A second click toggles the
+  // tree like a normal sidebar.
+  function openExplorer() {
+    if (rail !== "editor" && rail !== "files") {
+      explorerOpen = true;
+      rail = activeFile ? "editor" : "files";
+    } else {
+      explorerOpen = !explorerOpen;
+    }
+  }
+  async function newRootFile() {
+    const name = await askText({ title: "New file", placeholder: "name.ext" });
+    if (!name) return;
+    const path = `${cwd.replace(/\/$/, "")}/${name}`;
+    await invoke("create_path", { path, isDir: false }).catch(() => {});
+    explorerOpen = true;
+    openInEditor(path);
+  }
+  async function newRootFolder() {
+    const name = await askText({ title: "New folder" });
+    if (!name) return;
+    await invoke("create_path", { path: `${cwd.replace(/\/$/, "")}/${name}`, isDir: true }).catch(() => {});
+    explorerOpen = true;
+  }
 
   // Activity rail is hideable on demand (⌘⇧B), persisted.
   let railHidden = $state(false);
@@ -1603,7 +1630,7 @@
     <nav class="rail" aria-label="Activity bar">
       <div class="brandmark" role="button" tabindex="0" title="Anvil — Command Palette (⌘K)" onclick={openCommands} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openCommands())}><Icon name="basin" size={20} /></div>
       <div class="i {rail === 'term' ? 'on' : ''}" role="button" tabindex="0" title="Terminal" onclick={() => (rail = 'term')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'term'))}><Icon name="terminal" /></div>
-      <div class="i panel {explorerOpen ? 'pinned' : ''}" role="button" tabindex="0" title="Explorer (⌘B)" onclick={toggleSide} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), toggleSide())}><Icon name="folder" /></div>
+      <div class="i panel {explorerOpen ? 'pinned' : ''}" role="button" tabindex="0" title="Explorer (⌘B)" onclick={openExplorer} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openExplorer())}><Icon name="folder" /></div>
       <div class="i {rail === 'scm' ? 'on' : ''}" role="button" tabindex="0" title="Source Control" onclick={() => openView('scm')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('scm'))}><Icon name="branch" /></div>
       <div class="i {rail === 'search' ? 'on' : ''}" role="button" tabindex="0" title="Search (⌘⇧F)" onclick={() => openView('search')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('search'))}><Icon name="search" /></div>
       <div class="i agent {rail === 'agent' ? 'on' : ''}" role="button" tabindex="0" title="AI Agent" onclick={() => openView('agent')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('agent'))}><Icon name="agent" /></div>
@@ -1767,7 +1794,7 @@
       {:else if rail === "settings"}
         <div class="view">{#await Settings() then M}<M.default />{/await}</div>
       {:else if rail === "editor" || rail === "files"}
-        <div class="view"><Welcome recent={recentFiles} onOpenRecent={openInEditor} onNewTerminal={newTerm} onCommandPalette={openCommands} /></div>
+        <div class="view"><Welcome recent={recentFiles} onOpenRecent={openInEditor} onNewTerminal={newTerm} onCommandPalette={openCommands} onNewFile={newRootFile} onNewFolder={newRootFolder} onOpenFile={openFileDialog} onOpenFolder={openFolder} /></div>
       {/if}
 
       <!-- Heavy rail views: mounted on first visit, then shown/hidden (no re-fetch on switch). -->
