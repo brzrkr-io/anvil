@@ -134,6 +134,7 @@
   import Dialog from "$lib/Dialog.svelte";
   import Welcome from "$lib/Welcome.svelte";
   import { askText } from "$lib/dialog";
+  import { getProfiles, saveProfile, setActiveProfile, profileSummary, type EnvProfile } from "$lib/profiles";
   import WhatsNew from "$lib/WhatsNew.svelte";
   import Keymap from "$lib/Keymap.svelte";
   import Doctor from "$lib/Doctor.svelte";
@@ -335,6 +336,44 @@
     if (!name) return;
     await invoke("create_path", { path: `${cwd.replace(/\/$/, "")}/${name}`, isDir: true }).catch(() => {});
     explorerOpen = true;
+  }
+
+  // #4 Per-environment profiles: switch kube context + namespace + AWS profile in
+  // one move so every surface follows the same environment.
+  async function applyProfile(p: EnvProfile) {
+    try {
+      if (p.kubeContext) await invoke("kube_use_context", { name: p.kubeContext });
+      if (p.namespace) await invoke("kube_set_namespace", { namespace: p.namespace });
+      if (p.awsProfile) await invoke("set_aws_profile", { profile: p.awsProfile });
+      setActiveProfile(p.name);
+      toast(`Environment → ${p.name}${profileSummary(p) ? ` (${profileSummary(p)})` : ""}`, "success");
+    } catch (e) {
+      toast("Profile switch failed: " + String(e).slice(0, 80), "error");
+    }
+  }
+  function switchProfilePalette() {
+    const profs = getProfiles();
+    if (!profs.length) { toast("No environment profiles yet — save one first", "info"); return; }
+    palettePlaceholder = "Switch environment…";
+    paletteItems = profs.map((p) => ({ label: p.name, hint: profileSummary(p), run: () => applyProfile(p) }));
+    paletteOpen = true;
+  }
+  async function saveCurrentProfile() {
+    const name = await askText({ title: "Save environment profile", placeholder: "prod / stage / dev" });
+    if (!name) return;
+    const [ctx, ns] = await Promise.allSettled([
+      invoke<string>("kube_current_context"),
+      invoke<string>("kube_current_namespace"),
+    ]);
+    const aws = typeof localStorage !== "undefined" ? localStorage.getItem("anvil-acct-aws-profile") || undefined : undefined;
+    saveProfile({
+      name,
+      kubeContext: ctx.status === "fulfilled" ? ctx.value.trim() || undefined : undefined,
+      namespace: ns.status === "fulfilled" ? ns.value.trim() || undefined : undefined,
+      awsProfile: aws,
+    });
+    setActiveProfile(name);
+    toast(`Saved environment profile “${name}”`, "success");
   }
 
   // Activity rail is hideable on demand (⌘⇧B), persisted.
@@ -987,6 +1026,8 @@
       { label: `Help: View Crash Log (${getCrashes().length})`, run: () => { const cr = getCrashes(); if (!cr.length) { toast("No crashes recorded 🎉", "success"); return; } palettePlaceholder = `${cr.length} crash${cr.length === 1 ? "" : "es"} (local)`; paletteItems = [...cr].reverse().slice(0, 100).map((c) => ({ label: `${c.kind}: ${c.message}`, hint: new Date(c.ts).toLocaleString(), run: () => {} })); paletteItems.push({ label: "Clear crash log", hint: "irreversible", run: () => { clearCrashes(); toast("Crash log cleared", "success"); } }); paletteOpen = true; } },
       { label: "Help: Keyboard Shortcuts", hint: "⌘/", run: () => (keymapOpen = true) },
       { label: "Connections: Check tools & auth", hint: "k8s · aws · gh · glab · docker", run: () => (doctorOpen = true) },
+      { label: "Environment: Switch Profile…", hint: "ctx + ns + aws in one move", run: switchProfilePalette },
+      { label: "Environment: Save Current as Profile…", hint: "snapshot ctx/ns/aws", run: saveCurrentProfile },
       { label: "Editor: Font Larger", run: () => bumpEditorFontSize(1) },
       { label: "Editor: Font Smaller", run: () => bumpEditorFontSize(-1) },
       { label: "Import Theme (JSON)…", run: importThemeJson },
