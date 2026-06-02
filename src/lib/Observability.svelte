@@ -1,16 +1,29 @@
 <script lang="ts">
-  import { onDestroy } from "svelte";
+  import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import Icon from "$lib/Icon.svelte";
   import { askText } from "$lib/dialog";
-
-  let { active = true }: { active?: boolean } = $props();
+  import { toast } from "$lib/toast";
 
   const ls = typeof localStorage !== "undefined" ? localStorage : null;
-  let view = $state<"metrics" | "logs">("metrics");
+  function lsGet(k: string, def = ""): string { return ls?.getItem(k) ?? def; }
+  function lsSet(k: string, v: string) { ls?.setItem(k, v); }
 
-  // ── Prometheus ──
-  let promBase = $state(ls?.getItem("anvil-prom-base") ?? "");
+  let view = $state<"metrics" | "signoz" | "dashboards">("metrics");
+
+  // API keys live in the macOS Keychain, never localStorage.
+  async function loadKey(name: string): Promise<string> {
+    try { return await invoke<string>("secret_get", { key: name }); } catch { return ""; }
+  }
+  async function saveKey(name: string, value: string) {
+    try { await invoke("secret_set", { key: name, value }); } catch (e) { toast("Keychain save failed: " + String(e).slice(0, 80), "error"); }
+  }
+  function openUrl(url: string) {
+    invoke("open_url_window", { url }).catch((e) => toast(String(e).slice(0, 100), "error"));
+  }
+
+  // ── Prometheus (metrics) ──
+  let promBase = $state(lsGet("anvil-prom-base", "https://prometheus.firemon.net"));
   let promQuery = $state("");
   let promRows = $state<{ metric: string; value: string }[]>([]);
   let promErr = $state("");
@@ -21,10 +34,9 @@
     const labels = Object.entries(m).filter(([k]) => k !== "__name__").map(([k, v]) => `${k}="${v}"`).join(", ");
     return labels ? `${name}{${labels}}` : name || "{}";
   }
-
   async function runProm() {
     if (!promBase || !promQuery) return;
-    ls?.setItem("anvil-prom-base", promBase);
+    lsSet("anvil-prom-base", promBase);
     promErr = ""; promRows = []; promBusy = true;
     try {
       const j = JSON.parse(await invoke<string>("prom_query", { base: promBase, query: promQuery }));
@@ -34,13 +46,12 @@
     } catch (e) { promErr = String(e); } finally { promBusy = false; }
   }
 
-  // Saved queries + sparklines
   let savedQs = $state<{ name: string; q: string }[]>(loadSaved());
   let sparks = $state<Record<string, number[]>>({});
   function loadSaved(): { name: string; q: string }[] {
-    try { return JSON.parse(ls?.getItem("anvil-prom-queries") || "[]"); } catch { return []; }
+    try { return JSON.parse(lsGet("anvil-prom-queries", "[]")); } catch { return []; }
   }
-  function persistSaved() { ls?.setItem("anvil-prom-queries", JSON.stringify(savedQs)); }
+  function persistSaved() { lsSet("anvil-prom-queries", JSON.stringify(savedQs)); }
   async function saveQuery() {
     if (!promQuery.trim()) return;
     const name = await askText({ title: "Save query", value: promQuery.slice(0, 40) });
@@ -68,100 +79,105 @@
     const min = Math.min(...vals), max = Math.max(...vals), span = max - min || 1;
     return vals.map((v, i) => `${i === 0 ? "M" : "L"}${((i / (vals.length - 1)) * w).toFixed(1)} ${(h - ((v - min) / span) * h).toFixed(1)}`).join(" ");
   }
-
-  // Firing alerts
   let alerts = $state<{ name: string; sev: string; labels: string }[]>([]);
-  let alertErr = $state("");
   async function loadAlerts() {
     if (!promBase) return;
-    alertErr = "";
     try {
       const j = JSON.parse(await invoke<string>("prom_query", { base: promBase, query: 'ALERTS{alertstate="firing"}' }));
-      if (j.status !== "success") { alertErr = j.error || "query error"; alerts = []; return; }
+      if (j.status !== "success") { alerts = []; return; }
       alerts = (j.data?.result ?? []).map((r: any) => {
         const m = r.metric ?? {};
         return {
-          name: m.alertname || "alert",
-          sev: m.severity || "",
+          name: m.alertname || "alert", sev: m.severity || "",
           labels: Object.entries(m).filter(([k]) => !["alertname", "alertstate", "severity", "__name__"].includes(k)).map(([k, v]) => `${k}=${v}`).join("  "),
         };
       });
-    } catch (e) { alertErr = String(e); alerts = []; }
+    } catch { alerts = []; }
   }
   function refreshMetrics() { loadAlerts(); loadSparks(); }
 
-  // ── Loki ──
-  let lokiBase = $state(ls?.getItem("anvil-loki-base") ?? "");
-  let lokiQuery = $state("");
-  let lokiLines = $state<{ ts: string; line: string }[]>([]);
-  let lokiErr = $state("");
-  let lokiTail = $state(false);
-  let lokiTimer: ReturnType<typeof setInterval> | null = null;
+  // ── SigNoz (logs / traces / services) ──
+  let sigBase = $state(lsGet("anvil-signoz-base", "https://signoz.firemon.net"));
+  let sigKey = $state("");
+  let sigServices = $state<{ serviceName: string; p99: number; errorRate: number; callRate: number }[]>([]);
+  let sigErr = $state("");
+  let sigBusy = $state(false);
 
-  async function runLoki() {
-    if (!lokiBase || !lokiQuery || !active) return;
-    ls?.setItem("anvil-loki-base", lokiBase);
-    lokiErr = "";
+  async function loadServices() {
+    if (!sigBase) return;
+    lsSet("anvil-signoz-base", sigBase);
+    sigErr = ""; sigBusy = true;
     try {
-      const j = JSON.parse(await invoke<string>("loki_query", { base: lokiBase, query: lokiQuery }));
-      if (j.status !== "success") { lokiErr = j.error || "query error"; return; }
-      const out: { ts: string; line: string }[] = [];
-      for (const s of j.data?.result ?? []) {
-        for (const [ns, line] of s.values ?? []) out.push({ ts: new Date(Number(ns) / 1e6).toLocaleTimeString(), line });
-      }
-      out.sort((a, b) => (a.ts < b.ts ? 1 : -1));
-      lokiLines = out.slice(0, 300);
-      if (!lokiLines.length) lokiErr = "no log lines";
-    } catch (e) { lokiErr = String(e); }
+      const raw = await invoke<string>("signoz_services", { base: sigBase, apiKey: sigKey });
+      const arr = JSON.parse(raw);
+      sigServices = (Array.isArray(arr) ? arr : []).map((s: any) => ({
+        serviceName: s.serviceName ?? s.name ?? "",
+        p99: Math.round((s.p99 ?? 0) / 1e6),
+        errorRate: +(s.errorRate ?? 0).toFixed(2),
+        callRate: +(s.callRate ?? 0).toFixed(2),
+      })).filter((s: any) => s.serviceName);
+      if (!sigServices.length) sigErr = "no services in the last 5m";
+    } catch (e) { sigErr = String(e); } finally { sigBusy = false; }
   }
-  function toggleLokiTail() {
-    lokiTail = !lokiTail;
-    if (lokiTimer) { clearInterval(lokiTimer); lokiTimer = null; }
-    if (lokiTail) { runLoki(); lokiTimer = setInterval(runLoki, 3000); }
+
+  // ── Grafana (dashboards) ──
+  let grafBase = $state(lsGet("anvil-grafana-base", ""));
+  let grafKey = $state("");
+  let dashboards = $state<{ title: string; url: string; folderTitle?: string; tags?: string[] }[]>([]);
+  let grafErr = $state("");
+  let grafBusy = $state(false);
+
+  async function loadDashboards() {
+    if (!grafBase) { grafErr = "Set the Grafana base URL"; return; }
+    lsSet("anvil-grafana-base", grafBase);
+    grafErr = ""; grafBusy = true;
+    try {
+      const raw = await invoke<string>("grafana_dashboards", { base: grafBase, token: grafKey });
+      dashboards = (JSON.parse(raw) as any[]).map((d) => ({ title: d.title, url: d.url, folderTitle: d.folderTitle, tags: d.tags }));
+      if (!dashboards.length) grafErr = "no dashboards found";
+    } catch (e) { grafErr = String(e); } finally { grafBusy = false; }
   }
-  onDestroy(() => { if (lokiTimer) clearInterval(lokiTimer); });
+  function openDashboard(url: string) { openUrl(grafBase.replace(/\/$/, "") + url); }
+
+  onMount(async () => {
+    sigKey = await loadKey("signoz-key");
+    grafKey = await loadKey("grafana-token");
+    loadAlerts();
+    if (savedQs.length) loadSparks();
+  });
 </script>
 
 <div class="obs">
   <div class="topbar">
     <div class="seg">
       <button class="seg-btn" class:on={view === "metrics"} onclick={() => (view = "metrics")}>Metrics</button>
-      <button class="seg-btn" class:on={view === "logs"} onclick={() => (view = "logs")}>Logs</button>
+      <button class="seg-btn" class:on={view === "signoz"} onclick={() => { view = "signoz"; if (!sigServices.length) loadServices(); }}>SigNoz</button>
+      <button class="seg-btn" class:on={view === "dashboards"} onclick={() => { view = "dashboards"; if (!dashboards.length) loadDashboards(); }}>Dashboards</button>
     </div>
     <span class="spacer"></span>
-    {#if view === "metrics"}
-      <button class="iconbtn" onclick={refreshMetrics} title="Refresh alerts + sparklines"><Icon name="refresh" size={13} /></button>
-    {/if}
+    {#if view === "metrics"}<button class="iconbtn" onclick={refreshMetrics} title="Refresh alerts + sparklines"><Icon name="refresh" size={13} /></button>{/if}
+    {#if view === "signoz"}<button class="iconbtn" onclick={loadServices} title="Refresh services"><Icon name="refresh" size={13} /></button>{/if}
+    {#if view === "dashboards"}<button class="iconbtn" onclick={loadDashboards} title="Refresh dashboards"><Icon name="refresh" size={13} /></button>{/if}
   </div>
 
   {#if view === "metrics"}
     <div class="bar">
-      <input class="in" placeholder="Prometheus base URL (http://host:9090)" bind:value={promBase} />
-      <input class="in mono" placeholder="PromQL  e.g. up" bind:value={promQuery}
-        onkeydown={(e) => e.key === "Enter" && runProm()} />
+      <input class="in url" placeholder="Prometheus base URL" bind:value={promBase} />
+      <input class="in mono" placeholder="PromQL  e.g. up" bind:value={promQuery} onkeydown={(e) => e.key === "Enter" && runProm()} />
       <button class="btn" onclick={runProm} disabled={promBusy}>{promBusy ? "…" : "Run"}</button>
-      <button class="btn" onclick={saveQuery} title="Save query">Save</button>
+      <button class="btn" onclick={saveQuery}>Save</button>
     </div>
-
     <div class="scroll">
       {#if alerts.length}
         <div class="sec-h">Firing alerts <span class="cnt">{alerts.length}</span></div>
         {#each alerts as a (a.name + a.labels)}
-          <div class="alert">
-            <span class="adot" class:crit={a.sev === "critical"}></span>
-            <span class="aname">{a.name}</span>
-            {#if a.sev}<span class="asev">{a.sev}</span>{/if}
-            <span class="albl">{a.labels}</span>
-          </div>
+          <div class="alert"><span class="adot" class:crit={a.sev === "critical"}></span><span class="aname">{a.name}</span>{#if a.sev}<span class="asev">{a.sev}</span>{/if}<span class="albl">{a.labels}</span></div>
         {/each}
       {/if}
-      {#if alertErr}<div class="err">{alertErr.slice(0, 160)}</div>{/if}
-
       {#if savedQs.length}
         <div class="sec-h">Saved</div>
         {#each savedQs as s (s.q)}
-          <div class="spark" role="button" tabindex="0" title={s.q}
-            onclick={() => { promQuery = s.q; runProm(); }} onkeydown={(e) => e.key === "Enter" && (promQuery = s.q)}>
+          <div class="spark" role="button" tabindex="0" title={s.q} onclick={() => { promQuery = s.q; runProm(); }} onkeydown={(e) => e.key === "Enter" && (promQuery = s.q)}>
             <span class="sname">{s.name}</span>
             <svg class="sparksvg" viewBox="0 0 120 22" preserveAspectRatio="none"><path d={sparkPath(sparks[s.q] ?? [])} fill="none" stroke="var(--accent)" stroke-width="1.2" /></svg>
             <span class="sval">{sparkLast(sparks[s.q] ?? [])}</span>
@@ -169,7 +185,6 @@
           </div>
         {/each}
       {/if}
-
       {#if promErr}<div class="err">{promErr.slice(0, 200)}</div>{/if}
       {#if promRows.length}
         <div class="sec-h">Result <span class="cnt">{promRows.length}</span></div>
@@ -178,20 +193,50 @@
         {/each}
       {/if}
     </div>
+  {:else if view === "signoz"}
+    <div class="bar">
+      <input class="in url" placeholder="SigNoz base URL" bind:value={sigBase} />
+      <input class="in mono" type="password" placeholder="SIGNOZ-API-KEY (Keychain)" bind:value={sigKey}
+        onchange={() => saveKey("signoz-key", sigKey)} />
+      <button class="btn" onclick={loadServices} disabled={sigBusy}>{sigBusy ? "…" : "Services"}</button>
+      <button class="btn ext" onclick={() => openUrl(sigBase)}>Open SigNoz ↗</button>
+    </div>
+    <div class="scroll">
+      {#if sigErr}<div class="err">{sigErr.slice(0, 240)}</div>{/if}
+      {#if sigServices.length}
+        <div class="svc-head"><span>Service</span><span>p99 (ms)</span><span>err/s</span><span>req/s</span></div>
+        {#each sigServices as s (s.serviceName)}
+          <div class="svc-row">
+            <span class="svc-name mono">{s.serviceName}</span>
+            <span class="svc-n">{s.p99}</span>
+            <span class="svc-n" style="color:{s.errorRate > 0 ? 'var(--red)' : 'var(--text3)'}">{s.errorRate}</span>
+            <span class="svc-n">{s.callRate}</span>
+          </div>
+        {/each}
+      {:else if !sigErr && !sigBusy}
+        <div class="empty">Services overview (last 5m). Use <b>Open SigNoz ↗</b> for logs &amp; traces.</div>
+      {/if}
+    </div>
   {:else}
     <div class="bar">
-      <input class="in" placeholder="Loki base URL (http://host:3100)" bind:value={lokiBase} />
-      <input class="in mono" placeholder={'LogQL  e.g. {app="api"} |= "error"'} bind:value={lokiQuery}
-        onkeydown={(e) => e.key === "Enter" && runLoki()} />
-      <button class="btn" onclick={runLoki}>Run</button>
-      <button class="btn" class:on={lokiTail} onclick={toggleLokiTail} title="Live tail (3s)">{lokiTail ? "Tailing" : "Tail"}</button>
+      <input class="in url" placeholder="Grafana base URL (https://grafana.…)" bind:value={grafBase} />
+      <input class="in mono" type="password" placeholder="Grafana token (Keychain)" bind:value={grafKey}
+        onchange={() => saveKey("grafana-token", grafKey)} />
+      <button class="btn" onclick={loadDashboards} disabled={grafBusy}>{grafBusy ? "…" : "Load"}</button>
     </div>
-    {#if lokiErr}<div class="err">{lokiErr.slice(0, 200)}</div>{/if}
-    <div class="logout">
-      {#each lokiLines as l, i (i)}
-        <div class="lrow"><span class="lts">{l.ts}</span><span class="lline">{l.line}</span></div>
+    <div class="scroll">
+      {#if grafErr}<div class="err">{grafErr.slice(0, 240)}</div>{/if}
+      {#each dashboards as d (d.url)}
+        <div class="dash" role="button" tabindex="0" onclick={() => openDashboard(d.url)} onkeydown={(e) => e.key === "Enter" && openDashboard(d.url)}>
+          <span class="dash-title">{d.title}</span>
+          {#if d.folderTitle}<span class="dash-folder">{d.folderTitle}</span>{/if}
+          {#each (d.tags ?? []).slice(0, 3) as t}<span class="dash-tag">{t}</span>{/each}
+          <span class="dash-open"><Icon name="zoom" size={11} /></span>
+        </div>
       {/each}
-      {#if !lokiLines.length && !lokiErr}<div class="empty">Run a LogQL query to stream logs.</div>{/if}
+      {#if !dashboards.length && !grafErr && !grafBusy}
+        <div class="empty">Set the Grafana URL + token and click <b>Load</b>. Dashboards open in their own window.</div>
+      {/if}
     </div>
   {/if}
 </div>
@@ -209,29 +254,20 @@
   .iconbtn:hover { background: var(--sel); color: var(--text); }
 
   .bar { display: flex; align-items: center; gap: 6px; padding: 7px 12px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
-  .in {
-    height: 24px; border: 1px solid var(--border); background: var(--panel2); color: var(--text);
-    border-radius: 5px; padding: 0 8px; font-size: 11.5px; font-family: var(--font-ui);
-  }
-  .in:first-child { flex: 0 0 230px; }
+  .in { height: 24px; border: 1px solid var(--border); background: var(--panel2); color: var(--text); border-radius: 5px; padding: 0 8px; font-size: 11.5px; font-family: var(--font-ui); }
+  .in.url { flex: 0 0 240px; }
   .in.mono { flex: 1; font-family: var(--font-mono); font-size: 11px; }
   .in:focus { outline: none; border-color: var(--text3); }
-  .btn {
-    height: 24px; padding: 0 11px; border: 1px solid var(--border); background: var(--panel2);
-    color: var(--text2); border-radius: 5px; font-size: 11.5px; cursor: default; flex: 0 0 auto;
-  }
+  .btn { height: 24px; padding: 0 11px; border: 1px solid var(--border); background: var(--panel2); color: var(--text2); border-radius: 5px; font-size: 11.5px; cursor: default; flex: 0 0 auto; }
   .btn:hover:not(:disabled) { color: var(--text); border-color: var(--text3); }
   .btn:disabled { opacity: 0.5; }
-  .btn.on { color: var(--accent); border-color: var(--accent); }
+  .btn.ext { font-family: var(--font-mono); font-size: 11px; }
 
   .scroll { flex: 1; min-height: 0; overflow-y: auto; }
-  .sec-h {
-    display: flex; align-items: center; gap: 7px; padding: 7px 12px 4px; font-size: 10px; font-weight: 500;
-    color: var(--text3); text-transform: uppercase; letter-spacing: 0.05em;
-  }
+  .sec-h { display: flex; align-items: center; gap: 7px; padding: 7px 12px 4px; font-size: 10px; font-weight: 500; color: var(--text3); text-transform: uppercase; letter-spacing: 0.05em; }
   .cnt { font-family: var(--font-mono); font-size: 9.5px; opacity: 0.7; letter-spacing: 0; }
-  .err { padding: 8px 12px; font-size: 11.5px; color: var(--red); font-family: var(--font-mono); }
-  .empty { padding: 18px 14px; color: var(--text3); font-size: 12px; }
+  .err { padding: 8px 12px; font-size: 11.5px; color: var(--red); font-family: var(--font-mono); white-space: pre-wrap; }
+  .empty { padding: 18px 14px; color: var(--text3); font-size: 12px; line-height: 1.5; }
 
   .alert { display: flex; align-items: center; gap: 8px; padding: 0 12px; height: 24px; border-bottom: 1px solid var(--hairline); font-size: 11.5px; }
   .adot { width: 7px; height: 7px; border-radius: 50%; background: var(--yellow); flex: 0 0 auto; }
@@ -253,9 +289,17 @@
   .mval { flex: 0 0 auto; color: var(--text); }
   .mono { font-family: var(--font-mono); }
 
-  .logout { flex: 1; min-height: 0; overflow: auto; background: var(--bg); padding: 4px 0; }
-  .lrow { display: flex; gap: 10px; padding: 0 12px; font-family: var(--font-mono); font-size: 11px; line-height: 1.55; white-space: pre; min-width: max-content; }
-  .lrow:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
-  .lts { color: var(--text3); opacity: 0.55; flex: 0 0 auto; user-select: none; }
-  .lline { color: var(--text2); }
+  .svc-head, .svc-row { display: grid; grid-template-columns: minmax(0,1fr) 70px 60px 60px; column-gap: 10px; align-items: center; padding: 0 12px; height: 24px; border-bottom: 1px solid var(--hairline); font-size: 11.5px; }
+  .svc-head { color: var(--text3); font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; position: sticky; top: 0; background: var(--panel); }
+  .svc-head span:not(:first-child), .svc-n { text-align: right; font-family: var(--font-mono); }
+  .svc-row:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+  .svc-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .dash { display: flex; align-items: center; gap: 8px; padding: 0 12px; height: 28px; border-bottom: 1px solid var(--hairline); cursor: default; font-size: 12px; }
+  .dash:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+  .dash-title { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dash-folder { font-size: 10px; color: var(--text3); flex: 0 0 auto; }
+  .dash-tag { font-family: var(--font-mono); font-size: 9px; color: var(--text3); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; flex: 0 0 auto; }
+  .dash-open { margin-left: auto; color: var(--text3); flex: 0 0 auto; }
+  .dash:hover .dash-open { color: var(--text); }
 </style>

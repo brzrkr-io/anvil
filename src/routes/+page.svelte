@@ -1462,7 +1462,7 @@
         <div class="view" style:display={rail === "helm" ? "block" : "none"}>{#await Helm() then M}<M.default />{/await}</div>
       {/if}
       {#if mountedRails.obs}
-        <div class="view" style:display={rail === "obs" ? "block" : "none"}>{#await Observability() then M}<M.default active={rail === "obs"} />{/await}</div>
+        <div class="view" style:display={rail === "obs" ? "block" : "none"}>{#await Observability() then M}<M.default />{/await}</div>
       {/if}
       {#if mountedRails.devops}
         <div class="view" style:display={rail === "devops" ? "block" : "none"}>{#key cwd}{#await DevOps() then M}<M.default {cwd} onRunCommand={sendToTerm} />{/await}{/key}</div>
