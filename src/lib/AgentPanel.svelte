@@ -655,8 +655,8 @@
   .editrow .ep { color: var(--text); font-family: var(--font-mono); }
   .agentmode { border: 1px solid var(--border); border-radius: 6px; padding: 2px 7px; background: transparent;
     color: var(--text3); font-size: 11px; cursor: default; }
-  .agentmode.on { border-color: var(--accent); color: var(--accent); }
-  .toolcard { margin: 8px 12px; border: 1px solid var(--accent); border-radius: 9px; overflow: hidden;
+  .agentmode.on { border-color: var(--status-agent); color: var(--status-agent); }
+  .toolcard { margin: 8px 12px; border: 1px solid var(--status-agent); border-radius: 9px; overflow: hidden;
     background: var(--panel); }
   .tchd { display: flex; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--border); }
   .tckind { flex: 1; font-size: 11.5px; font-weight: 600; color: var(--accent); }
@@ -664,7 +664,7 @@
   .tcarg { margin: 0; padding: 8px 10px; font-family: var(--font-mono); font-size: 12px; color: var(--text);
     white-space: pre-wrap; word-break: break-all; max-height: 120px; overflow-y: auto; }
   .tcacts { display: flex; gap: 8px; padding: 8px 10px; border-top: 1px solid var(--border); }
-  .tcapprove { border: 0; border-radius: 6px; padding: 4px 12px; background: var(--accent); color: var(--bg);
+  .tcapprove { border: 0; border-radius: 6px; padding: 4px 12px; background: var(--status-agent); color: var(--bg);
     font-size: 11.5px; font-weight: 600; cursor: default; }
   .tcreject { border: 1px solid var(--border); border-radius: 6px; padding: 4px 12px; background: transparent;
     color: var(--text2); font-size: 11.5px; cursor: default; }

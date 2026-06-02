@@ -345,6 +345,7 @@ body {
 }
 .rail .i:hover { background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text); }
 .rail .i.on { color: var(--accent); background: transparent; }
+.rail .i.agent.on { color: var(--status-agent); }
 /* Explorer is a toggleable panel, not a main view: a distinct outline state so
    it never reads as a second "active view" alongside the real one. */
 .rail .i.panel.pinned { color: var(--accent); background: transparent; box-shadow: inset 0 0 0 1px var(--accent); }
