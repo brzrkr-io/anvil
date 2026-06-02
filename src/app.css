@@ -350,6 +350,13 @@ body {
    it never reads as a second "active view" alongside the real one. */
 .rail .i.panel.pinned { color: var(--accent); background: transparent; box-shadow: inset 0 0 0 1px var(--accent); }
 .rail .grow { margin-top: auto; margin-bottom: 8px; }
+/* Basin mark — the brand anchor at the top of the rail. */
+.rail .brandmark {
+  width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
+  margin-bottom: 6px; color: var(--status-trace); cursor: default; border-radius: 8px;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+.rail .brandmark:hover { background: color-mix(in srgb, var(--status-trace) 12%, transparent); }
 
 .side {
   width: var(--side-w); flex: 0 0 auto; background: color-mix(in srgb, var(--panel) calc(var(--win-alpha) * 100%), transparent);

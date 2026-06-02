@@ -9,6 +9,7 @@
     branch: '<circle cx="6" cy="6" r="2.4"/><circle cx="6" cy="18" r="2.4"/><circle cx="18" cy="7" r="2.4"/><path d="M6 8.4v7.2"/><path d="M18 9.4A6 6 0 0 1 12 15.4H9"/>',
     search: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>',
     agent: '<circle cx="12" cy="12" r="4.5"/><path d="M12 3v3"/><path d="M12 18v3"/><path d="M3 12h3"/><path d="M18 12h3"/>',
+    basin: '<circle cx="12" cy="12" r="10"/><path d="M2 12 L22 12 A10 10 0 0 1 2 12 Z" fill="currentColor" stroke="none"/>',
     pin: '<path d="M12 3v7"/><path d="M8 10h8l-1 4H9z"/><path d="M12 14v7"/>',
     devops: '<path d="M21 8.5l-9-5-9 5 9 5 9-5z"/><path d="M3 8.5v7l9 5 9-5v-7"/><path d="M12 13.5v7"/>',
     kube: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.4"/><path d="M12 3v3.6"/><path d="M12 17.4V21"/><path d="M3 12h3.6"/><path d="M17.4 12H21"/><path d="M5.6 5.6l2.6 2.6"/><path d="M15.8 15.8l2.6 2.6"/><path d="M18.4 5.6l-2.6 2.6"/><path d="M8.2 15.8l-2.6 2.6"/>',
