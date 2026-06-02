@@ -454,6 +454,8 @@ pub fn run() {
             iac::helm_history,
             iac::helm_status,
             iac::helm_manifest,
+            iac::helm_rollback,
+            iac::helm_diff_revision,
             kube::kube_pods,
             kube::kube_logs,
             kube::kube_logs_selector,

@@ -76,13 +76,12 @@
   const Kube = () => import("$lib/Kube.svelte");
   const CI = () => import("$lib/CI.svelte");
   const Terraform = () => import("$lib/Terraform.svelte");
-  const Helm = () => import("$lib/Helm.svelte");
   const Observability = () => import("$lib/Observability.svelte");
 
   // Keep-alive for the DevOps rail views: mount each once visited, then toggle
   // with display instead of unmount/remount. Re-mounting re-ran kubectl/glab/etc
   // on every page switch — that round-trip was the switching lag.
-  const KEEPALIVE_RAILS = ["k8s", "ci", "terraform", "helm", "obs", "devops", "scm", "search"];
+  const KEEPALIVE_RAILS = ["k8s", "ci", "terraform", "obs", "devops", "scm", "search"];
   let mountedRails = $state<Record<string, boolean>>({});
   $effect(() => { if (KEEPALIVE_RAILS.includes(rail) && !mountedRails[rail]) mountedRails = { ...mountedRails, [rail]: true }; });
   function sendToTerm(cmd: string) {
@@ -887,7 +886,7 @@
       { label: "View: Kubernetes", run: () => (rail = "k8s") },
       { label: "View: CI / Pipelines", run: () => (rail = "ci") },
       { label: "View: Terraform / Terragrunt", run: () => (rail = "terraform") },
-      { label: "View: Helm", run: () => (rail = "helm") },
+      { label: "View: Helm", hint: "in Kubernetes", run: () => (rail = "k8s") },
       { label: "View: Observability (Metrics / Logs)", run: () => (rail = "obs") },
       { label: "View: DevOps (Terraform / Helm / Observability)", run: () => (rail = "devops") },
       { label: "View: Workspace (multipane)", run: () => (rail = "workspace") },
@@ -1150,7 +1149,7 @@
     // page is an instant mount instead of a chunk download + parse on click.
     // Pure module preload — nothing renders or fetches here.
     const prefetchViews = () => {
-      for (const f of [SourceControl, Editor, DiffView, SearchPanel, AgentPanel, Settings, DevOps, Kube, CI, Terraform, Helm, Observability, FileView]) {
+      for (const f of [SourceControl, Editor, DiffView, SearchPanel, AgentPanel, Settings, DevOps, Kube, CI, Terraform, Observability, FileView]) {
         f().catch(() => {});
       }
     };
@@ -1360,7 +1359,6 @@
       {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'k8s' ? 'on' : ''}" role="button" tabindex="0" title="Kubernetes" onclick={() => (rail = 'k8s')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'k8s'))}><Icon name="kube" /></div>{/if}
       {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'ci' ? 'on' : ''}" role="button" tabindex="0" title="CI / Pipelines" onclick={() => (rail = 'ci')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'ci'))}><Icon name="ci" /></div>{/if}
       {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'terraform' ? 'on' : ''}" role="button" tabindex="0" title="Terraform / Terragrunt" onclick={() => (rail = 'terraform')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'terraform'))}><Icon name="terraform" /></div>{/if}
-      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'helm' ? 'on' : ''}" role="button" tabindex="0" title="Helm" onclick={() => (rail = 'helm')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'helm'))}><Icon name="helm" /></div>{/if}
       {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'obs' ? 'on' : ''}" role="button" tabindex="0" title="Observability (Metrics / Logs)" onclick={() => (rail = 'obs')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'obs'))}><Icon name="chart" /></div>{/if}
       {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'devops' ? 'on' : ''}" role="button" tabindex="0" title="DevOps (PRs / GitLab / AWS / Incidents)" onclick={() => (rail = 'devops')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'devops'))}><Icon name="devops" /></div>{/if}
       <div class="i {rail === 'workspace' ? 'on' : ''}" role="button" tabindex="0" title="Workspace (multipane)" onclick={() => (rail = 'workspace')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'workspace'))}><Icon name="workspace" /></div>
@@ -1391,7 +1389,6 @@
         {:else if rail === "k8s"}<span class="ph-ic accent"><Icon name="kube" /></span> Kubernetes
         {:else if rail === "ci"}<span class="ph-ic accent"><Icon name="ci" /></span> CI / Pipelines
         {:else if rail === "terraform"}<span class="ph-ic accent"><Icon name="terraform" /></span> Terraform
-        {:else if rail === "helm"}<span class="ph-ic accent"><Icon name="helm" /></span> Helm
         {:else if rail === "obs"}<span class="ph-ic accent"><Icon name="chart" /></span> Observability
         {:else if rail === "devops"}<span class="ph-ic accent"><Icon name="devops" /></span> DevOps
         {:else if rail === "workspace"}<span class="ph-ic accent"><Icon name="workspace" /></span> Workspace — {baseName(cwd)}
@@ -1525,9 +1522,6 @@
       {/if}
       {#if mountedRails.terraform}
         <div class="view" style:display={rail === "terraform" ? "block" : "none"}>{#key cwd}{#await Terraform() then M}<M.default {cwd} onRunCommand={sendToTerm} />{/await}{/key}</div>
-      {/if}
-      {#if mountedRails.helm}
-        <div class="view" style:display={rail === "helm" ? "block" : "none"}>{#await Helm() then M}<M.default />{/await}</div>
       {/if}
       {#if mountedRails.obs}
         <div class="view" style:display={rail === "obs" ? "block" : "none"}>{#await Observability() then M}<M.default />{/await}</div>

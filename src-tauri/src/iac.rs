@@ -345,6 +345,44 @@ pub async fn helm_manifest(name: String, namespace: String) -> Result<String, St
     .map_err(|e| e.to_string())?
 }
 
+/// `helm rollback <name> <revision> -n <ns>` — revert a release to a prior
+/// revision. Mutating; the in-app confirm gates it.
+#[tauri::command]
+pub async fn helm_rollback(
+    name: String,
+    namespace: String,
+    revision: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        helm(&["rollback", &name, &revision, "-n", &namespace, "--wait"])
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// `helm diff revision <name> <revision> -n <ns>` — diff a past revision against
+/// what's currently deployed (needs the helm-diff plugin; errors clearly if not).
+#[tauri::command]
+pub async fn helm_diff_revision(
+    name: String,
+    namespace: String,
+    revision: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        helm(&[
+            "diff",
+            "revision",
+            &name,
+            &revision,
+            "-n",
+            &namespace,
+            "--no-color",
+        ])
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::scan_iac;

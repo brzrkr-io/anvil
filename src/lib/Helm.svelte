@@ -3,6 +3,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import Icon from "$lib/Icon.svelte";
   import { readCache, writeCache } from "$lib/cache";
+  import { toast } from "$lib/toast";
 
   interface Release {
     name: string; namespace: string; revision: string;
@@ -52,10 +53,40 @@
   }
 
   async function select(r: Release) {
-    selected = r; detail = "values";
+    selected = r; detail = "values"; diffText = ""; diffRevNum = 0;
     await loadDetail();
   }
-  function setDetail(d: Detail) { detail = d; loadDetail(); }
+  function setDetail(d: Detail) { detail = d; diffText = ""; diffRevNum = 0; loadDetail(); }
+
+  let busy = $state("");
+  let diffText = $state("");
+  let diffRevNum = $state(0);
+
+  async function diffRev(rev: number) {
+    if (!selected || busy) return;
+    busy = `diff${rev}`; diffText = "Loading diff…"; diffRevNum = rev;
+    try {
+      diffText = await invoke<string>("helm_diff_revision", { name: selected.name, namespace: selected.namespace, revision: String(rev) });
+      if (!diffText.trim()) diffText = "No differences from the deployed revision.";
+    } catch (e) {
+      diffText = `${e}`.includes("unknown command") || `${e}`.includes("diff")
+        ? "helm diff failed — the helm-diff plugin may not be installed (`helm plugin install https://github.com/databus23/helm-diff`)."
+        : String(e);
+    } finally { busy = ""; }
+  }
+
+  async function rollback(rev: number) {
+    if (!selected || busy) return;
+    if (!confirm(`Roll back ${selected.namespace}/${selected.name} to revision v${rev}?\n\nThis re-applies that revision's manifests to the cluster.`)) return;
+    busy = `rb${rev}`;
+    try {
+      const out = await invoke<string>("helm_rollback", { name: selected.name, namespace: selected.namespace, revision: String(rev) });
+      toast(`Rolled back ${selected.name} to v${rev}: ${out.trim().split("\n").pop() || "done"}`.slice(0, 140), "success");
+      await loadDetail();
+    } catch (e) {
+      toast(String(e).slice(0, 160), "error");
+    } finally { busy = ""; }
+  }
 
   function statusColor(s: string): string {
     if (s === "deployed") return "var(--green)";
@@ -130,16 +161,26 @@
         </div>
         {#if detail === "history"}
           <div class="hist">
-            <div class="h-head"><span>Rev</span><span>Status</span><span>Chart</span><span>Description</span></div>
+            <div class="h-head"><span>Rev</span><span>Status</span><span>Chart</span><span>Description</span><span></span></div>
             {#each history as h (h.revision)}
-              <div class="h-row">
+              <div class="h-row" class:cur={h.revision === Math.max(...history.map((x) => x.revision))}>
                 <span class="h-rev">v{h.revision}</span>
                 <span class="h-st" style="color:{statusColor(h.status)}">{h.status}</span>
                 <span class="h-chart">{h.chart}</span>
                 <span class="h-desc">{h.description}</span>
+                <span class="h-acts">
+                  <button class="h-act" title="Diff this revision vs deployed" disabled={!!busy} onclick={() => diffRev(h.revision)}>diff</button>
+                  {#if h.revision !== Math.max(...history.map((x) => x.revision))}
+                    <button class="h-act warn" title="Roll back to this revision" disabled={!!busy} onclick={() => rollback(h.revision)}>rollback</button>
+                  {/if}
+                </span>
               </div>
             {/each}
             {#if !history.length}<div class="empty">No history.</div>{/if}
+            {#if diffText}
+              <div class="h-diff-head">Diff — v{diffRevNum} vs deployed <button class="h-x" onclick={() => { diffText = ""; }} title="Close">×</button></div>
+              <pre class="out diff">{diffText}</pre>
+            {/if}
           </div>
         {:else}
           <pre class="out">{content}</pre>
@@ -205,11 +246,22 @@
   }
   .hist { flex: 1; min-height: 0; overflow: auto; }
   .h-head, .h-row {
-    display: grid; grid-template-columns: 40px 90px 160px minmax(0,1fr); column-gap: 10px;
-    align-items: center; padding: 0 12px; height: 24px; border-bottom: 1px solid var(--hairline); font-size: 11px;
+    display: grid; grid-template-columns: 40px 90px 150px minmax(0,1fr) auto; column-gap: 10px;
+    align-items: center; padding: 0 12px; height: 26px; border-bottom: 1px solid var(--hairline); font-size: 11px;
   }
   .h-head { color: var(--text3); font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; position: sticky; top: 0; background: var(--panel); }
+  .h-row.cur { background: color-mix(in srgb, var(--accent) 7%, transparent); }
   .h-rev { font-family: var(--font-mono); }
   .h-chart { font-family: var(--font-mono); font-size: 10px; color: var(--text3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .h-desc { color: var(--text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .h-acts { display: flex; gap: 4px; justify-content: flex-end; }
+  .h-act { border: 1px solid var(--border); background: transparent; color: var(--text2);
+    font-family: var(--font-ui); font-size: 10px; height: 18px; padding: 0 7px; border-radius: 4px; cursor: default; }
+  .h-act:hover:not(:disabled) { color: var(--text); border-color: var(--text3); }
+  .h-act.warn:hover:not(:disabled) { color: var(--accent2); border-color: var(--accent2); }
+  .h-act:disabled { opacity: 0.45; }
+  .h-diff-head { display: flex; align-items: center; gap: 8px; padding: 6px 12px 4px; font-size: 11px; color: var(--text2); font-weight: 600; }
+  .h-x { margin-left: auto; border: 0; background: transparent; color: var(--text3); cursor: default; font-size: 14px; line-height: 1; }
+  .h-x:hover { color: var(--text); }
+  .out.diff { margin: 0; }
 </style>

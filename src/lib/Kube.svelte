@@ -6,6 +6,7 @@
   import { toast } from "$lib/toast";
   import { askConfirm, askText } from "$lib/dialog";
   import Flux from "$lib/Flux.svelte";
+  import Helm from "$lib/Helm.svelte";
 
   let { cwd, onRunCommand }: { cwd: string; onRunCommand?: (cmd: string) => void } = $props();
 
@@ -181,7 +182,7 @@
   // Flux | Workloads top-level views. Default to Workloads; switch to Flux the
   // first time the cluster reports Flux CRDs (GitOps-first), but never trap the
   // user there if Flux disappears.
-  let view = $state<"flux" | "workloads">("workloads");
+  let view = $state<"flux" | "workloads" | "helm">("workloads");
   let fluxPresent = $state(false);
   let fluxDefaulted = false;
   function onFluxPresence(p: boolean) {
@@ -225,13 +226,14 @@
     </div>
   {/if}
 
-  <!-- Flux | Workloads view switch (only when the cluster runs Flux). -->
-  {#if fluxPresent}
-    <div class="kviews">
+  <!-- Flux | Workloads | Helm view switch (Flux tab only when the cluster runs it). -->
+  <div class="kviews">
+    {#if fluxPresent}
       <button class:on={view === "flux"} onclick={() => (view = "flux")}><Icon name="kube" size={12} /> Flux</button>
-      <button class:on={view === "workloads"} onclick={() => (view = "workloads")}><Icon name="workspace" size={12} /> Workloads</button>
-    </div>
-  {/if}
+    {/if}
+    <button class:on={view === "workloads"} onclick={() => (view = "workloads")}><Icon name="workspace" size={12} /> Workloads</button>
+    <button class:on={view === "helm"} onclick={() => (view = "helm")}><Icon name="helm" size={12} /> Helm</button>
+  </div>
 
   <!-- FluxCD (GitOps) view. Always mounted (to detect Flux CRDs), shown only in
        the Flux view. Self-hides if the cluster has no Flux. -->
@@ -239,8 +241,13 @@
     <Flux {onRunCommand} onPresence={onFluxPresence} />
   </div>
 
+  <!-- Helm releases view. -->
+  <div class="kpane" style:display={view === "helm" ? "flex" : "none"}>
+    <Helm />
+  </div>
+
   <!-- Workloads view: port-forwards + pods. -->
-  <div class="kpane" style:display={view === "workloads" || !fluxPresent ? "flex" : "none"}>
+  <div class="kpane" style:display={view === "workloads" ? "flex" : "none"}>
   {#if pfList.length}
     <div class="section-head">
       <span class="sect-lbl">Port-forwards</span>
