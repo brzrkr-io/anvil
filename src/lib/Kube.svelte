@@ -172,6 +172,12 @@
     onRunCommand?.(`kubectl exec -it -n ${p.ns} ${p.name} -- sh -c 'command -v bash >/dev/null && exec bash || exec sh'`);
   }
 
+  // Stream logs live in a terminal pane (the in-panel Logs view is a snapshot).
+  function followLogs(p: Pod) {
+    const ctx = current ? `--context ${current} ` : "";
+    onRunCommand?.(`kubectl ${ctx}logs -f --tail=200 -n ${p.ns} ${p.name}`);
+  }
+
   // Render last-known pods instantly from cache, then refresh in the background.
   onMount(() => { pods = readCache<string>("kube-pods") ?? pods; load(); refreshPf(); });
 </script>
@@ -266,8 +272,11 @@
             <span class="col-status" style="color:{statusText(p.status)}">{p.status}</span>
             <span class="col-age muted">{p.age}</span>
             <span class="col-acts">
-              <button class="act" title="Logs" onclick={(e) => { e.stopPropagation(); openLogs(p); }}>
+              <button class="act" title="Logs (snapshot)" onclick={(e) => { e.stopPropagation(); openLogs(p); }}>
                 <Icon name="history" size={12} />
+              </button>
+              <button class="act" title="Follow logs in terminal" onclick={(e) => { e.stopPropagation(); followLogs(p); }}>
+                <Icon name="play" size={12} />
               </button>
               <button class="act" title="Describe" onclick={(e) => { e.stopPropagation(); openDescribe(p); }}>
                 <Icon name="info" size={12} />
