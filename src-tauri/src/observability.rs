@@ -54,6 +54,20 @@ fn http_client() -> Result<reqwest::Client, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Walk the full error-source chain so transport failures show the ROOT cause
+/// (TLS handshake / DNS / connection refused / proxy) instead of reqwest's
+/// generic "error sending request for url (…)".
+fn req_err(e: reqwest::Error) -> String {
+    let mut s = e.to_string();
+    let mut src = std::error::Error::source(&e);
+    while let Some(inner) = src {
+        s.push_str(" → ");
+        s.push_str(&inner.to_string());
+        src = inner.source();
+    }
+    s
+}
+
 /// List Grafana dashboards via the search API. `token` is a Grafana API token /
 /// service-account token (Bearer). Returns the raw JSON array of dashboards
 /// (title, uid, url, folderTitle, tags…). no_proxy.
@@ -67,7 +81,7 @@ pub async fn grafana_dashboards(base: String, token: String) -> Result<String, S
     if !token.is_empty() {
         req = req.bearer_auth(token);
     }
-    let r = req.send().await.map_err(|e| e.to_string())?;
+    let r = req.send().await.map_err(req_err)?;
     if !r.status().is_success() {
         return Err(format!(
             "grafana {}: {}",
@@ -91,7 +105,7 @@ pub async fn signoz_query(base: String, api_key: String, body: String) -> Result
     if !api_key.is_empty() {
         req = req.header("SIGNOZ-API-KEY", api_key);
     }
-    let r = req.send().await.map_err(|e| e.to_string())?;
+    let r = req.send().await.map_err(req_err)?;
     let status = r.status();
     let text = r.text().await.map_err(|e| e.to_string())?;
     if !status.is_success() {
@@ -127,7 +141,7 @@ pub async fn signoz_services(base: String, api_key: String, mins: u64) -> Result
     if !api_key.is_empty() {
         req = req.header("SIGNOZ-API-KEY", api_key);
     }
-    let r = req.send().await.map_err(|e| e.to_string())?;
+    let r = req.send().await.map_err(req_err)?;
     let status = r.status();
     let text = r.text().await.map_err(|e| e.to_string())?;
     if !status.is_success() {
