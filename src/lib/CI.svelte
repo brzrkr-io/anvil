@@ -5,8 +5,9 @@
   import { toast } from "$lib/toast";
   import { askConfirm } from "$lib/dialog";
   import { readCache, writeCache } from "$lib/cache";
+  import { gitlabInvestigation } from "$lib/agent-ops";
 
-  let { cwd, onRunCommand, active = true }: { cwd: string; onRunCommand?: (cmd: string) => void; active?: boolean } = $props();
+  let { cwd, onRunCommand, onInvestigate, active = true }: { cwd: string; onRunCommand?: (cmd: string) => void; onInvestigate?: (prompt: string) => void; active?: boolean } = $props();
 
   interface Pipeline {
     id: number;
@@ -356,6 +357,11 @@
               {:else}
                 <button class="act" title="Retry" onclick={(e) => { e.stopPropagation(); retryPipeline(p); }}>
                   <Icon name="refresh" size={11} />
+                </button>
+              {/if}
+              {#if onInvestigate && p.status === "failed"}
+                <button class="act ai" title="Investigate this pipeline with the agent" onclick={(e) => { e.stopPropagation(); onInvestigate(gitlabInvestigation(String(p.id), p.ref)); }}>
+                  <Icon name="agent" size={11} />
                 </button>
               {/if}
               <button class="act" title="Open in GitLab" onclick={(e) => { e.stopPropagation(); openInGitLab(p); }}>

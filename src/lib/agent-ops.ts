@@ -4,7 +4,7 @@
 // output, then proposes a minimal fix the user approves — it never mutates on
 // its own. Pure + tested; the UI just seeds the result into the agent.
 
-export type OpsTool = "flux" | "terraform" | "github";
+export type OpsTool = "flux" | "terraform" | "github" | "gitlab";
 
 export interface OpsContext {
   tool: OpsTool;
@@ -37,6 +37,9 @@ export function investigationPrompt(c: OpsContext): string {
       break;
     case "github":
       lines.push(`${c.subject} has failing CI checks.`);
+      break;
+    case "gitlab":
+      lines.push(`The GitLab pipeline ${c.subject} failed.`);
       break;
   }
   lines.push(COMMON);
@@ -74,6 +77,15 @@ export function actionsInvestigation(id: string, workflow: string, branch: strin
     tool: "github",
     subject: `GitHub Actions run ${id}${workflow ? ` (${workflow})` : ""}${branch ? ` on ${branch}` : ""}`,
     diagnose: `gh run view ${id} --log-failed`,
+  });
+}
+
+export function gitlabInvestigation(id: string, ref?: string): string {
+  return investigationPrompt({
+    tool: "gitlab",
+    subject: `#${id}${ref ? ` on ${ref}` : ""}`,
+    diagnose: `glab ci view ${id}`,
+    also: `glab ci trace ${id}`,
   });
 }
 

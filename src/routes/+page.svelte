@@ -1818,7 +1818,7 @@
                 getTerminalText={() => readTerminal(activeTerm)}
                 onRunCommand={(c) => invoke("pty_write", { id: activeTerm, data: c + "\n" })} />{/await}
             {:else if lf.view === "devops"}
-              {#key cwd}{#await DevOps() then M}<M.default {cwd} onRunCommand={(c) => invoke("pty_write", { id: activeTerm, data: c + "\n" })} />{/await}{/key}
+              {#key cwd}{#await DevOps() then M}<M.default {cwd} onRunCommand={(c) => invoke("pty_write", { id: activeTerm, data: c + "\n" })} onInvestigate={investigate} />{/await}{/key}
             {:else if lf.view === "editor" && (lf.ref || activeFile)}
               {@const p = lf.ref || activeFile}
               {#if isNonText(p)}
@@ -1855,7 +1855,7 @@
         <div class="view" style:display={rail === "k8s" ? "block" : "none"}>{#key cwd}{#await Kube() then M}<M.default {cwd} active={rail === "k8s"} onRunCommand={sendToTerm} onHealth={(n) => (kubeFails = n)} onInvestigate={investigate} onCheckConnections={() => (doctorOpen = true)} />{/await}{/key}</div>
       {/if}
       {#if mountedRails.ci}
-        <div class="view" style:display={rail === "ci" ? "block" : "none"}>{#key cwd}{#await CI() then M}<M.default {cwd} active={rail === "ci"} onRunCommand={sendToTerm} />{/await}{/key}</div>
+        <div class="view" style:display={rail === "ci" ? "block" : "none"}>{#key cwd}{#await CI() then M}<M.default {cwd} active={rail === "ci"} onRunCommand={sendToTerm} onInvestigate={investigate} />{/await}{/key}</div>
       {/if}
       {#if mountedRails.terraform}
         <div class="view" style:display={rail === "terraform" ? "block" : "none"}>{#key cwd}{#await Terraform() then M}<M.default {cwd} onRunCommand={sendToTerm} onInvestigate={investigate} />{/await}{/key}</div>
