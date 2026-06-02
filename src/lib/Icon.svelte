@@ -10,9 +10,6 @@
     search: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>',
     agent: '<circle cx="12" cy="12" r="4.5"/><path d="M12 3v3"/><path d="M12 18v3"/><path d="M3 12h3"/><path d="M18 12h3"/>',
     basin: '<circle cx="12" cy="12" r="10"/><path d="M2 12 L22 12 A10 10 0 0 1 2 12 Z" fill="currentColor" stroke="none"/>',
-    // Anvil — brand mark: horned working surface, narrow waist, flared base.
-    // Filled (like the basin mark it replaces) so the silhouette reads as an anvil.
-    anvil: '<path d="M2.5 9.3L9 7L20 7L20 9.8L14 9.8L13 13L17.5 13L18.5 16.8L5.5 16.8L6.5 13L11 13L10 9.8L4.5 9.8Z" fill="currentColor" stroke="none"/>',
     pin: '<path d="M12 3v7"/><path d="M8 10h8l-1 4H9z"/><path d="M12 14v7"/>',
     devops: '<path d="M21 8.5l-9-5-9 5 9 5 9-5z"/><path d="M3 8.5v7l9 5 9-5v-7"/><path d="M12 13.5v7"/>',
     // Kubernetes — 7-sided helm (heptagon ring + hub + 7 spokes).

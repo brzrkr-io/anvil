@@ -171,6 +171,10 @@
         }
         return false;
       }
+      // Let app-level ⌘ shortcuts (⌘W close tab, ⌘T new tab, ⌘K palette, …)
+      // bubble to the window handler instead of being written to the PTY.
+      // ⌘C/⌘V stay with the terminal for copy/paste.
+      if (e.metaKey && !["c", "C", "v", "V"].includes(e.key)) return false;
       return true;
     });
 

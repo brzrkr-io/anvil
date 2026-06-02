@@ -424,12 +424,7 @@
       case "open-file": openFileDialog(); break;
       case "open-folder": openFolder(); break;
       case "close-tab":
-        if (rail === "editor" && activeFile) closeFile(activeFile);
-        else if (rail === "term") closeTerm(activeTerm);
-        else if (rail === "panel") closePanel(activePanel);
-        else if (viewTabs.includes(rail)) closeView(rail);
-        else if (rail === "workspace") wsClose(activeLeaf);
-        else if (rail === "settings") { settingsOpen = false; rail = "term"; }
+        closeActiveTab();
         break;
       case "settings": openSettings(); break;
       case "palette": openCommands(); break;
@@ -621,6 +616,16 @@
       else if (panels.length) { activePanel = panels.at(-1)!.id; rail = "panel"; }
       else rail = "term";
     }
+  }
+  // Close whichever tab is currently active. Single source of truth for both the
+  // ⌘W shortcut and the "close-tab" menu command so they can never drift.
+  function closeActiveTab() {
+    if (rail === "editor" && activeFile) closeFile(activeFile);
+    else if (rail === "term") closeTerm(activeTerm);
+    else if (rail === "panel") closePanel(activePanel);
+    else if (viewTabs.includes(rail)) closeView(rail);
+    else if (rail === "workspace") wsClose(activeLeaf);
+    else if (rail === "settings") { settingsOpen = false; rail = "term"; }
   }
   let recentFiles = $state<string[]>([]);
   let recentWorkspaces = $state<string[]>([]);
@@ -1197,11 +1202,7 @@
     else if (e.key === "t") { e.preventDefault(); newTerm(); }
     else if (e.key === "w") {
       e.preventDefault();
-      if (rail === "editor" && activeFile) closeFile(activeFile);
-      else if (rail === "term") closeTerm(activeTerm);
-      else if (rail === "panel") closePanel(activePanel);
-      else if (viewTabs.includes(rail)) closeView(rail);
-      else if (rail === "workspace") wsClose(activeLeaf);
+      closeActiveTab();
     }
     else if (e.key === "k") { e.preventDefault(); openCommands(); }
     else if (e.key === "p") { e.preventDefault(); openFilesPalette(); }
@@ -1594,7 +1595,7 @@
     {#if $autoHideRail}<div class="rail-hot"></div>{/if}
     {#if !railHidden}
     <nav class="rail" aria-label="Activity bar">
-      <div class="brandmark" role="button" tabindex="0" title="Anvil — Command Palette (⌘K)" onclick={openCommands} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openCommands())}><Icon name="anvil" size={20} /></div>
+      <div class="brandmark" role="button" tabindex="0" title="Anvil — Command Palette (⌘K)" onclick={openCommands} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openCommands())}><Icon name="basin" size={20} /></div>
       <div class="i {rail === 'term' ? 'on' : ''}" role="button" tabindex="0" title="Terminal" onclick={() => (rail = 'term')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'term'))}><Icon name="terminal" /></div>
       <div class="i panel {explorerOpen ? 'pinned' : ''}" role="button" tabindex="0" title="Explorer (⌘B)" onclick={toggleSide} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), toggleSide())}><Icon name="folder" /></div>
       <div class="i {rail === 'scm' ? 'on' : ''}" role="button" tabindex="0" title="Source Control" onclick={() => openView('scm')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('scm'))}><Icon name="branch" /></div>
