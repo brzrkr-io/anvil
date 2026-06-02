@@ -153,6 +153,7 @@
   import { railEnabled, extEnabled } from "$lib/extensions";
   import { agentSeed, agentInvestigate } from "$lib/agent-seed";
   import { getSnippets, addSnippet, removeSnippet } from "$lib/snippets";
+  import { rankItems, withTracking } from "$lib/palette-rank";
   import { keyOverrides, comboOf, KEY_PRESETS, applyKeymapPreset } from "$lib/keymap";
 
   // Per-workspace theme/density overrides (#84), keyed by folder path.
@@ -987,6 +988,8 @@
       { label: "View: Settings", run: openSettings },
       { label: "Toggle Zen / Terminal Mode", hint: "⌘.", run: () => toggleZen() },
     ];
+    // H74: float most-used commands up, and record each run.
+    paletteItems = rankItems(paletteItems.map(withTracking));
     paletteOpen = true;
   }
 
