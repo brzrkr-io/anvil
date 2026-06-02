@@ -17,6 +17,8 @@
     suspended: boolean;
     revision: string;
     message: string;
+    source: string; // sourceRef name (which Git/OCI/Helm source it reconciles from)
+    deps: number;   // count of dependsOn entries
   }
 
   let tab = $state<Tab>("kustomizations");
@@ -54,6 +56,8 @@
       const conds = it?.status?.conditions ?? [];
       const ready = conds.find((c: any) => c.type === "Ready");
       const st = it?.status ?? {};
+      const sp = it?.spec ?? {};
+      const source = sp.sourceRef?.name || sp.chart?.spec?.sourceRef?.name || sp.chartRef?.name || "";
       return {
         name: it?.metadata?.name ?? "?",
         ns: it?.metadata?.namespace ?? "",
@@ -62,6 +66,8 @@
         suspended: it?.spec?.suspend === true,
         revision: st.lastAppliedRevision || st.lastAttemptedRevision || st.artifact?.revision || "",
         message: ready?.message ?? "",
+        source,
+        deps: Array.isArray(sp.dependsOn) ? sp.dependsOn.length : 0,
       };
     });
   }
@@ -190,6 +196,8 @@
               <span class="fx-dot {it.suspended ? 'susp' : it.ready}" title={it.suspended ? "Suspended" : it.ready}></span>
               <span class="fx-name" title={it.message}>{it.name}</span>
               <span class="fx-ns">{it.ns}</span>
+              {#if it.source && tab !== "sources"}<span class="fx-src" title="reconciles from source: {it.source}">← {it.source}</span>{/if}
+              {#if it.deps}<span class="fx-deps" title="{it.deps} dependsOn">⇲{it.deps}</span>{/if}
               {#if tab === "sources"}<span class="fx-k">{it.apiKind}</span>{/if}
               {#if it.ready === "fail" && it.message}
                 <span class="fx-msg" title={it.message}>{oneLine(it.message)}</span>
@@ -246,6 +254,8 @@
   .fx-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
   .fx-ns { color: var(--text3); font-size: 11px; }
   .fx-k { color: var(--accent); font-size: 10px; font-family: var(--font-mono); }
+  .fx-src { color: var(--text3); font-size: 10px; font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 130px; }
+  .fx-deps { color: var(--status-trace); font-size: 9.5px; font-family: var(--font-mono); }
   .fx-rev { color: var(--text2); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
   .fx-msg { flex: 1; min-width: 0; color: var(--status-failure); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .fx-fail-chip { color: var(--red); font-size: 11px; font-family: var(--font-ui); padding: 1px 7px; border-radius: 9px;
