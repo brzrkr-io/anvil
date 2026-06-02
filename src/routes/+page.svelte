@@ -508,6 +508,7 @@
     return (tabGroups[a] || "~").localeCompare(tabGroups[b] || "~");
   }));
   let tabOverflow = $state(false);
+  let plusMenu = $state(false);
   let recentFiles = $state<string[]>([]);
   let recentWorkspaces = $state<string[]>([]);
   let branch = $state("");
@@ -632,7 +633,6 @@
     terms = terms.filter((t) => t.id !== id);
     if (splitTerm === id) splitTerm = null;
     if (activeTerm === id) activeTerm = terms.at(-1)?.id ?? "";
-    if (terms.length === 0) newTerm();
   }
   function selectTerm(id: string) {
     activeTerm = id;
@@ -1269,9 +1269,20 @@
         <span class="x" onclick={(e) => { e.stopPropagation(); settingsOpen = false; if (rail === 'settings') rail = 'term'; }}>×</span>
       </div>
     {/if}
-    <div class="newtab" title="New terminal (⌘T)" onclick={newTerm}><Icon name="plus" size={15} /></div>
+    <div class="newtab" title="New…" onclick={() => (plusMenu = !plusMenu)}><Icon name="plus" size={15} /></div>
     <div class="spacer" data-tauri-drag-region></div>
   </div>
+
+  {#if plusMenu}
+    <div class="ctxscrim" onclick={() => (plusMenu = false)} role="presentation"></div>
+    <div class="plusmenu">
+      <button onclick={() => { newTerm(); plusMenu = false; }}><Icon name="terminal" size={13} /><span>New Terminal</span><kbd>⌘T</kbd></button>
+      <button onclick={() => { openFileDialog(); plusMenu = false; }}><Icon name="pencil" size={13} /><span>Open File…</span><kbd>⌘E</kbd></button>
+      <button onclick={() => { rail = 'scm'; plusMenu = false; }}><Icon name="branch" size={13} /><span>Source Control</span></button>
+      <button onclick={() => { rail = 'search'; plusMenu = false; }}><Icon name="search" size={13} /><span>Search</span><kbd>⌘⇧F</kbd></button>
+      <button onclick={() => { rail = 'agent'; plusMenu = false; }}><Icon name="agent" size={13} /><span>AI Agent</span></button>
+    </div>
+  {/if}
 
   {#if tabMenu}
     <div class="ctxscrim" onclick={() => (tabMenu = null)} oncontextmenu={(e) => { e.preventDefault(); tabMenu = null; }} role="presentation"></div>
@@ -1350,6 +1361,13 @@
       </div>
 
       <div class="term-row" style:display={rail === "term" ? "flex" : "none"}>
+        {#if terms.length === 0}
+          <div class="term-empty">
+            <Icon name="terminal" size={28} />
+            <p>No terminals open</p>
+            <button onclick={newTerm}>New Terminal <kbd>⌘T</kbd></button>
+          </div>
+        {/if}
         {#each terms as t (t.id)}
           {@const shown = t.id === activeTerm || t.id === splitTerm}
           <div

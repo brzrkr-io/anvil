@@ -19,6 +19,14 @@ confidence: high
   `git apply` stdin pipe in `git_apply_hunk`, `tf_detect` version probes. `cargo build` clean;
   9 tests pass; 0 new clippy warnings; `cargo fmt` applied.
 
+- 2026-06-02 — Restructured `src/lib/SourceControl.svelte` into a two-pane layout (VS Code /
+  Zed style). Left pane (`aside.scm-side`, 300px fixed): commit composer at top, changed files
+  (Staged + Changes) scrollable below. Right pane (`main.scm-main`, flex:1): branch header,
+  filters, Stashes, Tags, History graph, commit-detail panel. Moved `{#snippet tree(...)}` to
+  top-level inside `.scm` so both panes can render it. Removed `.scm-col` max-width centering.
+  `.scm` is now `flex-direction:row`. No script logic changed. svelte-check: 0 new errors/warnings
+  in SourceControl.svelte; vite build clean; vitest 486/486 pass.
+
 - 2026-06-02 — Converted all blocking Tauri commands to `async fn` with `spawn_blocking`.
   Modules changed: `git.rs` (38 commands), `kube.rs` (15 commands), `iac.rs` (15 commands),
   `ci.rs` (15 commands), `cloud.rs` (7 commands; `set_aws_profile`/`set_github_token` left sync
