@@ -965,7 +965,12 @@
     else if (e.key === "=" || e.key === "+") { e.preventDefault(); bumpScale(1); }
     else if (e.key === "-" || e.key === "_") { e.preventDefault(); bumpScale(-1); }
     else if (e.key === "0") { e.preventDefault(); resetScale(); }
-    else if (e.key === ".") { e.preventDefault(); toggleZen(); }
+    else if (e.key === ".") {
+      // In the editor ⌘. is the LSP code-action / quick-fix; only outside it does
+      // ⌘. mean "jump to a zen terminal".
+      if (document.activeElement?.closest(".cm-editor")) return;
+      e.preventDefault(); toggleZen();
+    }
     else if (e.key >= "1" && e.key <= "9") {
       e.preventDefault();
       // ⌘1–9 jumps to the Nth tab across the strip (terminals, then files).
