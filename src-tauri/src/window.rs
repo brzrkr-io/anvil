@@ -32,3 +32,25 @@ pub fn open_url_window(app: tauri::AppHandle, url: String) -> Result<(), String>
         .map_err(|e| e.to_string())?;
     Ok(())
 }
+
+/// Open `url` in a single reusable, persistent webview window keyed by `label`
+/// (e.g. "grafana", "signoz"). If the window already exists, navigate it instead
+/// of opening a new one — so the user logs in to Grafana/SSO ONCE and every
+/// later dashboard reuses that authenticated session (cookies persist in the
+/// shared WKWebsiteDataStore across windows + restarts).
+#[tauri::command]
+pub fn open_named_window(app: tauri::AppHandle, url: String, label: String) -> Result<(), String> {
+    let u = tauri::Url::parse(&url).map_err(|e| e.to_string())?;
+    if let Some(w) = app.get_webview_window(&label) {
+        w.navigate(u).map_err(|e| e.to_string())?;
+        let _ = w.set_focus();
+        return Ok(());
+    }
+    let title = format!("Anvil — {label}");
+    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::External(u))
+        .title(title)
+        .inner_size(1280.0, 860.0)
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}

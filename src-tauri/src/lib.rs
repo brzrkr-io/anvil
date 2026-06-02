@@ -422,6 +422,7 @@ pub fn run() {
             iac::tf_output,
             window::new_window,
             window::open_url_window,
+            window::open_named_window,
             fs::pick_folder,
             fs::pick_file,
             fs::create_path,

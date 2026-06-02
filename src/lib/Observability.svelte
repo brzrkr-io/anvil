@@ -18,8 +18,10 @@
   async function saveKey(name: string, value: string) {
     try { await invoke("secret_set", { key: name, value }); } catch (e) { toast("Keychain save failed: " + String(e).slice(0, 80), "error"); }
   }
-  function openUrl(url: string) {
-    invoke("open_url_window", { url }).catch((e) => toast(String(e).slice(0, 100), "error"));
+  // Reuse one persistent window per service so you log in (SSO) once and every
+  // later open reuses that authenticated session.
+  function openIn(url: string, label: string) {
+    invoke("open_named_window", { url, label }).catch((e) => toast(String(e).slice(0, 100), "error"));
   }
 
   // ── Prometheus (metrics) ──
@@ -137,7 +139,7 @@
       if (!dashboards.length) grafErr = "no dashboards found";
     } catch (e) { grafErr = String(e); } finally { grafBusy = false; }
   }
-  function openDashboard(url: string) { openUrl(grafBase.replace(/\/$/, "") + url); }
+  function openDashboard(url: string) { openIn(grafBase.replace(/\/$/, "") + url, "grafana"); }
 
   onMount(async () => {
     sigKey = await loadKey("signoz-key");
@@ -199,7 +201,7 @@
       <input class="in mono" type="password" placeholder="SIGNOZ-API-KEY (Keychain)" bind:value={sigKey}
         onchange={() => saveKey("signoz-key", sigKey)} />
       <button class="btn" onclick={loadServices} disabled={sigBusy}>{sigBusy ? "…" : "Services"}</button>
-      <button class="btn ext" onclick={() => openUrl(sigBase)}>Open SigNoz ↗</button>
+      <button class="btn ext" onclick={() => openIn(sigBase, "signoz")}>Open SigNoz ↗</button>
     </div>
     <div class="scroll">
       {#if sigErr}<div class="err">{sigErr.slice(0, 240)}</div>{/if}

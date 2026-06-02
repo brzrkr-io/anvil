@@ -9,6 +9,16 @@ confidence: high
 
 # Wiki Log
 
+- 2026-06-02 — Added `exec_capture` to `shared.rs`: kills hung child after a configurable
+  deadline using a poll loop + drain threads, returns `io::Error(TimedOut)` on timeout.
+  Replaced all external-CLI `.output()` calls across `git.rs` (8 sites), `kube.rs` (1 — `kubectl`
+  helper), `iac.rs` (6 — `tf_exec`, `helm`, `terraform_plan/state/apply`), `ci.rs` (19 — all gh/glab
+  commands), `cloud.rs` (1 — `aws_list`), `lib.rs` (3 — `run_capture`, `repo_import_graph`, `grep`).
+  Timeouts: 25s reads/lists; 30s write/trigger actions; 60s helm helper; 120s `run_capture` agent
+  shell; 180s git network + terraform long ops. Left untouched: `security` CLI (macOS Keychain),
+  `git apply` stdin pipe in `git_apply_hunk`, `tf_detect` version probes. `cargo build` clean;
+  9 tests pass; 0 new clippy warnings; `cargo fmt` applied.
+
 - 2026-06-02 — Converted all blocking Tauri commands to `async fn` with `spawn_blocking`.
   Modules changed: `git.rs` (38 commands), `kube.rs` (15 commands), `iac.rs` (15 commands),
   `ci.rs` (15 commands), `cloud.rs` (7 commands; `set_aws_profile`/`set_github_token` left sync
