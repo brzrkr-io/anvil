@@ -9,7 +9,7 @@
   import Helm from "$lib/Helm.svelte";
   import CodeView from "$lib/CodeView.svelte";
 
-  let { cwd, onRunCommand, onHealth, onInvestigate, active = true }: { cwd: string; onRunCommand?: (cmd: string) => void; onHealth?: (failing: number) => void; onInvestigate?: (prompt: string) => void; active?: boolean } = $props();
+  let { cwd, onRunCommand, onHealth, onInvestigate, onCheckConnections, active = true }: { cwd: string; onRunCommand?: (cmd: string) => void; onHealth?: (failing: number) => void; onInvestigate?: (prompt: string) => void; onCheckConnections?: () => void; active?: boolean } = $props();
 
   let contexts = $state<string[]>([]);
   let current = $state("");
@@ -271,6 +271,7 @@
       <button onclick={() => onRunCommand?.("aws sso login")}>aws sso login</button>
       <button onclick={() => onRunCommand?.(`aws eks update-kubeconfig --name "${current}"`)}>refresh kubeconfig</button>
       <button class="ghost" onclick={load}>Retry</button>
+      {#if onCheckConnections}<button class="ghost" onclick={onCheckConnections}>Check connections</button>{/if}
     </div>
   {/if}
 

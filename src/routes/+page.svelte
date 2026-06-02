@@ -386,7 +386,9 @@
     { title: "Git & DevOps built in", body: "Source Control has a Terax-style commit panel, swimlane history, and per-hunk staging. The k8s, Terraform, and CI surfaces sort failing-first — broken Flux reconciles, drifted stacks, and red checks float to the top so you see what needs attention without scanning.", tips: ["The <kbd>gen</kbd> button writes your commit message from the staged diff.", "Watch for the red count badge on the Kubernetes rail icon."] },
     { title: "Your AI agent drives ops", body: "On any failing resource — a Flux reconcile, a Terraform plan, a PR with red CI — hit Investigate. The agent runs the right diagnostic, reads it, and proposes a fix you approve. It never mutates on its own; every command is approval-gated.", tips: ["<kbd>⌘I</kbd> ask the agent · <kbd>⌘,</kbd> Settings for themes, fonts, keymap.", "Tool results are treated as untrusted — the agent won't act on instructions hidden in command output."] },
   ];
-  function tourNext() { if (obStep < TOUR.length - 1) obStep += 1; else dismissOnboard(); }
+  // Finishing the tour drops straight into the Connections doctor so a new user's
+  // first action is checking their tools/auth are wired for their environment.
+  function tourNext() { if (obStep < TOUR.length - 1) obStep += 1; else { dismissOnboard(); doctorOpen = true; } }
   function tourBack() { if (obStep > 0) obStep -= 1; }
 
   // #97 What's-new: auto-show once per release, reopenable from the palette.
@@ -1805,7 +1807,7 @@
         <div class="view" style:display={rail === "search" ? "block" : "none"}>{#key cwd}{#await SearchPanel() then M}<M.default root={cwd} onOpen={(p) => openInEditor(p)} />{/await}{/key}</div>
       {/if}
       {#if mountedRails.k8s}
-        <div class="view" style:display={rail === "k8s" ? "block" : "none"}>{#key cwd}{#await Kube() then M}<M.default {cwd} active={rail === "k8s"} onRunCommand={sendToTerm} onHealth={(n) => (kubeFails = n)} onInvestigate={investigate} />{/await}{/key}</div>
+        <div class="view" style:display={rail === "k8s" ? "block" : "none"}>{#key cwd}{#await Kube() then M}<M.default {cwd} active={rail === "k8s"} onRunCommand={sendToTerm} onHealth={(n) => (kubeFails = n)} onInvestigate={investigate} onCheckConnections={() => (doctorOpen = true)} />{/await}{/key}</div>
       {/if}
       {#if mountedRails.ci}
         <div class="view" style:display={rail === "ci" ? "block" : "none"}>{#key cwd}{#await CI() then M}<M.default {cwd} active={rail === "ci"} onRunCommand={sendToTerm} />{/await}{/key}</div>
@@ -1896,7 +1898,7 @@
           <button class="ob-skip" onclick={dismissOnboard}>Skip</button>
           <span style="flex:1"></span>
           {#if obStep > 0}<button class="ob-back" onclick={tourBack}>Back</button>{/if}
-          <button class="ob-go" onclick={tourNext}>{obStep === TOUR.length - 1 ? "Get started" : "Next"}</button>
+          <button class="ob-go" onclick={tourNext}>{obStep === TOUR.length - 1 ? "Check connections" : "Next"}</button>
         </div>
       </div>
     </div>
