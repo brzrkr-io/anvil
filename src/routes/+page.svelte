@@ -1039,8 +1039,16 @@
   }
 
   let restored = false;
+  let lastErrToast = 0;
   onMount(async () => {
-    installCrashHandlers();
+    // Surface uncaught errors/rejections (throttled) so a failure is visible,
+    // not a silent white-screen. crash.ts also records them to the ring buffer.
+    installCrashHandlers((_kind, message) => {
+      const t = performance.now();
+      if (t - lastErrToast < 4000) return;
+      lastErrToast = t;
+      toast("Unexpected error: " + message.slice(0, 120), "error");
+    });
     bootMs = Math.round(performance.now() - bootStart);
     requestAnimationFrame(() => { firstPaintMs = Math.round(performance.now() - bootStart); });
     initTheme();

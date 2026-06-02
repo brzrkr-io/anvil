@@ -23,13 +23,19 @@ function record(kind: string, message: string, stack?: string) {
 }
 
 let installed = false;
-export function installCrashHandlers() {
+export function installCrashHandlers(onCapture?: (kind: string, message: string) => void) {
   if (installed || typeof window === "undefined") return;
   installed = true;
-  window.addEventListener("error", (e) => record("error", e.message || "unknown error", (e.error as Error | undefined)?.stack));
+  window.addEventListener("error", (e) => {
+    const msg = e.message || "unknown error";
+    record("error", msg, (e.error as Error | undefined)?.stack);
+    onCapture?.("error", msg);
+  });
   window.addEventListener("unhandledrejection", (e) => {
     const r = e.reason;
-    record("promise", typeof r === "string" ? r : (r?.message ?? String(r)), r?.stack);
+    const msg = typeof r === "string" ? r : (r?.message ?? String(r));
+    record("promise", msg, r?.stack);
+    onCapture?.("promise", msg);
   });
 }
 
