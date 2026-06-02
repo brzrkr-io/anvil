@@ -243,6 +243,9 @@
   let diffTarget = $state<{ path?: string; staged?: boolean; rev?: string } | null>(null);
 
   let rail = $state("term");
+  // Flux failing-object count, surfaced on the k8s rail icon so trouble is
+  // visible without opening the panel. Reflects the Flux panel's active tab.
+  let kubeFails = $state(0);
   let cwd = $state("");
 
   // Detach-pane → new OS window (#17). A detached window carries a `?detach=`
@@ -1421,7 +1424,7 @@
       <div class="i {rail === 'scm' ? 'on' : ''}" role="button" tabindex="0" title="Source Control" onclick={() => openView('scm')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('scm'))}><Icon name="branch" /></div>
       <div class="i {rail === 'search' ? 'on' : ''}" role="button" tabindex="0" title="Search (⌘⇧F)" onclick={() => openView('search')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('search'))}><Icon name="search" /></div>
       <div class="i {rail === 'agent' ? 'on' : ''}" role="button" tabindex="0" title="AI Agent" onclick={() => openView('agent')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('agent'))}><Icon name="agent" /></div>
-      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'k8s' ? 'on' : ''}" role="button" tabindex="0" title="Kubernetes" onclick={() => openView('k8s')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('k8s'))}><Icon name="kube" /></div>{/if}
+      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'k8s' ? 'on' : ''}" role="button" tabindex="0" title={kubeFails ? `Kubernetes — ${kubeFails} failing` : "Kubernetes"} onclick={() => openView('k8s')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('k8s'))}><Icon name="kube" />{#if kubeFails}<span class="rail-badge">{kubeFails}</span>{/if}</div>{/if}
       {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'ci' ? 'on' : ''}" role="button" tabindex="0" title="CI / Pipelines" onclick={() => openView('ci')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('ci'))}><Icon name="ci" /></div>{/if}
       {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'terraform' ? 'on' : ''}" role="button" tabindex="0" title="Terraform / Terragrunt" onclick={() => openView('terraform')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('terraform'))}><Icon name="terraform" /></div>{/if}
       {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'obs' ? 'on' : ''}" role="button" tabindex="0" title="Observability (Metrics / Logs)" onclick={() => openView('obs')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('obs'))}><Icon name="chart" /></div>{/if}
@@ -1580,7 +1583,7 @@
         <div class="view" style:display={rail === "search" ? "block" : "none"}>{#key cwd}{#await SearchPanel() then M}<M.default root={cwd} onOpen={(p) => openInEditor(p)} />{/await}{/key}</div>
       {/if}
       {#if mountedRails.k8s}
-        <div class="view" style:display={rail === "k8s" ? "block" : "none"}>{#key cwd}{#await Kube() then M}<M.default {cwd} onRunCommand={sendToTerm} />{/await}{/key}</div>
+        <div class="view" style:display={rail === "k8s" ? "block" : "none"}>{#key cwd}{#await Kube() then M}<M.default {cwd} onRunCommand={sendToTerm} onHealth={(n) => (kubeFails = n)} />{/await}{/key}</div>
       {/if}
       {#if mountedRails.ci}
         <div class="view" style:display={rail === "ci" ? "block" : "none"}>{#key cwd}{#await CI() then M}<M.default {cwd} active={rail === "ci"} onRunCommand={sendToTerm} />{/await}{/key}</div>

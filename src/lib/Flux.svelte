@@ -5,7 +5,7 @@
   import { toast } from "$lib/toast";
   import { byHealth, failingCount, oneLine, shortRev } from "$lib/flux-health";
 
-  let { onRunCommand, onPresence }: { onRunCommand?: (cmd: string) => void; onPresence?: (present: boolean) => void } = $props();
+  let { onRunCommand, onPresence, onHealth }: { onRunCommand?: (cmd: string) => void; onPresence?: (present: boolean) => void; onHealth?: (failing: number) => void } = $props();
 
   type Tab = "kustomizations" | "helmreleases" | "sources";
   interface FluxItem {
@@ -108,7 +108,13 @@
     onRunCommand?.(`flux logs --kind=${it.apiKind} --name=${it.name} -n ${it.ns} -f`);
   }
 
+  // Fastest "why" for a failing object: its reconcile events.
+  function events(it: FluxItem) {
+    onRunCommand?.(`flux events --for ${it.apiKind}/${it.name} -n ${it.ns}`);
+  }
+
   let fails = $derived(failingCount(items));
+  $effect(() => { onHealth?.(present ? fails : 0); });
 
   // Auto-poll while the panel is visible so a reconcile is watched to green
   // without hammering the refresh button. Skip ticks while a load is in flight
@@ -167,6 +173,7 @@
               {:else}
                 <button class="fx-act" title="Suspend" disabled={!!busyRow} onclick={() => act(it, "flux_suspend")}><Icon name="minus" size={12} /></button>
               {/if}
+              <button class="fx-act" class:hot={it.ready === "fail"} title="Reconcile events (why) in terminal" onclick={() => events(it)}><Icon name="alert" size={11} /></button>
               <button class="fx-act" title="Stream logs in terminal" onclick={() => logs(it)}>↗</button>
             </div>
           {/each}
@@ -208,4 +215,5 @@
     min-width: 22px; height: 20px; padding: 0 5px; font-size: 11px; display: inline-flex; align-items: center; justify-content: center; cursor: default; }
   .fx-act:hover:not(:disabled) { color: var(--text); border-color: var(--text3); }
   .fx-act:disabled { opacity: 0.4; }
+  .fx-act.hot { color: var(--red); border-color: color-mix(in srgb, var(--red) 45%, transparent); }
 </style>

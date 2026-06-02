@@ -316,9 +316,18 @@ body {
   display: flex; flex-direction: column; align-items: center; padding-top: 6px; gap: 2px;
 }
 .rail .i {
+  position: relative;
   width: 26px; height: 26px; border-radius: 8px; display: flex; align-items: center;
   justify-content: center; color: var(--text2); font-size: 13px; cursor: default;
   transition: background 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
+}
+/* Attention badge (e.g. Flux failing count) on a rail icon. */
+.rail .i .rail-badge {
+  position: absolute; top: -2px; right: -2px; min-width: 14px; height: 14px;
+  padding: 0 3px; border-radius: 7px; box-sizing: border-box;
+  background: var(--risk, #e5484d); color: #fff;
+  font-family: var(--font-ui); font-size: 9.5px; font-weight: 600; line-height: 14px;
+  text-align: center; pointer-events: none;
 }
 .rail .i:hover { background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text); }
 .rail .i.on { color: var(--accent); background: transparent; }
