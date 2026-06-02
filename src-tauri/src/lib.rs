@@ -412,6 +412,8 @@ pub fn run() {
             git::git_amend,
             git::git_last_message,
             git::git_branches,
+            git::git_reflog,
+            git::git_branch_compare,
             git::git_checkout,
             git::git_create_branch,
             git::git_diff,

@@ -388,6 +388,36 @@ pub async fn git_branches(cwd: String) -> Result<String, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// Recent reflog entries (G67) — "hash  selector: message" lines.
+#[tauri::command]
+pub async fn git_reflog(cwd: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        git(
+            &cwd,
+            &["reflog", "-50", "--date=relative", "--format=%h\t%gd\t%gs"],
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Compare the current branch to `base` (G63): a "+ahead -behind" summary line
+/// followed by the changed files (name-status) of base...HEAD.
+#[tauri::command]
+pub async fn git_branch_compare(cwd: String, base: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let range = format!("{base}...HEAD");
+        let counts = git(&cwd, &["rev-list", "--left-right", "--count", &range])?;
+        let mut it = counts.split_whitespace();
+        let behind = it.next().unwrap_or("0");
+        let ahead = it.next().unwrap_or("0");
+        let files = git(&cwd, &["diff", "--name-status", &range])?;
+        Ok(format!("+{ahead} ahead, -{behind} behind {base}\n{files}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub async fn git_checkout(cwd: String, branch: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || git(&cwd, &["checkout", &branch]))

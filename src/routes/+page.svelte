@@ -870,6 +870,8 @@
       { label: "Editor: Navigate Back", hint: "⌘⌥←", run: navBack },
       { label: "Editor: Navigate Forward", hint: "⌘⌥→", run: navForward },
       { label: "File History…", run: fileHistory },
+      { label: "Git: Reflog…", hint: "recover lost commits", run: gitReflog },
+      { label: "Git: Compare to Branch…", hint: "ahead/behind + files", run: gitBranchCompare },
       { label: `Problems… (${$problems.length})`, hint: "⇧⌘M", run: () => { bottomDock = true; dockTab = "problems"; } },
       { label: "Go to Line…", run: () => { if (!activeFile) { toast("Open a file first", "info"); return; } const n = prompt("Go to line:"); if (n && +n > 0) { rail = "editor"; editorGoto.set(Math.floor(+n)); } } },
       { label: "Ask Agent…", hint: "⌘I", run: () => { const q = prompt("Ask the agent:"); if (q && q.trim()) { agentSeed.set(q.trim()); rail = "agent"; } } },
@@ -1018,6 +1020,46 @@
       label: subject || short,
       hint: `${short} · ${author}`,
       run: () => { diffTarget = { rev }; rail = "diff"; },
+    }));
+    paletteOpen = true;
+  }
+
+  // G67 reflog browser — list recent HEAD moves; pick one to copy its hash.
+  async function gitReflog() {
+    let raw = "";
+    try { raw = await invoke<string>("git_reflog", { cwd }); } catch { toast("Not a git repository", "error"); return; }
+    const rows = raw.split("\n").filter(Boolean).map((l) => l.split("\t"));
+    if (!rows.length) { toast("Empty reflog", "info"); return; }
+    palettePlaceholder = "Reflog — pick to copy hash";
+    paletteItems = rows.map(([hash, sel, msg]) => ({
+      label: msg || sel,
+      hint: `${hash} · ${sel}`,
+      run: () => { navigator.clipboard?.writeText(hash).catch(() => {}); toast(`Copied ${hash}`, "success"); },
+    }));
+    paletteOpen = true;
+  }
+  // G63 branch compare — pick a base, show ahead/behind + changed files.
+  async function gitBranchCompare() {
+    let braw = "";
+    try { braw = await invoke<string>("git_branches", { cwd }); } catch { toast("Not a git repository", "error"); return; }
+    const branches = braw.split("\n").filter(Boolean).map((l) => l.split("\t")[1]).filter(Boolean);
+    palettePlaceholder = "Compare current branch to…";
+    paletteItems = branches.map((b) => ({
+      label: b,
+      hint: "base",
+      run: async () => {
+        try {
+          const out = await invoke<string>("git_branch_compare", { cwd, base: b });
+          const [summary, ...files] = out.split("\n");
+          toast(summary, "info");
+          const fileRows = files.filter(Boolean);
+          palettePlaceholder = summary;
+          paletteItems = fileRows.length
+            ? fileRows.map((f) => { const [st, ...rest] = f.split("\t"); const path = rest.join("\t"); return { label: path, hint: st, run: () => openInEditor(`${cwd.replace(/\/$/, "")}/${path}`) }; })
+            : [{ label: "No file differences", hint: "", run: () => {} }];
+          paletteOpen = true;
+        } catch (e) { toast(String(e).slice(0, 120) || "compare failed", "error"); }
+      },
     }));
     paletteOpen = true;
   }
