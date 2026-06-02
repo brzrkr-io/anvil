@@ -4,6 +4,7 @@
 
 mod ci;
 mod cloud;
+mod flux;
 mod fs;
 mod git;
 mod iac;
@@ -421,6 +422,11 @@ pub fn run() {
             iac::tf_state_list,
             iac::tf_output,
             iac::tg_stack_output,
+            flux::flux_get,
+            flux::flux_check,
+            flux::flux_reconcile,
+            flux::flux_suspend,
+            flux::flux_resume,
             window::new_window,
             window::open_url_window,
             window::open_named_window,

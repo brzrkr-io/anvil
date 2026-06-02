@@ -5,6 +5,7 @@
   import Icon from "$lib/Icon.svelte";
   import { toast } from "$lib/toast";
   import { askConfirm, askText } from "$lib/dialog";
+  import Flux from "$lib/Flux.svelte";
 
   let { cwd, onRunCommand }: { cwd: string; onRunCommand?: (cmd: string) => void } = $props();
 
@@ -205,6 +206,10 @@
       <button class="ghost" onclick={load}>Retry</button>
     </div>
   {/if}
+
+  <!-- FluxCD (GitOps) — reconcile / suspend / resume / logs. Self-hides if the
+       cluster has no Flux CRDs. -->
+  <Flux {onRunCommand} />
 
   <!-- Port-forwards section -->
   {#if pfList.length}
