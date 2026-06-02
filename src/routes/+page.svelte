@@ -3,6 +3,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import Terminal from "$lib/Terminal.svelte";
+  import Problems from "$lib/Problems.svelte";
   import SourceControl from "$lib/SourceControl.svelte";
   import FileBrowser from "$lib/FileBrowser.svelte";
   // Editor + DiffView pull in Monaco (~4 MB); load them lazily on first use
@@ -332,6 +333,7 @@
   // file" ask). Toggle with ⌘J; drag the top edge to resize.
   let bottomDock = $state(false);
   let dockH = $state(280);
+  let dockTab = $state<"term" | "problems">("term");
   function startDockResize(e: PointerEvent) {
     e.preventDefault();
     const startY = e.clientY, startH = dockH;
@@ -723,18 +725,7 @@
       { label: "Editor: Navigate Back", hint: "⌘⌥←", run: navBack },
       { label: "Editor: Navigate Forward", hint: "⌘⌥→", run: navForward },
       { label: "File History…", run: fileHistory },
-      { label: `Problems… (${$problems.length})`, run: () => {
-        const ps = $problems;
-        if (!ps.length) { toast("No problems 🎉", "success"); return; }
-        const sev = ["", "Error", "Warning", "Info", "Hint"];
-        palettePlaceholder = `${ps.length} problem${ps.length === 1 ? "" : "s"}`;
-        paletteItems = ps.map((p) => ({
-          label: `${p.message}`,
-          hint: `${p.path.split("/").pop()}:${p.line} · ${sev[p.severity] ?? ""}`,
-          run: () => { openInEditor(p.path); editorGoto.set(p.line); },
-        }));
-        paletteOpen = true;
-      } },
+      { label: `Problems… (${$problems.length})`, hint: "⇧⌘M", run: () => { bottomDock = true; dockTab = "problems"; } },
       { label: "Go to Line…", run: () => { if (!activeFile) { toast("Open a file first", "info"); return; } const n = prompt("Go to line:"); if (n && +n > 0) { rail = "editor"; editorGoto.set(Math.floor(+n)); } } },
       { label: "Ask Agent…", hint: "⌘I", run: () => { const q = prompt("Ask the agent:"); if (q && q.trim()) { agentSeed.set(q.trim()); rail = "agent"; } } },
       { label: "Agent: Enqueue Task…", run: () => { const q = prompt("Queue an agent task:"); if (q && q.trim()) { enqueueAgent(q.trim()); toast(`Queued (${get(agentQueue).length} pending)`, "success"); } } },
@@ -938,6 +929,7 @@
     else if (e.shiftKey && (e.key === "f" || e.key === "F")) { e.preventDefault(); rail = "search"; }
     else if (e.shiftKey && (e.key === "b" || e.key === "B")) { e.preventDefault(); toggleRail(); }
     else if (e.shiftKey && (e.key === "o" || e.key === "O")) { e.preventDefault(); goToSymbol(); }
+    else if (e.shiftKey && (e.key === "m" || e.key === "M")) { e.preventDefault(); bottomDock = true; dockTab = "problems"; }
     else if (e.shiftKey && (e.key === "v" || e.key === "V")) { if (isMarkdown(activeFile)) { e.preventDefault(); mdPreview = !mdPreview; rail = "editor"; } }
     else if (e.key === "i") { e.preventDefault(); rail = "agent"; }
     else if (e.key === "/") { e.preventDefault(); keymapOpen = true; }
@@ -1427,10 +1419,18 @@
         <div class="bdock" style:height="{dockH}px">
           <div class="bdock-resize" onpointerdown={startDockResize} role="separator" tabindex="-1" aria-label="Resize terminal"></div>
           <div class="bdock-head">
-            <span class="bdock-title"><Icon name="terminal" size={12} /> Terminal</span>
+            <button class="bdock-tab" class:on={dockTab === "term"} onclick={() => (dockTab = "term")}>
+              <Icon name="terminal" size={12} /> Terminal
+            </button>
+            <button class="bdock-tab" class:on={dockTab === "problems"} onclick={() => (dockTab = "problems")}>
+              <Icon name="alert" size={12} /> Problems{#if $problems.length} <span class="bdock-badge">{$problems.length}</span>{/if}
+            </button>
             <span class="x" onclick={() => (bottomDock = false)} title="Close (⌘J)">×</span>
           </div>
-          <div class="bdock-term"><Terminal id="dock" {cwd} active={bottomDock} /></div>
+          <div class="bdock-term" class:hidden={dockTab !== "term"}><Terminal id="dock" {cwd} active={bottomDock && dockTab === "term"} /></div>
+          {#if dockTab === "problems"}
+            <div class="bdock-term"><Problems onOpen={(p, ln) => { openInEditor(p); editorGoto.set(ln); }} /></div>
+          {/if}
         </div>
       {/if}
     </section>
@@ -1532,13 +1532,19 @@
   .bdock { flex: 0 0 auto; display: flex; flex-direction: column; min-height: 0;
     border-top: 1px solid var(--border); background: var(--bg); position: relative; }
   .bdock-resize { position: absolute; top: -3px; left: 0; right: 0; height: 6px; cursor: row-resize; z-index: 5; }
-  .bdock-head { display: flex; align-items: center; justify-content: space-between;
-    padding: 3px 10px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
-  .bdock-title { display: inline-flex; align-items: center; gap: 6px; font-size: 10px;
-    color: var(--text3); text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; }
-  .bdock-head .x { cursor: default; color: var(--text3); font-size: 15px; line-height: 1; padding: 0 4px; }
+  .bdock-head { display: flex; align-items: center; gap: 2px;
+    padding: 2px 8px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
+  .bdock-tab { display: inline-flex; align-items: center; gap: 6px; font-size: 10px; border: 0;
+    background: transparent; color: var(--text3); text-transform: uppercase; letter-spacing: 0.07em;
+    font-weight: 600; cursor: default; padding: 4px 10px; border-radius: 5px; }
+  .bdock-tab:hover { color: var(--text2); }
+  .bdock-tab.on { color: var(--text); background: var(--sel); }
+  .bdock-badge { font-family: var(--font-mono); font-size: 9px; padding: 0 4px; border-radius: 7px;
+    background: color-mix(in srgb, var(--text) 12%, transparent); letter-spacing: 0; }
+  .bdock-head .x { margin-left: auto; cursor: default; color: var(--text3); font-size: 15px; line-height: 1; padding: 0 4px; }
   .bdock-head .x:hover { color: var(--text); }
   .bdock-term { flex: 1; min-height: 0; padding: 4px 8px; }
+  .bdock-term.hidden { display: none; }
   .view.ws { padding: 6px; gap: 0; }
   .ws-empty { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text3); font-size: 12.5px; }
   .term-row { flex: 1; min-height: 0; }

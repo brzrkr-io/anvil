@@ -2,7 +2,7 @@
 // hover, diagnostics, go-to-definition, and rename. Document symbols are fetched
 // on demand (fetchSymbols) for the command-palette outline.
 import { invoke } from "@tauri-apps/api/core";
-import { autocompletion, type CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
+import { autocompletion, snippetCompletion, startCompletion, type CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
 import { hoverTooltip, EditorView, ViewPlugin, keymap, Decoration, WidgetType, showTooltip, type Command, type DecorationSet, type Tooltip } from "@codemirror/view";
 import { linter, forceLinting, type Diagnostic } from "@codemirror/lint";
 import { Prec, StateField, StateEffect, type Extension, type Text } from "@codemirror/state";
@@ -45,6 +45,15 @@ function applyLspEdits(text: string, edits: any[]): string {
   return text;
 }
 
+// Convert an LSP snippet ($1, ${1:foo}, $0) to CodeMirror's snippet template
+// syntax (${1}, ${1:foo}, ${} for the final stop).
+function lspToCmSnippet(t: string): string {
+  return t
+    .replace(/\$\{0(?::[^}]*)?\}/g, "${}")
+    .replace(/\$0/g, "${}")
+    .replace(/\$(\d+)/g, "${$1}");
+}
+
 const KIND: Record<number, string> = {
   2: "method", 3: "function", 4: "class", 5: "property", 6: "variable",
   7: "class", 8: "interface", 9: "namespace", 10: "property", 13: "enum",
@@ -57,22 +66,47 @@ export function cmLsp(lang: string, path: string, nav: LspNav): Extension {
 
   const completion = autocompletion({
     override: [async (ctx: CompletionContext): Promise<CompletionResult | null> => {
+      const word = ctx.matchBefore(/[\w$]+/);
+      // Activate after a member-access trigger (`.`, `::`, `->`) even with no
+      // word typed yet — that's where member completion matters most.
+      const before = ctx.state.sliceDoc(Math.max(0, ctx.pos - 2), ctx.pos);
+      const triggered = /\.$|::$|->$|:$/.test(before);
+      if (!word && !ctx.explicit && !triggered) return null;
       const line = ctx.state.doc.lineAt(ctx.pos);
       const r = await req(lang, "textDocument/completion", {
         textDocument: { uri }, position: { line: line.number - 1, character: ctx.pos - line.from },
       });
       const items = Array.isArray(r) ? r : r?.items ?? [];
       if (!items.length) return null;
-      const word = ctx.matchBefore(/[\w$]+/);
-      if (!word && !ctx.explicit) return null;
+      const from = word ? word.from : ctx.pos;
       return {
-        from: word ? word.from : ctx.pos,
-        options: items.slice(0, 200).map((it: any) => ({
-          label: it.label, detail: it.detail, type: KIND[it.kind] ?? "variable",
-          info: hoverText(it.documentation) || undefined, apply: it.insertText ?? it.label,
-        })),
+        from,
+        options: items.slice(0, 200).map((it: any) => {
+          const detail = it.detail || it.labelDetails?.detail;
+          const type = KIND[it.kind] ?? "variable";
+          const info = hoverText(it.documentation) || undefined;
+          const insert = it.textEdit?.newText ?? it.insertText ?? it.label;
+          // insertTextFormat 2 = snippet ($1, ${1:foo}, $0). Render as a real CM
+          // snippet so tab stops work instead of pasting literal placeholders.
+          if (it.insertTextFormat === 2) {
+            return snippetCompletion(lspToCmSnippet(insert), { label: it.label, detail, type, info });
+          }
+          return { label: it.label, detail, type, info, apply: insert };
+        }),
       };
     }],
+  });
+
+  // Auto-open completion right after a trigger char so members surface without
+  // an explicit ⌃Space.
+  const triggerOnDot = EditorView.updateListener.of((u) => {
+    if (!u.docChanged) return;
+    let fire = false;
+    u.changes.iterChanges((_a, _b, _c, _d, ins) => {
+      const s = ins.toString();
+      if (s === "." || s === ":" || s === ">") fire = true;
+    });
+    if (fire) startCompletion(u.view);
   });
 
   const hover = hoverTooltip(async (view, pos) => {
@@ -222,7 +256,7 @@ export function cmLsp(lang: string, path: string, nav: LspNav): Extension {
     { key: "Shift-Alt-f", run: (view) => { formatDoc(lang, path, view, view.state.tabSize); return true; }, preventDefault: true },
   ]);
 
-  return [completion, hover, lint, relint, cmdClick, signatureHelp(lang, uri), Prec.high(navKeys)];
+  return [completion, triggerOnDot, hover, lint, relint, cmdClick, signatureHelp(lang, uri), Prec.high(navKeys)];
 }
 
 // Floating quick-fix menu (plain DOM, themed via .cm-action-menu in app.css).
