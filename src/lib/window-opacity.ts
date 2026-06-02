@@ -17,6 +17,10 @@ export function applyOpacity(n: number): void {
   const v = Math.round(Math.max(MIN, Math.min(MAX, n)) * 100) / 100;
   if (typeof document !== "undefined") {
     document.documentElement.style.setProperty("--win-alpha", String(v));
+    // Frost scales with how see-through the window is: more transparency -> more
+    // blur on the vibrancy backdrop. 0 at full opacity (no compositing cost).
+    const blur = v >= 1 ? 0 : Math.round((1 - v) * 44);
+    document.documentElement.style.setProperty("--win-blur", `${blur}px`);
   }
   if (typeof localStorage !== "undefined") localStorage.setItem("anvil-win-opacity", String(v));
   windowOpacity.set(v);

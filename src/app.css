@@ -178,7 +178,15 @@ body {
 .anvil-g-del::before { background: var(--red); height: 2px; top: 0; }
 
 /* ---- app shell ---- */
-:root { --scale: 1; --win-alpha: 1; }
+:root { --scale: 1; --win-alpha: 1; --win-blur: 0px; }
+/* Frost the translucent shell surfaces: when --win-alpha < 1 the surface is
+   partly see-through and --win-blur (set by the opacity control) blurs the native
+   vibrancy backdrop behind it, so it reads as frosted glass instead of a raw,
+   washed-out window. At full opacity --win-blur is 0 (no compositing cost). */
+.rail, .side, .tabs, .content, .status {
+  backdrop-filter: blur(var(--win-blur)) saturate(1.1);
+  -webkit-backdrop-filter: blur(var(--win-blur)) saturate(1.1);
+}
 /* Window translucency: shell surfaces are mixed toward transparent by
    --win-alpha (1 = fully opaque, identical to no transparency). At <1 the macOS
    vibrancy material set on the NSWindow shows through as a blurred backdrop. */

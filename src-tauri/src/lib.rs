@@ -423,6 +423,7 @@ pub fn run() {
             window::new_window,
             window::open_url_window,
             window::open_named_window,
+            window::set_vibrancy,
             fs::pick_folder,
             fs::pick_file,
             fs::create_path,

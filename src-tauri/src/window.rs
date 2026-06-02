@@ -54,3 +54,17 @@ pub fn open_named_window(app: tauri::AppHandle, url: String, label: String) -> R
         .map_err(|e| e.to_string())?;
     Ok(())
 }
+
+/// Swap the macOS window vibrancy material to match the active theme's light/dark
+/// mode. Dark themes get a dark frosted material (HudWindow); light themes get
+/// Sidebar. Without this, the fixed light "sidebar" material washes out dark
+/// themes when window translucency is on. Called from the frontend on theme change.
+#[tauri::command]
+pub fn set_vibrancy(app: tauri::AppHandle, dark: bool) -> Result<(), String> {
+    use tauri::window::{Effect, EffectsBuilder};
+    let effect = if dark { Effect::HudWindow } else { Effect::Sidebar };
+    for w in app.webview_windows().values() {
+        let _ = w.set_effects(EffectsBuilder::new().effect(effect).build());
+    }
+    Ok(())
+}
