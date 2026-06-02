@@ -1592,7 +1592,7 @@
   <div class="main">
     {#if $autoHideRail}<div class="rail-hot"></div>{/if}
     {#if !railHidden}
-    <nav class="rail">
+    <nav class="rail" aria-label="Activity bar">
       <div class="brandmark" role="button" tabindex="0" title="Anvil — Command Palette (⌘K)" onclick={openCommands} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openCommands())}><Icon name="basin" size={20} /></div>
       <div class="i {rail === 'term' ? 'on' : ''}" role="button" tabindex="0" title="Terminal" onclick={() => (rail = 'term')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'term'))}><Icon name="terminal" /></div>
       <div class="i panel {explorerOpen ? 'pinned' : ''}" role="button" tabindex="0" title="Explorer (⌘B)" onclick={toggleSide} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), toggleSide())}><Icon name="folder" /></div>
@@ -1626,7 +1626,7 @@
     <section class="content">
       {#if tabDragView && rail !== "workspace"}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div class="dockzones">
+        <div class="dockzones" aria-hidden="true">
           {#each (["left", "right", "top", "bottom"] as const) as edge}
             <div class="dz dz-{edge}" class:hot={dockEdge === edge}
               ondragenter={(e) => { e.preventDefault(); dockEdge = edge; }}
