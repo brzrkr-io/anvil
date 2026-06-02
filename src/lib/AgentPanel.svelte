@@ -284,7 +284,7 @@
   }
 
   // Approval-gated tool execution + loop continuation (#53).
-  const MAX_TOOL_STEPS = 8;
+  const MAX_TOOL_STEPS = 12; // room for diagnose → fix → verify (and one iterate)
   let autoTools = $state(false);
   let toolSteps = $state(0);
   let pendingTool = $state<ToolCall | null>(null);

@@ -22,7 +22,9 @@ const COMMON =
   "Investigate before concluding — run the read-only command(s) below via your " +
   "run tool, read the output, then explain the root cause and propose the " +
   "minimal fix. Propose mutating commands or file edits for me to approve; do " +
-  "NOT run anything destructive or apply changes on your own.";
+  "NOT run anything destructive or apply changes on your own. After I approve " +
+  "and the fix is applied, re-run the diagnostic to verify the problem is " +
+  "resolved before declaring done; if it still fails, iterate.";
 
 export function investigationPrompt(c: OpsContext): string {
   const lines: string[] = [];

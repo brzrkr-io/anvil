@@ -9,6 +9,12 @@ describe("investigationPrompt", () => {
     expect(p).toMatch(/do NOT run anything destructive|approve/i);
   });
 
+  it("instructs apply-and-verify: re-run the diagnostic after the fix", () => {
+    const p = investigationPrompt({ tool: "flux", subject: "x", diagnose: "flux events ..." });
+    expect(p).toMatch(/re-run the diagnostic to verify/i);
+    expect(p).toMatch(/iterate/i);
+  });
+
   it("adds the optional second command and detail when present", () => {
     const p = investigationPrompt({ tool: "flux", subject: "x", diagnose: "a", also: "b", detail: "install retries exhausted" });
     expect(p).toContain("a");
