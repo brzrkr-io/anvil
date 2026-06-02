@@ -1242,7 +1242,7 @@
       <div class="i {rail === 'scm' ? 'on' : ''}" title="Source Control" onclick={() => (rail = 'scm')}><Icon name="branch" /></div>
       <div class="i {rail === 'search' ? 'on' : ''}" title="Search (⌘⇧F)" onclick={() => (rail = 'search')}><Icon name="search" /></div>
       <div class="i {rail === 'agent' ? 'on' : ''}" title="AI Agent" onclick={() => (rail = 'agent')}><Icon name="agent" /></div>
-      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'k8s' ? 'on' : ''}" title="Kubernetes" onclick={() => (rail = 'k8s')}><Icon name="devops" /></div>{/if}
+      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'k8s' ? 'on' : ''}" title="Kubernetes" onclick={() => (rail = 'k8s')}><Icon name="kube" /></div>{/if}
       {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'devops' ? 'on' : ''}" title="DevOps (CI / Terraform / Helm / Observability)" onclick={() => (rail = 'devops')}><Icon name="ci" /></div>{/if}
       {#if railEnabled('caldera', $extEnabled)}<div class="i {rail === 'caldera' ? 'on' : ''}" title="Caldera control plane" onclick={() => (rail = 'caldera')}><Icon name="caldera" /></div>{/if}
       <div class="i {rail === 'workspace' ? 'on' : ''}" title="Workspace (multipane)" onclick={() => (rail = 'workspace')}><Icon name="workspace" /></div>
@@ -1270,7 +1270,7 @@
         {:else if rail === "diff"}<span class="accent">±</span> Diff — {diffTarget?.rev ?? diffTarget?.path}
         {:else if rail === "search"}<span class="ph-ic accent"><Icon name="search" /></span> Search
         {:else if rail === "agent"}<span class="ph-ic accent"><Icon name="agent" /></span> Agent
-        {:else if rail === "k8s"}<span class="ph-ic accent"><Icon name="devops" /></span> Kubernetes
+        {:else if rail === "k8s"}<span class="ph-ic accent"><Icon name="kube" /></span> Kubernetes
         {:else if rail === "devops"}<span class="ph-ic accent"><Icon name="ci" /></span> DevOps
         {:else if rail === "caldera"}<span class="ph-ic accent"><Icon name="caldera" /></span> Caldera
         {:else if rail === "workspace"}<span class="ph-ic accent"><Icon name="workspace" /></span> Workspace — {baseName(cwd)}

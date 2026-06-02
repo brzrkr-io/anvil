@@ -351,28 +351,33 @@
   .pods { flex: 1; min-width: 0; overflow-y: auto; }
   .pods.split { flex: 0 0 55%; border-right: 1px solid var(--border); }
 
+  /* Shared grid so header + every row align exactly. Actions float on hover
+     (absolute) so they never shift the columns. */
+  .pod-header, .pod-row {
+    display: grid; grid-template-columns: 18px minmax(0, 1fr) 48px 64px 120px 52px;
+    align-items: center; column-gap: 10px; height: 22px; padding: 0 12px;
+    border-bottom: 1px solid var(--hairline); position: relative;
+  }
   .pod-header {
-    display: flex; align-items: center; height: 22px; padding: 0 12px;
-    border-bottom: 1px solid var(--hairline); font-size: 10.5px; color: var(--text3);
-    font-weight: 500; position: sticky; top: 0; background: var(--panel); z-index: 1;
+    font-size: 10.5px; color: var(--text3); font-weight: 500;
+    position: sticky; top: 0; background: var(--panel); z-index: 1;
   }
-  .pod-row {
-    display: flex; align-items: center; height: 22px; padding: 0 12px;
-    border-bottom: 1px solid var(--hairline); font-size: 11.5px; cursor: default;
-    transition: background 0.1s ease;
-  }
+  .pod-row { font-size: 11.5px; cursor: default; transition: background 0.1s ease; }
   .pod-row:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
   .pod-row:hover .col-acts { opacity: 1; }
 
   /* Columns */
-  .col-dot { flex: 0 0 18px; display: flex; align-items: center; }
+  .col-dot { display: flex; align-items: center; }
   .dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
-  .col-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
-  .col-ready { flex: 0 0 44px; text-align: right; }
-  .col-restarts { flex: 0 0 56px; text-align: right; font-family: var(--font-mono); }
-  .col-status { flex: 0 0 140px; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .col-age { flex: 0 0 44px; text-align: right; }
-  .col-acts { flex: 0 0 auto; display: flex; gap: 2px; margin-left: 8px; opacity: 0; transition: opacity 0.1s; }
+  .col-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+  .col-ready { text-align: right; }
+  .col-restarts { text-align: right; font-family: var(--font-mono); }
+  .col-status { text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .col-age { text-align: right; }
+  .col-acts { position: absolute; right: 8px; top: 0; height: 100%; display: flex; align-items: center; gap: 2px;
+    padding-left: 14px; background: linear-gradient(to right, transparent, var(--panel) 16px);
+    opacity: 0; transition: opacity 0.1s; }
+  .pod-row:hover .col-acts { background: linear-gradient(to right, transparent, color-mix(in srgb, var(--text) 6%, var(--panel)) 16px); }
 
   .mono { font-family: var(--font-mono); }
   .muted { color: var(--text3); }
