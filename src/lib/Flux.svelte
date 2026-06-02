@@ -4,7 +4,7 @@
   import Icon from "$lib/Icon.svelte";
   import { toast } from "$lib/toast";
 
-  let { onRunCommand }: { onRunCommand?: (cmd: string) => void } = $props();
+  let { onRunCommand, onPresence }: { onRunCommand?: (cmd: string) => void; onPresence?: (present: boolean) => void } = $props();
 
   type Tab = "kustomizations" | "helmreleases" | "sources";
   interface FluxItem {
@@ -22,7 +22,6 @@
   let loading = $state(false);
   let err = $state("");
   let present = $state(true); // false → cluster has no Flux CRDs; hide the panel
-  let collapsed = $state(false);
   let busyRow = $state("");
 
   const TABS: { id: Tab; label: string }[] = [
@@ -88,6 +87,7 @@
       err = String(e);
     } finally {
       loading = false;
+      onPresence?.(present);
     }
   }
 
@@ -119,27 +119,18 @@
 
 {#if present}
   <div class="flux">
-    <button class="fx-head" onclick={() => (collapsed = !collapsed)}>
-      <span class="chev" class:open={!collapsed}>▸</span>
-      <Icon name="kube" size={13} />
-      <span class="fx-title">Flux</span>
+    <div class="fx-tabs">
+      {#each TABS as t (t.id)}
+        <button class:on={tab === t.id} onclick={() => { tab = t.id; load(); }}>{t.label}</button>
+      {/each}
       <span class="spacer"></span>
       {#if loading}<span class="spin">…</span>{/if}
-      <span class="iconbtn" role="button" tabindex="0" title="Refresh"
-        onclick={(e) => { e.stopPropagation(); load(); }}
-        onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), load())}><Icon name="refresh" size={12} /></span>
-    </button>
+      <button class="fx-refresh" title="Refresh" onclick={load}><Icon name="refresh" size={12} /></button>
+    </div>
 
-    {#if !collapsed}
-      <div class="fx-tabs">
-        {#each TABS as t (t.id)}
-          <button class:on={tab === t.id} onclick={() => { tab = t.id; load(); }}>{t.label}</button>
-        {/each}
-      </div>
+    {#if err}<div class="fx-err">{err.slice(0, 200)}</div>{/if}
 
-      {#if err}<div class="fx-err">{err.slice(0, 200)}</div>{/if}
-
-      <div class="fx-body">
+    <div class="fx-body">
         {#if loading && !items.length}
           <div class="fx-empty">Loading…</div>
         {:else if !items.length}
@@ -167,30 +158,22 @@
           {/each}
         {/if}
       </div>
-    {/if}
   </div>
 {/if}
 
 <style>
-  .flux { border-bottom: 1px solid var(--border); flex: 0 0 auto; }
-  .fx-head { width: 100%; display: flex; align-items: center; gap: 7px; padding: 6px var(--pad-x, 10px);
-    background: transparent; border: 0; color: var(--text2); font-family: var(--font-ui); font-size: 11px;
-    font-weight: 600; letter-spacing: 0.03em; cursor: default; }
-  .fx-head:hover { color: var(--text); }
-  .fx-title { text-transform: uppercase; }
-  .chev { font-size: 9px; transition: transform 0.12s ease; display: inline-block; }
-  .chev.open { transform: rotate(90deg); }
+  .flux { display: flex; flex-direction: column; flex: 1; min-height: 0; }
   .spacer { flex: 1; }
   .spin { color: var(--text3); }
-  .iconbtn { color: var(--text3); display: inline-flex; padding: 2px; border-radius: 4px; }
-  .iconbtn:hover { color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); }
-  .fx-tabs { display: flex; gap: 2px; padding: 0 var(--pad-x, 10px) 6px; }
+  .fx-tabs { display: flex; align-items: center; gap: 2px; padding: 7px var(--pad-x, 10px); border-bottom: 1px solid var(--border); flex: 0 0 auto; }
   .fx-tabs button { background: transparent; border: 1px solid transparent; color: var(--text3);
-    font-family: var(--font-ui); font-size: 11px; padding: 2px 8px; border-radius: 5px; cursor: default; }
+    font-family: var(--font-ui); font-size: 11.5px; padding: 3px 10px; border-radius: 5px; cursor: default; }
   .fx-tabs button:hover { color: var(--text2); }
   .fx-tabs button.on { color: var(--text); background: var(--panel2); border-color: var(--border); }
-  .fx-err { margin: 0 var(--pad-x, 10px) 6px; color: var(--red); font-size: 11px; font-family: var(--font-mono); }
-  .fx-body { max-height: 260px; overflow-y: auto; }
+  .fx-refresh { color: var(--text3); display: inline-flex; align-items: center; padding: 3px; border: 0; background: transparent; border-radius: 4px; cursor: default; }
+  .fx-refresh:hover { color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); }
+  .fx-err { margin: 6px var(--pad-x, 10px); color: var(--red); font-size: 11px; font-family: var(--font-mono); }
+  .fx-body { flex: 1; min-height: 0; overflow-y: auto; }
   .fx-empty { padding: 10px var(--pad-x, 10px); color: var(--text3); font-size: 12px; }
   .fx-row { display: flex; align-items: center; gap: 8px; padding: 3px var(--pad-x, 10px); height: 24px; font-size: 12px; }
   .fx-row:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }

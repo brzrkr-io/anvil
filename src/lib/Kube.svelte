@@ -178,6 +178,18 @@
     onRunCommand?.(`kubectl ${ctx}logs -f --tail=200 -n ${p.ns} ${p.name}`);
   }
 
+  // Flux | Workloads top-level views. Default to Workloads; switch to Flux the
+  // first time the cluster reports Flux CRDs (GitOps-first), but never trap the
+  // user there if Flux disappears.
+  let view = $state<"flux" | "workloads">("workloads");
+  let fluxPresent = $state(false);
+  let fluxDefaulted = false;
+  function onFluxPresence(p: boolean) {
+    fluxPresent = p;
+    if (p && !fluxDefaulted) { fluxDefaulted = true; view = "flux"; }
+    else if (!p && view === "flux") view = "workloads";
+  }
+
   // Render last-known pods instantly from cache, then refresh in the background.
   onMount(() => { pods = readCache<string>("kube-pods") ?? pods; load(); refreshPf(); });
 </script>
@@ -213,11 +225,22 @@
     </div>
   {/if}
 
-  <!-- FluxCD (GitOps) — reconcile / suspend / resume / logs. Self-hides if the
-       cluster has no Flux CRDs. -->
-  <Flux {onRunCommand} />
+  <!-- Flux | Workloads view switch (only when the cluster runs Flux). -->
+  {#if fluxPresent}
+    <div class="kviews">
+      <button class:on={view === "flux"} onclick={() => (view = "flux")}><Icon name="kube" size={12} /> Flux</button>
+      <button class:on={view === "workloads"} onclick={() => (view = "workloads")}><Icon name="workspace" size={12} /> Workloads</button>
+    </div>
+  {/if}
 
-  <!-- Port-forwards section -->
+  <!-- FluxCD (GitOps) view. Always mounted (to detect Flux CRDs), shown only in
+       the Flux view. Self-hides if the cluster has no Flux. -->
+  <div class="kpane" style:display={view === "flux" && fluxPresent ? "flex" : "none"}>
+    <Flux {onRunCommand} onPresence={onFluxPresence} />
+  </div>
+
+  <!-- Workloads view: port-forwards + pods. -->
+  <div class="kpane" style:display={view === "workloads" || !fluxPresent ? "flex" : "none"}>
   {#if pfList.length}
     <div class="section-head">
       <span class="sect-lbl">Port-forwards</span>
@@ -318,10 +341,18 @@
       </div>
     {/if}
   </div>
+  </div>
 </div>
 
 <style>
   .kube { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+  .kviews { display: flex; gap: 4px; padding: 6px 12px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
+  .kviews button { display: inline-flex; align-items: center; gap: 5px; background: transparent;
+    border: 1px solid transparent; color: var(--text3); font-family: var(--font-ui); font-size: 12px;
+    padding: 3px 11px; border-radius: 6px; cursor: default; }
+  .kviews button:hover { color: var(--text2); }
+  .kviews button.on { color: var(--text); background: var(--panel2); border-color: var(--border); }
+  .kpane { flex: 1; min-height: 0; flex-direction: column; }
 
   /* Top bar */
   .topbar {
