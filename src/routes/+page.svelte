@@ -1260,6 +1260,7 @@
     </aside>
     {/if}
 
+    <svelte:boundary onerror={(e) => { console.error("view crashed", e); toast("This view hit an error — use Reload view", "error"); }}>
     <section class="content">
       <div class="pane-head">
         {#if rail === "scm"}<span class="ph-ic accent"><Icon name="branch" /></span> Source Control — {baseName(cwd)}
@@ -1395,6 +1396,16 @@
         </div>
       {/if}
     </section>
+    {#snippet failed(error, reset)}
+      <section class="content">
+        <div class="crash-fallback">
+          <div class="cf-title">This view hit an error.</div>
+          <div class="cf-msg">{String(error)}</div>
+          <button class="cf-btn" onclick={reset}>Reload view</button>
+        </div>
+      </section>
+    {/snippet}
+    </svelte:boundary>
   </div>
 
   <div class="status">
