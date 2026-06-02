@@ -13,3 +13,9 @@ vite.config.ts.timestamp-*
 /target
 .claude/worktrees/
 /coverage
+
+# scratch / editor / artifacts
+/test-results
+.obsidian/
+/.forge
+/.superpowers
