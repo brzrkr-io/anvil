@@ -267,233 +267,259 @@
 </script>
 
 <div class="scm">
-  <div class="scm-col">
-  <div class="head">
-    <span class="accent hd-ic"><Icon name="branch" size={13} /></span>
-    {#if branches.length}
-      <select class="branchsel" value={branch} onchange={(e) => { const v = (e.currentTarget as HTMLSelectElement).value; if (v !== branch) act("git_checkout", { branch: v }); }}>
-        {#each branches as b (b.name)}<option value={b.name}>{b.name}</option>{/each}
-      </select>
-    {:else}
-      <span class="accent">{branch || "—"}</span>
-    {/if}
-    {#each repoFeatures as f (f)}<button class="rfeat" title={f === "submodules" ? "git submodule update --init --recursive" : "git lfs pull"} disabled={busy} onclick={() => act(f === "submodules" ? "git_submodule_update" : "git_lfs_pull", {})}>{f}</button>{/each}
-    <span class="sync">
-      <button class="syncbtn" class:on={filtersActive || filtersOpen} title="Filter commits (author / message / path)" onclick={() => (filtersOpen = !filtersOpen)}><Icon name="search" size={13} /></button>
-      {#if aheadBehind}<span class="ab" title="ahead / behind upstream">↑{aheadBehind.a} ↓{aheadBehind.b}</span>{/if}
-      <button class="syncbtn" title="Pull (ff-only)" disabled={busy} onclick={pull}><Icon name="refresh" size={13} /></button>
-      <button class="syncbtn" title="Push" disabled={busy} onclick={push}><Icon name="up" size={13} /></button>
-    </span>
-  </div>
-
-  {#if filtersOpen}
-    <div class="logfilters">
-      <input placeholder="author" bind:value={fAuthor} onkeydown={(e) => e.key === "Enter" && load()} spellcheck="false" />
-      <input placeholder="message contains" bind:value={fGrep} onkeydown={(e) => e.key === "Enter" && load()} spellcheck="false" />
-      <input placeholder="path" bind:value={fPath} onkeydown={(e) => e.key === "Enter" && load()} spellcheck="false" />
-      <button class="syncbtn" title="Apply" onclick={() => load()}><Icon name="check" size={13} /></button>
-      {#if filtersActive}<button class="syncbtn" title="Clear filters" onclick={clearFilters}><Icon name="close" size={13} /></button>{/if}
-    </div>
-  {/if}
-
-  {#if error}
-    <div class="empty">{error}</div>
-  {:else}
-    {#snippet tree(nodes: FileNode[], isStaged: boolean, depth: number)}
-      {#each nodes as n (n.path)}
-        {#if n.dir}
-          <div class="chg dir" style="padding-left:{14 + depth * 12}px" onclick={() => toggleDir(n.path)} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), toggleDir(n.path))} role="button" tabindex="0">
-            <svg class="caret {collapsed.has(n.path) ? '' : 'open'}" viewBox="0 0 16 16" aria-hidden="true">
-              <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-            </svg>
-            <span class="dirname">{n.name}</span>
-          </div>
-          {#if !collapsed.has(n.path)}{@render tree(n.children, isStaged, depth + 1)}{/if}
-        {:else if n.change}
-          {@const hk = `${isStaged}:${n.change.path}`}
-          <div class="chg" style="padding-left:{14 + depth * 12}px">
-            <span class="sdot" style="background:{badge(n.change.code)}" title={n.change.code}></span>
-            <span class="fname" onclick={() => onOpenDiff?.({ path: n.change!.path, staged: isStaged })} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onOpenDiff?.({ path: n.change!.path, staged: isStaged }))} role="button" tabindex="0">{n.name}</span>
-            {#if n.change.path.includes("/")}<span class="fdir">{n.change.path.split("/").slice(0, -1).join("/")}</span>{/if}
-            {#if n.change.code !== "?"}
-              <button class="op hk {expandedHunks.has(hk) ? 'on' : ''}" title="Stage by hunk" disabled={busy} onclick={() => toggleHunks(hk)}><Icon name="density" size={13} /></button>
-            {/if}
-            <button class="op" title="Stash just this file" disabled={busy} onclick={() => stashFile(n.change!.path)}><Icon name="stash" size={12} /></button>
-            <button class="stagetoggle {isStaged ? 'on' : ''}" title={isStaged ? "Unstage" : "Stage"} disabled={busy} aria-label={isStaged ? "Unstage" : "Stage"} onclick={() => (isStaged ? unstage(n.change!.path) : stage(n.change!.path))}></button>
-          </div>
-          {#if expandedHunks.has(hk) && n.change.code !== "?"}
-            <HunkStage {cwd} path={n.change.path} staged={isStaged} onChanged={load} />
+  {#snippet tree(nodes: FileNode[], isStaged: boolean, depth: number)}
+    {#each nodes as n (n.path)}
+      {#if n.dir}
+        <div class="chg dir" style="padding-left:{14 + depth * 12}px" onclick={() => toggleDir(n.path)} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), toggleDir(n.path))} role="button" tabindex="0">
+          <svg class="caret {collapsed.has(n.path) ? '' : 'open'}" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          <span class="dirname">{n.name}</span>
+        </div>
+        {#if !collapsed.has(n.path)}{@render tree(n.children, isStaged, depth + 1)}{/if}
+      {:else if n.change}
+        {@const hk = `${isStaged}:${n.change.path}`}
+        <div class="chg" style="padding-left:{14 + depth * 12}px">
+          <span class="sdot" style="background:{badge(n.change.code)}" title={n.change.code}></span>
+          <span class="fname" onclick={() => onOpenDiff?.({ path: n.change!.path, staged: isStaged })} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onOpenDiff?.({ path: n.change!.path, staged: isStaged }))} role="button" tabindex="0">{n.name}</span>
+          {#if n.change.path.includes("/")}<span class="fdir">{n.change.path.split("/").slice(0, -1).join("/")}</span>{/if}
+          {#if n.change.code !== "?"}
+            <button class="op hk {expandedHunks.has(hk) ? 'on' : ''}" title="Stage by hunk" disabled={busy} onclick={() => toggleHunks(hk)}><Icon name="density" size={13} /></button>
           {/if}
+          <button class="op" title="Stash just this file" disabled={busy} onclick={() => stashFile(n.change!.path)}><Icon name="stash" size={12} /></button>
+          <button class="stagetoggle {isStaged ? 'on' : ''}" title={isStaged ? "Unstage" : "Stage"} disabled={busy} aria-label={isStaged ? "Unstage" : "Stage"} onclick={() => (isStaged ? unstage(n.change!.path) : stage(n.change!.path))}></button>
+        </div>
+        {#if expandedHunks.has(hk) && n.change.code !== "?"}
+          <HunkStage {cwd} path={n.change.path} staged={isStaged} onChanged={load} />
         {/if}
-      {/each}
-    {/snippet}
-
-    {#if staged.length}
-      <div class="sect">Staged <span class="cnt">{staged.length}</span></div>
-      <div class="changes">{@render tree(stagedTree, true, 0)}</div>
-    {/if}
-
-    {#if unstaged.length}
-      <div class="sect">Changes <span class="cnt">{unstaged.length}</span>
-        <button class="link" disabled={busy} onclick={stageAll}>Stage all</button>
-      </div>
-      <div class="changes">{@render tree(unstagedTree, false, 0)}</div>
-    {/if}
-
-    {#if stashes.length}
-      <div class="sect disclosure" onclick={() => (stashesOpen = !stashesOpen)} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), (stashesOpen = !stashesOpen))} role="button" tabindex="0">
-        <svg class="caret {stashesOpen ? 'open' : ''}" viewBox="0 0 16 16" aria-hidden="true">
-          <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-        Stashes <span class="cnt">{stashes.length}</span>
-      </div>
-      {#if stashesOpen}
-        <div class="changes">
-          {#each stashes as s, i (s)}
-            <div class="chg"><span class="path" style="margin-right:auto;cursor:default" onclick={() => onOpenDiff?.({ rev: `stash@{${i}}` })} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onOpenDiff?.({ rev: `stash@{${i}}` }))} role="button" tabindex="0">{s}</span><button class="op" title="Show diff" disabled={busy} onclick={() => onOpenDiff?.({ rev: `stash@{${i}}` })}><Icon name="search" size={12} /></button><button class="op" title="Apply" disabled={busy} onclick={() => stashApply(i)}><Icon name="stash" size={13} /></button></div>
-          {/each}
-        </div>
       {/if}
-    {/if}
+    {/each}
+  {/snippet}
 
-    {#if tags.length}
-      <div class="sect disclosure" onclick={() => (tagsOpen = !tagsOpen)} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), (tagsOpen = !tagsOpen))} role="button" tabindex="0">
-        <svg class="caret {tagsOpen ? 'open' : ''}" viewBox="0 0 16 16" aria-hidden="true">
-          <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-        Tags <span class="cnt">{tags.length}</span>
-      </div>
-      {#if tagsOpen}
-        <div class="changes">
-          {#each tags as t (t)}
-            <div class="chg"><span class="bdg" style="color:var(--green);display:inline-flex"><Icon name="tag" size={12} /></span><span class="path">{t}</span></div>
-          {/each}
+  <!-- LEFT: commit composer + changed files -->
+  <aside class="scm-side">
+    {#if branch && !error}
+      <div class="side-commit">
+        <div class="ci-card">
+          <textarea
+            bind:value={commitMsg}
+            onkeydown={onCommitKey}
+            placeholder="Commit message"
+            rows="2"
+            spellcheck="false"
+          ></textarea>
+          <button class="genmsg" title="Write a commit message from the staged diff (agent)" disabled={genBusy} onclick={genMessage}>{genBusy ? "…" : "gen"}</button>
         </div>
-      {/if}
-    {/if}
-
-    <div class="sect disclosure" onclick={() => (historyOpen = !historyOpen)} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), (historyOpen = !historyOpen))} role="button" tabindex="0">
-      <svg class="caret {historyOpen ? 'open' : ''}" viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-      </svg>
-      History
-    </div>
-    {#if historyOpen}
-      <div class="log" bind:this={logViewport} onscroll={onLogScroll}>
-        <div class="logspace" style="height:{commits.length * ROW_H}px">
-          {#each commits.slice(visStart, visEnd) as c, ii (c.hash)}
-            {@const i = visStart + ii}
-            {@const cv = parseConventional(c.subject)}
-            {@const g = graph[i]}
-            {@const stat = commitStats[c.short]}
-            <div class="row {i === sel ? 'sel' : ''}" style="top:{i * ROW_H}px" onclick={() => openCommitDetail(c)} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), openCommitDetail(c))} role="button" tabindex="0">
-              <svg class="graph" width={graphW} height={ROW_H} style="flex:0 0 {graphW}px">
-                {#each segPaths(g) as p}
-                  <path d={p.d} stroke={laneColor(p.color)} fill="none" stroke-width="1.6" />
-                {/each}
-                <circle cx={laneX(g.col)} cy={ROW_H / 2} r={NODE_R} fill={laneColor(g.color)}
-                  stroke="var(--bg)" stroke-width="1.5" />
-              </svg>
-              <span class="sha mono">{c.short}</span>
-              <span class="subj">
-                {#if i === 0 && c.refs}<span class="ref">{c.refs.split(",")[0].replace("HEAD -> ", "")}</span>{/if}
-                {#if cv}<span class="ctype" style="color:{typeColor[cv.kind] || 'var(--blue)'}">{cv.kind}{cv.scope ? `(${cv.scope})` : ""}:</span> {cv.rest}{:else}{c.subject}{/if}
-              </span>
-              <span class="auth">{c.author}</span>
-              <span class="when mono">{relTime(c.ts, now)}</span>
-              <span class="cstat">{#if stat?.add}<span class="cadd">+{stat.add}</span>{/if}{#if stat?.del}<span class="cdel">−{stat.del}</span>{/if}</span>
-            </div>
-          {/each}
-        </div>
-      </div>
-    {/if}
-  {/if}
-
-  {#if detail}
-    <div class="cdetail">
-      <div class="cd-head">
-        <span class="cd-sha mono">{detail.commit.short}</span>
-        <span class="cd-subj">{detail.commit.subject}</span>
-        <button class="cd-copy" title="Copy SHA" onclick={() => copySha(detail!.commit.hash)}><Icon name="paperclip" size={11} /></button>
-        <button class="cd-x" title="Close" onclick={() => (detail = null)} aria-label="Close">×</button>
-      </div>
-      <div class="cd-meta">{detail.commit.author} · {fullDate(detail.commit.ts)} · {detail.files.length} file{detail.files.length === 1 ? "" : "s"}</div>
-      <div class="cd-files">
-        {#each detail.files as f (f.path)}
-          <button class="cd-file" onclick={() => openFileAt(detail!.commit.short, f.path)}>
-            <span class="cd-fbdg" style="color:{badge(f.code)}">{f.code}</span>
-            <span class="cd-fname mono">{f.path.split("/").pop()}</span>
-            <span class="cd-fdir">{f.path.split("/").slice(0, -1).join("/")}</span>
+        <div class="ci-actions">
+          <button class="cbtn primary big" title="Commit all changes and push (⌘↩)" disabled={busy || (!commitMsg.trim() && !amend)} onclick={() => commit(true)}>
+            <Icon name="up" size={12} /> {amend ? "Amend & Push" : "Commit & Push"}{#if aheadBehind?.a}<span class="cbtn-n">{aheadBehind.a + 1}</span>{/if}
           </button>
-        {/each}
-        {#if !detail.files.length}<div class="cd-empty">No file changes</div>{/if}
-      </div>
-    </div>
-  {/if}
-
-  {#if branch && !error}
-    <footer class="composer">
-      <div class="ci-card">
-        <textarea
-          bind:value={commitMsg}
-          onkeydown={onCommitKey}
-          placeholder="Commit message"
-          rows="2"
-          spellcheck="false"
-        ></textarea>
-        <button class="genmsg" title="Write a commit message from the staged diff (agent)" disabled={genBusy} onclick={genMessage}>{genBusy ? "…" : "gen"}</button>
-      </div>
-      <div class="ci-actions">
-        <button class="cbtn primary big" title="Commit all changes and push (⌘↩)" disabled={busy || (!commitMsg.trim() && !amend)} onclick={() => commit(true)}>
-          <Icon name="up" size={12} /> {amend ? "Amend & Push" : "Commit & Push"}{#if aheadBehind?.a}<span class="cbtn-n">{aheadBehind.a + 1}</span>{/if}
-        </button>
-        <button class="cbtn" title="Commit without pushing" disabled={busy || (!commitMsg.trim() && !amend)} onclick={() => commit(false)}>{amend ? "Amend" : "Commit"}</button>
-        <button class="cbtn amend-toggle" class:on={amend} title="Amend last commit instead of a new one" disabled={busy} onclick={toggleAmend} aria-label="Toggle amend">⤺</button>
-        <button class="more {moreOpen ? 'on' : ''}" title="More commit actions" onclick={() => (moreOpen = !moreOpen)} aria-label="More actions">⋯</button>
-        {#if moreOpen}
-          <div class="mscrim" onclick={() => (moreOpen = false)} role="presentation"></div>
-          <div class="moremenu">
-            <button disabled={busy} onclick={() => { push(); moreOpen = false; }}><Icon name="up" size={12} /> Push only</button>
-            <div class="mm-sep"></div>
-            <button onclick={() => { tplOpen = !tplOpen; moreOpen = false; }}>Templates…</button>
-            {#if coAuthors.length}
-              <div class="mm-label">Co-author</div>
-              {#each coAuthors as a (a)}<button class="mm-sub" onclick={() => { addCoAuthor(a); moreOpen = false; }}>{a}</button>{/each}
-            {/if}
-            {#if changes.length}
+          <button class="cbtn" title="Commit without pushing" disabled={busy || (!commitMsg.trim() && !amend)} onclick={() => commit(false)}>{amend ? "Amend" : "Commit"}</button>
+          <button class="cbtn amend-toggle" class:on={amend} title="Amend last commit instead of a new one" disabled={busy} onclick={toggleAmend} aria-label="Toggle amend">⤺</button>
+          <button class="more {moreOpen ? 'on' : ''}" title="More commit actions" onclick={() => (moreOpen = !moreOpen)} aria-label="More actions">⋯</button>
+          {#if moreOpen}
+            <div class="mscrim" onclick={() => (moreOpen = false)} role="presentation"></div>
+            <div class="moremenu">
+              <button disabled={busy} onclick={() => { push(); moreOpen = false; }}><Icon name="up" size={12} /> Push only</button>
               <div class="mm-sep"></div>
-              <div class="mm-label">Stash</div>
-              <button class="mm-sub" disabled={busy} onclick={() => { stashSave(); moreOpen = false; }}>All changes</button>
-              <button class="mm-sub" disabled={busy} onclick={() => { stashWithMessage(); moreOpen = false; }}>With message…</button>
-              <button class="mm-sub" disabled={busy} onclick={() => { stashUntracked(); moreOpen = false; }}>Including untracked</button>
-            {/if}
+              <button onclick={() => { tplOpen = !tplOpen; moreOpen = false; }}>Templates…</button>
+              {#if coAuthors.length}
+                <div class="mm-label">Co-author</div>
+                {#each coAuthors as a (a)}<button class="mm-sub" onclick={() => { addCoAuthor(a); moreOpen = false; }}>{a}</button>{/each}
+              {/if}
+              {#if changes.length}
+                <div class="mm-sep"></div>
+                <div class="mm-label">Stash</div>
+                <button class="mm-sub" disabled={busy} onclick={() => { stashSave(); moreOpen = false; }}>All changes</button>
+                <button class="mm-sub" disabled={busy} onclick={() => { stashWithMessage(); moreOpen = false; }}>With message…</button>
+                <button class="mm-sub" disabled={busy} onclick={() => { stashUntracked(); moreOpen = false; }}>Including untracked</button>
+              {/if}
+            </div>
+          {/if}
+          {#if tplOpen}
+            <div class="mscrim" onclick={() => (tplOpen = false)} role="presentation"></div>
+            <div class="tplmenu">
+              <button onclick={() => { saveTemplate(); tplOpen = false; }}>+ Save current as template</button>
+              {#each templates as t (t)}
+                <div class="tplrow">
+                  <button class="tpluse" title={t} onclick={() => { commitMsg = t; tplOpen = false; }}>{t.split("\n")[0]}</button>
+                  <button class="tplx" title="Delete" onclick={() => { templates = templates.filter((x) => x !== t); persistTemplates(); }}>×</button>
+                </div>
+              {/each}
+              {#if !templates.length}<div class="tplempty">No templates yet</div>{/if}
+            </div>
+          {/if}
+        </div>
+      </div>
+    {/if}
+
+    <div class="side-changes">
+      {#if error}
+        <div class="empty">{error}</div>
+      {:else}
+        {#if staged.length}
+          <div class="sect">Staged <span class="cnt">{staged.length}</span></div>
+          <div class="changes">{@render tree(stagedTree, true, 0)}</div>
+        {/if}
+        {#if unstaged.length}
+          <div class="sect">Changes <span class="cnt">{unstaged.length}</span>
+            <button class="link" disabled={busy} onclick={stageAll}>Stage all</button>
+          </div>
+          <div class="changes">{@render tree(unstagedTree, false, 0)}</div>
+        {/if}
+        {#if !staged.length && !unstaged.length && !error}
+          <div class="clean">Nothing to commit — working tree clean</div>
+        {/if}
+      {/if}
+    </div>
+  </aside>
+
+  <!-- RIGHT: header + filters + stashes + tags + history + commit detail -->
+  <main class="scm-main">
+    <div class="head">
+      <span class="accent hd-ic"><Icon name="branch" size={13} /></span>
+      {#if branches.length}
+        <select class="branchsel" value={branch} onchange={(e) => { const v = (e.currentTarget as HTMLSelectElement).value; if (v !== branch) act("git_checkout", { branch: v }); }}>
+          {#each branches as b (b.name)}<option value={b.name}>{b.name}</option>{/each}
+        </select>
+      {:else}
+        <span class="accent">{branch || "—"}</span>
+      {/if}
+      {#each repoFeatures as f (f)}<button class="rfeat" title={f === "submodules" ? "git submodule update --init --recursive" : "git lfs pull"} disabled={busy} onclick={() => act(f === "submodules" ? "git_submodule_update" : "git_lfs_pull", {})}>{f}</button>{/each}
+      <span class="sync">
+        <button class="syncbtn" class:on={filtersActive || filtersOpen} title="Filter commits (author / message / path)" onclick={() => (filtersOpen = !filtersOpen)}><Icon name="search" size={13} /></button>
+        {#if aheadBehind}<span class="ab" title="ahead / behind upstream">↑{aheadBehind.a} ↓{aheadBehind.b}</span>{/if}
+        <button class="syncbtn" title="Pull (ff-only)" disabled={busy} onclick={pull}><Icon name="refresh" size={13} /></button>
+        <button class="syncbtn" title="Push" disabled={busy} onclick={push}><Icon name="up" size={13} /></button>
+      </span>
+    </div>
+
+    {#if filtersOpen}
+      <div class="logfilters">
+        <input placeholder="author" bind:value={fAuthor} onkeydown={(e) => e.key === "Enter" && load()} spellcheck="false" />
+        <input placeholder="message contains" bind:value={fGrep} onkeydown={(e) => e.key === "Enter" && load()} spellcheck="false" />
+        <input placeholder="path" bind:value={fPath} onkeydown={(e) => e.key === "Enter" && load()} spellcheck="false" />
+        <button class="syncbtn" title="Apply" onclick={() => load()}><Icon name="check" size={13} /></button>
+        {#if filtersActive}<button class="syncbtn" title="Clear filters" onclick={clearFilters}><Icon name="close" size={13} /></button>{/if}
+      </div>
+    {/if}
+
+    {#if !error}
+      {#if stashes.length}
+        <div class="sect disclosure" onclick={() => (stashesOpen = !stashesOpen)} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), (stashesOpen = !stashesOpen))} role="button" tabindex="0">
+          <svg class="caret {stashesOpen ? 'open' : ''}" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          Stashes <span class="cnt">{stashes.length}</span>
+        </div>
+        {#if stashesOpen}
+          <div class="changes">
+            {#each stashes as s, i (s)}
+              <div class="chg"><span class="path" style="margin-right:auto;cursor:default" onclick={() => onOpenDiff?.({ rev: `stash@{${i}}` })} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onOpenDiff?.({ rev: `stash@{${i}}` }))} role="button" tabindex="0">{s}</span><button class="op" title="Show diff" disabled={busy} onclick={() => onOpenDiff?.({ rev: `stash@{${i}}` })}><Icon name="search" size={12} /></button><button class="op" title="Apply" disabled={busy} onclick={() => stashApply(i)}><Icon name="stash" size={13} /></button></div>
+            {/each}
           </div>
         {/if}
-        {#if tplOpen}
-          <div class="mscrim" onclick={() => (tplOpen = false)} role="presentation"></div>
-          <div class="tplmenu">
-            <button onclick={() => { saveTemplate(); tplOpen = false; }}>+ Save current as template</button>
-            {#each templates as t (t)}
-              <div class="tplrow">
-                <button class="tpluse" title={t} onclick={() => { commitMsg = t; tplOpen = false; }}>{t.split("\n")[0]}</button>
-                <button class="tplx" title="Delete" onclick={() => { templates = templates.filter((x) => x !== t); persistTemplates(); }}>×</button>
+      {/if}
+
+      {#if tags.length}
+        <div class="sect disclosure" onclick={() => (tagsOpen = !tagsOpen)} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), (tagsOpen = !tagsOpen))} role="button" tabindex="0">
+          <svg class="caret {tagsOpen ? 'open' : ''}" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          Tags <span class="cnt">{tags.length}</span>
+        </div>
+        {#if tagsOpen}
+          <div class="changes">
+            {#each tags as t (t)}
+              <div class="chg"><span class="bdg" style="color:var(--green);display:inline-flex"><Icon name="tag" size={12} /></span><span class="path">{t}</span></div>
+            {/each}
+          </div>
+        {/if}
+      {/if}
+
+      <div class="sect disclosure" onclick={() => (historyOpen = !historyOpen)} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), (historyOpen = !historyOpen))} role="button" tabindex="0">
+        <svg class="caret {historyOpen ? 'open' : ''}" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        History
+      </div>
+      {#if historyOpen}
+        <div class="log" bind:this={logViewport} onscroll={onLogScroll}>
+          <div class="logspace" style="height:{commits.length * ROW_H}px">
+            {#each commits.slice(visStart, visEnd) as c, ii (c.hash)}
+              {@const i = visStart + ii}
+              {@const cv = parseConventional(c.subject)}
+              {@const g = graph[i]}
+              {@const stat = commitStats[c.short]}
+              <div class="row {i === sel ? 'sel' : ''}" style="top:{i * ROW_H}px" onclick={() => openCommitDetail(c)} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), openCommitDetail(c))} role="button" tabindex="0">
+                <svg class="graph" width={graphW} height={ROW_H} style="flex:0 0 {graphW}px">
+                  {#each segPaths(g) as p}
+                    <path d={p.d} stroke={laneColor(p.color)} fill="none" stroke-width="1.6" />
+                  {/each}
+                  <circle cx={laneX(g.col)} cy={ROW_H / 2} r={NODE_R} fill={laneColor(g.color)}
+                    stroke="var(--bg)" stroke-width="1.5" />
+                </svg>
+                <span class="sha mono">{c.short}</span>
+                <span class="subj">
+                  {#if i === 0 && c.refs}<span class="ref">{c.refs.split(",")[0].replace("HEAD -> ", "")}</span>{/if}
+                  {#if cv}<span class="ctype" style="color:{typeColor[cv.kind] || 'var(--blue)'}">{cv.kind}{cv.scope ? `(${cv.scope})` : ""}:</span> {cv.rest}{:else}{c.subject}{/if}
+                </span>
+                <span class="auth">{c.author}</span>
+                <span class="when mono">{relTime(c.ts, now)}</span>
+                <span class="cstat">{#if stat?.add}<span class="cadd">+{stat.add}</span>{/if}{#if stat?.del}<span class="cdel">−{stat.del}</span>{/if}</span>
               </div>
             {/each}
-            {#if !templates.length}<div class="tplempty">No templates yet</div>{/if}
           </div>
-        {/if}
-      </div>
-    </footer>
-  {/if}
-  </div>
+        </div>
+      {/if}
+    {/if}
 
+    {#if detail}
+      <div class="cdetail">
+        <div class="cd-head">
+          <span class="cd-sha mono">{detail.commit.short}</span>
+          <span class="cd-subj">{detail.commit.subject}</span>
+          <button class="cd-copy" title="Copy SHA" onclick={() => copySha(detail!.commit.hash)}><Icon name="paperclip" size={11} /></button>
+          <button class="cd-x" title="Close" onclick={() => (detail = null)} aria-label="Close">×</button>
+        </div>
+        <div class="cd-meta">{detail.commit.author} · {fullDate(detail.commit.ts)} · {detail.files.length} file{detail.files.length === 1 ? "" : "s"}</div>
+        <div class="cd-files">
+          {#each detail.files as f (f.path)}
+            <button class="cd-file" onclick={() => openFileAt(detail!.commit.short, f.path)}>
+              <span class="cd-fbdg" style="color:{badge(f.code)}">{f.code}</span>
+              <span class="cd-fname mono">{f.path.split("/").pop()}</span>
+              <span class="cd-fdir">{f.path.split("/").slice(0, -1).join("/")}</span>
+            </button>
+          {/each}
+          {#if !detail.files.length}<div class="cd-empty">No file changes</div>{/if}
+        </div>
+      </div>
+    {/if}
+  </main>
 </div>
 
 <style>
-  .scm { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--bg); align-items: center; }
-  /* Whole git view lives in a readable centered column on wide windows
-     (GitHub/Linear-style) instead of stretching edge-to-edge. */
-  .scm-col { width: 100%; max-width: 1040px; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .scm { display: flex; flex-direction: row; height: 100%; min-height: 0; background: var(--bg); }
+
+  /* LEFT sidebar — commit composer pinned at top, changed files below */
+  .scm-side { width: 300px; flex: 0 0 300px; display: flex; flex-direction: column; min-height: 0;
+    border-right: 1px solid var(--border); background: var(--panel); }
+
+  .side-commit { flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px;
+    padding: 10px 10px 8px; border-bottom: 1px solid var(--border); position: relative; }
+  .ci-card { position: relative; }
+  .side-commit textarea { width: 100%; box-sizing: border-box; resize: none; min-height: 52px; max-height: 160px;
+    padding: 7px 30px 7px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg);
+    color: var(--text); font-family: var(--font-ui); font-size: 12.5px; line-height: 1.45; outline: 0; }
+  .side-commit textarea:focus { border-color: var(--accent); }
+  .ci-actions { display: flex; align-items: center; height: 28px; gap: 5px; position: relative; }
+
+  .side-changes { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 8px; }
+
+  .clean { padding: 20px 14px; color: var(--text3); font-size: 11.5px; }
+
+  /* RIGHT — branch header + history */
+  .scm-main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; background: var(--bg); }
 
   /* Commit detail — docked panel between history and composer (no floating). */
   .cdetail { flex: 0 0 auto; max-height: 42%; display: flex; flex-direction: column;
@@ -513,13 +539,14 @@
   .cd-fname { font-size: 12px; color: var(--text); flex: 0 0 auto; }
   .cd-fdir { font-size: 10.5px; color: var(--text3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .cd-empty { padding: 8px 12px; color: var(--text3); font-size: 11.5px; }
+
   .head { height: 28px; flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 0 12px;
     border-bottom: 1px solid var(--border); font-size: 11.5px; }
   .accent { color: var(--accent); font-weight: 600; }
-  .sect { padding: 4px 14px 2px; font-size: 11px; color: var(--text3); font-weight: 500; }
-  .sect.disclosure { display: flex; align-items: center; gap: 4px; cursor: default; }
+  .sect { padding: 6px 14px 3px; font-size: 11px; color: var(--text3); font-weight: 600; letter-spacing: .03em; text-transform: uppercase; }
+  .sect.disclosure { display: flex; align-items: center; gap: 4px; cursor: default; padding: 6px 14px 3px; }
   .changes { padding-bottom: 4px; }
-  .chg { display: flex; align-items: center; height: 22px; padding: 0 8px 0 14px; gap: 6px; font-size: 12px;
+  .chg { display: flex; align-items: center; height: 24px; padding: 0 8px 0 14px; gap: 6px; font-size: 12px;
     transition: background 0.1s ease; }
   .chg:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
   .chg.dir { cursor: default; }
@@ -569,19 +596,9 @@
   .cadd { color: var(--green); }
   .cdel { color: var(--red); margin-left: 5px; }
   .empty { padding: 24px 14px; color: var(--text3); }
-  .cnt { margin-left: 4px; color: var(--text3); }
+  .cnt { margin-left: 4px; color: var(--text3); font-weight: 400; text-transform: none; letter-spacing: 0; }
   .link { margin-left: auto; border: 0; background: transparent; color: var(--accent);
-    font-size: 11px; cursor: default; }
-  /* Bottom-docked commit composer (Terax-style): slim card pinned to the panel
-     foot; secondary actions fold into the ⋯ menu so the footer stays small. */
-  .composer { flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px;
-    padding: 8px 10px 10px; border-top: 1px solid var(--border); background: var(--panel); position: relative; }
-  .ci-card { position: relative; }
-  .composer textarea { width: 100%; box-sizing: border-box; resize: none; min-height: 40px; max-height: 160px;
-    padding: 6px 28px 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg);
-    color: var(--text); font-family: var(--font-ui); font-size: 12.5px; line-height: 1.45; outline: 0; }
-  .composer textarea:focus { border-color: var(--accent); }
-  .ci-actions { display: flex; align-items: center; height: 28px; gap: 6px; position: relative; }
+    font-size: 11px; cursor: default; font-weight: 400; text-transform: none; letter-spacing: 0; }
   .cbtn { display: inline-flex; align-items: center; justify-content: center; gap: 5px;
     border: 1px solid var(--border); border-radius: 6px; background: var(--panel2);
     color: var(--text); font-size: 12px; font-weight: 500; cursor: default;
@@ -591,7 +608,7 @@
   .cbtn.primary { flex: 0 0 auto; height: 24px; padding: 0 12px; border-radius: 6px; font-size: 12px; font-weight: 600;
     border-color: transparent; background: var(--accent); color: var(--bg); }
   .cbtn.primary:hover:not(:disabled) { filter: brightness(1.05); }
-  .cbtn.primary.big { flex: 0 0 auto; height: 26px; padding: 0 18px; }
+  .cbtn.primary.big { flex: 1; height: 26px; padding: 0 10px; }
   .ci-actions .more { margin-left: auto; }
   .cbtn-n { margin-left: 2px; font-size: 10px; font-weight: 700; opacity: 0.85;
     background: color-mix(in srgb, var(--bg) 28%, transparent); border-radius: 8px; padding: 0 5px; }
@@ -630,7 +647,7 @@
   .logfilters input { flex: 1; min-width: 0; background: var(--bg); color: var(--text); border: 1px solid var(--border);
     border-radius: 5px; padding: 3px 7px; font-size: 11.5px; font-family: var(--font-mono); outline: 0; }
   .logfilters input:focus { border-color: var(--accent); }
-  .genmsg { position: absolute; top: 6px; right: 6px; border: 1px solid var(--border); background: var(--panel2);
+  .genmsg { position: absolute; top: 7px; right: 7px; border: 1px solid var(--border); background: var(--panel2);
     color: var(--text2); border-radius: 4px; width: 18px; height: 18px; font-size: 10px; font-family: var(--font-mono);
     cursor: default; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
   .genmsg:hover:not(:disabled) { border-color: var(--accent); color: var(--text); }
