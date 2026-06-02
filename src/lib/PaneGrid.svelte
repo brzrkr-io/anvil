@@ -55,7 +55,7 @@
     { k: "term", label: "Terminal" }, { k: "editor", label: "Editor" },
     { k: "files", label: "Explorer" }, { k: "scm", label: "Source Control" },
     { k: "search", label: "Search" }, { k: "agent", label: "Agent" },
-    { k: "devops", label: "DevOps" }, { k: "caldera", label: "Caldera" },
+    { k: "devops", label: "DevOps" },
   ];
   const labelOf = (k: ViewKind) => VIEWS.find((v) => v.k === k)?.label ?? k;
 

@@ -110,7 +110,6 @@
     for (const lang of langs) ensureLsp(lang, dir).catch(() => {});
   }
   $effect(() => { if (cwd) prewarmLsp(cwd); });
-  const Caldera = () => import("$lib/Caldera.svelte");
   import PaneGrid from "$lib/PaneGrid.svelte";
   import { leaf, splitLeaf, closeLeaf, resizeSplit, dockLeaf, setView as setLeafView, paneId, remapTermRefs, firstLeaf, findLeaf, balanceTree, closeOthers as closeOtherPanes, leafIds, addTab, setActiveTab, closeTab, type PaneNode, type Leaf, type ViewKind, type Edge } from "$lib/panes";
   import Palette, { type Item } from "$lib/Palette.svelte";
@@ -863,7 +862,6 @@
       { label: "View: Helm", run: () => (rail = "helm") },
       { label: "View: Observability (Metrics / Logs)", run: () => (rail = "obs") },
       { label: "View: DevOps (Terraform / Helm / Observability)", run: () => (rail = "devops") },
-      { label: "View: Caldera (control plane)", run: () => (rail = "caldera") },
       { label: "View: Workspace (multipane)", run: () => (rail = "workspace") },
       { label: "Workspace: Balance Panes", run: () => { paneTree = balanceTree(paneTree); rail = "workspace"; } },
       { label: "Workspace: Close Other Panes", run: () => { paneTree = closeOtherPanes(paneTree, activeLeaf); rail = "workspace"; } },
@@ -1123,7 +1121,7 @@
     // page is an instant mount instead of a chunk download + parse on click.
     // Pure module preload — nothing renders or fetches here.
     const prefetchViews = () => {
-      for (const f of [SourceControl, Editor, DiffView, SearchPanel, AgentPanel, Settings, DevOps, Kube, CI, Terraform, Helm, Observability, Caldera, FileView]) {
+      for (const f of [SourceControl, Editor, DiffView, SearchPanel, AgentPanel, Settings, DevOps, Kube, CI, Terraform, Helm, Observability, FileView]) {
         f().catch(() => {});
       }
     };
@@ -1313,7 +1311,6 @@
       {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'helm' ? 'on' : ''}" title="Helm" onclick={() => (rail = 'helm')}><Icon name="helm" /></div>{/if}
       {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'obs' ? 'on' : ''}" title="Observability (Metrics / Logs)" onclick={() => (rail = 'obs')}><Icon name="chart" /></div>{/if}
       {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'devops' ? 'on' : ''}" title="DevOps (PRs / GitLab / AWS / Incidents)" onclick={() => (rail = 'devops')}><Icon name="devops" /></div>{/if}
-      {#if railEnabled('caldera', $extEnabled)}<div class="i {rail === 'caldera' ? 'on' : ''}" title="Caldera control plane" onclick={() => (rail = 'caldera')}><Icon name="caldera" /></div>{/if}
       <div class="i {rail === 'workspace' ? 'on' : ''}" title="Workspace (multipane)" onclick={() => (rail = 'workspace')}><Icon name="workspace" /></div>
       <div class="i grow {rail === 'settings' ? 'on' : ''}" title="Settings" onclick={openSettings}><Icon name="settings" /></div>
     </nav>
@@ -1345,7 +1342,6 @@
         {:else if rail === "helm"}<span class="ph-ic accent"><Icon name="helm" /></span> Helm
         {:else if rail === "obs"}<span class="ph-ic accent"><Icon name="chart" /></span> Observability
         {:else if rail === "devops"}<span class="ph-ic accent"><Icon name="devops" /></span> DevOps
-        {:else if rail === "caldera"}<span class="ph-ic accent"><Icon name="caldera" /></span> Caldera
         {:else if rail === "workspace"}<span class="ph-ic accent"><Icon name="workspace" /></span> Workspace — {baseName(cwd)}
         {:else if rail === "settings"}<span class="ph-ic accent"><Icon name="settings" /></span> Settings
         {:else if rail === "files"}<span class="ph-ic accent"><Icon name="folder" /></span> Explorer
@@ -1392,8 +1388,6 @@
             {/await}
           {/if}
         </div>
-      {:else if rail === "caldera"}
-        <div class="view">{#await Caldera() then M}<M.default />{/await}</div>
       {:else if rail === "workspace"}
         <div class="view ws">
           {#snippet paneView(lf: Leaf)}
@@ -1415,8 +1409,6 @@
                 onRunCommand={(c) => invoke("pty_write", { id: activeTerm, data: c + "\n" })} />{/await}
             {:else if lf.view === "devops"}
               {#key cwd}{#await DevOps() then M}<M.default {cwd} onRunCommand={(c) => invoke("pty_write", { id: activeTerm, data: c + "\n" })} />{/await}{/key}
-            {:else if lf.view === "caldera"}
-              {#await Caldera() then M}<M.default />{/await}
             {:else if lf.view === "editor" && (lf.ref || activeFile)}
               {@const p = lf.ref || activeFile}
               {#if isNonText(p)}
