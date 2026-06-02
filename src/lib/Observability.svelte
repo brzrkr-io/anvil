@@ -188,7 +188,7 @@
     </div>
     {#if lokiErr}<div class="err">{lokiErr.slice(0, 200)}</div>{/if}
     <div class="logout">
-      {#each lokiLines as l (l.ts + l.line)}
+      {#each lokiLines as l, i (i)}
         <div class="lrow"><span class="lts">{l.ts}</span><span class="lline">{l.line}</span></div>
       {/each}
       {#if !lokiLines.length && !lokiErr}<div class="empty">Run a LogQL query to stream logs.</div>{/if}
