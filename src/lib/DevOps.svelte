@@ -467,18 +467,18 @@
   .pnm { flex: 1; min-width: 0; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pst { flex: 0 0 auto; width: 92px; text-align: right; }
   .tabbadge { margin-left: 5px; padding: 0 5px; border-radius: 8px; font-size: 9.5px; font-weight: 600;
-    color: #fff; background: var(--red); }
+    color: #fff; background: var(--status-failure); }
   .rbranch { flex: 0 0 auto; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     color: var(--text3); font-size: 10.5px; }
   .ck { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--text3); }
-  .ck-fail { background: var(--red); }
-  .ck-pending { background: var(--yellow); }
-  .ck-pass { background: var(--green); }
+  .ck-fail { background: var(--status-failure); }
+  .ck-pending { background: var(--status-attention); }
+  .ck-pass { background: var(--status-verified); }
   .ck-none { background: var(--text3); opacity: 0.4; }
   .rerun { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
     width: 20px; height: 18px; border: 1px solid color-mix(in srgb, var(--red) 40%, transparent);
     border-radius: 5px; background: transparent; color: var(--red); cursor: default; }
   .rerun:hover { background: color-mix(in srgb, var(--red) 12%, transparent); }
-  .rerun.ai { border-color: color-mix(in srgb, var(--accent) 45%, transparent); color: var(--accent); }
-  .rerun.ai:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .rerun.ai { border-color: color-mix(in srgb, var(--status-agent) 45%, transparent); color: var(--status-agent); }
+  .rerun.ai:hover { background: color-mix(in srgb, var(--status-agent) 12%, transparent); }
 </style>

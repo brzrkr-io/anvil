@@ -204,14 +204,14 @@
   .fx-row:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
   .fx-row.busy { opacity: 0.5; }
   .fx-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; background: var(--text3); }
-  .fx-dot.ok { background: var(--green); }
-  .fx-dot.fail { background: var(--red); }
-  .fx-dot.susp { background: var(--yellow); }
+  .fx-dot.ok { background: var(--status-verified); }
+  .fx-dot.fail { background: var(--status-failure); }
+  .fx-dot.susp { background: var(--status-attention); }
   .fx-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
   .fx-ns { color: var(--text3); font-size: 11px; }
   .fx-k { color: var(--accent); font-size: 10px; font-family: var(--font-mono); }
   .fx-rev { color: var(--text2); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
-  .fx-msg { flex: 1; min-width: 0; color: var(--red); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fx-msg { flex: 1; min-width: 0; color: var(--status-failure); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .fx-fail-chip { color: var(--red); font-size: 11px; font-family: var(--font-ui); padding: 1px 7px; border-radius: 9px;
     background: color-mix(in srgb, var(--red) 14%, transparent); border: 1px solid color-mix(in srgb, var(--red) 35%, transparent); }
   .mono { font-family: var(--font-mono); }
@@ -219,6 +219,6 @@
     min-width: 22px; height: 20px; padding: 0 5px; font-size: 11px; display: inline-flex; align-items: center; justify-content: center; cursor: default; }
   .fx-act:hover:not(:disabled) { color: var(--text); border-color: var(--text3); }
   .fx-act:disabled { opacity: 0.4; }
-  .fx-act.hot { color: var(--red); border-color: color-mix(in srgb, var(--red) 45%, transparent); }
-  .fx-act.ai { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+  .fx-act.hot { color: var(--status-failure); border-color: color-mix(in srgb, var(--status-failure) 45%, transparent); }
+  .fx-act.ai { color: var(--status-agent); border-color: color-mix(in srgb, var(--status-agent) 45%, transparent); }
 </style>

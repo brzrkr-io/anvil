@@ -419,8 +419,8 @@
   .act.primary { color: var(--text); border-color: var(--text3); }
   .act.ext { font-family: var(--font-mono); font-size: 11px; }
   .act.danger:hover:not(:disabled) { color: var(--red); border-color: var(--red); }
-  .act.ai { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
-  .act.ai:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .act.ai { color: var(--status-agent); border-color: color-mix(in srgb, var(--status-agent) 45%, transparent); }
+  .act.ai:hover:not(:disabled) { background: color-mix(in srgb, var(--status-agent) 12%, transparent); }
 
   .err {
     padding: 8px 12px; font-size: 11.5px; color: var(--red);
@@ -463,8 +463,8 @@
     border-radius: 3px; flex: 0 0 auto; letter-spacing: 0.02em;
   }
   .drift { font-family: var(--font-mono); font-size: 8.5px; font-weight: 600; padding: 1px 4px; border-radius: 3px;
-    flex: 0 0 auto; color: var(--yellow); background: color-mix(in srgb, var(--yellow) 16%, transparent); white-space: nowrap; }
-  .drift.clean { color: var(--green); background: color-mix(in srgb, var(--green) 14%, transparent); }
+    flex: 0 0 auto; color: var(--status-attention); background: color-mix(in srgb, var(--status-attention) 16%, transparent); white-space: nowrap; }
+  .drift.clean { color: var(--status-verified); background: color-mix(in srgb, var(--status-verified) 14%, transparent); }
   .tag.k-terraform { color: var(--text3); background: color-mix(in srgb, var(--text) 8%, transparent); }
   .tag.k-tg-unit { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
   .tag.k-tg-stack { color: var(--purple); background: color-mix(in srgb, var(--purple) 16%, transparent); }

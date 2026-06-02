@@ -116,9 +116,9 @@
   .row:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
   .row.busy { opacity: 0.5; }
   .dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; background: var(--text3); }
-  .dot.s-running { background: var(--green); }
+  .dot.s-running { background: var(--status-verified); }
   .dot.s-exited { background: var(--text3); }
-  .dot.s-paused { background: var(--yellow); }
+  .dot.s-paused { background: var(--status-attention); }
   .dot.s-other { background: var(--text3); }
   .nm { color: var(--text); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
   .img { color: var(--text3); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px; }
