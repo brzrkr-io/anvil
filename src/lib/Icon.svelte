@@ -10,17 +10,27 @@
     search: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>',
     agent: '<circle cx="12" cy="12" r="4.5"/><path d="M12 3v3"/><path d="M12 18v3"/><path d="M3 12h3"/><path d="M18 12h3"/>',
     basin: '<circle cx="12" cy="12" r="10"/><path d="M2 12 L22 12 A10 10 0 0 1 2 12 Z" fill="currentColor" stroke="none"/>',
+    // Anvil — brand mark: horned working surface, narrow waist, flared base.
+    // Filled (like the basin mark it replaces) so the silhouette reads as an anvil.
+    anvil: '<path d="M2.5 9.3L9 7L20 7L20 9.8L14 9.8L13 13L17.5 13L18.5 16.8L5.5 16.8L6.5 13L11 13L10 9.8L4.5 9.8Z" fill="currentColor" stroke="none"/>',
     pin: '<path d="M12 3v7"/><path d="M8 10h8l-1 4H9z"/><path d="M12 14v7"/>',
     devops: '<path d="M21 8.5l-9-5-9 5 9 5 9-5z"/><path d="M3 8.5v7l9 5 9-5v-7"/><path d="M12 13.5v7"/>',
-    kube: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.4"/><path d="M12 3v3.6"/><path d="M12 17.4V21"/><path d="M3 12h3.6"/><path d="M17.4 12H21"/><path d="M5.6 5.6l2.6 2.6"/><path d="M15.8 15.8l2.6 2.6"/><path d="M18.4 5.6l-2.6 2.6"/><path d="M8.2 15.8l-2.6 2.6"/>',
-    terraform: '<rect x="3.5" y="3.5" width="7" height="7" rx="1"/><rect x="13.5" y="3.5" width="7" height="7" rx="1"/><rect x="3.5" y="13.5" width="7" height="7" rx="1"/>',
+    // Kubernetes — 7-sided helm (heptagon ring + hub + 7 spokes).
+    kube: '<path d="M12 3L19.03 6.39L20.78 14L15.91 20.11L8.09 20.11L3.22 14L4.97 6.39Z"/><circle cx="12" cy="12" r="2.2"/><path d="M12 9.2L12 5.8M14.19 10.26L16.85 8.14M14.73 12.62L18.05 13.38M13.22 14.52L14.69 17.59M10.78 14.52L9.31 17.59M9.27 12.62L5.95 13.38M9.81 10.26L7.15 8.14"/>',
+    // Terraform — three leaning tiles (two stacked left, one top-right).
+    terraform: '<path d="M4 2.8l6 2.2v7l-6-2.2z"/><path d="M4 11.4l6 2.2v7l-6-2.2z"/><path d="M10.6 5.9l6 2.2v7l-6-2.2z"/>',
     helm: '<circle cx="12" cy="12" r="3.2"/><circle cx="12" cy="12" r="8"/><path d="M12 4v3.2"/><path d="M12 16.8V20"/><path d="M4 12h3.2"/><path d="M16.8 12H20"/>',
+    // Docker — three containers on a whale wave.
+    docker: '<rect x="3.2" y="9.5" width="3.2" height="3.2" rx="0.4"/><rect x="7" y="9.5" width="3.2" height="3.2" rx="0.4"/><rect x="10.8" y="9.5" width="3.2" height="3.2" rx="0.4"/><rect x="7" y="5.9" width="3.2" height="3.2" rx="0.4"/><path d="M2 15.2c1.8 1.4 4.6 1.4 6.4 0 1.8 1.8 5.4 1.4 7.2-.8.4 1.8 2.6 1.5 3.4.4"/>',
+    // Flux — GitOps reconcile loop around a source node.
+    flux: '<path d="M19 12a7 7 0 1 1-2-4.9"/><path d="M19 5v3.2h-3.2"/><circle cx="12" cy="12" r="1.8"/>',
     caldera: '<path d="M12 2.5l9.5 9.5L12 21.5 2.5 12z"/><path d="M12 8l4 4-4 4-4-4z"/>',
     workspace: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9.5h18"/><path d="M9.5 21V9.5"/>',
     settings: '<path d="M4 6h8"/><path d="M16 6h4"/><circle cx="14" cy="6" r="2"/><path d="M4 12h2"/><path d="M10 12h10"/><circle cx="8" cy="12" r="2"/><path d="M4 18h10"/><path d="M18 18h2"/><circle cx="16" cy="18" r="2"/>',
     theme: '<circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor" stroke="none"/>',
     zoom: '<path d="M21 3h-6"/><path d="M21 3v6"/><path d="M21 3l-7 7"/><path d="M3 21h6"/><path d="M3 21v-6"/><path d="M3 21l7-7"/>',
-    ci: '<path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/>',
+    // CI — run-pipeline: a workflow loop with a play (distinct from refresh).
+    ci: '<path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 5v4h-4"/><path d="M10.5 9l5 3-5 3z"/>',
     pr: '<circle cx="6" cy="6" r="2.4"/><circle cx="6" cy="18" r="2.4"/><circle cx="18" cy="18" r="2.4"/><path d="M6 8.4v7.2"/><path d="M18 15.6V11a4 4 0 0 0-4-4h-3"/><path d="M13 4l-2 3 2 3"/>',
     chart: '<path d="M3 3v18h18"/><path d="M7 15l3-4 3 3 4-6"/>',
     plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',

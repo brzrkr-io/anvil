@@ -268,7 +268,7 @@
     <button class:on={tab === "prs"} onclick={() => (tab = "prs")}><Icon name="pr" size={14} /> Pull Requests</button>
     <button class:on={tab === "actions"} onclick={() => { tab = "actions"; if (!runs.length) loadActions(); }}><Icon name="ci" size={14} /> Actions{#if runFails}<span class="tabbadge">{runFails}</span>{/if}</button>
     <button class:on={tab === "gitlab"} onclick={() => { tab = "gitlab"; if (!glabOut) loadGlab(); }}><Icon name="ci" size={14} /> GitLab CI</button>
-    <button class:on={tab === "docker"} onclick={() => (tab = "docker")}><Icon name="kube" size={14} /> Docker</button>
+    <button class:on={tab === "docker"} onclick={() => (tab = "docker")}><Icon name="docker" size={14} /> Docker</button>
     <button class:on={tab === "aws"} onclick={() => { tab = "aws"; if (!awsOut) loadAws(); }}><Icon name="devops" size={14} /> AWS</button>
     <button class:on={tab === "inc"} onclick={() => (tab = "inc")}><Icon name="alert" size={14} /> Incident</button>
     <span class="sp"></span>

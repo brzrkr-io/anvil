@@ -260,7 +260,7 @@
   <!-- Flux | Workloads | Helm view switch (Flux tab only when the cluster runs it). -->
   <div class="kviews">
     {#if fluxPresent}
-      <button class:on={view === "flux"} onclick={() => (view = "flux")}><Icon name="kube" size={12} /> Flux</button>
+      <button class:on={view === "flux"} onclick={() => (view = "flux")}><Icon name="flux" size={12} /> Flux</button>
     {/if}
     <button class:on={view === "workloads"} onclick={() => (view = "workloads")}><Icon name="workspace" size={12} /> Workloads</button>
     <button class:on={view === "helm"} onclick={() => (view = "helm")}><Icon name="helm" size={12} /> Helm</button>
