@@ -11,6 +11,7 @@
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { activeTheme, themes } from "$lib/themes";
+  import { windowOpacity } from "$lib/window-opacity";
   import { termFontSize, termCursorBlink, termCursorStyle, termLineHeight, termLetterSpacing, termScrollback } from "$lib/terminal-settings";
   import { monoFont, termBold } from "$lib/fonts";
   import { registerTerminal, unregisterTerminal, broadcastInput, liveTerminals } from "$lib/term-registry";
@@ -32,6 +33,18 @@
   let resizeRaf = 0;
   let lastCols = 0, lastRows = 0;
   let unsubTheme: () => void;
+  let unsubOpacity: () => void;
+
+  // Build an xterm theme whose background is mixed toward transparent by the
+  // window-opacity value (a). At a=1 the background is the theme's solid color;
+  // below 1 it becomes translucent so the vibrancy backdrop shows through.
+  function themeFor(name: string, a: number) {
+    const base = themes[name].xterm;
+    if (a >= 1) return base;
+    const hex = (base.background ?? "#000000").replace("#", "");
+    const r = parseInt(hex.slice(0, 2), 16), g = parseInt(hex.slice(2, 4), 16), b = parseInt(hex.slice(4, 6), 16);
+    return { ...base, background: `rgba(${r}, ${g}, ${b}, ${a})` };
+  }
 
   let searchOpen = $state(false);
   let searchQuery = $state("");
@@ -66,15 +79,21 @@
       fontSize: get(termFontSize),
       lineHeight: get(termLineHeight),
       letterSpacing: get(termLetterSpacing),
-      theme: themes[$activeTheme].xterm,
+      theme: themeFor($activeTheme, get(windowOpacity)),
       cursorBlink: get(termCursorBlink),
       cursorStyle: get(termCursorStyle),
       allowProposedApi: true,
+      allowTransparency: true,
       scrollback: get(termScrollback),
     });
 
     unsubTheme = activeTheme.subscribe((name) => {
-      if (term) term.options.theme = themes[name].xterm;
+      if (term) term.options.theme = themeFor(name, get(windowOpacity));
+    });
+    // Re-tint the terminal background when window opacity changes so the macOS
+    // vibrancy material shows through at <1.
+    unsubOpacity = windowOpacity.subscribe((a) => {
+      if (term) term.options.theme = themeFor(get(activeTheme), a);
     });
     fit = new FitAddon();
     term.loadAddon(fit);
@@ -247,6 +266,7 @@
 
   onDestroy(() => {
     unsubTheme?.();
+    unsubOpacity?.();
     if (resizeRaf) cancelAnimationFrame(resizeRaf);
     ro?.disconnect();
     unlisten.forEach((u) => u());

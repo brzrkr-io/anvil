@@ -25,6 +25,7 @@
   } from "$lib/editor-settings";
   import { termFontSize, termCursorBlink, termCursorStyle, CURSOR_STYLES, termLineHeight, termLetterSpacing, termScrollback, bumpTermFontSize, toggleTermBlink, setTermCursorStyle, bumpTermLineHeight, bumpTermLetterSpacing, setTermScrollback } from "$lib/terminal-settings";
   import { uiScale, bumpScale, resetScale } from "$lib/scale";
+  import { windowOpacity, applyOpacity } from "$lib/window-opacity";
   import { uiFont, monoFont, editorBold, termBold, UI_FONTS, MONO_FONTS, setUiFont, setMonoFont, toggleEditorBold, toggleTermBold } from "$lib/fonts";
   import Icon from "$lib/Icon.svelte";
   import { ACCOUNTS, getValue, setValue, clearValue, hasValue, type AccountField } from "$lib/accounts";
@@ -204,6 +205,18 @@
             <span class="val">{Math.round($uiScale * 100)}%</span>
             <button onclick={() => bumpScale(1)}>+</button>
             <button class="reset" onclick={resetScale}>Reset</button>
+          </div>
+        </div>
+      </section>
+      <section>
+        <div class="section-header">Window Transparency</div>
+        <div class="opt">
+          <span class="opt-lbl">Translucency <span class="kbd-hint">macOS vibrancy</span></span>
+          <div class="stepper">
+            <input type="range" min="0.5" max="1" step="0.02" value={$windowOpacity}
+              oninput={(e) => applyOpacity(+(e.currentTarget as HTMLInputElement).value)} style="width:140px" />
+            <span class="val">{Math.round($windowOpacity * 100)}%</span>
+            <button class="reset" onclick={() => applyOpacity(1)}>Off</button>
           </div>
         </div>
       </section>

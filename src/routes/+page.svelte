@@ -93,6 +93,7 @@
   import { activeTheme, initTheme, cycleTheme, applyTheme, themeLabel } from "$lib/themes";
   import { density, initDensity, toggleDensity, applyDensity, type Density } from "$lib/density";
   import { initScale, bumpScale, resetScale } from "$lib/scale";
+  import { initOpacity } from "$lib/window-opacity";
   import { initFonts } from "$lib/fonts";
   import { autoHideRail, focusDimming, toggleFocusDimming, terminalAutoCd, toggleTerminalAutoCd } from "$lib/layout-settings";
   import Icon from "$lib/Icon.svelte";
@@ -1076,6 +1077,7 @@
     initTheme();
     initDensity();
     initScale();
+    initOpacity();
     loadUserConfig();
     // Live reload (#90): re-read the user config when the window regains focus.
     window.addEventListener("focus", () => loadUserConfig());
