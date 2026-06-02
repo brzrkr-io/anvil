@@ -2428,3 +2428,10 @@ Tests updated: `build_section_*` tests replaced with `context_section_*` tests; 
   Command via explicit .arg() (no shell interpolation); verb-reaching commands
   allow-list the verb. Single shell exec is `run_capture` (agent tool, UI-gated)
   → that is #46's surface, not this boundary's. Finding: boundary sound.
+
+- 2026-06-02 — Product wedge defined (#50). New decision `0006-product-wedge.md`
+  + index link. Wedge user = solo DevOps/platform eng (project owner's own role).
+  Three beat-targets Anvil must beat terminal+VSCode+kubectl+browser at: (1) GitOps
+  reconcile loop, (2) IaC plan/apply, (3) PR+CI triage — all have surfaces, work is
+  sharpening not building. Agent (gated run_capture) overlays all three. De-prioritizes
+  observability depth, generalist-dev polish, agent autonomy beyond the gated loop.

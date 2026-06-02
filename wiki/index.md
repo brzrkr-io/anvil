@@ -77,6 +77,7 @@ Allowed `confidence`: `high`, `medium`, `low`. Dates use `YYYY-MM-DD`.
 - [[concepts/agent-actions|Agent Actions]] — caldera approve/start keybindings (AG3), `anvil-caldera` action helpers.
 - [[concepts/native-editor|Native Editor]] — Buffer/rope model (NE1), file IO (NE2), undo/redo (NE3), EditorPane + registry (NE4), render path (NE5).
 - [[concepts/security-boundary|Security Boundary]] — CSP + IPC audit: locked CSP (local-only, unsafe-inline required by hydration), scoped capabilities, no shell plugin, allow-listed verbs; agent `run_capture` is the live surface.
+- [[decisions/0006-product-wedge|0006 Product Wedge]] — wedge user = solo DevOps/platform eng; the 3 beat-targets (GitOps reconcile, IaC plan/apply, PR+CI triage) Anvil must beat terminal+VSCode+kubectl at; agent overlays all three.
 - [../BRAND](../BRAND.md) — Anvil brand contract for all user-facing work.
 
 ## Current State
