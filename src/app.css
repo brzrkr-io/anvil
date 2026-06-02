@@ -351,7 +351,7 @@ body {
 .rail .i.agent.on { color: var(--status-agent); }
 /* Explorer is a toggleable panel, not a main view: a distinct outline state so
    it never reads as a second "active view" alongside the real one. */
-.rail .i.panel.pinned { color: var(--accent); background: transparent; box-shadow: inset 0 0 0 1px var(--accent); }
+.rail .i.panel.pinned { color: var(--accent); background: transparent; }
 .rail .grow { margin-top: auto; margin-bottom: 8px; }
 /* Basin mark — the brand anchor at the top of the rail. */
 .rail .brandmark {
