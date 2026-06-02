@@ -173,6 +173,31 @@
     prDetail = "Loading diff…";
     try { prDetail = await invoke<string>("gh_pr_diff", { cwd, num: prSel }); } catch (e) { prDetail = String(e); }
   }
+  // Merge the selected PR (squash/rebase/merge), deleting the branch.
+  async function mergePr(method: "squash" | "merge" | "rebase") {
+    if (!prSel || prBusy) return;
+    if (!confirm(`${method} PR #${prSel} and delete its branch?`)) return;
+    prBusy = true;
+    try {
+      const out = await invoke<string>("gh_pr_merge", { cwd, num: prSel, method });
+      toast(`Merged #${prSel} (${method})`, "success");
+      prSel = ""; prDetail = ""; await loadPRs();
+      if (!out) { /* noop */ }
+    } catch (e) { toast(String(e).slice(0, 140) || "merge failed", "error"); }
+    finally { prBusy = false; }
+  }
+  // Open a PR for the current branch (gh pr create --fill).
+  async function createPr() {
+    if (busy) return;
+    busy = true;
+    try {
+      const out = await invoke<string>("gh_pr_create", { cwd });
+      const url = out.trim().split("\n").find((l) => l.startsWith("http")) || "PR created";
+      toast(url, "success");
+      await loadPRs();
+    } catch (e) { toast(String(e).slice(0, 160) || "gh pr create failed", "error"); }
+    finally { busy = false; }
+  }
   async function loadPRs() {
     busy = true;
     // JSON variant carries CI check status so we can sort failing-first; keep the
@@ -258,7 +283,11 @@
   {/if}
 
   {#if tab === "prs"}
-    <div class="bar"><span class="lbl">Open PRs · {cwd.split("/").pop()}</span></div>
+    <div class="bar"><span class="lbl">Open PRs · {cwd.split("/").pop()}</span>
+      <span class="grow"></span>
+      <button class="refresh" disabled={busy} onclick={createPr} title="Open a PR for the current branch (gh pr create --fill)">+ New PR</button>
+      <button class="refresh" disabled={busy} onclick={loadPRs} title="Refresh"><Icon name="refresh" size={13} /></button>
+    </div>
     {#if prRows.length}
       <div class="podlist">
         {#each prRows as r (r.num)}
@@ -279,6 +308,8 @@
           <span class="grow"></span>
           <button class="pr-btn ok" disabled={prBusy} onclick={() => reviewPr("approve")} title="Approve (optionally with the comment below)">Approve</button>
           <button class="pr-btn warn" disabled={prBusy} onclick={() => reviewPr("request-changes")} title="Request changes (needs a comment)">Request changes</button>
+          <button class="pr-btn ok" disabled={prBusy} onclick={() => mergePr("squash")} title="Squash & merge, delete branch">Squash</button>
+          <button class="pr-btn" disabled={prBusy} onclick={() => mergePr("merge")} title="Merge commit, delete branch">Merge</button>
         </div>
         <pre class="out">{prDetail}</pre>
         <div class="bar">

@@ -228,6 +228,32 @@ pub async fn gh_pr_create(cwd: String) -> Result<String, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// Merge a PR with an allow-listed strategy, deleting the branch after.
+/// `method` is one of merge | squash | rebase.
+#[tauri::command]
+pub async fn gh_pr_merge(cwd: String, num: String, method: String) -> Result<String, String> {
+    let flag = match method.as_str() {
+        "merge" => "--merge",
+        "squash" => "--squash",
+        "rebase" => "--rebase",
+        _ => return Err(format!("invalid merge method: {method}")),
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut cmd = gh_cmd(&cwd);
+        cmd.args(["pr", "merge", &num, flag, "--delete-branch"]);
+        let out = crate::shared::exec_capture(cmd, 60).map_err(|e| e.to_string())?;
+        let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+        s.push_str(&String::from_utf8_lossy(&out.stderr));
+        if out.status.success() {
+            Ok(s)
+        } else {
+            Err(s)
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// View the current branch's PR in the browser via `gh pr view --web` (#66).
 #[tauri::command]
 pub async fn gh_pr_web(cwd: String) -> Result<String, String> {

@@ -539,6 +539,7 @@ pub fn run() {
             ci::gh_pr_review,
             ci::gh_pr_diff,
             ci::gh_pr_create,
+            ci::gh_pr_merge,
             ci::gh_pr_web,
             git::git_tags,
             git::git_show_file
