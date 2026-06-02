@@ -8,7 +8,7 @@
 
   let { onRunCommand, onPresence, onHealth, onInvestigate }: { onRunCommand?: (cmd: string) => void; onPresence?: (present: boolean) => void; onHealth?: (failing: number) => void; onInvestigate?: (prompt: string) => void } = $props();
 
-  type Tab = "kustomizations" | "helmreleases" | "sources";
+  type Tab = "kustomizations" | "helmreleases" | "sources" | "images";
   interface FluxItem {
     name: string;
     ns: string;
@@ -32,6 +32,7 @@
     { id: "kustomizations", label: "Kustomizations" },
     { id: "helmreleases", label: "HelmReleases" },
     { id: "sources", label: "Sources" },
+    { id: "images", label: "Images" },
   ];
 
   // Map the k8s object kind → the `flux` CLI kind argument the backend allow-lists.
@@ -123,6 +124,8 @@
 
   // A2: client-side namespace filter (read-only; no extra cluster calls).
   let nsFilter = $state("");
+  // sources + image-automation CRDs are read-only listings (no reconcile/suspend).
+  const readonly = $derived(tab === "sources" || tab === "images");
   const namespaces = $derived([...new Set(items.map((i) => i.ns).filter(Boolean))].sort());
   const shown = $derived(nsFilter ? items.filter((i) => i.ns === nsFilter) : items);
 
@@ -196,9 +199,9 @@
               <span class="fx-dot {it.suspended ? 'susp' : it.ready}" title={it.suspended ? "Suspended" : it.ready}></span>
               <span class="fx-name" title={it.message}>{it.name}</span>
               <span class="fx-ns">{it.ns}</span>
-              {#if it.source && tab !== "sources"}<span class="fx-src" title="reconciles from source: {it.source}">← {it.source}</span>{/if}
+              {#if it.source && !readonly}<span class="fx-src" title="reconciles from source: {it.source}">← {it.source}</span>{/if}
               {#if it.deps}<span class="fx-deps" title="{it.deps} dependsOn">⇲{it.deps}</span>{/if}
-              {#if tab === "sources"}<span class="fx-k">{it.apiKind}</span>{/if}
+              {#if readonly}<span class="fx-k">{it.apiKind}</span>{/if}
               {#if it.ready === "fail" && it.message}
                 <span class="fx-msg" title={it.message}>{oneLine(it.message)}</span>
               {:else}
@@ -208,14 +211,14 @@
               {#if it.apiKind === "HelmRelease" && onRunCommand}
                 <button class="fx-act" title="Deployed values (helm get values)" onclick={() => onRunCommand?.(`helm get values ${it.name} -n ${it.ns}`)}>≡</button>
               {/if}
-              <button class="fx-act" title="Reconcile (sync now)" disabled={!!busyRow} onclick={() => act(it, "flux_reconcile")}><Icon name="refresh" size={12} /></button>
-              {#if tab !== "sources"}
+              {#if !readonly}
+                <button class="fx-act" title="Reconcile (sync now)" disabled={!!busyRow} onclick={() => act(it, "flux_reconcile")}><Icon name="refresh" size={12} /></button>
                 <button class="fx-act" title="Reconcile with source" disabled={!!busyRow} onclick={() => act(it, "flux_reconcile", true)}>↻+</button>
-              {/if}
-              {#if it.suspended}
-                <button class="fx-act" title="Resume" disabled={!!busyRow} onclick={() => act(it, "flux_resume")}><Icon name="play" size={12} /></button>
-              {:else}
-                <button class="fx-act" title="Suspend" disabled={!!busyRow} onclick={() => act(it, "flux_suspend")}><Icon name="minus" size={12} /></button>
+                {#if it.suspended}
+                  <button class="fx-act" title="Resume" disabled={!!busyRow} onclick={() => act(it, "flux_resume")}><Icon name="play" size={12} /></button>
+                {:else}
+                  <button class="fx-act" title="Suspend" disabled={!!busyRow} onclick={() => act(it, "flux_suspend")}><Icon name="minus" size={12} /></button>
+                {/if}
               {/if}
               {#if onInvestigate && it.ready === "fail"}
                 <button class="fx-act ai" title="Investigate with the agent" onclick={() => onInvestigate(fluxInvestigation(it.apiKind, it.name, it.ns, it.message))}><Icon name="agent" size={11} /></button>

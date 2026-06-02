@@ -12,6 +12,21 @@
 
   let contexts = $state<string[]>([]);
   let current = $state("");
+  // A10: pin favorite kubeconfig contexts to the top of the switcher.
+  const PIN_KEY = "anvil-kube-pinned";
+  let pinned = $state<string[]>(
+    (() => { try { return JSON.parse(localStorage.getItem(PIN_KEY) || "[]"); } catch { return []; } })(),
+  );
+  const sortedContexts = $derived(
+    [...contexts].sort((a, b) => {
+      const pa = pinned.includes(a), pb = pinned.includes(b);
+      return pa === pb ? a.localeCompare(b) : pa ? -1 : 1;
+    }),
+  );
+  function togglePin(name: string) {
+    pinned = pinned.includes(name) ? pinned.filter((p) => p !== name) : [...pinned, name];
+    localStorage.setItem(PIN_KEY, JSON.stringify(pinned));
+  }
   let namespaces = $state<string[]>([]);
   let currentNs = $state("default");
   let pods = $state("");
@@ -179,6 +194,12 @@
   function execPod(p: Pod) {
     onRunCommand?.(`kubectl exec -it -n ${p.ns} ${p.name} -- sh -c 'command -v bash >/dev/null && exec bash || exec sh'`);
   }
+  // A7: attach an ephemeral debug container (netshoot) — for distroless/crashing
+  // pods where exec into the app container won't work.
+  function debugPod(p: Pod) {
+    const ctx = current ? `--context ${current} ` : "";
+    onRunCommand?.(`kubectl ${ctx}debug -it -n ${p.ns} ${p.name} --image=nicolaka/netshoot --share-processes -- bash`);
+  }
 
   // Stream logs live in a terminal pane (the in-panel Logs view is a snapshot).
   function followLogs(p: Pod) {
@@ -207,9 +228,12 @@
   <div class="topbar">
     <span class="lbl">Context</span>
     <select value={current} onchange={(e) => useCtx((e.currentTarget as HTMLSelectElement).value)} disabled={busy}>
-      {#each contexts as c (c)}<option value={c}>{c}</option>{/each}
+      {#each sortedContexts as c (c)}<option value={c}>{pinned.includes(c) ? "★ " : ""}{c}</option>{/each}
       {#if !contexts.length && current}<option value={current}>{current}</option>{/if}
     </select>
+    {#if current}
+      <button class="pin" class:on={pinned.includes(current)} title={pinned.includes(current) ? "Unpin context" : "Pin context to top"} onclick={() => togglePin(current)}>★</button>
+    {/if}
     <span class="lbl">Namespace</span>
     <select value={currentNs} onchange={(e) => useNs((e.currentTarget as HTMLSelectElement).value)} disabled={busy}>
       {#if !namespaces.includes(currentNs)}<option value={currentNs}>{currentNs}</option>{/if}
@@ -321,6 +345,9 @@
               <button class="act" title="Exec shell" onclick={(e) => { e.stopPropagation(); execPod(p); }}>
                 <Icon name="terminal" size={12} />
               </button>
+              <button class="act" title="Debug (ephemeral netshoot container)" onclick={(e) => { e.stopPropagation(); debugPod(p); }}>
+                <Icon name="agent" size={12} />
+              </button>
               <button class="act" title="Port-forward" onclick={(e) => { e.stopPropagation(); portForward(p); }}>
                 <Icon name="branch" size={12} />
               </button>
@@ -381,6 +408,11 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .topbar select:disabled { opacity: 0.6; }
+  .pin {
+    background: none; border: none; cursor: pointer; padding: 0 2px;
+    color: var(--text3); font-size: 13px; line-height: 1; flex: 0 0 auto;
+  }
+  .pin.on { color: var(--status-attention, var(--yellow, #d8a657)); }
   .spacer { flex: 1; }
   .spin { color: var(--accent); font-size: 12px; }
 

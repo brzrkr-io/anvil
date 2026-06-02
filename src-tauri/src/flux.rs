@@ -29,6 +29,8 @@ fn flux(args: &[&str]) -> Result<String, String> {
 const KUSTOMIZATIONS: &str = "kustomizations.kustomize.toolkit.fluxcd.io";
 const HELMRELEASES: &str = "helmreleases.helm.toolkit.fluxcd.io";
 const SOURCES: &str = "gitrepositories.source.toolkit.fluxcd.io,ocirepositories.source.toolkit.fluxcd.io,helmrepositories.source.toolkit.fluxcd.io,helmcharts.source.toolkit.fluxcd.io,buckets.source.toolkit.fluxcd.io";
+// A9: Flux image-automation CRDs (read-only listing).
+const IMAGES: &str = "imagerepositories.image.toolkit.fluxcd.io,imagepolicies.image.toolkit.fluxcd.io,imageupdateautomations.image.toolkit.fluxcd.io";
 
 /// Cluster-wide Flux objects of `kind` as `kubectl ... -o json`. `kind` is one of
 /// "kustomizations" | "helmreleases" | "sources"; the frontend reads the standard
@@ -40,6 +42,7 @@ pub async fn flux_get(kind: String) -> Result<String, String> {
             "kustomizations" => KUSTOMIZATIONS,
             "helmreleases" => HELMRELEASES,
             "sources" => SOURCES,
+            "images" => IMAGES,
             _ => return Err(format!("unknown flux kind: {kind}")),
         };
         kubectl(&["get", target, "-A", "-o", "json"])
