@@ -95,6 +95,31 @@ pub async fn gh_prs(cwd: String) -> Result<String, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// PR list with CI check status, so failing PRs surface without a browser trip.
+/// Returns the raw `gh pr list --json …` array (number, title, branch, draft,
+/// statusCheckRollup) for the frontend to roll up and sort failing-first.
+#[tauri::command]
+pub async fn gh_prs_json(cwd: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut cmd = gh_cmd(&cwd);
+        cmd.args([
+            "pr",
+            "list",
+            "-L",
+            "20",
+            "--json",
+            "number,title,headRefName,isDraft,statusCheckRollup",
+        ]);
+        let out = crate::shared::exec_capture(cmd, 25).map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// #27 PR review: body + conversation comments for a PR number, as plain text.
 #[tauri::command]
 pub async fn gh_pr_view(cwd: String, num: String) -> Result<String, String> {

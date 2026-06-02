@@ -506,6 +506,7 @@ pub fn run() {
             iac::terraform_apply,
             git::git_blame,
             ci::gh_prs,
+            ci::gh_prs_json,
             ci::gh_pr_view,
             ci::gh_pr_comment,
             ci::gh_pr_review,

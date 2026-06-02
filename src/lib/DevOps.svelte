@@ -8,6 +8,7 @@
   import Icon from "$lib/Icon.svelte";
   import { toast } from "$lib/toast";
   import { askText, askConfirm } from "$lib/dialog";
+  import { parsePrRows, type PrRow } from "$lib/pr-checks";
 
   let { cwd, onRunCommand }: { cwd: string; onRunCommand?: (cmd: string) => void } = $props();
 
@@ -147,7 +148,7 @@
   let prDetail = $state("");
   let prComment = $state("");
   let prBusy = $state(false);
-  const prRows = $derived(prs.split("\n").filter(Boolean).map((l) => { const p = l.split("\t"); return { num: p[0], title: p[1] || p[0] }; }).filter((r) => /^\d+$/.test(r.num)));
+  let prRows = $state<PrRow[]>([]);
   async function openPr(num: string) {
     prSel = num; prDetail = "Loading…";
     try { prDetail = await invoke<string>("gh_pr_view", { cwd, num }); } catch (e) { prDetail = String(e); }
@@ -172,8 +173,21 @@
   }
   async function loadPRs() {
     busy = true;
-    try { prs = await invoke<string>("gh_prs", { cwd }); } catch (e) { prs = String(e); }
+    // JSON variant carries CI check status so we can sort failing-first; keep the
+    // raw string in `prs` for the auth-error banner + empty-state fallback.
+    try {
+      prs = await invoke<string>("gh_prs_json", { cwd });
+      prRows = parsePrRows(prs);
+    } catch (e) {
+      prs = String(e);
+      prRows = [];
+    }
     busy = false;
+  }
+  // Re-run a failed PR's checks (gh run rerun on the PR's branch), in a terminal.
+  function rerunChecks(r: PrRow) {
+    if (!r.branch) return;
+    runCmd(`gh run list --branch ${r.branch} -L 1 --json databaseId -q '.[0].databaseId' | xargs gh run rerun`);
   }
   // GitLab CI (#54) — via the authed glab CLI, run in the repo cwd.
   let glabOut = $state("");
@@ -223,7 +237,9 @@
       <div class="podlist">
         {#each prRows as r (r.num)}
           <div class="podrow" class:cur={prSel === r.num} role="button" tabindex="0" onclick={() => openPr(r.num)} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), openPr(r.num))}>
-            <span class="bdg" style="color:var(--accent)">#{r.num}</span><span class="pnm">{r.title}</span>
+            <span class="ck ck-{r.checks}" title={r.checks === "none" ? "No checks" : `Checks: ${r.checks}`}></span>
+            <span class="bdg" style="color:var(--accent)">#{r.num}</span><span class="pnm">{r.title}{r.draft ? " · draft" : ""}</span>
+            {#if r.checks === "fail"}<button class="rerun" title="Re-run failed checks (in terminal)" onclick={(e) => { e.stopPropagation(); rerunChecks(r); }}><Icon name="refresh" size={11} /></button>{/if}
           </div>
         {/each}
       </div>
@@ -242,7 +258,7 @@
         </div>
       {/if}
     {:else}
-      <pre class="out">{prs || "No open PRs / gh unavailable."}</pre>
+      <pre class="out">{prs.trimStart().startsWith("[") ? "No open PRs." : prs || "No open PRs / gh unavailable."}</pre>
     {/if}
   {:else if tab === "gitlab"}
     <div class="bar"><span class="lbl">GitLab CI · {cwd.split("/").pop()}</span>
@@ -362,4 +378,13 @@
   .podrow:hover { background: var(--panel); }
   .pnm { flex: 1; min-width: 0; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pst { flex: 0 0 auto; width: 92px; text-align: right; }
+  .ck { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--text3); }
+  .ck-fail { background: var(--red); }
+  .ck-pending { background: var(--yellow); }
+  .ck-pass { background: var(--green); }
+  .ck-none { background: var(--text3); opacity: 0.4; }
+  .rerun { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+    width: 20px; height: 18px; border: 1px solid color-mix(in srgb, var(--red) 40%, transparent);
+    border-radius: 5px; background: transparent; color: var(--red); cursor: default; }
+  .rerun:hover { background: color-mix(in srgb, var(--red) 12%, transparent); }
 </style>
