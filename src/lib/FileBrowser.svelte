@@ -8,6 +8,10 @@
 
   interface Entry { name: string; path: string; is_dir: boolean; }
   let entries = $state<Entry[]>([]);
+  // J92: cap rendered rows so a huge directory can't build thousands of nodes
+  // at once; reveal more on demand.
+  const PAGE = 300;
+  let cap = $state(PAGE);
 
   let menu = $state<{ x: number; y: number } | null>(null);
 
@@ -15,7 +19,7 @@
     try { entries = await invoke<Entry[]>("list_dir", { path: p }); }
     catch (e) { entries = []; console.warn("list_dir failed", e); }
   }
-  $effect(() => { if (path) load(path); });
+  $effect(() => { if (path) { load(path); cap = PAGE; } });
 
   function up() {
     const i = path.replace(/\/$/, "").lastIndexOf("/");
@@ -51,9 +55,14 @@
   <div class="row up" onclick={up} role="button" tabindex="0" onkeydown={(e) => e.key === "Enter" && up()}>
     <span class="ic folder" style="display:inline-flex"><Icon name="up" size={12} /></span><span class="nm">..</span>
   </div>
-  {#each entries as e (e.path)}
+  {#each entries.slice(0, cap) as e (e.path)}
     <TreeNode entry={e} depth={0} {onOpenFile} onReload={() => load(path)} />
   {/each}
+  {#if entries.length > cap}
+    <div class="row more" onclick={() => (cap += PAGE)} role="button" tabindex="0" onkeydown={(ev) => ev.key === "Enter" && (cap += PAGE)}>
+      <span class="nm">… {entries.length - cap} more</span>
+    </div>
+  {/if}
 </div>
 
 {#if menu}
@@ -78,6 +87,7 @@
   }
   .row:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
   .row.up { color: var(--text3); }
+  .row.more { color: var(--accent); font-size: 11.5px; }
   .ic { width: 12px; flex: 0 0 auto; color: var(--text3); font-size: 9px; text-align: center; }
   .ic.folder { color: var(--text3); }
   .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
