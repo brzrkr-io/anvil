@@ -1113,11 +1113,11 @@
   });
 
   async function saveState() {
-    try {
-      await invoke("write_state", {
-        contents: JSON.stringify({ cwd, rail, explorerOpen, openFiles, activeFile, terms, activeTerm, seq, recentFiles, recentWorkspaces, wsSettings, paneTree, activeLeaf }),
-      });
-    } catch { /* ignore */ }
+    const json = JSON.stringify({ cwd, rail, explorerOpen, openFiles, activeFile, terms, activeTerm, seq, recentFiles, recentWorkspaces, wsSettings, paneTree, activeLeaf });
+    // Mirror to localStorage *synchronously* first: it survives an abrupt quit or
+    // crash even if the async file write below gets cut off mid-exit.
+    try { localStorage.setItem("anvil-session", json); } catch { /* ignore */ }
+    try { await invoke("write_state", { contents: json }); } catch { /* ignore */ }
   }
 
   let restored = false;
@@ -1173,7 +1173,12 @@
       return;
     }
     let st: any = {};
-    try { st = JSON.parse(await invoke<string>("read_state")); } catch { st = {}; }
+    // Prefer the synchronous localStorage mirror (freshest, crash-safe); fall back
+    // to the on-disk state file (older sessions / before this mirror existed).
+    try { st = JSON.parse(localStorage.getItem("anvil-session") || ""); } catch { st = {}; }
+    if (!st || typeof st !== "object" || !st.cwd) {
+      try { st = JSON.parse(await invoke<string>("read_state")); } catch { st = {}; }
+    }
     cwd = st.cwd || (await invoke<string>("home_dir"));
     if (Array.isArray(st.terms) && st.terms.length) {
       terms = st.terms;
@@ -1191,6 +1196,12 @@
     // Migrate old single-rail "files" mode → persistent explorer + editor view.
     if (rail === "files") { explorerOpen = true; rail = activeFile ? "editor" : "term"; }
     restored = true;
+    // Crash/quit safety: flush the session immediately (cancel the debounce) when
+    // the window is hidden or about to close — saveState writes localStorage
+    // synchronously, so the last layout survives even an abrupt exit.
+    const flushState = () => { if (!restored || isDetached) return; clearTimeout(saveTimer); void saveState(); };
+    window.addEventListener("pagehide", flushState);
+    document.addEventListener("visibilitychange", () => { if (document.hidden) flushState(); });
     // Editable keymap (#82): custom shortcuts run via a capture-phase listener,
     // layered over the default onKey handler.
     window.addEventListener("keydown", onCustomKey, true);
