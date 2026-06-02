@@ -67,9 +67,8 @@
 <style>
   .fb { padding-bottom: 8px; }
   .cwd {
-    padding: 9px 12px 6px; color: var(--text3); font-size: 10px; font-weight: 700;
-    letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; overflow: hidden;
-    text-overflow: ellipsis;
+    padding: 9px 12px 6px; color: var(--text3); font-size: 10px; font-weight: 500;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .row {
     display: flex; align-items: center; gap: 4px; margin: 0 6px; padding: 4px 6px 4px 2px;
@@ -80,7 +79,7 @@
   .row:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
   .row.up { color: var(--text3); }
   .ic { width: 12px; flex: 0 0 auto; color: var(--text3); font-size: 9px; text-align: center; }
-  .ic.folder { color: var(--accent); }
+  .ic.folder { color: var(--text3); }
   .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
   .scrim {

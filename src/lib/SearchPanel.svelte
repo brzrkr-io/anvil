@@ -158,7 +158,7 @@
   .sp { display: flex; flex-direction: column; height: 100%; min-height: 0; }
   .bar { display: flex; align-items: center; gap: 8px; padding: 10px; border-bottom: 1px solid var(--border); }
   .bar input {
-    flex: 1; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px;
+    flex: 1; padding: 7px 10px; border: 1px solid var(--border); border-radius: 4px;
     background: var(--bg); color: var(--text); font-size: 13px; outline: 0;
   }
   .count { flex: 0 0 auto; color: var(--text3); font-size: 11px; }
@@ -175,7 +175,7 @@
   .spacer { position: relative; width: 100%; }
   .hit { position: absolute; left: 0; right: 0; padding: 5px 12px; cursor: default; box-sizing: border-box; }
   .hit:hover { background: var(--panel); }
-  .loc { display: block; color: var(--accent); font-size: 11px; }
+  .loc { display: block; color: var(--text3); font-size: 11px; }
   .txt { display: block; color: var(--text2); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .msg { padding: 16px 12px; color: var(--text3); font-size: 12.5px; }
 </style>

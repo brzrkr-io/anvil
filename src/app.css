@@ -86,7 +86,7 @@
   --hairline: color-mix(in srgb, #fff 7%, transparent);
   --blur: 16px;
   --frost: blur(var(--blur)) saturate(1.2);
-  --radius: 8px;
+  --radius: 6px;
   --elev-1: 0 1px 2px rgba(0, 0, 0, 0.28);
   --elev-2: 0 8px 24px rgba(0, 0, 0, 0.36);
   --elev-3: 0 18px 52px rgba(0, 0, 0, 0.5);
@@ -183,47 +183,42 @@ body {
 /* First-run onboarding overlay (#100). */
 .onboard-scrim { position: fixed; inset: 0; z-index: 90; display: flex; align-items: center; justify-content: center;
   background: var(--glass-scrim); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
-.onboard { width: 440px; max-width: 90vw; background: var(--glass); border: 1px solid var(--border);
-  backdrop-filter: var(--frost); -webkit-backdrop-filter: var(--frost);
-  border-radius: 8px; padding: 26px 28px; box-shadow: var(--elev-3), inset 0 1px 0 var(--hairline); }
-.ob-wm { font-size: 30px; font-weight: 700; letter-spacing: -0.02em; color: var(--text); }
-.ob-dot { color: var(--accent); }
+.onboard { width: 440px; max-width: 90vw; background: var(--panel); border: 1px solid var(--border);
+  border-radius: 4px; padding: 26px 28px; box-shadow: var(--elev-3); }
 .ob-tag { margin: 4px 0 16px; font-size: 13px; color: var(--text2); }
 .ob-tips { list-style: none; margin: 0 0 18px; padding: 0; display: flex; flex-direction: column; gap: 9px; }
 .ob-tips li { font-size: 12.5px; color: var(--text2); }
 .ob-tips kbd { font-family: var(--font-mono); font-size: 11px; color: var(--accent); background: var(--bg);
   border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; margin-right: 4px; }
-.ob-go { border: 0; background: var(--accent); color: var(--bg); font-family: var(--font-ui); font-size: 13px;
-  font-weight: 600; padding: 8px 18px; border-radius: 8px; cursor: default; }
+.ob-go { border: 1px solid var(--accent); background: transparent; color: var(--accent); font-family: var(--font-ui); font-size: 13px;
+  font-weight: 600; padding: 8px 18px; border-radius: 4px; cursor: default; }
 .ob-go:hover { filter: brightness(1.05); }
 .ob-h { margin: 6px 0 2px; font-size: 17px; font-weight: 600; color: var(--text); }
-.ob-dots { display: flex; gap: 6px; margin: 2px 0 14px; }
-.ob-d { width: 6px; height: 6px; border-radius: 50%; background: var(--border); }
-.ob-d.on { background: var(--accent); }
+.ob-step { font-size: 11px; color: var(--text3); margin: 2px 0 14px; }
 .ob-nav { display: flex; align-items: center; gap: 8px; }
 .ob-skip, .ob-back { border: 0; background: transparent; color: var(--text3); font-family: var(--font-ui);
-  font-size: 12.5px; padding: 8px 12px; border-radius: 8px; cursor: default; }
+  font-size: 12.5px; padding: 8px 12px; border-radius: 4px; cursor: default; }
 .ob-skip:hover, .ob-back:hover { color: var(--text); background: var(--sel); }
 /* Tab drag-reorder + right-click context menu (roadmap §A #15 / #16). */
 .tab.drag { opacity: 0.4; }
 .ctxscrim { position: fixed; inset: 0; z-index: 60; }
 .tabctx { z-index: 61; min-width: 168px; background: var(--glass-2); }
 .tab .pin { font-size: 9px; margin-right: 3px; opacity: 0.85; cursor: default; }
-.tab.pinned-tab { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.tab.pinned-tab { background: transparent; }
 .taboverflow { z-index: 61; top: 40px; right: 12px; min-width: 220px; max-height: 60vh; overflow-y: auto; background: var(--glass-2); }
 .taboverflow button { display: flex; align-items: center; gap: 4px; }
 .taboverflow button.on { background: var(--sel); color: var(--accent); }
 .taboverflow .ofpin { font-size: 9px; }
 .taboverflow .oftt { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agentq-chip { position: fixed; bottom: 10px; right: 12px; z-index: 70; font-family: var(--font-ui); font-size: 11px;
-  color: var(--text); background: var(--glass-2); backdrop-filter: blur(12px) saturate(1.3); -webkit-backdrop-filter: blur(12px) saturate(1.3);
-  border: 1px solid var(--border); border-radius: 20px; padding: 4px 12px;
-  cursor: default; box-shadow: var(--elev-2), inset 0 1px 0 var(--hairline); transition: border-color 0.12s ease; }
+  color: var(--text); background: var(--panel);
+  border: 1px solid var(--border); border-radius: 4px; padding: 4px 12px;
+  cursor: default; box-shadow: var(--elev-1); transition: border-color 0.12s ease; }
 .agentq-chip:hover { border-color: var(--accent); }
 .quake-scrim { position: fixed; inset: 0; z-index: 95; background: var(--glass-scrim); backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px); }
 .quake { position: fixed; top: 0; left: 0; right: 0; height: 42vh; z-index: 96; display: flex; flex-direction: column;
-  background: var(--glass); backdrop-filter: var(--frost); -webkit-backdrop-filter: var(--frost);
-  border-bottom: 1px solid var(--border); box-shadow: var(--elev-3), inset 0 1px 0 var(--hairline);
+  background: var(--panel);
+  border-bottom: 1px solid var(--border); box-shadow: var(--elev-3);
   animation: quake-drop 0.16s cubic-bezier(0.2, 0.9, 0.3, 1); }
 @keyframes quake-drop { from { transform: translateY(-100%); } to { transform: translateY(0); } }
 .quake-head { display: flex; align-items: center; justify-content: space-between; padding: 5px 12px;
@@ -235,13 +230,13 @@ body {
   border: 1px solid var(--hairline); border-radius: 7px; padding: 2px 8px; pointer-events: none; }
 .offline-chip { position: fixed; top: 8px; left: 50%; transform: translateX(-50%); z-index: 70;
   font-family: var(--font-ui); font-size: 11px; color: var(--bg); background: var(--warn, #f5a623);
-  border-radius: 20px; padding: 4px 12px; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4); pointer-events: none; }
+  border-radius: 4px; padding: 4px 12px; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4); pointer-events: none; }
 .broadcast-chip { position: fixed; bottom: 10px; left: 50%; transform: translateX(-50%); z-index: 70;
   font-family: var(--font-ui); font-size: 11px; color: #fff; background: var(--danger, #e5484d);
-  border: 0; border-radius: 20px; padding: 4px 12px; cursor: default; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4); }
+  border: 0; border-radius: 4px; padding: 4px 12px; cursor: default; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4); }
 .zen-exit { position: fixed; bottom: 10px; right: 12px; z-index: 50; font-family: var(--font-ui);
-  font-size: 11px; color: var(--text3); background: color-mix(in srgb, var(--panel) 80%, transparent);
-  border: 1px solid var(--border); border-radius: 20px; padding: 3px 10px; cursor: default; opacity: 0.5; }
+  font-size: 11px; color: var(--text3); background: transparent;
+  border: 0; padding: 3px 10px; cursor: default; opacity: 0.5; }
 .zen-exit:hover { opacity: 1; color: var(--text); }
 /* Only when zoomed ≠ 100%: inverse-size + transform so the app still fills the
    viewport. At 100% no transform → terminal canvas renders without GPU resample. */
@@ -269,11 +264,10 @@ body {
 }
 .tab:not(.on):hover { background: color-mix(in srgb, var(--text) 5%, transparent); color: var(--text); }
 .tab .tt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tab .dot, .tab .tab-ic, .tab .dirty, .tab .x { flex: 0 0 auto; }
+.tab .tab-ic, .tab .dirty, .tab .x { flex: 0 0 auto; }
 .tab.on { color: var(--text); background: var(--bg); }
-.tab.on::after { content: ""; position: absolute; left: 0; right: 0; top: -1px; height: 2px;
-  background: var(--accent); }
-.tab .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+.tab.on::after { content: ""; position: absolute; left: 0; right: 0; top: -1px; height: 1px;
+  background: var(--text3); opacity: 0.5; }
 .tabs .spacer { flex: 1; }
 
 .main { flex: 1; display: flex; min-height: 0; position: relative; }
@@ -300,7 +294,7 @@ body {
   transition: background 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
 }
 .rail .i:hover { background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text2); }
-.rail .i.on { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.rail .i.on { color: var(--accent); background: transparent; }
 /* Explorer is a toggleable panel, not a main view: a distinct outline state so
    it never reads as a second "active view" alongside the real one. */
 .rail .i.panel.pinned { color: var(--accent); background: transparent; box-shadow: inset 0 0 0 1px var(--accent); }
@@ -311,8 +305,8 @@ body {
   border-right: 1px solid var(--border); overflow-y: auto;
 }
 .sect {
-  padding: var(--sect-pt) var(--pad-x) 5px; font-size: 10px; letter-spacing: 0.09em;
-  text-transform: uppercase; font-weight: 600; color: var(--text3);
+  padding: var(--sect-pt) var(--pad-x) 5px; font-size: 10px;
+  font-weight: 500; color: var(--text3);
   display: flex; align-items: center; gap: 6px;
 }
 .sect .n { margin-left: auto; }
@@ -326,7 +320,7 @@ body {
   transition: background 0.1s ease, color 0.1s ease;
 }
 .row:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
-.row.cur { color: var(--text); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.row.cur { color: var(--text); background: var(--sel); }
 .row .ic { width: 13px; color: var(--text3); font-size: 11px; flex: 0 0 auto; }
 .row .meta { margin-left: auto; color: var(--text3); font-size: 10.5px; }
 
@@ -335,7 +329,7 @@ body {
   height: var(--head-h); flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
   padding: 0 var(--pad-x); color: var(--text2); font-size: 12px; border-bottom: 1px solid var(--hairline);
 }
-.pane-head .accent { color: var(--accent); }
+.pane-head .accent { color: var(--text3); }
 .term-wrap { flex: 1; min-height: 0; padding: 6px 8px; }
 
 .status {

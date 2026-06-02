@@ -80,9 +80,8 @@
   .palette {
     position: fixed; top: 64px; left: 50%; transform: translateX(-50%);
     width: min(620px, 86vw); z-index: 91;
-    background: var(--glass); border: 1px solid var(--border); border-radius: 8px;
-    backdrop-filter: blur(var(--blur)) saturate(1.4); -webkit-backdrop-filter: blur(var(--blur)) saturate(1.4);
-    box-shadow: var(--elev-3), inset 0 1px 0 var(--hairline); overflow: hidden;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+    box-shadow: var(--elev-3); overflow: hidden;
     animation: pal-in 0.14s cubic-bezier(0.2, 0.9, 0.3, 1);
   }
   @keyframes pal-in { from { opacity: 0; transform: translate(-50%, -6px); } to { opacity: 1; transform: translate(-50%, 0); } }

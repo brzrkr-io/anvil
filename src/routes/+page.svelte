@@ -1179,7 +1179,7 @@
         ondragstart={() => { dragTab = { kind: 'term', id: t.id }; tabDragView = { view: 'term', ref: t.id }; }}
         ondragend={() => { dragTab = null; tabDragView = null; }} ondragover={(e) => e.preventDefault()}
         ondrop={() => tabDrop('term', t.id)} oncontextmenu={(e) => tabCtx(e, 'term', t.id)}>
-        <span class="dot"></span><span class="tt">{t.title}</span>
+        <span class="tt">{t.title}</span>
         <span class="x" onclick={(e) => { e.stopPropagation(); closeTerm(t.id); }}>×</span>
       </div>
     {/each}
@@ -1190,7 +1190,7 @@
         ondragstart={() => { dragTab = { kind: 'file', id: f }; tabDragView = { view: 'editor', ref: f }; }}
         ondragend={() => { dragTab = null; tabDragView = null; }} ondragover={(e) => e.preventDefault()}
         ondrop={() => tabDrop('file', f)} oncontextmenu={(e) => tabCtx(e, 'file', f)}>
-        {#if pinnedFiles.includes(f)}<span class="pin" onclick={(e) => { e.stopPropagation(); togglePin(f); }} title="Unpin">📌</span>{/if}
+        {#if pinnedFiles.includes(f)}<span class="pin" onclick={(e) => { e.stopPropagation(); togglePin(f); }} title="Unpin"><Icon name="pin" size={9} /></span>{/if}
         <span class="tt">{baseName(f)}</span>{#if dirtyFiles[f]}<span class="dirty"></span>{/if}
         <span class="x" onclick={(e) => { e.stopPropagation(); closeFile(f); }}>×</span>
       </div>
@@ -1225,7 +1225,7 @@
     <div class="taboverflow">
       {#each orderedFiles as f (f)}
         <button class:on={activeFile === f && rail === 'editor'} onclick={() => { activeFile = f; rail = 'editor'; tabOverflow = false; }} title={f}>
-          {#if pinnedFiles.includes(f)}<span class="ofpin">📌</span>{/if}<span class="oftt">{baseName(f)}</span>{#if dirtyFiles[f]}<span class="dirty"></span>{/if}
+          {#if pinnedFiles.includes(f)}<span class="ofpin"><Icon name="pin" size={9} /></span>{/if}<span class="oftt">{baseName(f)}</span>{#if dirtyFiles[f]}<span class="dirty"></span>{/if}
         </button>
       {/each}
     </div>
@@ -1269,7 +1269,7 @@
         {:else if rail === "agent"}<span class="ph-ic accent"><Icon name="agent" /></span> Agent
         {:else if rail === "devops"}<span class="ph-ic accent"><Icon name="devops" /></span> DevOps
         {:else if rail === "caldera"}<span class="ph-ic accent"><Icon name="caldera" /></span> Caldera
-        {:else if rail === "workspace"}<span class="ph-ic accent"><Icon name="workspace" /></span> Workspace — drag tab/header to dock · ⌘\ split · ⌘⇧⏎ zoom · ⌥⌘←→ focus · ⌘W close
+        {:else if rail === "workspace"}<span class="ph-ic accent"><Icon name="workspace" /></span> Workspace — {baseName(cwd)}
         {:else if rail === "settings"}<span class="ph-ic accent"><Icon name="settings" /></span> Settings
         {:else if rail === "files"}<span class="ph-ic accent"><Icon name="folder" /></span> Explorer
         {:else if rail === "editor"}<span class="accent"></span> {activeFile || "Welcome"}
@@ -1409,7 +1409,7 @@
   </div>
 
   <div class="status">
-    <span class="accent si"><Icon name="branch" size={12} /> {branch || "—"}{#if aheadBehind} <span class="ab">↑{aheadBehind.a} ↓{aheadBehind.b}</span>{/if}</span>
+    <span class="si"><Icon name="branch" size={12} /> {branch || "—"}{#if aheadBehind} <span class="ab">↑{aheadBehind.a} ↓{aheadBehind.b}</span>{/if}</span>
     <span title={cwd}>{baseName(cwd) || "~"}</span>
     <div class="r">
       <span class="si" onclick={toggleDensity} title="Toggle density" style="cursor:default">{$density}</span>
@@ -1427,15 +1427,12 @@
   {#if !onboarded}
     <div class="onboard-scrim" role="presentation">
       <div class="onboard">
-        {#if obStep === 0}<div class="ob-wm">Anvil<span class="ob-dot">.</span></div>{/if}
         <h2 class="ob-h">{TOUR[obStep].title}</h2>
         <p class="ob-tag">{TOUR[obStep].body}</p>
         <ul class="ob-tips">
           {#each TOUR[obStep].tips as t}<li>{@html t}</li>{/each}
         </ul>
-        <div class="ob-dots">
-          {#each TOUR as _, i}<span class="ob-d {i === obStep ? 'on' : ''}"></span>{/each}
-        </div>
+        <div class="ob-step">Step {obStep + 1} of {TOUR.length}</div>
         <div class="ob-nav">
           <button class="ob-skip" onclick={dismissOnboard}>Skip</button>
           <span style="flex:1"></span>
