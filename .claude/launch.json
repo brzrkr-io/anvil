@@ -12,12 +12,6 @@
       "runtimeExecutable": "node_modules/.bin/vite",
       "runtimeArgs": ["preview", "--port", "4173"],
       "port": 4173
-    },
-    {
-      "name": "renders",
-      "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "8899", "--directory", "/tmp/anvil-renders"],
-      "port": 8899
     }
   ]
 }

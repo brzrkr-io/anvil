@@ -44,7 +44,7 @@
 
 /* Nerd Font symbols — icon glyph fallback for the terminal (powerline, devicons). */
 @font-face { font-family: "Symbols Nerd Font Mono"; font-weight: normal; font-style: normal; font-display: swap;
-  src: url("/fonts/nerd/SymbolsNerdFontMono-Regular.ttf") format("truetype"); }
+  src: url("/fonts/nerd/SymbolsNerdFontMono-Regular.woff2") format("woff2"); }
 
 /* IBM Plex Sans — bundled (UI chrome option). */
 @font-face { font-family: "IBM Plex Sans"; font-weight: 400; font-style: normal; font-display: swap;
