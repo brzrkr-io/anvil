@@ -11,6 +11,7 @@
   const Editor = () => import("$lib/Editor.svelte");
   const FileView = () => import("$lib/FileView.svelte");
   const MarkdownPreview = () => import("$lib/MarkdownPreview.svelte");
+  const WebPreview = () => import("$lib/WebPreview.svelte");
   const RunbookView = () => import("$lib/RunbookView.svelte");
   let mdPreview = $state(false);
   let runbook = $state(false);
@@ -394,6 +395,7 @@
       case "close-tab":
         if (rail === "editor" && activeFile) closeFile(activeFile);
         else if (rail === "term") closeTerm(activeTerm);
+        else if (rail === "panel") closePanel(activePanel);
         else if (rail === "workspace") wsClose(activeLeaf);
         else if (rail === "settings") { settingsOpen = false; rail = "term"; }
         break;
@@ -509,6 +511,31 @@
   }));
   let tabOverflow = $state(false);
   let plusMenu = $state<{ x: number; y: number } | null>(null);
+
+  // Terax-style openable panels: web preview / markdown / git history live as
+  // real tabs in the tab bar (kept alive, draggable) alongside terminals & files.
+  type PanelKind = "preview" | "markdown" | "githistory";
+  let panels = $state<{ id: string; kind: PanelKind; title: string; url?: string; file?: string }[]>([]);
+  let activePanel = $state("");
+  const panelIcon = (k: PanelKind) => (k === "preview" ? "globe" : k === "markdown" ? "pencil" : "history");
+  function openPanel(kind: PanelKind, opts: { title: string; url?: string; file?: string }) {
+    seq += 1;
+    const id = `p${seq}`;
+    panels = [...panels, { id, kind, ...opts }];
+    activePanel = id;
+    rail = "panel";
+  }
+  function selectPanel(id: string) {
+    activePanel = id;
+    rail = "panel";
+  }
+  function closePanel(id: string) {
+    panels = panels.filter((p) => p.id !== id);
+    if (activePanel === id) {
+      activePanel = panels.at(-1)?.id ?? "";
+      rail = activePanel ? "panel" : terms.length ? "term" : "term";
+    }
+  }
   let recentFiles = $state<string[]>([]);
   let recentWorkspaces = $state<string[]>([]);
   let branch = $state("");
@@ -953,6 +980,7 @@
       e.preventDefault();
       if (rail === "editor" && activeFile) closeFile(activeFile);
       else if (rail === "term") closeTerm(activeTerm);
+      else if (rail === "panel") closePanel(activePanel);
       else if (rail === "workspace") wsClose(activeLeaf);
     }
     else if (e.key === "k") { e.preventDefault(); openCommands(); }
@@ -1260,6 +1288,13 @@
         <span class="x" onclick={(e) => { e.stopPropagation(); closeFile(f); }}>×</span>
       </div>
     {/each}
+    {#each panels as p (p.id)}
+      <div class="tab {rail === 'panel' && activePanel === p.id ? 'on' : ''}" onclick={() => selectPanel(p.id)} title={p.title}>
+        <span class="tab-ic"><Icon name={panelIcon(p.kind)} size={12} /></span>
+        <span class="tt">{p.title}</span>
+        <span class="x" onclick={(e) => { e.stopPropagation(); closePanel(p.id); }}>×</span>
+      </div>
+    {/each}
     {#if openFiles.length > 1}
       <div class="newtab" title="All open tabs" onclick={() => (tabOverflow = !tabOverflow)}>⌄</div>
     {/if}
@@ -1278,6 +1313,11 @@
     <div class="plusmenu" style:left="{plusMenu.x}px" style:top="{plusMenu.y}px">
       <button onclick={() => { newTerm(); plusMenu = null; }}><Icon name="terminal" size={13} /><span>New Terminal</span><kbd>⌘T</kbd></button>
       <button onclick={() => { openFileDialog(); plusMenu = null; }}><Icon name="pencil" size={13} /><span>Open File…</span><kbd>⌘E</kbd></button>
+      <div class="plus-sep"></div>
+      <button onclick={() => { openPanel('preview', { title: 'Web Preview', url: 'http://localhost:5173' }); plusMenu = null; }}><Icon name="globe" size={13} /><span>Web Preview</span></button>
+      <button onclick={() => { const f = isMarkdown(activeFile) ? activeFile : `${cwd.replace(/\/$/, '')}/README.md`; openPanel('markdown', { title: `Preview: ${baseName(f)}`, file: f }); plusMenu = null; }}><Icon name="pencil" size={13} /><span>Markdown Preview</span></button>
+      <button onclick={() => { openPanel('githistory', { title: 'Git History' }); plusMenu = null; }}><Icon name="history" size={13} /><span>Git History</span></button>
+      <div class="plus-sep"></div>
       <button onclick={() => { rail = 'scm'; plusMenu = null; }}><Icon name="branch" size={13} /><span>Source Control</span></button>
       <button onclick={() => { rail = 'search'; plusMenu = null; }}><Icon name="search" size={13} /><span>Search</span><kbd>⌘⇧F</kbd></button>
       <button onclick={() => { rail = 'agent'; plusMenu = null; }}><Icon name="agent" size={13} /><span>AI Agent</span></button>
@@ -1357,6 +1397,7 @@
         {:else if rail === "settings"}<span class="ph-ic accent"><Icon name="settings" /></span> Settings
         {:else if rail === "files"}<span class="ph-ic accent"><Icon name="folder" /></span> Explorer
         {:else if rail === "editor"}<span class="accent"></span> {activeFile || "Welcome"}
+        {:else if rail === "panel"}{@const ap = panels.find((p) => p.id === activePanel)}<span class="ph-ic accent"><Icon name={ap ? panelIcon(ap.kind) : "globe"} /></span> {ap?.title ?? ""}
         {:else}<span class="ph-ic accent"><Icon name="terminal" /></span> {terms.find((t) => t.id === activeTerm)?.title ?? "zsh"}{/if}
       </div>
 
@@ -1379,6 +1420,22 @@
             role="presentation"
           >
             <Terminal id={t.id} {cwd} shell={t.shell ?? ""} active={rail === "term" && shown} />
+          </div>
+        {/each}
+      </div>
+
+      <!-- Terax-style openable panels (preview / markdown / git history), kept alive like terminals. -->
+      <div class="panel-row" style:display={rail === "panel" ? "block" : "none"}>
+        {#each panels as p (p.id)}
+          {@const on = rail === "panel" && p.id === activePanel}
+          <div class="view" style:display={on ? "block" : "none"}>
+            {#if p.kind === "preview"}
+              {#await WebPreview() then M}<M.default bind:url={p.url} />{/await}
+            {:else if p.kind === "markdown"}
+              {#key p.file}{#await MarkdownPreview() then M}<M.default path={p.file ?? ""} />{/await}{/key}
+            {:else if p.kind === "githistory"}
+              {#key cwd}{#await SourceControl() then M}<M.default {cwd} onOpenDiff={(t) => { diffTarget = t; rail = "diff"; }} />{/await}{/key}
+            {/if}
           </div>
         {/each}
       </div>

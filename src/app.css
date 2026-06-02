@@ -158,6 +158,9 @@ body {
 .plusmenu button { display: flex; align-items: center; gap: 9px; }
 .plusmenu button span { flex: 1; }
 .plusmenu button kbd { font-family: var(--font-ui); font-size: 10.5px; color: var(--text3); background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
+.plusmenu .plus-sep { height: 1px; margin: 4px 6px; background: var(--border); }
+.panel-row { flex: 1; min-height: 0; }
+.panel-row > .view { height: 100%; }
 .term-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--text3); }
 .term-empty p { font-size: 13px; }
 .term-empty button { display: inline-flex; align-items: center; gap: 8px; font-family: var(--font-ui); font-size: 12px; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 12px; cursor: default; }
