@@ -197,6 +197,9 @@
                 <span class="fx-rev mono" title={it.revision}>{shortRev(it.revision)}</span>
                 <span class="spacer"></span>
               {/if}
+              {#if it.apiKind === "HelmRelease" && onRunCommand}
+                <button class="fx-act" title="Deployed values (helm get values)" onclick={() => onRunCommand?.(`helm get values ${it.name} -n ${it.ns}`)}>≡</button>
+              {/if}
               <button class="fx-act" title="Reconcile (sync now)" disabled={!!busyRow} onclick={() => act(it, "flux_reconcile")}><Icon name="refresh" size={12} /></button>
               {#if tab !== "sources"}
                 <button class="fx-act" title="Reconcile with source" disabled={!!busyRow} onclick={() => act(it, "flux_reconcile", true)}>↻+</button>
