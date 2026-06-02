@@ -29,6 +29,14 @@ test("activity rail switches the main view", async ({ page }) => {
   await expect(page.locator(".pane-head")).toContainText(/Source Control/i);
 });
 
+test("rail view opens as a closable tab (unified tab model)", async ({ page }) => {
+  await page.locator('.rail .i[title^="Source Control"]').click();
+  const tab = page.locator(".tabs .tab").filter({ hasText: "Source Control" });
+  await expect(tab).toBeVisible();
+  await tab.locator(".x").click();
+  await expect(tab).toBeHidden();
+});
+
 test("the + menu opens with New… actions", async ({ page }) => {
   await page.locator('.newtab[title="New…"]').click();
   const menu = page.locator(".plusmenu");

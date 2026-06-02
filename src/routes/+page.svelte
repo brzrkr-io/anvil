@@ -85,6 +85,10 @@
   const KEEPALIVE_RAILS = ["k8s", "ci", "terraform", "obs", "devops", "scm", "search"];
   let mountedRails = $state<Record<string, boolean>>({});
   $effect(() => { if (KEEPALIVE_RAILS.includes(rail) && !mountedRails[rail]) mountedRails = { ...mountedRails, [rail]: true }; });
+  // Unified tabs: any path that shows a rail view (rail icon, palette, shortcut,
+  // diff-back) registers it as a closable tab. Single source of truth so we don't
+  // touch every call site. VIEW_META is defined below; referenced lazily here.
+  $effect(() => { if (VIEW_META[rail] && !viewTabs.includes(rail)) viewTabs = [...viewTabs, rail]; });
   function sendToTerm(cmd: string) {
     invoke("pty_write", { id: activeTerm, data: cmd + "\n" });
     rail = "term";
@@ -404,6 +408,7 @@
         if (rail === "editor" && activeFile) closeFile(activeFile);
         else if (rail === "term") closeTerm(activeTerm);
         else if (rail === "panel") closePanel(activePanel);
+        else if (viewTabs.includes(rail)) closeView(rail);
         else if (rail === "workspace") wsClose(activeLeaf);
         else if (rail === "settings") { settingsOpen = false; rail = "term"; }
         break;
@@ -542,6 +547,36 @@
     if (activePanel === id) {
       activePanel = panels.at(-1)?.id ?? "";
       rail = activePanel ? "panel" : terms.length ? "term" : "term";
+    }
+  }
+
+  // Unified tab model (Terax-style): rail views (SCM/Search/Agent/DevOps/…) open as
+  // closable tabs in the tab bar. `rail` stays the source of truth for what shows;
+  // viewTabs tracks which rail views are pinned as tabs. Additive over the existing
+  // keep-alive view mounts — nothing about those views changes. (Helm/Flux/Workloads
+  // live inside the Kubernetes view, so there's no separate helm tab here.)
+  const VIEW_META: Record<string, { title: string; icon: string }> = {
+    scm: { title: "Source Control", icon: "branch" },
+    search: { title: "Search", icon: "search" },
+    agent: { title: "AI Agent", icon: "agent" },
+    k8s: { title: "Kubernetes", icon: "kube" },
+    ci: { title: "CI / Pipelines", icon: "ci" },
+    terraform: { title: "Terraform", icon: "terraform" },
+    obs: { title: "Observability", icon: "chart" },
+    devops: { title: "DevOps", icon: "devops" },
+  };
+  let viewTabs = $state<string[]>([]);
+  function openView(kind: string) {
+    if (!viewTabs.includes(kind)) viewTabs = [...viewTabs, kind];
+    rail = kind;
+  }
+  function closeView(kind: string) {
+    viewTabs = viewTabs.filter((k) => k !== kind);
+    if (rail === kind) {
+      const next = viewTabs.at(-1);
+      if (next) rail = next;
+      else if (panels.length) { activePanel = panels.at(-1)!.id; rail = "panel"; }
+      else rail = "term";
     }
   }
   let recentFiles = $state<string[]>([]);
@@ -990,6 +1025,7 @@
       if (rail === "editor" && activeFile) closeFile(activeFile);
       else if (rail === "term") closeTerm(activeTerm);
       else if (rail === "panel") closePanel(activePanel);
+      else if (viewTabs.includes(rail)) closeView(rail);
       else if (rail === "workspace") wsClose(activeLeaf);
     }
     else if (e.key === "k") { e.preventDefault(); openCommands(); }
@@ -1315,6 +1351,15 @@
         <span class="x" role="button" tabindex="0" onclick={(e) => { e.stopPropagation(); closePanel(p.id); }} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), e.stopPropagation(), closePanel(p.id))}>×</span>
       </div>
     {/each}
+    {#each viewTabs as vk (vk)}
+      <div class="tab {rail === vk ? 'on' : ''}" role="button" tabindex="0" title={VIEW_META[vk].title}
+        onclick={() => (rail = vk)} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = vk))}>
+        <span class="tab-ic"><Icon name={VIEW_META[vk].icon} size={12} /></span>
+        <span class="tt">{VIEW_META[vk].title}</span>
+        <span class="x" role="button" tabindex="0" onclick={(e) => { e.stopPropagation(); closeView(vk); }}
+          onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), e.stopPropagation(), closeView(vk))}>×</span>
+      </div>
+    {/each}
     {#if openFiles.length > 1}
       <div class="newtab" role="button" tabindex="0" title="All open tabs" onclick={() => (tabOverflow = !tabOverflow)} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (tabOverflow = !tabOverflow))}>⌄</div>
     {/if}
@@ -1338,9 +1383,9 @@
       <button onclick={() => { const f = isMarkdown(activeFile) ? activeFile : `${cwd.replace(/\/$/, '')}/README.md`; openPanel('markdown', { title: `Preview: ${baseName(f)}`, file: f }); plusMenu = null; }}><Icon name="pencil" size={13} /><span>Markdown Preview</span></button>
       <button onclick={() => { openPanel('githistory', { title: 'Git History' }); plusMenu = null; }}><Icon name="history" size={13} /><span>Git History</span></button>
       <div class="plus-sep"></div>
-      <button onclick={() => { rail = 'scm'; plusMenu = null; }}><Icon name="branch" size={13} /><span>Source Control</span></button>
-      <button onclick={() => { rail = 'search'; plusMenu = null; }}><Icon name="search" size={13} /><span>Search</span><kbd>⌘⇧F</kbd></button>
-      <button onclick={() => { rail = 'agent'; plusMenu = null; }}><Icon name="agent" size={13} /><span>AI Agent</span></button>
+      <button onclick={() => { openView('scm'); plusMenu = null; }}><Icon name="branch" size={13} /><span>Source Control</span></button>
+      <button onclick={() => { openView('search'); plusMenu = null; }}><Icon name="search" size={13} /><span>Search</span><kbd>⌘⇧F</kbd></button>
+      <button onclick={() => { openView('agent'); plusMenu = null; }}><Icon name="agent" size={13} /><span>AI Agent</span></button>
     </div>
   {/if}
 
@@ -1373,14 +1418,14 @@
     <nav class="rail">
       <div class="i {rail === 'term' ? 'on' : ''}" role="button" tabindex="0" title="Terminal" onclick={() => (rail = 'term')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'term'))}><Icon name="terminal" /></div>
       <div class="i panel {explorerOpen ? 'pinned' : ''}" role="button" tabindex="0" title="Explorer (⌘B)" onclick={toggleSide} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), toggleSide())}><Icon name="folder" /></div>
-      <div class="i {rail === 'scm' ? 'on' : ''}" role="button" tabindex="0" title="Source Control" onclick={() => (rail = 'scm')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'scm'))}><Icon name="branch" /></div>
-      <div class="i {rail === 'search' ? 'on' : ''}" role="button" tabindex="0" title="Search (⌘⇧F)" onclick={() => (rail = 'search')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'search'))}><Icon name="search" /></div>
-      <div class="i {rail === 'agent' ? 'on' : ''}" role="button" tabindex="0" title="AI Agent" onclick={() => (rail = 'agent')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'agent'))}><Icon name="agent" /></div>
-      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'k8s' ? 'on' : ''}" role="button" tabindex="0" title="Kubernetes" onclick={() => (rail = 'k8s')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'k8s'))}><Icon name="kube" /></div>{/if}
-      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'ci' ? 'on' : ''}" role="button" tabindex="0" title="CI / Pipelines" onclick={() => (rail = 'ci')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'ci'))}><Icon name="ci" /></div>{/if}
-      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'terraform' ? 'on' : ''}" role="button" tabindex="0" title="Terraform / Terragrunt" onclick={() => (rail = 'terraform')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'terraform'))}><Icon name="terraform" /></div>{/if}
-      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'obs' ? 'on' : ''}" role="button" tabindex="0" title="Observability (Metrics / Logs)" onclick={() => (rail = 'obs')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'obs'))}><Icon name="chart" /></div>{/if}
-      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'devops' ? 'on' : ''}" role="button" tabindex="0" title="DevOps (PRs / GitLab / AWS / Incidents)" onclick={() => (rail = 'devops')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'devops'))}><Icon name="devops" /></div>{/if}
+      <div class="i {rail === 'scm' ? 'on' : ''}" role="button" tabindex="0" title="Source Control" onclick={() => openView('scm')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('scm'))}><Icon name="branch" /></div>
+      <div class="i {rail === 'search' ? 'on' : ''}" role="button" tabindex="0" title="Search (⌘⇧F)" onclick={() => openView('search')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('search'))}><Icon name="search" /></div>
+      <div class="i {rail === 'agent' ? 'on' : ''}" role="button" tabindex="0" title="AI Agent" onclick={() => openView('agent')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('agent'))}><Icon name="agent" /></div>
+      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'k8s' ? 'on' : ''}" role="button" tabindex="0" title="Kubernetes" onclick={() => openView('k8s')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('k8s'))}><Icon name="kube" /></div>{/if}
+      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'ci' ? 'on' : ''}" role="button" tabindex="0" title="CI / Pipelines" onclick={() => openView('ci')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('ci'))}><Icon name="ci" /></div>{/if}
+      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'terraform' ? 'on' : ''}" role="button" tabindex="0" title="Terraform / Terragrunt" onclick={() => openView('terraform')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('terraform'))}><Icon name="terraform" /></div>{/if}
+      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'obs' ? 'on' : ''}" role="button" tabindex="0" title="Observability (Metrics / Logs)" onclick={() => openView('obs')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('obs'))}><Icon name="chart" /></div>{/if}
+      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'devops' ? 'on' : ''}" role="button" tabindex="0" title="DevOps (PRs / GitLab / AWS / Incidents)" onclick={() => openView('devops')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('devops'))}><Icon name="devops" /></div>{/if}
       <div class="i {rail === 'workspace' ? 'on' : ''}" role="button" tabindex="0" title="Workspace (multipane)" onclick={() => (rail = 'workspace')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'workspace'))}><Icon name="workspace" /></div>
       <div class="i grow {rail === 'settings' ? 'on' : ''}" role="button" tabindex="0" title="Settings" onclick={openSettings} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openSettings())}><Icon name="settings" /></div>
     </nav>
