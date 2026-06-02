@@ -94,6 +94,18 @@
     rail = "term";
     toast("Sent to terminal", "info");
   }
+  // Command snippets (roadmap E41): save / manage reusable terminal commands.
+  function saveSnippetFlow() {
+    const label = prompt("Snippet name:"); if (!label) return;
+    const command = prompt("Command:"); if (!command) return;
+    addSnippet(label, command);
+    toast(`Saved snippet "${label}"`, "success");
+  }
+  function manageSnippetsFlow() {
+    palettePlaceholder = "Remove a snippet";
+    paletteItems = getSnippets().map((s) => ({ label: s.label, hint: "✕ remove", run: () => { removeSnippet(s.id); toast("Removed", "success"); } }));
+    paletteOpen = true;
+  }
 
   // Prewarm the language server when a project folder opens, so the server
   // (gopls especially) indexes in the background instead of cold-starting on the
@@ -140,6 +152,7 @@
   import { problems } from "$lib/diagnostics";
   import { railEnabled, extEnabled } from "$lib/extensions";
   import { agentSeed, agentInvestigate } from "$lib/agent-seed";
+  import { getSnippets, addSnippet, removeSnippet } from "$lib/snippets";
   import { keyOverrides, comboOf, KEY_PRESETS, applyKeymapPreset } from "$lib/keymap";
 
   // Per-workspace theme/density overrides (#84), keyed by folder path.
@@ -867,6 +880,8 @@
       { label: "Agent: Diagnose Terminal Output", hint: "last failure", run: () => { const t = readTerminal(activeTerm).slice(-4000).trim(); if (!t) { toast("Active terminal is empty", "info"); return; } agentSeed.set(`Diagnose the problem in this terminal output and propose a fix. Use your run tool to investigate (logs, status, describe, plan) before concluding — don't guess.\n\n\`\`\`\n${t}\n\`\`\``); rail = "agent"; } },
       { label: "Agent: Set Utility Model (fast tasks)…", run: () => { const cur = (typeof localStorage !== "undefined" && localStorage.getItem("anvil-util-model")) || ""; const m = prompt("Model id for quick tasks like commit messages (blank = use default):", cur); if (m === null) return; try { if (m.trim()) localStorage.setItem("anvil-util-model", m.trim()); else localStorage.removeItem("anvil-util-model"); } catch { /* ignore */ } toast(m.trim() ? `Utility model: ${m.trim()}` : "Utility model cleared", "success"); } },
       { label: "Agent: Set Reasoning Model (agent chat)…", run: () => { const cur = (typeof localStorage !== "undefined" && localStorage.getItem("anvil-reasoning-model")) || ""; const m = prompt("Model id for agent reasoning/chat (blank = use default; reopen agent to apply):", cur); if (m === null) return; try { if (m.trim()) localStorage.setItem("anvil-reasoning-model", m.trim()); else localStorage.removeItem("anvil-reasoning-model"); } catch { /* ignore */ } toast(m.trim() ? `Reasoning model: ${m.trim()}` : "Reasoning model cleared", "success"); } },
+      { label: "Terminal: Run Snippet…", hint: "quick commands", run: () => { palettePlaceholder = "Run snippet in terminal"; paletteItems = getSnippets().map((s) => ({ label: s.label, hint: s.command, run: () => sendToTerm(s.command) })); paletteItems.push({ label: "➕ Save a snippet…", hint: "", run: saveSnippetFlow }); paletteItems.push({ label: "🗑 Manage snippets…", hint: "", run: manageSnippetsFlow }); paletteOpen = true; } },
+      { label: "Terminal: Save Snippet…", hint: "reusable command", run: saveSnippetFlow },
       { label: "Markdown: Toggle Preview", hint: "⌘⇧V", run: () => { if (!isMarkdown(activeFile)) { toast("Open a Markdown file first", "info"); return; } mdPreview = !mdPreview; runbook = false; rail = "editor"; } },
       { label: "Markdown: Run as Runbook", run: () => { if (!isMarkdown(activeFile)) { toast("Open a Markdown file first", "info"); return; } runbook = !runbook; mdPreview = false; rail = "editor"; } },
       { label: `Editor: Ghost-Text Completion ${get(editorGhostText) ? "(on)" : "(off)"}`, run: () => { toggleGhostText(); toast(get(editorGhostText) ? "Ghost-text on — reopen files to apply" : "Ghost-text off", "success"); } },
