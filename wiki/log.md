@@ -2463,3 +2463,11 @@ Tests updated: `build_section_*` tests replaced with `context_section_*` tests; 
   diagnostic, enables Agent mode, auto-sends via new agentInvestigate store.
   Pure prompt builders in agent-ops.ts + 7 tests. Agent proposes, never mutates
   unapproved — composes with the #46 injection defenses.
+
+- 2026-06-02 — Agent-driven ops: apply-and-verify + GitHub Actions view.
+  agent-ops COMMON now contracts re-run-the-diagnostic-after-fix (apply-and-
+  verify), MAX_TOOL_STEPS 8→12 for headroom. New GitHub Actions runs view: wired
+  the previously-unused gh_runs_json into a DevOps "Actions" tab — failing-first,
+  status dot, log/-failed, re-run, investigate-with-agent, red tab badge. Pure
+  parse/sort in actions-runs.ts + 12 tests. Loop 3 (PR+CI triage) now covers PRs
+  AND Actions runs.
