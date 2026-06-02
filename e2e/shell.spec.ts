@@ -4,6 +4,9 @@ import { test, expect } from "@playwright/test";
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem("anvil-onboarded", "1"));
   await page.goto("/");
+  // Dismiss the one-time "What's New" modal if it shows — it overlays the shell
+  // and blocks keyboard/click interaction.
+  await page.locator(".wn-go").click({ timeout: 2000 }).catch(() => {});
 });
 
 test("renders the app shell with the activity rail", async ({ page }) => {

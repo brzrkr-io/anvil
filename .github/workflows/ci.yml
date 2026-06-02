@@ -33,6 +33,12 @@ jobs:
       - name: Build frontend
         run: pnpm build
 
+      - name: Install Playwright browser
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: E2E (functional shell — visual snapshots are macOS-only, run locally)
+        run: pnpm exec playwright test shell.spec.ts
+
   rust:
     runs-on: ubuntu-latest
     steps:
