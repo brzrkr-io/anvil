@@ -4,6 +4,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import Icon from "$lib/Icon.svelte";
   import { toast } from "$lib/toast";
+  import { parsePlanSummary, planBadge, lineClass, type PlanSummary } from "$lib/iac-plan";
 
   let { cwd, onRunCommand }: { cwd: string; onRunCommand?: (cmd: string) => void } = $props();
 
@@ -80,9 +81,13 @@
     activeStack = path;
     output = "";
     outKind = "";
-    // Show last-known state for this stack instantly, then refresh.
+    // Show last-known state + plan result for this stack instantly, then refresh.
     const dir = path && path !== "." ? `${cwd}/${path}` : cwd;
     resources = readCache<string[]>(`tf-state:${dir}`) ?? [];
+    if (!planResults[path]) {
+      const cached = readCache<PlanSummary>(`tf-plan:${dir}`);
+      if (cached) planResults = { ...planResults, [path]: cached };
+    }
     const st = stacks.find((s) => s.path === path);
     // Bias the binary toggle to what the stack actually uses.
     if (st && st.kind !== "terraform" && available.terragrunt) bin = "terragrunt";
@@ -133,6 +138,13 @@
     try {
       const map = { init: "tf_init", validate: "tf_validate", plan: "tf_plan" } as const;
       output = await invoke<string>(map[cmd], { cwd: activeDir, bin });
+      if (cmd === "plan" && activeStack) {
+        const s = parsePlanSummary(output, true);
+        if (s) {
+          planResults = { ...planResults, [activeStack]: s };
+          writeCache(`tf-plan:${activeDir}`, s);
+        }
+      }
       if (cmd === "init" || cmd === "plan") await loadState();
       if (outEl) outEl.scrollTop = 0;
     } catch (e) {
@@ -199,26 +211,12 @@
   let collapsed = $state<Record<string, boolean>>({});
   function toggle(k: string) { collapsed = { ...collapsed, [k]: !collapsed[k] }; }
 
-  // Plan summary: "Plan: 3 to add, 1 to change, 2 to destroy."
-  const summary = $derived.by(() => {
-    const m = output.match(/Plan:\s+(\d+)\s+to add,\s+(\d+)\s+to change,\s+(\d+)\s+to destroy/);
-    if (m) return { add: +m[1], change: +m[2], destroy: +m[3], none: false };
-    if (outKind === "plan" && /No changes\.|infrastructure matches/i.test(output)) {
-      return { add: 0, change: 0, destroy: 0, none: true };
-    }
-    return null;
-  });
+  // Plan summary for the active output pane.
+  const summary = $derived(parsePlanSummary(output, outKind === "plan"));
 
-  function lineClass(l: string): string {
-    const t = l.replace(/^\s+/, "");
-    if (t.startsWith("-/+") || t.startsWith("+/-")) return "rec";
-    if (t.startsWith("+")) return "add";
-    if (t.startsWith("- ") || t === "-") return "del";
-    if (t.startsWith("~")) return "chg";
-    if (/^(Error:|╷|│\s*Error|✗)/.test(t)) return "err";
-    if (/^(Success!|✓|Apply complete|No changes)/.test(t)) return "ok";
-    return "";
-  }
+  // Last plan result per stack path, so the stacks list shows which have pending
+  // changes (drift) without re-planning each. Persisted per stack dir.
+  let planResults = $state<Record<string, PlanSummary>>({});
 
   function stackLabel(p: string): string {
     return p === "." ? "(repo root)" : p;
@@ -311,6 +309,12 @@
               onkeydown={(e) => e.key === "Enter" && selectStack(s.path)}
             >
               <span class="stack-name">{stackLabel(s.path)}</span>
+              {#if planBadge(planResults[s.path]) === "drift"}
+                {@const p = planResults[s.path]}
+                <span class="drift" title="Pending: +{p.add} ~{p.change} -{p.destroy}">+{p.add} ~{p.change} -{p.destroy}</span>
+              {:else if planBadge(planResults[s.path]) === "clean"}
+                <span class="drift clean" title="No changes at last plan">✓</span>
+              {/if}
               <span class="tag k-{s.kind}">{s.runall && s.kind === "tg-unit" ? "RUN-ALL" : KIND_LABEL[s.kind]}</span>
             </div>
           {/each}
@@ -452,6 +456,9 @@
     font-family: var(--font-mono); font-size: 8.5px; font-weight: 600; padding: 1px 4px;
     border-radius: 3px; flex: 0 0 auto; letter-spacing: 0.02em;
   }
+  .drift { font-family: var(--font-mono); font-size: 8.5px; font-weight: 600; padding: 1px 4px; border-radius: 3px;
+    flex: 0 0 auto; color: var(--yellow); background: color-mix(in srgb, var(--yellow) 16%, transparent); white-space: nowrap; }
+  .drift.clean { color: var(--green); background: color-mix(in srgb, var(--green) 14%, transparent); }
   .tag.k-terraform { color: var(--text3); background: color-mix(in srgb, var(--text) 8%, transparent); }
   .tag.k-tg-unit { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
   .tag.k-tg-stack { color: var(--purple); background: color-mix(in srgb, var(--purple) 16%, transparent); }
