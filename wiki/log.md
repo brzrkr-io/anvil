@@ -2435,3 +2435,10 @@ Tests updated: `build_section_*` tests replaced with `context_section_*` tests; 
   reconcile loop, (2) IaC plan/apply, (3) PR+CI triage — all have surfaces, work is
   sharpening not building. Agent (gated run_capture) overlays all three. De-prioritizes
   observability depth, generalist-dev polish, agent autonomy beyond the gated loop.
+
+- 2026-06-02 — Sharpened beat-target 1 (GitOps reconcile loop, decision 0006).
+  Flux.svelte: broken-first sort, inline failure message (was hover-only),
+  auto-poll 6s, "N failing" chip, per-row `flux events` diagnosis, and a red
+  failing-count badge on the k8s rail icon (onHealth: Flux→Kube→page). Pure
+  sort/summary logic → flux-health.ts + 10 tests. Goal: reconcile loop faster
+  than the kubectl+terminal path (fewer keystrokes, state visible without typing).
