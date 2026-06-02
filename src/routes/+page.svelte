@@ -1119,6 +1119,16 @@
     // #72 Report flood-bench drain time when the command finishes (OSC 133 D).
     lastExit.subscribe(() => { if (floodArmed) { floodArmed = false; toast(`PTY flood drained in ${Math.round(performance.now() - floodT0)}ms`, "success"); } });
     initFonts();
+    // Warm every lazy view chunk once the app is idle, so the first switch to a
+    // page is an instant mount instead of a chunk download + parse on click.
+    // Pure module preload — nothing renders or fetches here.
+    const prefetchViews = () => {
+      for (const f of [SourceControl, Editor, DiffView, SearchPanel, AgentPanel, Settings, DevOps, Kube, CI, Terraform, Helm, Observability, Caldera, FileView]) {
+        f().catch(() => {});
+      }
+    };
+    if (typeof requestIdleCallback === "function") requestIdleCallback(prefetchViews, { timeout: 4000 });
+    else setTimeout(prefetchViews, 2500);
     // Theme (incl. custom overrides + system light/dark follow) handled in initTheme.
     if (isDetached && detachSeed) {
       cwd = detachSeed.cwd || (await invoke<string>("home_dir").catch(() => ""));
