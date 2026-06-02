@@ -9,6 +9,24 @@ confidence: high
 
 # Wiki Log
 
+- 2026-06-01 — Replaced all blocking browser `prompt()`/`confirm()` calls in FileBrowser,
+  DevOps, SourceControl, and cm-lsp with a themed in-app modal system. New files:
+  `src/lib/dialog.ts` (store-driven `askText`/`askConfirm` API) and `src/lib/Dialog.svelte`
+  (glass/scrim modal matching WhatsNew styling). `<Dialog />` mounted once at app root in
+  `src/routes/+page.svelte`. Call sites converted: FileBrowser newFile/newFolder (2×askText),
+  DevOps runTfApply/deletePod/restartPod (3×askConfirm danger), saveDash/savePromQuery
+  (2×askText), portForwardPod (1×askText), SourceControl stashWithMessage (1×askText),
+  cm-lsp renameKey (1×askText). Build: vite build green; svelte-check 1 pre-existing error
+  (unchanged); vitest 486/486 passed.
+
+- 2026-06-01 — Production robustness pass: audited ~62 silent error catches across src/lib and
+  src/routes. Converted 9 to `toast(..., "error")` (file save, file open, new-window × 4,
+  open_url_window × 2, AWS profile switch) and 13 to `console.warn` (clipboard, pty_set_active,
+  cd auto-cd, list_dir × 2, kube_pf_stop, set_aws/gh creds, git_log_range, git_diff,
+  git_last_message, link open, selection copy). Left all localStorage parse fallbacks, polling
+  background ops, LSP best-effort, and loop-per-file skips silent. Build: vite build green;
+  svelte-check 1 pre-existing error (unchanged); vitest 486/486 passed.
+
 - 2026-05-31 — Generated real app icon set (roadmap #97): stylized orange anvil mark
   (#f5874f) on near-black rounded-square (#1a1518), rendered 1024x1024 via headless Chrome,
   built into `src-tauri/icons/icon.icns` (94 KB) plus `32x32.png`, `128x128.png`,
