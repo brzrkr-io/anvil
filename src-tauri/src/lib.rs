@@ -332,6 +332,32 @@ async fn check_update(
     }
 }
 
+/// Download + install the pending update (signature-verified by the updater),
+/// then relaunch into the new version. User-initiated from the update prompt.
+/// Returns Err if no update is available or the install fails; on success the
+/// app restarts and this never returns.
+#[tauri::command]
+async fn install_update(app: tauri::AppHandle, channel: Option<String>) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let mut builder = app.updater_builder();
+    if let Some(ch) = channel.filter(|c| !c.is_empty()) {
+        builder = builder
+            .header("X-Anvil-Channel", ch)
+            .map_err(|e| e.to_string())?;
+    }
+    let updater = builder.build().map_err(|e| e.to_string())?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "No update available".to_string())?;
+    update
+        .download_and_install(|_chunk, _total| {}, || {})
+        .await
+        .map_err(|e| e.to_string())?;
+    app.restart();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Capture panics to a crash log so a hard failure leaves a trace.
@@ -372,6 +398,7 @@ pub fn run() {
             lsp::lsp_request,
             lsp::lsp_notify,
             check_update,
+            install_update,
             caldera_snapshot,
             git::git_log,
             git::git_log_stats,

@@ -341,8 +341,8 @@
   const TOUR = [
     { title: "Welcome to Anvil", body: "The AI-native console for 100% of your work — terminal, editor, git, and DevOps in one native surface.", tips: ["Press <kbd>⌘K</kbd> any time — every action lives in the command palette."] },
     { title: "Code & terminal together", body: "Open files alongside live shells.", tips: ["<kbd>⌘O</kbd> open file · <kbd>⌘⇧O</kbd> open folder", "<kbd>⌘T</kbd> new terminal · <kbd>⌘J</kbd> terminal under your editor", "<kbd>⌘\\</kbd> split workspace panes · drag a tab onto a pane edge"] },
-    { title: "Git & DevOps built in", body: "Source Control has a Terax-style commit panel, swimlane history, and per-hunk staging. The DevOps tab fronts k8s, CI, Helm, Terraform, and observability.", tips: ["The <kbd>gen</kbd> button writes your commit message from the staged diff."] },
-    { title: "Your AI agent", body: "The agent reads files, terminal output, and the repo map — all redacted, all local-first.", tips: ["<kbd>⌘I</kbd> ask the agent · <kbd>⌘,</kbd> Settings for themes, fonts, keymap."] },
+    { title: "Git & DevOps built in", body: "Source Control has a Terax-style commit panel, swimlane history, and per-hunk staging. The k8s, Terraform, and CI surfaces sort failing-first — broken Flux reconciles, drifted stacks, and red checks float to the top so you see what needs attention without scanning.", tips: ["The <kbd>gen</kbd> button writes your commit message from the staged diff.", "Watch for the red count badge on the Kubernetes rail icon."] },
+    { title: "Your AI agent drives ops", body: "On any failing resource — a Flux reconcile, a Terraform plan, a PR with red CI — hit Investigate. The agent runs the right diagnostic, reads it, and proposes a fix you approve. It never mutates on its own; every command is approval-gated.", tips: ["<kbd>⌘I</kbd> ask the agent · <kbd>⌘,</kbd> Settings for themes, fonts, keymap.", "Tool results are treated as untrusted — the agent won't act on instructions hidden in command output."] },
   ];
   function tourNext() { if (obStep < TOUR.length - 1) obStep += 1; else dismissOnboard(); }
   function tourBack() { if (obStep > 0) obStep -= 1; }
@@ -661,15 +661,37 @@
 
   // On-demand update check (#95). Degrades gracefully if no release host.
   function updateChannel(): string { try { return localStorage.getItem("anvil-update-channel") || "stable"; } catch { return "stable"; } }
+  let installingUpdate = false;
+  async function installUpdate(v: string) {
+    if (installingUpdate) return;
+    if (!confirm(`Install Anvil v${v} and restart now?\n\nThe download is verified against Anvil's signing key before it's applied.`)) return;
+    installingUpdate = true;
+    toast(`Downloading v${v}…`, "info");
+    try {
+      await invoke("install_update", { channel: updateChannel() });
+      // On success the app restarts and never returns here.
+    } catch (e) {
+      installingUpdate = false;
+      toast("Update failed: " + String(e).slice(0, 100), "error");
+    }
+  }
   async function checkForUpdates() {
     const ch = updateChannel();
     toast(`Checking for updates (${ch})…`, "info");
     try {
       const v = await invoke<string | null>("check_update", { channel: ch });
-      toast(v ? `Update available: v${v}` : "Anvil is up to date", v ? "success" : "info");
+      if (v) await installUpdate(v);
+      else toast("Anvil is up to date", "info");
     } catch {
       toast("Update check unavailable (no release endpoint yet)", "info");
     }
+  }
+  // Quiet auto-check shortly after launch; only surfaces if an update exists.
+  async function autoCheckUpdate() {
+    try {
+      const v = await invoke<string | null>("check_update", { channel: updateChannel() });
+      if (v) await installUpdate(v);
+    } catch { /* no endpoint / offline — stay silent */ }
   }
   function setUpdateChannel() {
     palettePlaceholder = "Update channel";
@@ -1189,6 +1211,8 @@
     initScale();
     initOpacity();
     loadUserConfig();
+    // Quiet update check once the app has settled (no-op without a release host).
+    setTimeout(autoCheckUpdate, 8000);
     // Live reload (#90): re-read the user config when the window regains focus.
     window.addEventListener("focus", () => loadUserConfig());
     // #20 Open file paths clicked in a terminal.
