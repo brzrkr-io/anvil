@@ -33,6 +33,10 @@ pub async fn secret_read(source: String, key: String) -> Result<String, String> 
             "vault" => std::process::Command::new("vault")
                 .args(["kv", "get", &key])
                 .output(),
+            // 1Password CLI: key is a secret reference, e.g. op://vault/item/field
+            "op" => std::process::Command::new("op")
+                .args(["read", &key])
+                .output(),
             "keychain" => std::process::Command::new("security")
                 .args(["find-generic-password", "-s", &key, "-w"])
                 .output(),

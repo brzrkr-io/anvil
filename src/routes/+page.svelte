@@ -975,6 +975,12 @@
       { label: "AWS: EC2 Instances", run: () => { invoke("pty_write", { id: activeTerm, data: "aws ec2 describe-instances --query 'Reservations[].Instances[].{ID:InstanceId,Type:InstanceType,State:State.Name,Name:Tags[?Key==`Name`]|[0].Value}' --output table\n" }); rail = "term"; } },
       { label: "AWS: S3 Buckets", run: () => { invoke("pty_write", { id: activeTerm, data: "aws s3 ls\n" }); rail = "term"; } },
       { label: "AWS: Lambda Functions", run: () => { invoke("pty_write", { id: activeTerm, data: "aws lambda list-functions --query 'Functions[].{Name:FunctionName,Runtime:Runtime,Mem:MemorySize}' --output table\n" }); rail = "term"; } },
+      { label: "Secrets: Read → Copy…", hint: "ssm · vault · 1password · keychain", run: () => { palettePlaceholder = "Secret source — value is copied, never shown or stored"; paletteItems = [
+        { label: "AWS SSM Parameter", hint: "ssm", run: () => readSecret("ssm", "SSM parameter name (e.g. /prod/db/url):") },
+        { label: "Vault", hint: "vault", run: () => readSecret("vault", "Vault path (e.g. secret/data/app):") },
+        { label: "1Password", hint: "op", run: () => readSecret("op", "Secret reference (op://vault/item/field):") },
+        { label: "macOS Keychain", hint: "keychain", run: () => readSecret("keychain", "Keychain service name:") },
+      ]; paletteOpen = true; } },
       { label: "AWS: RDS Instances", run: () => { invoke("pty_write", { id: activeTerm, data: "aws rds describe-db-instances --query 'DBInstances[].{ID:DBInstanceIdentifier,Engine:Engine,Class:DBInstanceClass,Status:DBInstanceStatus}' --output table\n" }); rail = "term"; } },
       { label: "Secrets: SSM Get Parameter…", run: () => { const k = prompt("SSM parameter name (e.g. /app/db/password):"); if (k) { invoke("pty_write", { id: activeTerm, data: `aws ssm get-parameter --name '${k}' --with-decryption --query Parameter.Value --output text\n` }); rail = "term"; } } },
       { label: "Secrets: Vault Read…", run: () => { const k = prompt("Vault path (e.g. secret/data/app):"); if (k) { invoke("pty_write", { id: activeTerm, data: `vault kv get '${k}'\n` }); rail = "term"; } } },
@@ -1049,6 +1055,19 @@
       run: () => { diffTarget = { rev }; rail = "diff"; },
     }));
     paletteOpen = true;
+  }
+
+  // I83 read-only secret fetch — copy to clipboard, never display or persist.
+  async function readSecret(source: string, label: string) {
+    const key = prompt(label);
+    if (!key) return;
+    try {
+      const v = await invoke<string>("secret_read", { source, key });
+      await navigator.clipboard?.writeText(v).catch(() => {});
+      toast("Secret fetched → copied to clipboard (not stored)", "success");
+    } catch (e) {
+      toast("Read failed: " + String(e).slice(0, 100), "error");
+    }
   }
 
   // G67 reflog browser — list recent HEAD moves; pick one to copy its hash.
