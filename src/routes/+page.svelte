@@ -73,6 +73,7 @@
   const DevOps = () => import("$lib/DevOps.svelte");
   const Kube = () => import("$lib/Kube.svelte");
   const CI = () => import("$lib/CI.svelte");
+  const Terraform = () => import("$lib/Terraform.svelte");
   const Caldera = () => import("$lib/Caldera.svelte");
   import PaneGrid from "$lib/PaneGrid.svelte";
   import { leaf, splitLeaf, closeLeaf, resizeSplit, dockLeaf, setView as setLeafView, paneId, remapTermRefs, firstLeaf, findLeaf, balanceTree, closeOthers as closeOtherPanes, leafIds, addTab, setActiveTab, closeTab, type PaneNode, type Leaf, type ViewKind, type Edge } from "$lib/panes";
@@ -816,6 +817,7 @@
       { label: "View: AI Agent", run: () => (rail = "agent") },
       { label: "View: Kubernetes", run: () => (rail = "k8s") },
       { label: "View: CI / Pipelines", run: () => (rail = "ci") },
+      { label: "View: Terraform / Terragrunt", run: () => (rail = "terraform") },
       { label: "View: DevOps (Terraform / Helm / Observability)", run: () => (rail = "devops") },
       { label: "View: Caldera (control plane)", run: () => (rail = "caldera") },
       { label: "View: Workspace (multipane)", run: () => (rail = "workspace") },
@@ -1246,7 +1248,8 @@
       <div class="i {rail === 'agent' ? 'on' : ''}" title="AI Agent" onclick={() => (rail = 'agent')}><Icon name="agent" /></div>
       {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'k8s' ? 'on' : ''}" title="Kubernetes" onclick={() => (rail = 'k8s')}><Icon name="kube" /></div>{/if}
       {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'ci' ? 'on' : ''}" title="CI / Pipelines" onclick={() => (rail = 'ci')}><Icon name="ci" /></div>{/if}
-      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'devops' ? 'on' : ''}" title="DevOps (Terraform / Helm / Observability)" onclick={() => (rail = 'devops')}><Icon name="devops" /></div>{/if}
+      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'terraform' ? 'on' : ''}" title="Terraform / Terragrunt" onclick={() => (rail = 'terraform')}><Icon name="terraform" /></div>{/if}
+      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'devops' ? 'on' : ''}" title="DevOps (Helm / Observability)" onclick={() => (rail = 'devops')}><Icon name="devops" /></div>{/if}
       {#if railEnabled('caldera', $extEnabled)}<div class="i {rail === 'caldera' ? 'on' : ''}" title="Caldera control plane" onclick={() => (rail = 'caldera')}><Icon name="caldera" /></div>{/if}
       <div class="i {rail === 'workspace' ? 'on' : ''}" title="Workspace (multipane)" onclick={() => (rail = 'workspace')}><Icon name="workspace" /></div>
       <div class="i grow {rail === 'settings' ? 'on' : ''}" title="Settings" onclick={openSettings}><Icon name="settings" /></div>
@@ -1275,6 +1278,7 @@
         {:else if rail === "agent"}<span class="ph-ic accent"><Icon name="agent" /></span> Agent
         {:else if rail === "k8s"}<span class="ph-ic accent"><Icon name="kube" /></span> Kubernetes
         {:else if rail === "ci"}<span class="ph-ic accent"><Icon name="ci" /></span> CI / Pipelines
+        {:else if rail === "terraform"}<span class="ph-ic accent"><Icon name="terraform" /></span> Terraform
         {:else if rail === "devops"}<span class="ph-ic accent"><Icon name="devops" /></span> DevOps
         {:else if rail === "caldera"}<span class="ph-ic accent"><Icon name="caldera" /></span> Caldera
         {:else if rail === "workspace"}<span class="ph-ic accent"><Icon name="workspace" /></span> Workspace — {baseName(cwd)}
@@ -1331,6 +1335,8 @@
         <div class="view">{#key cwd}{#await Kube() then M}<M.default {cwd} onRunCommand={(cmd) => { invoke("pty_write", { id: activeTerm, data: cmd + "\n" }); rail = "term"; toast("Sent to terminal", "info"); }} />{/await}{/key}</div>
       {:else if rail === "ci"}
         <div class="view">{#key cwd}{#await CI() then M}<M.default {cwd} onRunCommand={(cmd) => { invoke("pty_write", { id: activeTerm, data: cmd + "\n" }); rail = "term"; toast("Sent to terminal", "info"); }} />{/await}{/key}</div>
+      {:else if rail === "terraform"}
+        <div class="view">{#key cwd}{#await Terraform() then M}<M.default {cwd} onRunCommand={(cmd) => { invoke("pty_write", { id: activeTerm, data: cmd + "\n" }); rail = "term"; toast("Sent to terminal", "info"); }} />{/await}{/key}</div>
       {:else if rail === "devops"}
         <div class="view">{#key cwd}{#await DevOps() then M}<M.default {cwd} onRunCommand={(cmd) => { invoke("pty_write", { id: activeTerm, data: cmd + "\n" }); rail = "term"; toast("Sent to terminal", "info"); }} />{/await}{/key}</div>
       {:else if rail === "caldera"}

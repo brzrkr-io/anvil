@@ -801,6 +801,90 @@ fn terraform_apply(cwd: String) -> Result<String, String> {
     Ok(s)
 }
 
+// --- Terraform / Terragrunt / OpenTofu (generic binary) -------------------
+// The `bin` arg selects "terraform", "terragrunt", or "tofu". Only these three
+// are accepted so a caller can't shell out to an arbitrary program.
+fn tf_bin(bin: &str) -> Result<&'static str, String> {
+    match bin {
+        "terraform" => Ok("terraform"),
+        "terragrunt" => Ok("terragrunt"),
+        "tofu" => Ok("tofu"),
+        _ => Err(format!("unsupported binary: {bin}")),
+    }
+}
+
+fn tf_exec(bin: &str, cwd: &str, args: &[&str]) -> Result<String, String> {
+    let prog = tf_bin(bin)?;
+    let out = std::process::Command::new(prog)
+        .current_dir(cwd)
+        .args(args)
+        .output()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                format!("{prog} not found in PATH")
+            } else {
+                e.to_string()
+            }
+        })?;
+    let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+    s.push_str(&String::from_utf8_lossy(&out.stderr));
+    Ok(s)
+}
+
+/// Detect which IaC tooling fits this dir: presence of terragrunt.hcl picks
+/// terragrunt, otherwise terraform. Also reports which binaries are on PATH.
+#[tauri::command]
+fn tf_detect(cwd: String) -> Result<String, String> {
+    let has_tg = std::path::Path::new(&cwd).join("terragrunt.hcl").exists()
+        || std::path::Path::new(&cwd).join("root.hcl").exists();
+    let on_path = |p: &str| {
+        std::process::Command::new(p)
+            .arg("version")
+            .output()
+            .map(|o| o.status.success() || !o.stdout.is_empty())
+            .unwrap_or(false)
+    };
+    let prefer = if has_tg { "terragrunt" } else { "terraform" };
+    // JSON so the frontend can pick a default and gray out missing tools.
+    Ok(format!(
+        "{{\"prefer\":\"{}\",\"terraform\":{},\"terragrunt\":{},\"tofu\":{}}}",
+        prefer,
+        on_path("terraform"),
+        on_path("terragrunt"),
+        on_path("tofu"),
+    ))
+}
+
+/// `<bin> init -input=false -no-color` — downloads providers / modules.
+#[tauri::command]
+fn tf_init(cwd: String, bin: String) -> Result<String, String> {
+    tf_exec(&bin, &cwd, &["init", "-input=false", "-no-color"])
+}
+
+/// `<bin> validate -no-color` — config validity, no remote state needed.
+#[tauri::command]
+fn tf_validate(cwd: String, bin: String) -> Result<String, String> {
+    tf_exec(&bin, &cwd, &["validate", "-no-color"])
+}
+
+/// `<bin> plan -no-color -input=false` — preview changes, never mutates infra.
+#[tauri::command]
+fn tf_plan(cwd: String, bin: String) -> Result<String, String> {
+    tf_exec(&bin, &cwd, &["plan", "-no-color", "-input=false"])
+}
+
+/// `<bin> state list` — managed resource addresses in current state.
+#[tauri::command]
+fn tf_state_list(cwd: String, bin: String) -> Result<String, String> {
+    tf_exec(&bin, &cwd, &["state", "list"])
+}
+
+/// `<bin> output -json` — current root output values.
+#[tauri::command]
+fn tf_output(cwd: String, bin: String) -> Result<String, String> {
+    tf_exec(&bin, &cwd, &["output", "-json", "-no-color"])
+}
+
 /// Instant Prometheus query (#77) — native HTTP, not an iframe. Returns the raw
 /// JSON from `/api/v1/query`. no_proxy so it works behind the corporate proxy.
 #[tauri::command]
@@ -2114,6 +2198,12 @@ pub fn run() {
             loki_query,
             terraform_plan,
             terraform_state,
+            tf_detect,
+            tf_init,
+            tf_validate,
+            tf_plan,
+            tf_state_list,
+            tf_output,
             new_window,
             open_url_window,
             pick_folder,

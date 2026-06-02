@@ -12,6 +12,7 @@
     pin: '<path d="M12 3v7"/><path d="M8 10h8l-1 4H9z"/><path d="M12 14v7"/>',
     devops: '<path d="M21 8.5l-9-5-9 5 9 5 9-5z"/><path d="M3 8.5v7l9 5 9-5v-7"/><path d="M12 13.5v7"/>',
     kube: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.4"/><path d="M12 3v3.6"/><path d="M12 17.4V21"/><path d="M3 12h3.6"/><path d="M17.4 12H21"/><path d="M5.6 5.6l2.6 2.6"/><path d="M15.8 15.8l2.6 2.6"/><path d="M18.4 5.6l-2.6 2.6"/><path d="M8.2 15.8l-2.6 2.6"/>',
+    terraform: '<rect x="3.5" y="3.5" width="7" height="7" rx="1"/><rect x="13.5" y="3.5" width="7" height="7" rx="1"/><rect x="3.5" y="13.5" width="7" height="7" rx="1"/>',
     caldera: '<path d="M12 2.5l9.5 9.5L12 21.5 2.5 12z"/><path d="M12 8l4 4-4 4-4-4z"/>',
     workspace: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9.5h18"/><path d="M9.5 21V9.5"/>',
     settings: '<path d="M4 6h8"/><path d="M16 6h4"/><circle cx="14" cy="6" r="2"/><path d="M4 12h2"/><path d="M10 12h10"/><circle cx="8" cy="12" r="2"/><path d="M4 18h10"/><path d="M18 18h2"/><circle cx="16" cy="18" r="2"/>',

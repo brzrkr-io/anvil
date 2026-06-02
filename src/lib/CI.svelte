@@ -107,7 +107,8 @@
     if (document.hidden) return;
     try {
       const raw = await invoke<string>("glab_pipeline_jobs", { cwd, pipeline: String(pipelineId) });
-      jobs = JSON.parse(raw) as Job[];
+      // glab returns jobs newest-first; ascending id = pipeline stage order (validate→build→deploy).
+      jobs = (JSON.parse(raw) as Job[]).sort((a, b) => a.id - b.id);
     } catch (e) {
       jobs = [];
     }
@@ -278,7 +279,7 @@
             onkeydown={(e) => e.key === "Enter" && selectPipeline(p)}
           >
             <span class="col-dot">
-              <span class="dot" style="background:{statusColor(p.status)}"></span>
+              <span class="dot" class:running={isRunning(p.status)} style="background:{statusColor(p.status)}"></span>
             </span>
             <span class="col-iid muted">#{p.iid}</span>
             <span class="col-ref mono">{p.ref}</span>
@@ -321,7 +322,7 @@
             <div class="empty">No jobs.</div>
           {:else}
             {#each [...stageGroups.entries()] as [stage, stageJobs] (stage)}
-              <div class="stage-label">{stage}</div>
+              <div class="stage-label"><span>{stage}</span><span class="stage-count">{stageJobs.length}</span></div>
               {#each stageJobs as j (j.id)}
                 <div
                   class="job-row"
@@ -331,7 +332,7 @@
                   onclick={() => selectJob(j)}
                   onkeydown={(e) => e.key === "Enter" && selectJob(j)}
                 >
-                  <span class="dot" style="background:{statusColor(j.status)}"></span>
+                  <span class="dot" class:running={isRunning(j.status)} style="background:{statusColor(j.status)}"></span>
                   <span class="job-name">{j.name}</span>
                   <span class="job-dur muted">{fmtDuration(j.duration)}</span>
                 </div>
@@ -413,6 +414,11 @@
 
   .col-dot { display: flex; align-items: center; }
   .dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+  .dot.running { animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent); }
+    50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 0%, transparent); }
+  }
   .col-iid { font-family: var(--font-mono); }
   .col-ref { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
   .col-src { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -458,10 +464,15 @@
   .jobs-body { flex: 1; overflow-y: auto; }
 
   .stage-label {
-    padding: 4px 10px 2px; font-size: 10px; font-weight: 500;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 5px 10px 3px; font-size: 10px; font-weight: 500;
     color: var(--text3); text-transform: uppercase; letter-spacing: 0.05em;
     border-bottom: 1px solid var(--hairline); background: var(--panel);
     position: sticky; top: 0; z-index: 1;
+  }
+  .stage-count {
+    font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0;
+    color: var(--text3); opacity: 0.7;
   }
   .job-row {
     display: flex; align-items: center; gap: 8px; height: 22px; padding: 0 10px;
