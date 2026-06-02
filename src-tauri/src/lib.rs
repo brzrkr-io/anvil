@@ -332,6 +332,15 @@ pub fn run() {
     #[cfg(desktop)]
     {
         builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+        // Persist window size/position across relaunches. Only size/position/
+        // maximized — leave decorations/visibility/fullscreen to the config so the
+        // custom overlay titlebar + transparency aren't disturbed.
+        use tauri_plugin_window_state::StateFlags;
+        builder = builder.plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED)
+                .build(),
+        );
     }
     builder
         .manage(PtyState::default())

@@ -27,6 +27,7 @@ base64 = "0.22"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots", "stream"] }
 futures-util = "0.3"
 tauri-plugin-updater = "2.10.1"
+tauri-plugin-window-state = "2"
 rfd = "0.15"
 
 # Shrink the shipped binary: strip symbols, fat LTO, size-optimized codegen,
