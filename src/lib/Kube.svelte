@@ -40,6 +40,17 @@
     }).filter((p) => p.name);
   });
 
+  // Filter + cap the rendered rows so a cluster with thousands of pods doesn't
+  // build thousands of DOM nodes at once (the render-side freeze).
+  let podFilter = $state("");
+  const POD_CAP = 400;
+  const filteredPods = $derived(
+    podFilter.trim()
+      ? podRows.filter((p) => `${p.name} ${p.ns}`.toLowerCase().includes(podFilter.toLowerCase()))
+      : podRows,
+  );
+  const shownPods = $derived(filteredPods.slice(0, POD_CAP));
+
   const AUTH_RE = /expired|credentials|unauthorized|not logged in|sso session|reauthenticate|InvalidIdentityToken|token has expired|failed to get token/i;
   const authErr = $derived(AUTH_RE.test(pods) || AUTH_RE.test(k8sErr));
 
@@ -61,13 +72,22 @@
   async function load() {
     busy = true;
     k8sErr = "";
-    try {
-      contexts = (await invoke<string>("kube_contexts")).split("\n").filter(Boolean);
-      current = (await invoke<string>("kube_current_context")).trim();
-      try { currentNs = (await invoke<string>("kube_current_namespace")).trim() || "default"; } catch { currentNs = "default"; }
-      try { namespaces = (await invoke<string>("kube_namespaces")).split("\n").filter(Boolean); } catch { namespaces = []; }
-      pods = await invoke<string>("kube_pods", { context: current });
-    } catch (e) { k8sErr = String(e); }
+    // Fire all five kubectl calls at once (they're independent) instead of
+    // sequentially — wall time becomes the slowest call, not the sum. pods uses
+    // the current context implicitly (context: "").
+    const [ctxs, cur, curNs, nss, podsOut] = await Promise.allSettled([
+      invoke<string>("kube_contexts"),
+      invoke<string>("kube_current_context"),
+      invoke<string>("kube_current_namespace"),
+      invoke<string>("kube_namespaces"),
+      invoke<string>("kube_pods", { context: "" }),
+    ]);
+    contexts = ctxs.status === "fulfilled" ? ctxs.value.split("\n").filter(Boolean) : [];
+    current = cur.status === "fulfilled" ? cur.value.trim() : "";
+    currentNs = curNs.status === "fulfilled" ? curNs.value.trim() || "default" : "default";
+    namespaces = nss.status === "fulfilled" ? nss.value.split("\n").filter(Boolean) : [];
+    if (podsOut.status === "fulfilled") pods = podsOut.value;
+    else { k8sErr = String(podsOut.reason); pods = ""; }
     busy = false;
   }
 
@@ -208,6 +228,10 @@
       {#if k8sErr && !authErr}
         <div class="empty">{k8sErr}</div>
       {:else if podRows.length}
+        <div class="pod-filter">
+          <input class="pf-in" placeholder="Filter pods… ({podRows.length})" bind:value={podFilter} spellcheck="false" />
+          {#if filteredPods.length > POD_CAP}<span class="pf-cap">showing {POD_CAP} of {filteredPods.length} — filter to narrow</span>{/if}
+        </div>
         <!-- Table header -->
         <div class="pod-header">
           <span class="col-dot"></span>
@@ -218,7 +242,7 @@
           <span class="col-age">Age</span>
           <span class="col-acts"></span>
         </div>
-        {#each podRows as p (`${p.ns}/${p.name}`)}
+        {#each shownPods as p (`${p.ns}/${p.name}`)}
           <div class="pod-row" role="button" tabindex="0"
             onclick={() => openLogs(p)}
             onkeydown={(e) => e.key === "Enter" && openLogs(p)}
@@ -350,6 +374,17 @@
   /* Pod table */
   .pods { flex: 1; min-width: 0; overflow-y: auto; }
   .pods.split { flex: 0 0 55%; border-right: 1px solid var(--border); }
+
+  .pod-filter {
+    display: flex; align-items: center; gap: 10px; padding: 6px 12px;
+    border-bottom: 1px solid var(--hairline); position: sticky; top: 0; z-index: 2; background: var(--panel);
+  }
+  .pf-in {
+    flex: 1; height: 24px; border: 1px solid var(--border); background: var(--panel2);
+    color: var(--text); border-radius: 5px; padding: 0 8px; font-size: 11.5px; font-family: var(--font-mono);
+  }
+  .pf-in:focus { outline: none; border-color: var(--text3); }
+  .pf-cap { flex: 0 0 auto; font-size: 10px; color: var(--text3); }
 
   /* Shared grid so header + every row align exactly. Actions float on hover
      (absolute) so they never shift the columns. */
