@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import Icon from "$lib/Icon.svelte";
   import { toast } from "$lib/toast";
+  import { byHealth, failingCount, oneLine, shortRev } from "$lib/flux-health";
 
   let { onRunCommand, onPresence }: { onRunCommand?: (cmd: string) => void; onPresence?: (present: boolean) => void } = $props();
 
@@ -29,13 +30,6 @@
     { id: "helmreleases", label: "HelmReleases" },
     { id: "sources", label: "Sources" },
   ];
-
-  function shortRev(r: string): string {
-    // git "main@sha1:abcd1234..." or "sha256:..." → keep branch + 7 chars.
-    const m = r.match(/^(.*?[@:])?([0-9a-f]{7,})/i);
-    if (m) return `${m[1] ?? ""}${m[2].slice(0, 7)}`;
-    return r.length > 24 ? r.slice(0, 24) + "…" : r;
-  }
 
   // Map the k8s object kind → the `flux` CLI kind argument the backend allow-lists.
   function fluxKind(apiKind: string): string {
@@ -82,7 +76,7 @@
         return;
       }
       present = true;
-      items = parse(raw).sort((a, b) => (a.ns + a.name).localeCompare(b.ns + b.name));
+      items = parse(raw).sort(byHealth);
     } catch (e) {
       err = String(e);
     } finally {
@@ -114,7 +108,22 @@
     onRunCommand?.(`flux logs --kind=${it.apiKind} --name=${it.name} -n ${it.ns} -f`);
   }
 
-  onMount(load);
+  let fails = $derived(failingCount(items));
+
+  // Auto-poll while the panel is visible so a reconcile is watched to green
+  // without hammering the refresh button. Skip ticks while a load is in flight
+  // or the window/tab is hidden, to avoid piling up kubectl calls.
+  const POLL_MS = 6000;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  function tick() {
+    if (loading || busyRow || (typeof document !== "undefined" && document.hidden)) return;
+    load();
+  }
+  onMount(() => {
+    load();
+    timer = setInterval(tick, POLL_MS);
+  });
+  onDestroy(() => clearInterval(timer));
 </script>
 
 {#if present}
@@ -124,6 +133,7 @@
         <button class:on={tab === t.id} onclick={() => { tab = t.id; load(); }}>{t.label}</button>
       {/each}
       <span class="spacer"></span>
+      {#if fails}<span class="fx-fail-chip" title="{fails} failing">{fails} failing</span>{/if}
       {#if loading}<span class="spin">…</span>{/if}
       <button class="fx-refresh" title="Refresh" onclick={load}><Icon name="refresh" size={12} /></button>
     </div>
@@ -142,8 +152,12 @@
               <span class="fx-name" title={it.message}>{it.name}</span>
               <span class="fx-ns">{it.ns}</span>
               {#if tab === "sources"}<span class="fx-k">{it.apiKind}</span>{/if}
-              <span class="fx-rev mono" title={it.revision}>{shortRev(it.revision)}</span>
-              <span class="spacer"></span>
+              {#if it.ready === "fail" && it.message}
+                <span class="fx-msg" title={it.message}>{oneLine(it.message)}</span>
+              {:else}
+                <span class="fx-rev mono" title={it.revision}>{shortRev(it.revision)}</span>
+                <span class="spacer"></span>
+              {/if}
               <button class="fx-act" title="Reconcile (sync now)" disabled={!!busyRow} onclick={() => act(it, "flux_reconcile")}><Icon name="refresh" size={12} /></button>
               {#if tab !== "sources"}
                 <button class="fx-act" title="Reconcile with source" disabled={!!busyRow} onclick={() => act(it, "flux_reconcile", true)}>↻+</button>
@@ -186,6 +200,9 @@
   .fx-ns { color: var(--text3); font-size: 11px; }
   .fx-k { color: var(--accent); font-size: 10px; font-family: var(--font-mono); }
   .fx-rev { color: var(--text2); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
+  .fx-msg { flex: 1; min-width: 0; color: var(--red); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fx-fail-chip { color: var(--red); font-size: 11px; font-family: var(--font-ui); padding: 1px 7px; border-radius: 9px;
+    background: color-mix(in srgb, var(--red) 14%, transparent); border: 1px solid color-mix(in srgb, var(--red) 35%, transparent); }
   .mono { font-family: var(--font-mono); }
   .fx-act { background: transparent; border: 1px solid var(--border); color: var(--text2); border-radius: 5px;
     min-width: 22px; height: 20px; padding: 0 5px; font-size: 11px; display: inline-flex; align-items: center; justify-content: center; cursor: default; }
