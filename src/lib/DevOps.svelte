@@ -9,8 +9,9 @@
   import { toast } from "$lib/toast";
   import { askText, askConfirm } from "$lib/dialog";
   import { parsePrRows, type PrRow } from "$lib/pr-checks";
+  import { githubInvestigation } from "$lib/agent-ops";
 
-  let { cwd, onRunCommand }: { cwd: string; onRunCommand?: (cmd: string) => void } = $props();
+  let { cwd, onRunCommand, onInvestigate }: { cwd: string; onRunCommand?: (cmd: string) => void; onInvestigate?: (prompt: string) => void } = $props();
 
   let tab = $state<"prs" | "gitlab" | "aws" | "inc">("prs");
   // #59 AWS in-pane resource browser.
@@ -239,7 +240,10 @@
           <div class="podrow" class:cur={prSel === r.num} role="button" tabindex="0" onclick={() => openPr(r.num)} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), openPr(r.num))}>
             <span class="ck ck-{r.checks}" title={r.checks === "none" ? "No checks" : `Checks: ${r.checks}`}></span>
             <span class="bdg" style="color:var(--accent)">#{r.num}</span><span class="pnm">{r.title}{r.draft ? " · draft" : ""}</span>
-            {#if r.checks === "fail"}<button class="rerun" title="Re-run failed checks (in terminal)" onclick={(e) => { e.stopPropagation(); rerunChecks(r); }}><Icon name="refresh" size={11} /></button>{/if}
+            {#if r.checks === "fail"}
+              {#if onInvestigate}<button class="rerun ai" title="Investigate failing checks with the agent" onclick={(e) => { e.stopPropagation(); onInvestigate(githubInvestigation(r.num, r.branch)); }}><Icon name="agent" size={11} /></button>{/if}
+              <button class="rerun" title="Re-run failed checks (in terminal)" onclick={(e) => { e.stopPropagation(); rerunChecks(r); }}><Icon name="refresh" size={11} /></button>
+            {/if}
           </div>
         {/each}
       </div>
@@ -387,4 +391,6 @@
     width: 20px; height: 18px; border: 1px solid color-mix(in srgb, var(--red) 40%, transparent);
     border-radius: 5px; background: transparent; color: var(--red); cursor: default; }
   .rerun:hover { background: color-mix(in srgb, var(--red) 12%, transparent); }
+  .rerun.ai { border-color: color-mix(in srgb, var(--accent) 45%, transparent); color: var(--accent); }
+  .rerun.ai:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 </style>

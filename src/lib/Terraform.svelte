@@ -5,8 +5,9 @@
   import Icon from "$lib/Icon.svelte";
   import { toast } from "$lib/toast";
   import { parsePlanSummary, planBadge, lineClass, type PlanSummary } from "$lib/iac-plan";
+  import { terraformInvestigation } from "$lib/agent-ops";
 
-  let { cwd, onRunCommand }: { cwd: string; onRunCommand?: (cmd: string) => void } = $props();
+  let { cwd, onRunCommand, onInvestigate }: { cwd: string; onRunCommand?: (cmd: string) => void; onInvestigate?: (prompt: string) => void } = $props();
 
   type Bin = "terraform" | "terragrunt" | "tofu";
   type TgKind = "terraform" | "tg-unit" | "tg-stack" | "tg-runall";
@@ -271,6 +272,9 @@
       <button class="act" disabled={!!running} onclick={loadOutputs} title="Show outputs">
         {running === "output" ? "Outputs…" : "Outputs"}
       </button>
+      {#if onInvestigate && (err || (summary && !summary.none))}
+        <button class="act ai" disabled={!!running} title="Investigate this plan with the agent" onclick={() => onInvestigate(terraformInvestigation(activeStack ?? ".", cmdFor("plan"), err || output))}>Investigate</button>
+      {/if}
       <span class="spacer"></span>
       <button class="act ext" onclick={applyAction} title={cmdFor("apply")}>Apply ↗</button>
       <button class="act ext danger" onclick={destroyAction} title={cmdFor("destroy")}>Destroy ↗</button>
@@ -415,6 +419,8 @@
   .act.primary { color: var(--text); border-color: var(--text3); }
   .act.ext { font-family: var(--font-mono); font-size: 11px; }
   .act.danger:hover:not(:disabled) { color: var(--red); border-color: var(--red); }
+  .act.ai { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+  .act.ai:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 
   .err {
     padding: 8px 12px; font-size: 11.5px; color: var(--red);

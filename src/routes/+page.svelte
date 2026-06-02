@@ -139,7 +139,7 @@
   import { fetchSymbols, searchWorkspaceSymbols } from "$lib/cm-lsp";
   import { problems } from "$lib/diagnostics";
   import { railEnabled, extEnabled } from "$lib/extensions";
-  import { agentSeed } from "$lib/agent-seed";
+  import { agentSeed, agentInvestigate } from "$lib/agent-seed";
   import { keyOverrides, comboOf, KEY_PRESETS, applyKeymapPreset } from "$lib/keymap";
 
   // Per-workspace theme/density overrides (#84), keyed by folder path.
@@ -246,6 +246,8 @@
   // Flux failing-object count, surfaced on the k8s rail icon so trouble is
   // visible without opening the panel. Reflects the Flux panel's active tab.
   let kubeFails = $state(0);
+  // Agent-driven ops: a failing resource seeds a live, gated investigation.
+  function investigate(prompt: string) { agentInvestigate.set(prompt); rail = "agent"; }
   let cwd = $state("");
 
   // Detach-pane → new OS window (#17). A detached window carries a `?detach=`
@@ -1584,19 +1586,19 @@
         <div class="view" style:display={rail === "search" ? "block" : "none"}>{#key cwd}{#await SearchPanel() then M}<M.default root={cwd} onOpen={(p) => openInEditor(p)} />{/await}{/key}</div>
       {/if}
       {#if mountedRails.k8s}
-        <div class="view" style:display={rail === "k8s" ? "block" : "none"}>{#key cwd}{#await Kube() then M}<M.default {cwd} onRunCommand={sendToTerm} onHealth={(n) => (kubeFails = n)} />{/await}{/key}</div>
+        <div class="view" style:display={rail === "k8s" ? "block" : "none"}>{#key cwd}{#await Kube() then M}<M.default {cwd} onRunCommand={sendToTerm} onHealth={(n) => (kubeFails = n)} onInvestigate={investigate} />{/await}{/key}</div>
       {/if}
       {#if mountedRails.ci}
         <div class="view" style:display={rail === "ci" ? "block" : "none"}>{#key cwd}{#await CI() then M}<M.default {cwd} active={rail === "ci"} onRunCommand={sendToTerm} />{/await}{/key}</div>
       {/if}
       {#if mountedRails.terraform}
-        <div class="view" style:display={rail === "terraform" ? "block" : "none"}>{#key cwd}{#await Terraform() then M}<M.default {cwd} onRunCommand={sendToTerm} />{/await}{/key}</div>
+        <div class="view" style:display={rail === "terraform" ? "block" : "none"}>{#key cwd}{#await Terraform() then M}<M.default {cwd} onRunCommand={sendToTerm} onInvestigate={investigate} />{/await}{/key}</div>
       {/if}
       {#if mountedRails.obs}
         <div class="view" style:display={rail === "obs" ? "block" : "none"}>{#await Observability() then M}<M.default />{/await}</div>
       {/if}
       {#if mountedRails.devops}
-        <div class="view" style:display={rail === "devops" ? "block" : "none"}>{#key cwd}{#await DevOps() then M}<M.default {cwd} onRunCommand={sendToTerm} />{/await}{/key}</div>
+        <div class="view" style:display={rail === "devops" ? "block" : "none"}>{#key cwd}{#await DevOps() then M}<M.default {cwd} onRunCommand={sendToTerm} onInvestigate={investigate} />{/await}{/key}</div>
       {/if}
 
       <!-- Agent stays mounted so a request keeps running after you switch views. -->

@@ -7,7 +7,7 @@
   import { online } from "$lib/offline";
   import { applyRedaction as redact, auditAgentSend } from "$lib/redaction";
   import { llmCreds } from "$lib/accounts";
-  import { agentSeed } from "$lib/agent-seed";
+  import { agentSeed, agentInvestigate } from "$lib/agent-seed";
   import Icon from "$lib/Icon.svelte";
   import DiffReview from "$lib/DiffReview.svelte";
   import { parseToolCalls, toolResultMessage, parseEditBlocks, riskyCommand, TOOL_SYSTEM_PROMPT, type ToolCall } from "$lib/agent-tools";
@@ -76,6 +76,16 @@
   $effect(() => {
     const s = $agentSeed;
     if (s) { input = s; agentSeed.set(""); }
+  });
+  // Agent-driven investigation: seed, turn on Agent (tool-use) mode, auto-send.
+  $effect(() => {
+    const s = $agentInvestigate;
+    if (s) {
+      agentInvestigate.set("");
+      autoTools = true;
+      input = s;
+      send();
+    }
   });
   let models = $state<string[]>([]);
   let model = $state("");

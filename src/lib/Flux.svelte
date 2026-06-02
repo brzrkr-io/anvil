@@ -4,8 +4,9 @@
   import Icon from "$lib/Icon.svelte";
   import { toast } from "$lib/toast";
   import { byHealth, failingCount, oneLine, shortRev } from "$lib/flux-health";
+  import { fluxInvestigation } from "$lib/agent-ops";
 
-  let { onRunCommand, onPresence, onHealth }: { onRunCommand?: (cmd: string) => void; onPresence?: (present: boolean) => void; onHealth?: (failing: number) => void } = $props();
+  let { onRunCommand, onPresence, onHealth, onInvestigate }: { onRunCommand?: (cmd: string) => void; onPresence?: (present: boolean) => void; onHealth?: (failing: number) => void; onInvestigate?: (prompt: string) => void } = $props();
 
   type Tab = "kustomizations" | "helmreleases" | "sources";
   interface FluxItem {
@@ -173,6 +174,9 @@
               {:else}
                 <button class="fx-act" title="Suspend" disabled={!!busyRow} onclick={() => act(it, "flux_suspend")}><Icon name="minus" size={12} /></button>
               {/if}
+              {#if onInvestigate && it.ready === "fail"}
+                <button class="fx-act ai" title="Investigate with the agent" onclick={() => onInvestigate(fluxInvestigation(it.apiKind, it.name, it.ns, it.message))}><Icon name="agent" size={11} /></button>
+              {/if}
               <button class="fx-act" class:hot={it.ready === "fail"} title="Reconcile events (why) in terminal" onclick={() => events(it)}><Icon name="alert" size={11} /></button>
               <button class="fx-act" title="Stream logs in terminal" onclick={() => logs(it)}>↗</button>
             </div>
@@ -216,4 +220,5 @@
   .fx-act:hover:not(:disabled) { color: var(--text); border-color: var(--text3); }
   .fx-act:disabled { opacity: 0.4; }
   .fx-act.hot { color: var(--red); border-color: color-mix(in srgb, var(--red) 45%, transparent); }
+  .fx-act.ai { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
 </style>
