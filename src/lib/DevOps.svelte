@@ -9,11 +9,12 @@
   import { toast } from "$lib/toast";
   import { askText, askConfirm } from "$lib/dialog";
   import { parsePrRows, type PrRow } from "$lib/pr-checks";
-  import { githubInvestigation } from "$lib/agent-ops";
+  import { githubInvestigation, actionsInvestigation } from "$lib/agent-ops";
+  import { parseRuns, failingRuns, type RunRow } from "$lib/actions-runs";
 
   let { cwd, onRunCommand, onInvestigate }: { cwd: string; onRunCommand?: (cmd: string) => void; onInvestigate?: (prompt: string) => void } = $props();
 
-  let tab = $state<"prs" | "gitlab" | "aws" | "inc">("prs");
+  let tab = $state<"prs" | "actions" | "gitlab" | "aws" | "inc">("prs");
   // #59 AWS in-pane resource browser.
   let awsSvc = $state<"ec2" | "s3" | "lambda" | "rds">("ec2");
   let awsOut = $state("");
@@ -190,6 +191,29 @@
     if (!r.branch) return;
     runCmd(`gh run list --branch ${r.branch} -L 1 --json databaseId -q '.[0].databaseId' | xargs gh run rerun`);
   }
+  // GitHub Actions runs — failing-first, with re-run / log / investigate.
+  let runs = $state<RunRow[]>([]);
+  let runsErr = $state("");
+  let runsBusy = $state(false);
+  const runFails = $derived(failingRuns(runs));
+  const runsAuthErr = $derived(/not authenticated|gh auth|HTTP 401/i.test(runsErr));
+  async function loadActions() {
+    runsBusy = true;
+    runsErr = "";
+    try {
+      runs = parseRuns(await invoke<string>("gh_runs_json", { cwd }));
+    } catch (e) {
+      runsErr = String(e);
+      runs = [];
+    }
+    runsBusy = false;
+  }
+  async function rerunRun(r: RunRow) {
+    try { await invoke("gh_rerun", { cwd, id: r.id }); toast(`Re-running ${r.workflow || r.id}`, "success"); setTimeout(loadActions, 1500); }
+    catch (e) { toast(String(e).slice(0, 120), "error"); }
+  }
+  function runLog(r: RunRow) { runCmd(`gh run view ${r.id} --log${r.state === "fail" ? "-failed" : ""}`); }
+
   // GitLab CI (#54) — via the authed glab CLI, run in the repo cwd.
   let glabOut = $state("");
   async function loadGlab() {
@@ -216,6 +240,7 @@
 <div class="dev">
   <div class="tabs">
     <button class:on={tab === "prs"} onclick={() => (tab = "prs")}><Icon name="pr" size={14} /> Pull Requests</button>
+    <button class:on={tab === "actions"} onclick={() => { tab = "actions"; if (!runs.length) loadActions(); }}><Icon name="ci" size={14} /> Actions{#if runFails}<span class="tabbadge">{runFails}</span>{/if}</button>
     <button class:on={tab === "gitlab"} onclick={() => { tab = "gitlab"; if (!glabOut) loadGlab(); }}><Icon name="ci" size={14} /> GitLab CI</button>
     <button class:on={tab === "aws"} onclick={() => { tab = "aws"; if (!awsOut) loadAws(); }}><Icon name="devops" size={14} /> AWS</button>
     <button class:on={tab === "inc"} onclick={() => (tab = "inc")}><Icon name="alert" size={14} /> Incident</button>
@@ -263,6 +288,30 @@
       {/if}
     {:else}
       <pre class="out">{prs.trimStart().startsWith("[") ? "No open PRs." : prs || "No open PRs / gh unavailable."}</pre>
+    {/if}
+  {:else if tab === "actions"}
+    <div class="bar">
+      <span class="lbl">GitHub Actions · {cwd.split("/").pop()}</span>
+      <span class="grow"></span>
+      <button class="refresh" onclick={loadActions} title="Refresh (gh run list)" disabled={runsBusy}><Icon name="refresh" size={13} /></button>
+    </div>
+    {#if runsErr}
+      <pre class="out">{runsAuthErr ? "Not authenticated — run `gh auth login`." : runsErr.slice(0, 200)}</pre>
+    {:else if runs.length}
+      <div class="podlist">
+        {#each runs as r (r.id)}
+          <div class="podrow">
+            <span class="ck ck-{r.state === 'running' ? 'pending' : r.state}" title={r.state}></span>
+            <span class="pnm">{r.workflow ? r.workflow + " · " : ""}{r.title}</span>
+            <span class="rbranch" title={r.branch}>{r.branch}</span>
+            {#if onInvestigate && r.state === "fail"}<button class="rerun ai" title="Investigate this run with the agent" onclick={() => onInvestigate(actionsInvestigation(r.id, r.workflow, r.branch))}><Icon name="agent" size={11} /></button>{/if}
+            <button class="rerun" title="View log in terminal" onclick={() => runLog(r)}><Icon name="terminal" size={11} /></button>
+            {#if r.state !== "running"}<button class="rerun" title="Re-run" onclick={() => rerunRun(r)}><Icon name="refresh" size={11} /></button>{/if}
+          </div>
+        {/each}
+      </div>
+    {:else}
+      <pre class="out">{runsBusy ? "Loading…" : "No recent runs / gh unavailable."}</pre>
     {/if}
   {:else if tab === "gitlab"}
     <div class="bar"><span class="lbl">GitLab CI · {cwd.split("/").pop()}</span>
@@ -382,6 +431,10 @@
   .podrow:hover { background: var(--panel); }
   .pnm { flex: 1; min-width: 0; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pst { flex: 0 0 auto; width: 92px; text-align: right; }
+  .tabbadge { margin-left: 5px; padding: 0 5px; border-radius: 8px; font-size: 9.5px; font-weight: 600;
+    color: #fff; background: var(--red); }
+  .rbranch { flex: 0 0 auto; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--text3); font-size: 10.5px; }
   .ck { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--text3); }
   .ck-fail { background: var(--red); }
   .ck-pending { background: var(--yellow); }

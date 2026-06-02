@@ -69,6 +69,14 @@ export function terraformInvestigation(path: string, planCmd: string, detail?: s
   });
 }
 
+export function actionsInvestigation(id: string, workflow: string, branch: string): string {
+  return investigationPrompt({
+    tool: "github",
+    subject: `GitHub Actions run ${id}${workflow ? ` (${workflow})` : ""}${branch ? ` on ${branch}` : ""}`,
+    diagnose: `gh run view ${id} --log-failed`,
+  });
+}
+
 export function githubInvestigation(num: string, branch: string): string {
   return investigationPrompt({
     tool: "github",
