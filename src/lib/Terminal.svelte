@@ -128,7 +128,9 @@
     });
     term.loadAddon(new WebLinksAddon((_e, uri) => { openUrl(uri).catch((e) => console.warn("openUrl failed", e)); }));
     // File/path smart links (#20): click a file path → open it in the editor.
-    const PATH_RE = /(?:[~.]{0,2}\/)?[\w.\-/]+\.[A-Za-z][\w]*(?::\d+)?/g;
+    // No `g` flag: WebLinksAddon builds `new RegExp(src, (flags||"")+"g")`, so a
+    // `g` here yields "gg" → "Invalid flags supplied to RegExp constructor".
+    const PATH_RE = /(?:[~.]{0,2}\/)?[\w.\-/]+\.[A-Za-z][\w]*(?::\d+)?/;
     term.loadAddon(new WebLinksAddon((_e, uri) => {
       const m = /^(.*?)(?::(\d+))?$/.exec(uri);
       let p = m?.[1] ?? uri;
