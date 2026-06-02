@@ -2455,3 +2455,11 @@ Tests updated: `build_section_*` tests replaced with `context_section_*` tests; 
   red/yellow/green status dot, and offers one-click re-run on failed PRs. Pure
   rollup/sort/parse → pr-checks.ts + 13 tests. Closes the "is this PR red?"
   browser trip. All three beat-targets now have a first sharpening pass.
+
+- 2026-06-02 — Agent-driven ops (first increment), decision 0006 AI overlay.
+  One-click "Investigate" on failing resources in all 3 loops (Flux failed row,
+  Terraform drift/error, PR with red checks). Seeds the gated agent with a
+  focused prompt (real failure data, marked untrusted) + the right read-only
+  diagnostic, enables Agent mode, auto-sends via new agentInvestigate store.
+  Pure prompt builders in agent-ops.ts + 7 tests. Agent proposes, never mutates
+  unapproved — composes with the #46 injection defenses.
