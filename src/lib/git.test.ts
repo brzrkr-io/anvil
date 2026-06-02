@@ -317,3 +317,18 @@ describe("parseHunks / buildHunkPatch", () => {
     expect(buildLinePatch(f, 0, new Set([1]))).toBe(""); // only a context line
   });
 });
+
+describe("parseStatus conflicts", () => {
+  it("flags unmerged XY pairs as conflicted, not staged", () => {
+    const raw = "## main\nUU app/main.tf\nAA b.txt\nM  staged.txt\n M unstaged.txt\n?? new.txt";
+    const { changes } = parseStatus(raw);
+    const byPath = (p: string) => changes.find((c) => c.path === p)!;
+    expect(byPath("app/main.tf").conflicted).toBe(true);
+    expect(byPath("app/main.tf").staged).toBe(false);
+    expect(byPath("b.txt").conflicted).toBe(true);
+    expect(byPath("staged.txt").staged).toBe(true);
+    expect(byPath("staged.txt").conflicted).toBeUndefined();
+    expect(byPath("unstaged.txt").staged).toBe(false);
+    expect(changes.filter((c) => c.conflicted).length).toBe(2);
+  });
+});

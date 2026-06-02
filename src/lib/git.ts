@@ -152,10 +152,14 @@ export function parseConventional(subject: string): Conventional | null {
 }
 
 export interface Change {
-  code: string; // A M D R ?
+  code: string; // A M D R ?  (U = unmerged/conflict)
   staged: boolean;
   path: string;
+  conflicted?: boolean;
 }
+
+// Porcelain XY pairs that mean "unmerged" (a merge/rebase conflict).
+const CONFLICT_XY = new Set(["DD", "AU", "UD", "UA", "DU", "AA", "UU"]);
 
 // Group a flat change list into a collapsible folder tree (Terax-style),
 // dirs first then files, each alphabetical. Pure for unit testing.
@@ -205,7 +209,8 @@ export function parseStatus(raw: string): { branch: string; changes: Change[] } 
     const x = line[0];
     const y = line[1];
     const path = line.slice(3).replace(/^ +/, "");
-    if (x === "?" && y === "?") changes.push({ code: "?", staged: false, path });
+    if (CONFLICT_XY.has(x + y)) changes.push({ code: "U", staged: false, path, conflicted: true });
+    else if (x === "?" && y === "?") changes.push({ code: "?", staged: false, path });
     else if (x !== " " && x !== "?") changes.push({ code: x, staged: true, path });
     else changes.push({ code: y, staged: false, path });
   }

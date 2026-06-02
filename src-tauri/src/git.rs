@@ -147,6 +147,84 @@ pub async fn git_checkout_side(cwd: String, path: String, side: String) -> Resul
     .map_err(|e| e.to_string())?
 }
 
+// Like git(), but captures stderr too (merge/rebase progress lands there) and
+// allows env overrides (to disable editors on --continue).
+fn git_io(cwd: &str, args: &[&str], env: &[(&str, &str)]) -> Result<String, String> {
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("-C").arg(cwd).args(args);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let out = crate::shared::exec_capture(cmd, 60).map_err(|e| e.to_string())?;
+    let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+    s.push_str(&String::from_utf8_lossy(&out.stderr));
+    Ok(s)
+}
+
+fn op_arg(op: &str) -> Result<&'static str, String> {
+    match op {
+        "merge" => Ok("merge"),
+        "rebase" => Ok("rebase"),
+        "cherry-pick" => Ok("cherry-pick"),
+        "revert" => Ok("revert"),
+        _ => Err(format!("unknown op: {op}")),
+    }
+}
+
+/// Which multi-step git op (if any) is mid-flight, so the UI can show the right
+/// Abort/Continue controls: "merge" | "rebase" | "cherry-pick" | "revert" | "none".
+#[tauri::command]
+pub async fn git_op_state(cwd: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let gd = git(&cwd, &["rev-parse", "--git-dir"])?;
+        let base = std::path::Path::new(&cwd).join(gd.trim());
+        let has = |p: &str| base.join(p).exists();
+        let s = if has("rebase-merge") || has("rebase-apply") {
+            "rebase"
+        } else if has("MERGE_HEAD") {
+            "merge"
+        } else if has("CHERRY_PICK_HEAD") {
+            "cherry-pick"
+        } else if has("REVERT_HEAD") {
+            "revert"
+        } else {
+            "none"
+        };
+        Ok(s.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Abort the in-flight op (`git <op> --abort`), restoring the pre-op state.
+#[tauri::command]
+pub async fn git_op_abort(cwd: String, op: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let op = op_arg(&op)?;
+        git_io(&cwd, &[op, "--abort"], &[])
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Continue the in-flight op once conflicts are resolved + staged. Editors are
+/// disabled so it never blocks waiting on a commit-message prompt. (merge has no
+/// `--continue`; the resolution commit finishes it.)
+#[tauri::command]
+pub async fn git_op_continue(cwd: String, op: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let op = op_arg(&op)?;
+        let env = [("GIT_EDITOR", "true"), ("GIT_SEQUENCE_EDITOR", "true")];
+        if op == "merge" {
+            git_io(&cwd, &["commit", "--no-edit"], &env)
+        } else {
+            git_io(&cwd, &[op, "--continue"], &env)
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// #29 Update submodules to their pinned commits.
 #[tauri::command]
 pub async fn git_submodule_update(cwd: String) -> Result<String, String> {

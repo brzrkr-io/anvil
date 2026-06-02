@@ -28,8 +28,10 @@
   let tags = $state<string[]>([]);
   const now = Date.now();
 
-  const staged = $derived(changes.filter((c) => c.staged));
-  const unstaged = $derived(changes.filter((c) => !c.staged));
+  const conflicts = $derived(changes.filter((c) => c.conflicted));
+  const staged = $derived(changes.filter((c) => c.staged && !c.conflicted));
+  const unstaged = $derived(changes.filter((c) => !c.staged && !c.conflicted));
+  let opState = $state("none"); // merge | rebase | cherry-pick | revert | none
   const stagedTree = $derived(buildFileTree(staged));
   const unstagedTree = $derived(buildFileTree(unstaged));
   let collapsed = $state<Set<string>>(new Set());
@@ -240,6 +242,7 @@
       const s = parseStatus(st);
       branch = s.branch;
       changes = s.changes;
+      try { opState = (await invoke<string>("git_op_state", { cwd })).trim(); } catch { opState = "none"; }
       branches = br.split("\n").filter(Boolean).map((l) => {
         const [h, n] = l.split("\t");
         return { name: n ?? "", cur: h === "*" };
@@ -263,6 +266,31 @@
   function badge(code: string) {
     return code === "A" ? "var(--green)" : code === "D" ? "var(--red)"
       : code === "?" ? "var(--text3)" : "var(--yellow)";
+  }
+
+  // ── Merge / rebase conflict resolution ──
+  async function takeSide(path: string, side: "ours" | "theirs") {
+    if (busy) return; busy = true;
+    try { await invoke("git_checkout_side", { cwd, path, side }); await load(); }
+    catch (e) { error = String(e); } finally { busy = false; }
+  }
+  async function markResolved(path: string) {
+    if (busy) return; busy = true;
+    try { await invoke("git_stage", { cwd, path }); await load(); }
+    catch (e) { error = String(e); } finally { busy = false; }
+  }
+  async function opAbort() {
+    if (busy || opState === "none") return; busy = true;
+    try { await invoke("git_op_abort", { cwd, op: opState }); await load(); }
+    catch (e) { error = String(e); } finally { busy = false; }
+  }
+  async function opContinue() {
+    if (busy || opState === "none") return; busy = true;
+    try {
+      const out = await invoke<string>("git_op_continue", { cwd, op: opState });
+      if (/conflict|error|fatal|cannot/i.test(out)) error = out.slice(0, 240);
+      await load();
+    } catch (e) { error = String(e); } finally { busy = false; }
   }
 </script>
 
@@ -354,6 +382,34 @@
     {/if}
 
     <div class="side-changes">
+      {#if opState !== "none"}
+        <div class="opbar">
+          <span class="op-lbl"><Icon name="alert" size={12} /> {opState} in progress</span>
+          <span class="spacer"></span>
+          {#if conflicts.length === 0}
+            <button class="op-go" disabled={busy} onclick={opContinue}>Continue</button>
+          {/if}
+          <button class="op-abort" disabled={busy} onclick={opAbort}>Abort</button>
+        </div>
+      {/if}
+      {#if conflicts.length}
+        <div class="sect conf">Conflicts <span class="cnt">{conflicts.length}</span></div>
+        <div class="changes">
+          {#each conflicts as c (c.path)}
+            <div class="chg conflict" style="padding-left:14px">
+              <span class="sdot" style="background:var(--red)" title="Conflict"></span>
+              <span class="fname" title={c.path}
+                onclick={() => onOpenDiff?.({ path: c.path, staged: false })}
+                onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onOpenDiff?.({ path: c.path, staged: false }))}
+                role="button" tabindex="0">{c.path.split("/").pop()}</span>
+              {#if c.path.includes("/")}<span class="fdir">{c.path.split("/").slice(0, -1).join("/")}</span>{/if}
+              <button class="cact" title="Use ours (current branch / rebase base)" disabled={busy} onclick={() => takeSide(c.path, "ours")}>ours</button>
+              <button class="cact" title="Use theirs (incoming)" disabled={busy} onclick={() => takeSide(c.path, "theirs")}>theirs</button>
+              <button class="cact ok" title="Mark resolved (git add)" disabled={busy} onclick={() => markResolved(c.path)}><Icon name="check" size={12} /></button>
+            </div>
+          {/each}
+        </div>
+      {/if}
       {#if error}
         <div class="empty">{error}</div>
       {:else}
@@ -546,6 +602,24 @@
   .sect { padding: 6px 14px 3px; font-size: 11px; color: var(--text3); font-weight: 600; letter-spacing: .03em; text-transform: uppercase; }
   .sect.disclosure { display: flex; align-items: center; gap: 4px; cursor: default; padding: 6px 14px 3px; }
   .changes { padding-bottom: 4px; }
+  .sect.conf { color: var(--red); }
+  /* Merge/rebase op banner */
+  .opbar { display: flex; align-items: center; gap: 8px; margin: 6px 10px; padding: 5px 9px;
+    border: 1px solid color-mix(in srgb, var(--yellow) 45%, var(--border)); border-radius: 6px;
+    background: color-mix(in srgb, var(--yellow) 12%, transparent); font-size: 11.5px; }
+  .op-lbl { display: inline-flex; align-items: center; gap: 5px; color: var(--yellow); text-transform: capitalize; font-weight: 600; }
+  .op-go, .op-abort { border: 1px solid var(--border); background: var(--panel2); color: var(--text);
+    font-family: var(--font-ui); font-size: 11px; padding: 2px 9px; border-radius: 5px; cursor: default; }
+  .op-go:hover:not(:disabled) { border-color: var(--green); color: var(--green); }
+  .op-abort:hover:not(:disabled) { border-color: var(--red); color: var(--red); }
+  .op-go:disabled, .op-abort:disabled { opacity: 0.5; }
+  .chg.conflict .fname { color: var(--text); }
+  .cact { border: 1px solid var(--border); background: transparent; color: var(--text2);
+    font-family: var(--font-ui); font-size: 10.5px; height: 18px; padding: 0 6px; border-radius: 4px;
+    display: inline-flex; align-items: center; cursor: default; flex: 0 0 auto; }
+  .cact:hover:not(:disabled) { color: var(--text); border-color: var(--text3); }
+  .cact.ok:hover:not(:disabled) { color: var(--green); border-color: var(--green); }
+  .cact:disabled { opacity: 0.5; }
   .chg { display: flex; align-items: center; height: 24px; padding: 0 8px 0 14px; gap: 6px; font-size: 12px;
     transition: background 0.1s ease; }
   .chg:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
