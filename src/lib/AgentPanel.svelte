@@ -120,9 +120,13 @@
     ta?.focus();
   }
 
+  // Cap retained chat so a long-running session can't grow memory / localStorage
+  // unbounded (and so the payload sent to the model stays bounded).
+  const MSG_CAP = 400;
+
   onMount(async () => {
     const saved = typeof localStorage !== "undefined" ? localStorage.getItem("anvil-agent-chat") : null;
-    if (saved) { try { messages = JSON.parse(saved); } catch { /* ignore */ } }
+    if (saved) { try { messages = (JSON.parse(saved) as Message[]).slice(-MSG_CAP); } catch { /* ignore */ } }
     try {
       const { base, apiKey } = await llmCreds();
       models = await invoke<string[]>("llm_models", { base, apiKey });
@@ -132,6 +136,10 @@
     } catch { models = []; }
     if (listFiles) { try { fileList = await listFiles(); } catch { fileList = []; } }
   });
+
+  // Trim to the cap whenever the history grows past it (no-op once at the cap, so
+  // it can't loop). Keeps the most recent exchanges.
+  $effect(() => { if (messages.length > MSG_CAP) messages = messages.slice(-MSG_CAP); });
 
   // Persist conversation across view switches.
   $effect(() => {
