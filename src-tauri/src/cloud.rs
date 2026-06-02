@@ -103,6 +103,8 @@ pub async fn aws_list(service: String) -> Result<String, String> {
             "s3" => vec!["s3", "ls"],
             "lambda" => vec!["lambda", "list-functions", "--query", "Functions[].{Name:FunctionName,Runtime:Runtime,Mem:MemorySize}", "--output", "table"],
             "rds" => vec!["rds", "describe-db-instances", "--query", "DBInstances[].{ID:DBInstanceIdentifier,Engine:Engine,Class:DBInstanceClass,Status:DBInstanceStatus}", "--output", "table"],
+            "ecs" => vec!["ecs", "list-clusters", "--query", "clusterArns", "--output", "table"],
+            "eks" => vec!["eks", "list-clusters", "--query", "clusters", "--output", "table"],
             other => return Err(format!("unknown aws service: {other}")),
         };
         let mut cmd = std::process::Command::new("aws");

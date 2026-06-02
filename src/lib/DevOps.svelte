@@ -17,7 +17,7 @@
 
   let tab = $state<"prs" | "actions" | "gitlab" | "docker" | "aws" | "inc">("prs");
   // #59 AWS in-pane resource browser.
-  let awsSvc = $state<"ec2" | "s3" | "lambda" | "rds">("ec2");
+  let awsSvc = $state<"ec2" | "s3" | "lambda" | "rds" | "ecs" | "eks">("ec2");
   let awsOut = $state("");
   let awsBusy = $state(false);
   async function loadAws() {
@@ -358,7 +358,7 @@
   {:else if tab === "aws"}
     <div class="bar">
       <span class="lbl">AWS</span>
-      <select class="sel" bind:value={awsSvc} onchange={loadAws}><option value="ec2">EC2</option><option value="s3">S3</option><option value="lambda">Lambda</option><option value="rds">RDS</option></select>
+      <select class="sel" bind:value={awsSvc} onchange={loadAws}><option value="ec2">EC2</option><option value="s3">S3</option><option value="lambda">Lambda</option><option value="rds">RDS</option><option value="ecs">ECS</option><option value="eks">EKS</option></select>
       <button class="refresh" onclick={loadAws} title="Refresh"><Icon name="refresh" size={13} /></button>
     </div>
     {#if awsBusy && !awsOut}<div class="empty">Loading…</div>{/if}
