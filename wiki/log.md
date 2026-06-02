@@ -19,6 +19,15 @@ confidence: high
   `git apply` stdin pipe in `git_apply_hunk`, `tf_detect` version probes. `cargo build` clean;
   9 tests pass; 0 new clippy warnings; `cargo fmt` applied.
 
+- 2026-06-02 — Code-health sweep: fixed all svelte-check diagnostics (was 1 error + 60 warnings,
+  now 0/0). Changes: (1) installed `@types/node` devDep + removed now-redundant `@ts-expect-error`
+  in `vite.config.js`; (2) replaced `<svelte:self>` with self-import `PaneGrid` in
+  `src/lib/PaneGrid.svelte`; (3) removed unused `.hint` CSS selector in `src/routes/+page.svelte`;
+  (4) added `role="button"`, `tabindex="0"`, and `onkeydown` (Enter/Space) handlers to all 29
+  interactive `<div>`/`<span>` elements in `+page.svelte` that were missing a11y attributes
+  (tab items, close × buttons, rail nav items, explorer session rows, bottom dock close, status
+  bar toggles, zen-exit). No behavior or visual changes. vite build clean; 486/486 vitest pass.
+
 - 2026-06-02 — Restructured `src/lib/SourceControl.svelte` into a two-pane layout (VS Code /
   Zed style). Left pane (`aside.scm-side`, 300px fixed): commit composer at top, changed files
   (Staged + Changes) scrollable below. Right pane (`main.scm-main`, flex:1): branch header,

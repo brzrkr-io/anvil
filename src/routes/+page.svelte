@@ -1267,44 +1267,44 @@
   {#if zen}<div class="zen-bar" data-tauri-drag-region></div>{/if}
   <div class="tabs" data-tauri-drag-region>
     {#each terms as t (t.id)}
-      <div class="tab {rail === 'term' && activeTerm === t.id ? 'on' : ''}" onclick={() => selectTerm(t.id)} title={t.title}
+      <div class="tab {rail === 'term' && activeTerm === t.id ? 'on' : ''}" role="button" tabindex="0" onclick={() => selectTerm(t.id)} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), selectTerm(t.id))} title={t.title}
         draggable="true" class:drag={dragTab?.kind === 'term' && dragTab.id === t.id}
         ondragstart={() => { dragTab = { kind: 'term', id: t.id }; tabDragView = { view: 'term', ref: t.id }; }}
         ondragend={() => { dragTab = null; tabDragView = null; }} ondragover={(e) => e.preventDefault()}
         ondrop={() => tabDrop('term', t.id)} oncontextmenu={(e) => tabCtx(e, 'term', t.id)}>
         <span class="tt">{t.title}</span>
-        <span class="x" onclick={(e) => { e.stopPropagation(); closeTerm(t.id); }}>×</span>
+        <span class="x" role="button" tabindex="0" onclick={(e) => { e.stopPropagation(); closeTerm(t.id); }} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), e.stopPropagation(), closeTerm(t.id))}>×</span>
       </div>
     {/each}
     {#each orderedFiles as f (f)}
-      <div class="tab {rail === 'editor' && activeFile === f ? 'on' : ''}" class:pinned-tab={pinnedFiles.includes(f)} onclick={() => { activeFile = f; rail = 'editor'; }} title={tabGroups[f] ? `${f}  ·  group: ${tabGroups[f]}` : f}
+      <div class="tab {rail === 'editor' && activeFile === f ? 'on' : ''}" class:pinned-tab={pinnedFiles.includes(f)} role="button" tabindex="0" onclick={() => { activeFile = f; rail = 'editor'; }} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (activeFile = f, rail = 'editor'))} title={tabGroups[f] ? `${f}  ·  group: ${tabGroups[f]}` : f}
         style={tabGroups[f] ? `box-shadow: inset 0 -2px 0 ${groupColor(tabGroups[f])}` : ''}
         draggable="true" class:drag={dragTab?.kind === 'file' && dragTab.id === f}
         ondragstart={() => { dragTab = { kind: 'file', id: f }; tabDragView = { view: 'editor', ref: f }; }}
         ondragend={() => { dragTab = null; tabDragView = null; }} ondragover={(e) => e.preventDefault()}
         ondrop={() => tabDrop('file', f)} oncontextmenu={(e) => tabCtx(e, 'file', f)}>
-        {#if pinnedFiles.includes(f)}<span class="pin" onclick={(e) => { e.stopPropagation(); togglePin(f); }} title="Unpin"><Icon name="pin" size={9} /></span>{/if}
+        {#if pinnedFiles.includes(f)}<span class="pin" role="button" tabindex="0" onclick={(e) => { e.stopPropagation(); togglePin(f); }} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), e.stopPropagation(), togglePin(f))} title="Unpin"><Icon name="pin" size={9} /></span>{/if}
         <span class="tt">{baseName(f)}</span>{#if dirtyFiles[f]}<span class="dirty"></span>{/if}
-        <span class="x" onclick={(e) => { e.stopPropagation(); closeFile(f); }}>×</span>
+        <span class="x" role="button" tabindex="0" onclick={(e) => { e.stopPropagation(); closeFile(f); }} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), e.stopPropagation(), closeFile(f))}>×</span>
       </div>
     {/each}
     {#each panels as p (p.id)}
-      <div class="tab {rail === 'panel' && activePanel === p.id ? 'on' : ''}" onclick={() => selectPanel(p.id)} title={p.title}>
+      <div class="tab {rail === 'panel' && activePanel === p.id ? 'on' : ''}" role="button" tabindex="0" onclick={() => selectPanel(p.id)} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), selectPanel(p.id))} title={p.title}>
         <span class="tab-ic"><Icon name={panelIcon(p.kind)} size={12} /></span>
         <span class="tt">{p.title}</span>
-        <span class="x" onclick={(e) => { e.stopPropagation(); closePanel(p.id); }}>×</span>
+        <span class="x" role="button" tabindex="0" onclick={(e) => { e.stopPropagation(); closePanel(p.id); }} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), e.stopPropagation(), closePanel(p.id))}>×</span>
       </div>
     {/each}
     {#if openFiles.length > 1}
-      <div class="newtab" title="All open tabs" onclick={() => (tabOverflow = !tabOverflow)}>⌄</div>
+      <div class="newtab" role="button" tabindex="0" title="All open tabs" onclick={() => (tabOverflow = !tabOverflow)} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (tabOverflow = !tabOverflow))}>⌄</div>
     {/if}
     {#if settingsOpen}
-      <div class="tab {rail === 'settings' ? 'on' : ''}" onclick={() => (rail = 'settings')}>
+      <div class="tab {rail === 'settings' ? 'on' : ''}" role="button" tabindex="0" onclick={() => (rail = 'settings')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'settings'))}>
         <span class="tab-ic"><Icon name="settings" size={12} /></span><span class="tt">Settings</span>
-        <span class="x" onclick={(e) => { e.stopPropagation(); settingsOpen = false; if (rail === 'settings') rail = 'term'; }}>×</span>
+        <span class="x" role="button" tabindex="0" onclick={(e) => { e.stopPropagation(); settingsOpen = false; if (rail === 'settings') rail = 'term'; }} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), e.stopPropagation(), (settingsOpen = false, rail === 'settings' && (rail = 'term')))}>×</span>
       </div>
     {/if}
-    <div class="newtab" title="New…" onclick={(e) => { if (plusMenu) { plusMenu = null; return; } const r = e.currentTarget.getBoundingClientRect(); plusMenu = { x: r.left, y: r.bottom + 4 }; }}><Icon name="plus" size={15} /></div>
+    <div class="newtab" role="button" tabindex="0" title="New…" onclick={(e) => { if (plusMenu) { plusMenu = null; return; } const r = e.currentTarget.getBoundingClientRect(); plusMenu = { x: r.left, y: r.bottom + 4 }; }} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (plusMenu) { plusMenu = null; } else { const r = (e.currentTarget as HTMLElement).getBoundingClientRect(); plusMenu = { x: r.left, y: r.bottom + 4 }; } } }}><Icon name="plus" size={15} /></div>
     <div class="spacer" data-tauri-drag-region></div>
   </div>
 
@@ -1351,19 +1351,19 @@
     {#if $autoHideRail}<div class="rail-hot"></div>{/if}
     {#if !railHidden}
     <nav class="rail">
-      <div class="i {rail === 'term' ? 'on' : ''}" title="Terminal" onclick={() => (rail = 'term')}><Icon name="terminal" /></div>
-      <div class="i panel {explorerOpen ? 'pinned' : ''}" title="Explorer (⌘B)" onclick={toggleSide}><Icon name="folder" /></div>
-      <div class="i {rail === 'scm' ? 'on' : ''}" title="Source Control" onclick={() => (rail = 'scm')}><Icon name="branch" /></div>
-      <div class="i {rail === 'search' ? 'on' : ''}" title="Search (⌘⇧F)" onclick={() => (rail = 'search')}><Icon name="search" /></div>
-      <div class="i {rail === 'agent' ? 'on' : ''}" title="AI Agent" onclick={() => (rail = 'agent')}><Icon name="agent" /></div>
-      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'k8s' ? 'on' : ''}" title="Kubernetes" onclick={() => (rail = 'k8s')}><Icon name="kube" /></div>{/if}
-      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'ci' ? 'on' : ''}" title="CI / Pipelines" onclick={() => (rail = 'ci')}><Icon name="ci" /></div>{/if}
-      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'terraform' ? 'on' : ''}" title="Terraform / Terragrunt" onclick={() => (rail = 'terraform')}><Icon name="terraform" /></div>{/if}
-      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'helm' ? 'on' : ''}" title="Helm" onclick={() => (rail = 'helm')}><Icon name="helm" /></div>{/if}
-      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'obs' ? 'on' : ''}" title="Observability (Metrics / Logs)" onclick={() => (rail = 'obs')}><Icon name="chart" /></div>{/if}
-      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'devops' ? 'on' : ''}" title="DevOps (PRs / GitLab / AWS / Incidents)" onclick={() => (rail = 'devops')}><Icon name="devops" /></div>{/if}
-      <div class="i {rail === 'workspace' ? 'on' : ''}" title="Workspace (multipane)" onclick={() => (rail = 'workspace')}><Icon name="workspace" /></div>
-      <div class="i grow {rail === 'settings' ? 'on' : ''}" title="Settings" onclick={openSettings}><Icon name="settings" /></div>
+      <div class="i {rail === 'term' ? 'on' : ''}" role="button" tabindex="0" title="Terminal" onclick={() => (rail = 'term')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'term'))}><Icon name="terminal" /></div>
+      <div class="i panel {explorerOpen ? 'pinned' : ''}" role="button" tabindex="0" title="Explorer (⌘B)" onclick={toggleSide} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), toggleSide())}><Icon name="folder" /></div>
+      <div class="i {rail === 'scm' ? 'on' : ''}" role="button" tabindex="0" title="Source Control" onclick={() => (rail = 'scm')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'scm'))}><Icon name="branch" /></div>
+      <div class="i {rail === 'search' ? 'on' : ''}" role="button" tabindex="0" title="Search (⌘⇧F)" onclick={() => (rail = 'search')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'search'))}><Icon name="search" /></div>
+      <div class="i {rail === 'agent' ? 'on' : ''}" role="button" tabindex="0" title="AI Agent" onclick={() => (rail = 'agent')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'agent'))}><Icon name="agent" /></div>
+      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'k8s' ? 'on' : ''}" role="button" tabindex="0" title="Kubernetes" onclick={() => (rail = 'k8s')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'k8s'))}><Icon name="kube" /></div>{/if}
+      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'ci' ? 'on' : ''}" role="button" tabindex="0" title="CI / Pipelines" onclick={() => (rail = 'ci')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'ci'))}><Icon name="ci" /></div>{/if}
+      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'terraform' ? 'on' : ''}" role="button" tabindex="0" title="Terraform / Terragrunt" onclick={() => (rail = 'terraform')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'terraform'))}><Icon name="terraform" /></div>{/if}
+      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'helm' ? 'on' : ''}" role="button" tabindex="0" title="Helm" onclick={() => (rail = 'helm')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'helm'))}><Icon name="helm" /></div>{/if}
+      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'obs' ? 'on' : ''}" role="button" tabindex="0" title="Observability (Metrics / Logs)" onclick={() => (rail = 'obs')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'obs'))}><Icon name="chart" /></div>{/if}
+      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'devops' ? 'on' : ''}" role="button" tabindex="0" title="DevOps (PRs / GitLab / AWS / Incidents)" onclick={() => (rail = 'devops')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'devops'))}><Icon name="devops" /></div>{/if}
+      <div class="i {rail === 'workspace' ? 'on' : ''}" role="button" tabindex="0" title="Workspace (multipane)" onclick={() => (rail = 'workspace')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'workspace'))}><Icon name="workspace" /></div>
+      <div class="i grow {rail === 'settings' ? 'on' : ''}" role="button" tabindex="0" title="Settings" onclick={openSettings} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openSettings())}><Icon name="settings" /></div>
     </nav>
     {/if}
 
@@ -1371,7 +1371,7 @@
     <aside class="side">
       <div class="sect">Sessions <span class="n">{terms.length}</span></div>
       {#each terms as t (t.id)}
-        <div class="row {activeTerm === t.id ? 'cur' : ''}" onclick={() => selectTerm(t.id)}>
+        <div class="row {activeTerm === t.id ? 'cur' : ''}" role="button" tabindex="0" onclick={() => selectTerm(t.id)} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), selectTerm(t.id))}>
           <span class="ic">›_</span>{t.title}
         </div>
       {/each}
@@ -1559,7 +1559,7 @@
             <button class="bdock-tab" class:on={dockTab === "problems"} onclick={() => (dockTab = "problems")}>
               <Icon name="alert" size={12} /> Problems{#if $problems.length} <span class="bdock-badge">{$problems.length}</span>{/if}
             </button>
-            <span class="x" onclick={() => (bottomDock = false)} title="Close (⌘J)">×</span>
+            <span class="x" role="button" tabindex="0" onclick={() => (bottomDock = false)} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (bottomDock = false))} title="Close (⌘J)">×</span>
           </div>
           <div class="bdock-term" class:hidden={dockTab !== "term"}><Terminal id="dock" {cwd} active={bottomDock && dockTab === "term"} /></div>
           {#if dockTab === "problems"}
@@ -1584,14 +1584,14 @@
     <span class="si"><Icon name="branch" size={12} /> {branch || "—"}{#if aheadBehind} <span class="ab">↑{aheadBehind.a} ↓{aheadBehind.b}</span>{/if}</span>
     <span title={cwd}>{baseName(cwd) || "~"}</span>
     <div class="r">
-      <span class="si" onclick={toggleDensity} title="Toggle density" style="cursor:default">{$density}</span>
-      <span class="si" onclick={cycleTheme} title="Cycle theme" style="cursor:default">{themeLabel($activeTheme)}</span>
+      <span class="si" role="button" tabindex="0" onclick={toggleDensity} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), toggleDensity())} title="Toggle density" style="cursor:default">{$density}</span>
+      <span class="si" role="button" tabindex="0" onclick={cycleTheme} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), cycleTheme())} title="Cycle theme" style="cursor:default">{themeLabel($activeTheme)}</span>
       <span class="ok" title="Ready">●</span>
       <span>UTF-8</span>
     </div>
   </div>
 
-  {#if zen}<div class="zen-exit" onclick={() => toggleZen()} role="button" tabindex="-1" title="Exit zen mode (⌘.)">⌘. exit zen</div>{/if}
+  {#if zen}<div class="zen-exit" role="button" tabindex="0" onclick={() => toggleZen()} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), toggleZen())} title="Exit zen mode (⌘.)">⌘. exit zen</div>{/if}
   <Palette bind:open={paletteOpen} items={paletteItems} placeholder={palettePlaceholder} />
   <Dialog />
   <Toasts />
@@ -1682,8 +1682,7 @@
   .view.ws { padding: 6px; gap: 0; }
   .ws-empty { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text3); font-size: 12.5px; }
   .term-row { flex: 1; min-height: 0; }
-  .hint { padding: 24px; color: var(--text3); }
-  .difftop { padding: 6px 12px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
+.difftop { padding: 6px 12px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
   .back { border: 0; background: transparent; color: var(--accent); font-size: 12px; cursor: default; }
   .tab .x { margin-left: 8px; color: var(--text3); font-size: 13px; }
   .tab .x:hover { color: var(--text); }

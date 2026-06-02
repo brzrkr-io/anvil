@@ -1,5 +1,6 @@
 <script lang="ts">
   import { leafIds, type PaneNode, type SplitNode, type Leaf, type ViewKind, type Edge } from "./panes";
+  import PaneGrid from "./PaneGrid.svelte";
   import type { Snippet } from "svelte";
 
   let {
@@ -105,7 +106,7 @@
     {#each sp.children as child, i (child.id)}
       {@const hide = zoomId && !leafIds(child).includes(zoomId)}
       <div class="cell" style="flex: {hide ? 0 : zoomId ? 1 : sp.sizes[i]} 1 0; min-width:0; min-height:0; {hide ? 'display:none;' : ''}">
-        <svelte:self node={child} {view} {drag} {activeId} {onSplit} {onClose} {onSetView} {onResize} {onDock} {onFocusLeaf} {onDragStart} {onDragEnd} {extDrag} {onDropExternal} {onSetActiveTab} {onCloseTab} {onAddTab} {zoomId} {dim} depth={depth + 1} />
+        <PaneGrid node={child} {view} {drag} {activeId} {onSplit} {onClose} {onSetView} {onResize} {onDock} {onFocusLeaf} {onDragStart} {onDragEnd} {extDrag} {onDropExternal} {onSetActiveTab} {onCloseTab} {onAddTab} {zoomId} {dim} depth={depth + 1} />
       </div>
       {#if i < sp.children.length - 1 && !zoomId}
         <div class="divider {sp.dir}" onpointerdown={(e) => startResize(e, sp, i)} role="separator" tabindex="-1"></div>
