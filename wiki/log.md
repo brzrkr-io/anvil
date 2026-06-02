@@ -2442,3 +2442,9 @@ Tests updated: `build_section_*` tests replaced with `context_section_*` tests; 
   failing-count badge on the k8s rail icon (onHealth: Flux→Kube→page). Pure
   sort/summary logic → flux-health.ts + 10 tests. Goal: reconcile loop faster
   than the kubectl+terminal path (fewer keystrokes, state visible without typing).
+
+- 2026-06-02 — Sharpened beat-target 2 (IaC plan/apply, decision 0006).
+  Terraform.svelte: plan result cached per stack dir and shown on the stacks list
+  as a drift badge ('+a ~c -d' or '✓'), so pending changes are visible without
+  re-planning each stack. Pure plan parsing + line classification → iac-plan.ts
+  + 10 tests. Mirrors the GitOps loop's "state visible without typing" approach.
