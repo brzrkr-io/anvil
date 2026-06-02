@@ -44,3 +44,26 @@ test("the + menu opens with New… actions", async ({ page }) => {
   await expect(menu.getByText("New Terminal")).toBeVisible();
   await expect(menu.getByText("Web Preview")).toBeVisible();
 });
+
+test("the Basin brand mark anchors the rail", async ({ page }) => {
+  await expect(page.locator(".rail .brandmark")).toBeVisible();
+});
+
+test("command palette surfaces ops commands", async ({ page }) => {
+  await page.keyboard.press("Meta+k");
+  const input = page.locator(".palette input");
+  await input.fill("Run Snippet");
+  await expect(page.locator(".palette .pi").filter({ hasText: "Run Snippet" }).first()).toBeVisible();
+  await input.fill("Secrets");
+  await expect(page.locator(".palette .pi").filter({ hasText: "Secrets" }).first()).toBeVisible();
+  await page.keyboard.press("Escape");
+});
+
+test("the snippets palette lists default DevOps commands", async ({ page }) => {
+  await page.keyboard.press("Meta+k");
+  await page.locator(".palette input").fill("Run Snippet");
+  await page.locator(".palette .pi").filter({ hasText: "Run Snippet" }).first().click();
+  await page.locator(".palette input").fill(""); // sub-palette keeps the old filter
+  await expect(page.locator(".palette .pi").filter({ hasText: "kubectl" }).first()).toBeVisible();
+  await page.keyboard.press("Escape");
+});
