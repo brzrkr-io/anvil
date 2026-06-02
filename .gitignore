@@ -19,3 +19,15 @@ vite.config.ts.timestamp-*
 .obsidian/
 /.forge
 /.superpowers
+
+# internal scaffolding — not part of the shipped app, kept local only
+/.claude
+/wiki
+/context
+/brand
+/AGENTS.md
+/CLAUDE.md
+/BRAND.md
+/SHIP.md
+/docs/RELEASE.md
+/docs/superpowers
