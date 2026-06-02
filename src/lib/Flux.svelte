@@ -98,6 +98,7 @@
       const verb = cmd.replace("flux_", "");
       toast(`${verb} ${it.name}: ${out.trim().split("\n").pop() || "done"}`.slice(0, 120), /error|fail/i.test(out) ? "error" : "success");
       await load();
+      refreshClusterHealth();
     } catch (e) {
       toast(String(e).slice(0, 160), "error");
     } finally {
@@ -114,8 +115,25 @@
     onRunCommand?.(`flux events --for ${it.apiKind}/${it.name} -n ${it.ns}`);
   }
 
-  let fails = $derived(failingCount(items));
-  $effect(() => { onHealth?.(present ? fails : 0); });
+  let fails = $derived(failingCount(items)); // active tab only (drives the in-panel chip)
+
+  // A1: cluster-wide failing count — Kustomizations + HelmReleases, regardless of
+  // the active tab — so the rail badge reflects the whole cluster's health.
+  let clusterFails = $state(0);
+  async function refreshClusterHealth() {
+    let total = 0;
+    let any = false;
+    for (const kind of ["kustomizations", "helmreleases"]) {
+      try {
+        const raw = await invoke<string>("flux_get", { kind });
+        if (/the server doesn't have a resource type|no matches for kind|NotFound|could not find the requested resource/i.test(raw)) continue;
+        any = true;
+        total += failingCount(parse(raw));
+      } catch { /* ignore one kind */ }
+    }
+    if (any) clusterFails = total;
+  }
+  $effect(() => { onHealth?.(present ? clusterFails : 0); });
 
   // Auto-poll while the panel is visible so a reconcile is watched to green
   // without hammering the refresh button. Skip ticks while a load is in flight
@@ -125,9 +143,11 @@
   function tick() {
     if (loading || busyRow || (typeof document !== "undefined" && document.hidden)) return;
     load();
+    refreshClusterHealth();
   }
   onMount(() => {
     load();
+    refreshClusterHealth();
     timer = setInterval(tick, POLL_MS);
   });
   onDestroy(() => clearInterval(timer));
