@@ -269,7 +269,7 @@
   const TOUR = [
     { title: "Welcome to Anvil", body: "The AI-native console for 100% of your work — terminal, editor, git, and DevOps in one native surface.", tips: ["Press <kbd>⌘K</kbd> any time — every action lives in the command palette."] },
     { title: "Code & terminal together", body: "Open files alongside live shells.", tips: ["<kbd>⌘O</kbd> open file · <kbd>⌘⇧O</kbd> open folder", "<kbd>⌘T</kbd> new terminal · <kbd>⌘J</kbd> terminal under your editor", "<kbd>⌘\\</kbd> split workspace panes · drag a tab onto a pane edge"] },
-    { title: "Git & DevOps built in", body: "Source Control has a Terax-style commit panel, swimlane history, and per-hunk staging. The DevOps tab fronts k8s, CI, Helm, Terraform, and observability.", tips: ["✨ writes your commit message from the staged diff."] },
+    { title: "Git & DevOps built in", body: "Source Control has a Terax-style commit panel, swimlane history, and per-hunk staging. The DevOps tab fronts k8s, CI, Helm, Terraform, and observability.", tips: ["The <kbd>gen</kbd> button writes your commit message from the staged diff."] },
     { title: "Your AI agent", body: "The agent reads files, terminal output, and the repo map — all redacted, all local-first.", tips: ["<kbd>⌘I</kbd> ask the agent · <kbd>⌘,</kbd> Settings for themes, fonts, keymap."] },
   ];
   function tourNext() { if (obStep < TOUR.length - 1) obStep += 1; else dismissOnboard(); }
@@ -1411,12 +1411,10 @@
   <div class="status">
     <span class="accent si"><Icon name="branch" size={12} /> {branch || "—"}{#if aheadBehind} <span class="ab">↑{aheadBehind.a} ↓{aheadBehind.b}</span>{/if}</span>
     <span title={cwd}>{baseName(cwd) || "~"}</span>
-    <span>Anvil 0.1.0</span>
     <div class="r">
-      <span class="accent si" onclick={toggleDensity} title="Toggle density" style="cursor:default"><Icon name="density" size={12} /> {$density}</span>
-      <span class="accent si" onclick={cycleTheme} title="Cycle theme" style="cursor:default"><Icon name="theme" size={12} /> {themeLabel($activeTheme)}</span>
-      <span class="accent si"><Icon name="agent" size={12} /> Agent ⌘I</span>
-      <span class="ok">● READY</span>
+      <span class="si" onclick={toggleDensity} title="Toggle density" style="cursor:default">{$density}</span>
+      <span class="si" onclick={cycleTheme} title="Cycle theme" style="cursor:default">{themeLabel($activeTheme)}</span>
+      <span class="ok" title="Ready">●</span>
       <span>UTF-8</span>
     </div>
   </div>
