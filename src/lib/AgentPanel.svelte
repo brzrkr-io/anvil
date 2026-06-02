@@ -224,7 +224,10 @@
     await loadProjectRules();
     let base = `You are the AI agent inside Anvil, a developer console. The working directory is ${cwd}. Be concise and practical. When asked to edit the attached file, reply with the COMPLETE new file contents in a single fenced code block. For a multi-step task, FIRST output a fenced \`\`\`plan code block with one short step per line, then the details.`;
     if (projectRules) base += `\n\nProject conventions (follow these):\n${projectRules}`;
-    if (autoTools) base += "\n\n" + TOOL_SYSTEM_PROMPT;
+    if (autoTools) {
+      base += "\n\n" + TOOL_SYSTEM_PROMPT;
+      base += "\n\nOperational context: this is a DevOps console. Where present on PATH you may use kubectl, flux, terragrunt, terraform, helm, aws, gh, glab, and docker via the run tool. Always investigate before mutating — read state first (get / describe / status / plan / logs). For Kubernetes managed by FluxCD, prefer `flux` (get / reconcile / logs / suspend) over `kubectl apply`, since the cluster is reconciled from git.";
+    }
     const sys = { role: "system", content: base };
     const hist = messages.map((m) => ({ role: m.role, content: m.text }));
     messages = [...messages, { role: "assistant", text: "…" }];
