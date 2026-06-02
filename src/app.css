@@ -183,14 +183,12 @@ body {
    partly see-through and --win-blur (set by the opacity control) blurs the native
    vibrancy backdrop behind it, so it reads as frosted glass instead of a raw,
    washed-out window. At full opacity --win-blur is 0 (no compositing cost). */
-.rail, .side, .tabs, .content, .status {
-  backdrop-filter: blur(var(--win-blur)) saturate(1.1);
-  -webkit-backdrop-filter: blur(var(--win-blur)) saturate(1.1);
-}
-/* When translucent, the editor + terminal drop their own opaque backgrounds so
-   the frosted shell shows through uniformly (otherwise only the chrome frosts
-   and the big content pane stays a solid block). Theme bg still tints via the
-   .content surface behind them. */
+/* Translucency is done the macOS-native way: the NSWindow's vibrancy material
+   (set via windowEffects + window::set_vibrancy) is the ONE blur layer. The
+   webview surfaces are just semi-transparent theme tint on top of it — NO CSS
+   backdrop-filter (stacking it on every surface compounds into mud). For the
+   blur to actually show through the big panes, the editor + terminal drop their
+   opaque backgrounds when translucent. */
 :root.translucent .cm-editor,
 :root.translucent .cm-scroller,
 :root.translucent .cm-gutters,

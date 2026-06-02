@@ -717,20 +717,8 @@ function applyVars(name: string): void {
     const ov = JSON.parse(localStorage.getItem("anvil-custom-theme") || "{}");
     for (const [k, v] of Object.entries(ov)) root.setProperty(`--${k}`, v as string);
   } catch { /* ignore */ }
-  const light = isLight(name);
-  document.documentElement.style.colorScheme = light ? "light" : "dark";
+  document.documentElement.style.colorScheme = isLight(name) ? "light" : "dark";
   activeTheme.set(name);
-  syncVibrancy(light);
-}
-
-// Match the native macOS window vibrancy material to the theme's light/dark mode
-// so translucency frosts instead of washing. No-op outside the Tauri shell.
-async function syncVibrancy(light: boolean): Promise<void> {
-  if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return;
-  try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("set_vibrancy", { dark: !light });
-  } catch { /* not in tauri / command missing */ }
 }
 
 const prefersLight = () =>

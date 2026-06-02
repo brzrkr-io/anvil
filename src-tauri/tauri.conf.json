@@ -22,9 +22,9 @@
         "transparent": true,
         "windowEffects": {
           "effects": [
-            "sidebar"
+            "hudWindow"
           ],
-          "state": "followsWindowActiveState"
+          "state": "active"
         }
       }
     ],

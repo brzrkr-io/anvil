@@ -17,15 +17,11 @@ export function applyOpacity(n: number): void {
   const v = Math.round(Math.max(MIN, Math.min(MAX, n)) * 100) / 100;
   if (typeof document !== "undefined") {
     const root = document.documentElement;
-    // Floor the *visual* surface alpha so the theme color always dominates the
-    // backdrop — otherwise the desktop washes straight through. Slider 0.5..1
-    // maps to surface 0.66..1; the raw slider value still drives the store.
-    const surface = v >= 1 ? 1 : 0.66 + (v - MIN) * ((1 - 0.66) / (1 - MIN));
-    const blur = v >= 1 ? 0 : Math.round((1 - v) * 64);
-    root.style.setProperty("--win-alpha", surface.toFixed(3));
-    root.style.setProperty("--win-blur", `${blur}px`);
-    // Flag for the editor/terminal panes to drop their opaque backgrounds so the
-    // frosted shell shows through uniformly (not just the chrome).
+    // Surface tint = the slider value directly. The native vibrancy material
+    // behind the webview provides the blur and keeps it readable, so we don't
+    // floor or add CSS blur here. `translucent` lets the editor/terminal panes
+    // go see-through so the blur shows through them too.
+    root.style.setProperty("--win-alpha", String(v));
     root.classList.toggle("translucent", v < 1);
   }
   if (typeof localStorage !== "undefined") localStorage.setItem("anvil-win-opacity", String(v));
