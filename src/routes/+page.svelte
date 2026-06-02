@@ -1267,7 +1267,7 @@
       {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'terraform' ? 'on' : ''}" title="Terraform / Terragrunt" onclick={() => (rail = 'terraform')}><Icon name="terraform" /></div>{/if}
       {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'helm' ? 'on' : ''}" title="Helm" onclick={() => (rail = 'helm')}><Icon name="helm" /></div>{/if}
       {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'obs' ? 'on' : ''}" title="Observability (Metrics / Logs)" onclick={() => (rail = 'obs')}><Icon name="chart" /></div>{/if}
-      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'devops' ? 'on' : ''}" title="DevOps (AWS / Secrets / PRs / Incidents)" onclick={() => (rail = 'devops')}><Icon name="devops" /></div>{/if}
+      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'devops' ? 'on' : ''}" title="DevOps (PRs / GitLab / AWS / Incidents)" onclick={() => (rail = 'devops')}><Icon name="devops" /></div>{/if}
       {#if railEnabled('caldera', $extEnabled)}<div class="i {rail === 'caldera' ? 'on' : ''}" title="Caldera control plane" onclick={() => (rail = 'caldera')}><Icon name="caldera" /></div>{/if}
       <div class="i {rail === 'workspace' ? 'on' : ''}" title="Workspace (multipane)" onclick={() => (rail = 'workspace')}><Icon name="workspace" /></div>
       <div class="i grow {rail === 'settings' ? 'on' : ''}" title="Settings" onclick={openSettings}><Icon name="settings" /></div>
