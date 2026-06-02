@@ -581,20 +581,19 @@
   .logspace { position: relative; width: 100%; }
   .row { position: absolute; left: 0; right: 0; display: flex; align-items: center; height: 22px; padding: 0 16px; gap: 12px; cursor: default; }
   .row:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
-  .row.sel { background: color-mix(in srgb, var(--accent) 13%, transparent); box-shadow: inset 2px 0 0 var(--accent); }
+  .row.sel { background: color-mix(in srgb, var(--accent) 16%, transparent); box-shadow: inset 2px 0 0 var(--accent); }
   .graph { flex: 0 0 auto; height: 22px; overflow: visible; }
-  .sha { flex: 0 0 auto; width: 66px; color: var(--text3); font-size: 11px; font-variant-numeric: tabular-nums;
+  .sha { flex: 0 0 auto; width: 66px; color: var(--text2); font-size: 11.5px; font-variant-numeric: tabular-nums;
     letter-spacing: 0.01em; white-space: nowrap; overflow: hidden; }
   .subj { flex: 1 1 auto; min-width: 0; max-width: 760px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    color: var(--text); font-size: 12.5px; }
-  .ctype { font-family: var(--font-mono); font-weight: 500; }
-  .ref { display: inline-block; font-size: 10px; line-height: 15px; padding: 0 6px; margin-right: 8px; border-radius: 4px;
-    background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent);
-    border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); font-family: var(--font-mono); vertical-align: 1px; }
-  .auth { flex: 0 0 auto; width: 128px; color: var(--text3); font-size: 11px; white-space: nowrap;
+    color: var(--text); font-size: 13px; }
+  .ctype { font-family: var(--font-mono); font-weight: 600; }
+  .ref { display: inline-block; font-size: 10px; line-height: 16px; padding: 0 7px; margin-right: 8px; border-radius: 4px;
+    background: var(--panel2); color: var(--accent); border: 1px solid var(--border); font-family: var(--font-mono); vertical-align: 1px; }
+  .auth { flex: 0 0 auto; width: 128px; color: var(--text2); font-size: 11.5px; white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis; }
-  .when { flex: 0 0 auto; width: 46px; color: var(--text3); font-size: 11px; font-variant-numeric: tabular-nums; }
-  .cstat { flex: 0 0 auto; min-width: 56px; font-family: var(--font-mono); font-size: 10px; white-space: nowrap; }
+  .when { flex: 0 0 auto; width: 46px; color: var(--text2); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+  .cstat { flex: 0 0 auto; min-width: 56px; font-family: var(--font-mono); font-size: 10.5px; white-space: nowrap; }
   .cadd { color: var(--green); }
   .cdel { color: var(--red); margin-left: 5px; }
   .empty { padding: 24px 14px; color: var(--text3); }
