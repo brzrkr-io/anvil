@@ -187,6 +187,16 @@ body {
   backdrop-filter: blur(var(--win-blur)) saturate(1.1);
   -webkit-backdrop-filter: blur(var(--win-blur)) saturate(1.1);
 }
+/* When translucent, the editor + terminal drop their own opaque backgrounds so
+   the frosted shell shows through uniformly (otherwise only the chrome frosts
+   and the big content pane stays a solid block). Theme bg still tints via the
+   .content surface behind them. */
+:root.translucent .cm-editor,
+:root.translucent .cm-scroller,
+:root.translucent .cm-gutters,
+:root.translucent .xterm,
+:root.translucent .xterm-viewport,
+:root.translucent .xterm-screen { background: transparent !important; }
 /* Window translucency: shell surfaces are mixed toward transparent by
    --win-alpha (1 = fully opaque, identical to no transparency). At <1 the macOS
    vibrancy material set on the NSWindow shows through as a blurred backdrop. */
