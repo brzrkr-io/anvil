@@ -2,6 +2,8 @@
 //! Owns the PTY (cross-platform via portable-pty) and thin git helpers.
 //! The webview frontend (Svelte + xterm.js) drives everything over IPC.
 
+use tauri::Manager;
+
 mod ci;
 mod cloud;
 mod flux;
@@ -521,10 +523,38 @@ pub fn run() {
                     let _ = app.emit("menu", action.to_string());
                 }
             });
+            // Multi-monitor safety: a restored position can land off-screen if the
+            // display it was on is gone. Recenter any window whose center isn't on
+            // a connected monitor.
+            for win in app.handle().webview_windows().values() {
+                ensure_on_screen(win);
+            }
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// Recenter a window if its center point lies on no connected monitor (e.g. a
+/// saved position from an external display that's since been unplugged).
+fn ensure_on_screen(win: &tauri::WebviewWindow) {
+    let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) else {
+        return;
+    };
+    let cx = pos.x + size.width as i32 / 2;
+    let cy = pos.y + size.height as i32 / 2;
+    let monitors = win.available_monitors().unwrap_or_default();
+    if monitors.is_empty() {
+        return;
+    }
+    let on_screen = monitors.iter().any(|m| {
+        let mp = m.position();
+        let ms = m.size();
+        cx >= mp.x && cx < mp.x + ms.width as i32 && cy >= mp.y && cy < mp.y + ms.height as i32
+    });
+    if !on_screen {
+        let _ = win.center();
+    }
 }
 
 /// Native macOS menu bar (File / Edit / View / Window). Custom items carry a
