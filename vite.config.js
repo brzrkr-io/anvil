@@ -7,6 +7,22 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(async () => ({
   plugins: [sveltekit()],
 
+  // J91: split the heavy editor/terminal vendors into their own chunks so the
+  // initial parse is lighter and they cache independently across releases.
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("node_modules")) {
+            if (/@?codemirror|@lezer|@replit\/codemirror/.test(id)) return "vendor-codemirror";
+            if (/@xterm|xterm/.test(id)) return "vendor-xterm";
+            if (/marked/.test(id)) return "vendor-marked";
+          }
+        },
+      },
+    },
+  },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors
