@@ -302,7 +302,7 @@
       zen = true;
     }
   }
-  function openSettings() { settingsOpen = true; rail = "settings"; }
+  function openSettings() { settingsOpen = true; rail = "settings"; explorerOpen = false; }
   // Explorer is a persistent left panel, independent of the main view (#74): it
   // stays open while you're in the editor/terminal instead of being a `rail`
   // mode that other views replace.
@@ -607,6 +607,9 @@
   function openView(kind: string) {
     if (!viewTabs.includes(kind)) viewTabs = [...viewTabs, kind];
     rail = kind;
+    // App views (SCM/Search/k8s/CI/…) take the full pane — the Explorer sidebar
+    // is for file work (editor/terminal), so collapse it like every other view.
+    explorerOpen = false;
   }
   function closeView(kind: string) {
     viewTabs = viewTabs.filter((k) => k !== kind);
@@ -1009,13 +1012,13 @@
       { label: "GitLab: CI Pipelines (glab ci list)", run: () => { invoke("pty_write", { id: activeTerm, data: "glab ci list\n" }); rail = "term"; } },
       { label: "GitLab: Pipeline Logs (glab ci trace)", run: () => { invoke("pty_write", { id: activeTerm, data: "glab ci trace\n" }); rail = "term"; } },
       { label: "GitLab: Retry Pipeline (glab ci retry)", run: () => { invoke("pty_write", { id: activeTerm, data: "glab ci retry\n" }); rail = "term"; } },
-      { label: "View: Search", run: () => (rail = "search") },
-      { label: "View: AI Agent", run: () => (rail = "agent") },
-      { label: "View: Kubernetes", run: () => (rail = "k8s") },
-      { label: "View: CI / Pipelines", run: () => (rail = "ci") },
-      { label: "View: Terraform / Terragrunt", run: () => (rail = "terraform") },
-      { label: "View: Helm", hint: "in Kubernetes", run: () => (rail = "k8s") },
-      { label: "View: Observability (Metrics / Logs)", run: () => (rail = "obs") },
+      { label: "View: Search", run: () => openView("search") },
+      { label: "View: AI Agent", run: () => openView("agent") },
+      { label: "View: Kubernetes", run: () => openView("k8s") },
+      { label: "View: CI / Pipelines", run: () => openView("ci") },
+      { label: "View: Terraform / Terragrunt", run: () => openView("terraform") },
+      { label: "View: Helm", hint: "in Kubernetes", run: () => openView("k8s") },
+      { label: "View: Observability (Metrics / Logs)", run: () => openView("obs") },
       { label: "View: DevOps (Terraform / Helm / Observability)", run: () => (rail = "devops") },
       { label: "View: Workspace (multipane)", run: () => (rail = "workspace") },
       { label: "Workspace: Balance Panes", run: () => { paneTree = balanceTree(paneTree); rail = "workspace"; } },

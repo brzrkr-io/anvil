@@ -7,6 +7,7 @@
   import { askConfirm, askText } from "$lib/dialog";
   import Flux from "$lib/Flux.svelte";
   import Helm from "$lib/Helm.svelte";
+  import CodeView from "$lib/CodeView.svelte";
 
   let { cwd, onRunCommand, onHealth, onInvestigate, active = true }: { cwd: string; onRunCommand?: (cmd: string) => void; onHealth?: (failing: number) => void; onInvestigate?: (prompt: string) => void; active?: boolean } = $props();
 
@@ -378,7 +379,11 @@
           <span class="spacer"></span>
           <button class="iconbtn" onclick={() => (panel = null)} title="Close"><Icon name="close" size={13} /></button>
         </div>
-        <pre class="log-out">{panel.content}</pre>
+        {#if panel.title === "Describe"}
+          <div class="log-out cv"><CodeView text={panel.content} lang="yaml" /></div>
+        {:else}
+          <pre class="log-out">{panel.content}</pre>
+        {/if}
       </div>
     {/if}
   </div>
@@ -536,4 +541,6 @@
     font-family: var(--font-mono); font-size: 11px; line-height: 1.45;
     color: var(--text2); white-space: pre; background: var(--bg);
   }
+  /* CodeView owns its scroller/padding/font — strip the <pre> styling. */
+  .log-out.cv { padding: 0; overflow: hidden; white-space: normal; }
 </style>

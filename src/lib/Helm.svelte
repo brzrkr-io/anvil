@@ -4,6 +4,7 @@
   import Icon from "$lib/Icon.svelte";
   import { readCache, writeCache } from "$lib/cache";
   import { toast } from "$lib/toast";
+  import CodeView from "$lib/CodeView.svelte";
 
   interface Release {
     name: string; namespace: string; revision: string;
@@ -183,7 +184,7 @@
             {/if}
           </div>
         {:else}
-          <pre class="out">{content}</pre>
+          <div class="out cv"><CodeView text={content} lang="yaml" /></div>
         {/if}
       </div>
     {/if}
@@ -264,4 +265,6 @@
   .h-x { margin-left: auto; border: 0; background: transparent; color: var(--text3); cursor: default; font-size: 14px; line-height: 1; }
   .h-x:hover { color: var(--text); }
   .out.diff { margin: 0; }
+  /* CodeView brings its own scroller, font, and padding — strip the <pre> styling. */
+  .out.cv { padding: 0; overflow: hidden; white-space: normal; }
 </style>
