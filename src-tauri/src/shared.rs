@@ -55,11 +55,42 @@ pub(crate) fn shell_path() -> &'static str {
     })
 }
 
-/// Build a `Command` for an external CLI with the login-shell PATH injected, so a
-/// freshly-downloaded app finds the user's tools regardless of how it was
-/// launched. Use this instead of `Command::new` for any third-party binary.
+/// Resolve the login shell's environment once. A Finder/Dock-launched GUI app
+/// gets a minimal env, so rc-defined vars the CLIs rely on (KUBECONFIG,
+/// AWS_REGION, DOCKER_HOST, HTTPS_PROXY, …) are missing. Capture `env` from a
+/// login shell and keep every var EXCEPT PATH (owned by `shell_path`) and a few
+/// volatile ones that shouldn't be carried into child processes.
+fn shell_env() -> &'static Vec<(String, String)> {
+    static ENV: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+    ENV.get_or_init(|| {
+        let mut vars = Vec::new();
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+        if let Ok(out) = Command::new(&shell).args(["-lic", "env"]).output() {
+            for line in String::from_utf8_lossy(&out.stdout).lines() {
+                if let Some((k, v)) = line.split_once('=') {
+                    if k.is_empty() || matches!(k, "PATH" | "PWD" | "OLDPWD" | "SHLVL" | "_") {
+                        continue;
+                    }
+                    vars.push((k.to_string(), v.to_string()));
+                }
+            }
+        }
+        vars
+    })
+}
+
+/// Build a `Command` for an external CLI with the login-shell PATH + environment
+/// injected, so a freshly-downloaded app finds the user's tools AND their
+/// rc-defined config (KUBECONFIG, regions, proxies) regardless of how it was
+/// launched. rc vars are only filled when not already present in the process
+/// env, so an explicitly-set var (or a later caller `.env`) always wins.
 pub(crate) fn command(program: &str) -> Command {
     let mut c = Command::new(program);
+    for (k, v) in shell_env() {
+        if std::env::var_os(k).is_none() {
+            c.env(k, v);
+        }
+    }
     c.env("PATH", shell_path());
     c
 }
