@@ -7,6 +7,11 @@
   let { cwd, onRunCommand }: { cwd: string; onRunCommand?: (cmd: string) => void } = $props();
 
   type Bin = "terraform" | "terragrunt" | "tofu";
+  interface Stack { path: string; terragrunt: boolean; }
+
+  let stacks = $state<Stack[]>([]);
+  let activeStack = $state<string | null>(null);
+  let scanning = $state(false);
 
   let bin = $state<Bin>("terraform");
   let available = $state<Record<Bin, boolean>>({ terraform: true, terragrunt: false, tofu: false });
@@ -19,9 +24,46 @@
 
   const BIN_LABEL: Record<Bin, string> = { terraform: "Terraform", terragrunt: "Terragrunt", tofu: "OpenTofu" };
 
+  // Absolute dir the CLI runs in = repo root + selected stack.
+  const activeDir = $derived(
+    activeStack && activeStack !== "." ? `${cwd}/${activeStack}` : cwd,
+  );
+
+  async function discover() {
+    scanning = true;
+    err = "";
+    try {
+      const raw = await invoke<string>("tf_discover", { cwd });
+      stacks = JSON.parse(raw) as Stack[];
+      if (stacks.length && (!activeStack || !stacks.find((s) => s.path === activeStack))) {
+        // Prefer a leaf stack over the root; pick the shallowest path.
+        await selectStack(stacks[0].path);
+      } else if (!stacks.length) {
+        activeStack = null;
+        resources = [];
+      }
+    } catch (e) {
+      err = String(e);
+    } finally {
+      scanning = false;
+    }
+  }
+
+  async function selectStack(path: string) {
+    activeStack = path;
+    output = "";
+    outKind = "";
+    resources = [];
+    const st = stacks.find((s) => s.path === path);
+    // Bias the binary toggle to what the stack actually uses.
+    if (st?.terragrunt && available.terragrunt) bin = "terragrunt";
+    await detect();
+    await loadState();
+  }
+
   async function detect() {
     try {
-      const raw = await invoke<string>("tf_detect", { cwd });
+      const raw = await invoke<string>("tf_detect", { cwd: activeDir });
       const d = JSON.parse(raw) as { prefer: Bin; terraform: boolean; terragrunt: boolean; tofu: boolean };
       available = { terraform: d.terraform, terragrunt: d.terragrunt, tofu: d.tofu };
       if (available[d.prefer]) bin = d.prefer;
@@ -32,10 +74,11 @@
   }
 
   async function loadState() {
+    if (!activeStack) return;
     err = "";
     try {
-      const raw = await invoke<string>("tf_state_list", { cwd, bin });
-      if (/No state file|Backend initialization|not been initialized/i.test(raw)) {
+      const raw = await invoke<string>("tf_state_list", { cwd: activeDir, bin });
+      if (/No state file|Backend initialization|not been initialized|reinitialization required/i.test(raw)) {
         resources = [];
         return;
       }
@@ -47,14 +90,14 @@
   }
 
   async function run(cmd: "init" | "validate" | "plan", kind: typeof outKind) {
-    if (running) return;
+    if (running || !activeStack) return;
     running = cmd;
     output = "";
     outKind = kind;
     err = "";
     try {
       const map = { init: "tf_init", validate: "tf_validate", plan: "tf_plan" } as const;
-      output = await invoke<string>(map[cmd], { cwd, bin });
+      output = await invoke<string>(map[cmd], { cwd: activeDir, bin });
       if (cmd === "init" || cmd === "plan") await loadState();
       if (outEl) outEl.scrollTop = 0;
     } catch (e) {
@@ -65,7 +108,8 @@
   }
 
   function sendTerminal(verb: "apply" | "destroy") {
-    onRunCommand?.(`${bin} ${verb}`);
+    const cd = activeStack && activeStack !== "." ? `cd ${activeDir} && ` : "";
+    onRunCommand?.(`${cd}${bin} ${verb}`);
     toast(`Sent "${bin} ${verb}" to terminal`, "info");
   }
 
@@ -108,17 +152,19 @@
     return "";
   }
 
-  onMount(async () => {
-    await detect();
-    await loadState();
-  });
+  function stackLabel(p: string): string {
+    return p === "." ? "(repo root)" : p;
+  }
 
-  // Re-detect + reload when the workspace dir changes.
+  onMount(discover);
+
+  // Re-scan when the repo dir changes.
   let lastCwd = "";
   $effect(() => {
     if (cwd && cwd !== lastCwd) {
       lastCwd = cwd;
-      detect().then(loadState);
+      activeStack = null;
+      discover();
     }
   });
 </script>
@@ -136,42 +182,75 @@
         >{BIN_LABEL[b]}</button>
       {/each}
     </div>
-    <span class="ws" title={cwd}>{cwd.split("/").pop() || "/"}</span>
+    {#if activeStack}
+      <span class="ws" title={activeDir}>{stackLabel(activeStack)}</span>
+    {/if}
     <span class="spacer"></span>
-    <button class="iconbtn" onclick={() => { detect(); loadState(); }} title="Refresh state">
+    <button class="iconbtn" onclick={discover} title="Re-scan repo for stacks">
       <Icon name="refresh" size={13} />
     </button>
   </div>
 
-  <div class="actions">
-    <button class="act" disabled={!!running} onclick={() => run("init", "init")}>
-      {running === "init" ? "Init…" : "Init"}
-    </button>
-    <button class="act" disabled={!!running} onclick={() => run("validate", "validate")}>
-      {running === "validate" ? "Validate…" : "Validate"}
-    </button>
-    <button class="act primary" disabled={!!running} onclick={() => run("plan", "plan")}>
-      {running === "plan" ? "Planning…" : "Plan"}
-    </button>
-    <span class="spacer"></span>
-    <button class="act ext" onclick={() => sendTerminal("apply")} title="Run apply in terminal">Apply ↗</button>
-    <button class="act ext danger" onclick={() => sendTerminal("destroy")} title="Run destroy in terminal">Destroy ↗</button>
-  </div>
+  {#if activeStack}
+    <div class="actions">
+      <button class="act" disabled={!!running} onclick={() => run("init", "init")}>
+        {running === "init" ? "Init…" : "Init"}
+      </button>
+      <button class="act" disabled={!!running} onclick={() => run("validate", "validate")}>
+        {running === "validate" ? "Validate…" : "Validate"}
+      </button>
+      <button class="act primary" disabled={!!running} onclick={() => run("plan", "plan")}>
+        {running === "plan" ? "Planning…" : "Plan"}
+      </button>
+      <span class="spacer"></span>
+      <button class="act ext" onclick={() => sendTerminal("apply")} title="Run apply in terminal">Apply ↗</button>
+      <button class="act ext danger" onclick={() => sendTerminal("destroy")} title="Run destroy in terminal">Destroy ↗</button>
+    </div>
+  {/if}
 
   {#if err}
     <div class="err">{err.includes("not found in PATH") ? `${BIN_LABEL[bin]} not found in PATH.` : err.slice(0, 240)}</div>
   {/if}
 
   <div class="body">
+    <!-- Stacks (discovered IaC dirs) -->
+    <div class="stacks">
+      <div class="pane-h"><span>Stacks</span><span class="count">{stacks.length}</span></div>
+      <div class="stacks-body">
+        {#if scanning}
+          <div class="empty">Scanning…</div>
+        {:else if stacks.length === 0}
+          <div class="empty">
+            No Terraform / Terragrunt found in this repo.<br /><br />
+            Open a repo that contains <code>*.tf</code> or <code>terragrunt.hcl</code> files.
+          </div>
+        {:else}
+          {#each stacks as s (s.path)}
+            <div
+              class="stack-row"
+              class:on={activeStack === s.path}
+              role="button"
+              tabindex="0"
+              title={s.path}
+              onclick={() => selectStack(s.path)}
+              onkeydown={(e) => e.key === "Enter" && selectStack(s.path)}
+            >
+              <span class="stack-name">{stackLabel(s.path)}</span>
+              {#if s.terragrunt}<span class="tag tg">TG</span>{:else}<span class="tag tf">TF</span>{/if}
+            </div>
+          {/each}
+        {/if}
+      </div>
+    </div>
+
     <!-- State resources -->
     <div class="state">
-      <div class="pane-h">
-        <span>Resources</span>
-        <span class="count">{resources.length}</span>
-      </div>
+      <div class="pane-h"><span>Resources</span><span class="count">{resources.length}</span></div>
       <div class="state-body">
-        {#if resources.length === 0}
-          <div class="empty">No state. Run <b>Init</b> then <b>Plan</b>.</div>
+        {#if !activeStack}
+          <div class="empty">Pick a stack.</div>
+        {:else if resources.length === 0}
+          <div class="empty">No state yet. Run <b>Init</b> then <b>Plan</b>.</div>
         {:else}
           {#each groups as g (g.module)}
             <div class="mod" onclick={() => toggle(g.module)} role="button" tabindex="0"
@@ -206,8 +285,10 @@
       </div>
       {#if running === "plan" || running === "init" || running === "validate"}
         <div class="out-body busy">{running}…</div>
+      {:else if !activeStack}
+        <div class="out-body empty">Select a stack to run Terraform.</div>
       {:else if !output}
-        <div class="out-body empty">Run <b>Plan</b> to preview changes.</div>
+        <div class="out-body empty">Run <b>Plan</b> to preview changes in <code>{stackLabel(activeStack)}</code>.</div>
       {:else}
         <pre class="out-body log" bind:this={outEl}>{#each output.split("\n") as l}<span class="ln {lineClass(l)}">{l}
 </span>{/each}</pre>
@@ -275,9 +356,33 @@
     color: var(--text3); opacity: 0.7; letter-spacing: 0;
   }
 
+  /* Stacks */
+  .stacks {
+    flex: 0 0 210px; min-width: 160px; display: flex; flex-direction: column;
+    border-right: 1px solid var(--border);
+  }
+  .stacks-body { flex: 1; overflow-y: auto; }
+  .stack-row {
+    display: flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px;
+    font-size: 11.5px; color: var(--text2); cursor: default;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .stack-row:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+  .stack-row.on { background: var(--sel); color: var(--text); }
+  .stack-name {
+    flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; font-family: var(--font-mono); direction: rtl; text-align: left;
+  }
+  .tag {
+    font-family: var(--font-mono); font-size: 8.5px; font-weight: 600; padding: 1px 4px;
+    border-radius: 3px; flex: 0 0 auto; letter-spacing: 0.02em;
+  }
+  .tag.tg { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+  .tag.tf { color: var(--text3); background: color-mix(in srgb, var(--text) 8%, transparent); }
+
   /* State */
   .state {
-    flex: 0 0 320px; min-width: 220px; display: flex; flex-direction: column;
+    flex: 0 0 280px; min-width: 200px; display: flex; flex-direction: column;
     border-right: 1px solid var(--border);
   }
   .state-body { flex: 1; overflow-y: auto; }
@@ -321,5 +426,6 @@
   .ln.err { color: var(--red); }
   .ln.ok { color: var(--green); }
 
-  .empty { padding: 18px 14px; color: var(--text3); font-size: 12px; }
+  .empty { padding: 16px 12px; color: var(--text3); font-size: 12px; line-height: 1.5; }
+  .empty code { font-family: var(--font-mono); color: var(--text2); }
 </style>

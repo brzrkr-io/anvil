@@ -831,6 +831,60 @@ fn tf_exec(bin: &str, cwd: &str, args: &[&str]) -> Result<String, String> {
     Ok(s)
 }
 
+// Walk a repo for directories that contain IaC code so the UI can offer them as
+// pickable stacks (TF code usually lives in subdirs, not the repo root).
+fn scan_iac(dir: &std::path::Path, base: &std::path::Path, depth: usize, out: &mut Vec<(String, bool)>) {
+    if depth > 6 || out.len() > 400 {
+        return;
+    }
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let mut has_tf = false;
+    let mut has_tg = false;
+    let mut subdirs: Vec<std::path::PathBuf> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if path.is_dir() {
+            // Skip noise: VCS, caches, vendored modules, hidden dirs.
+            if name.starts_with('.')
+                || matches!(name.as_str(), "node_modules" | "vendor" | "target" | ".terraform")
+            {
+                continue;
+            }
+            subdirs.push(path);
+        } else if name == "terragrunt.hcl" {
+            has_tg = true;
+        } else if name.ends_with(".tf") || name.ends_with(".tf.json") {
+            has_tf = true;
+        }
+    }
+    if has_tf || has_tg {
+        let rel = dir.strip_prefix(base).unwrap_or(dir).to_string_lossy().into_owned();
+        out.push((if rel.is_empty() { ".".into() } else { rel }, has_tg));
+    }
+    for sub in subdirs {
+        scan_iac(&sub, base, depth + 1, out);
+    }
+}
+
+/// Find IaC stacks under `cwd` (#dirs holding *.tf or terragrunt.hcl). Returns
+/// JSON `[{"path":"infra/prod","terragrunt":true}, ...]`, relative to cwd.
+#[tauri::command]
+fn tf_discover(cwd: String) -> Result<String, String> {
+    let base = std::path::Path::new(&cwd);
+    let mut out: Vec<(String, bool)> = Vec::new();
+    scan_iac(base, base, 0, &mut out);
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    let items: Vec<String> = out
+        .iter()
+        .map(|(p, tg)| format!("{{\"path\":{:?},\"terragrunt\":{}}}", p, tg))
+        .collect();
+    Ok(format!("[{}]", items.join(",")))
+}
+
 /// Detect which IaC tooling fits this dir: presence of terragrunt.hcl picks
 /// terragrunt, otherwise terraform. Also reports which binaries are on PATH.
 #[tauri::command]
@@ -1748,6 +1802,42 @@ fn glab_pipeline_retry(cwd: String, pipeline: String) -> Result<String, String> 
     }
 }
 
+/// Retry one job via `glab api -X POST projects/:id/jobs/<id>/retry`.
+#[tauri::command]
+fn glab_job_retry(cwd: String, job: String) -> Result<String, String> {
+    let path = format!("projects/:id/jobs/{job}/retry");
+    let out = std::process::Command::new("glab")
+        .current_dir(&cwd)
+        .args(["api", "-X", "POST", &path])
+        .output()
+        .map_err(|e| format!("glab not found: {e}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+        s.push_str(&String::from_utf8_lossy(&out.stderr));
+        Err(s)
+    }
+}
+
+/// Play (start) a manual job via `glab api -X POST projects/:id/jobs/<id>/play`.
+#[tauri::command]
+fn glab_job_play(cwd: String, job: String) -> Result<String, String> {
+    let path = format!("projects/:id/jobs/{job}/play");
+    let out = std::process::Command::new("glab")
+        .current_dir(&cwd)
+        .args(["api", "-X", "POST", &path])
+        .output()
+        .map_err(|e| format!("glab not found: {e}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+        s.push_str(&String::from_utf8_lossy(&out.stderr));
+        Err(s)
+    }
+}
+
 /// Cancel a pipeline via `glab api -X POST`.
 #[tauri::command]
 fn glab_pipeline_cancel(cwd: String, pipeline: String) -> Result<String, String> {
@@ -2199,6 +2289,7 @@ pub fn run() {
             terraform_plan,
             terraform_state,
             tf_detect,
+            tf_discover,
             tf_init,
             tf_validate,
             tf_plan,
@@ -2243,6 +2334,8 @@ pub fn run() {
             glab_job_trace,
             glab_pipeline_retry,
             glab_pipeline_cancel,
+            glab_job_retry,
+            glab_job_play,
             terraform_apply,
             git_blame,
             gh_prs,

@@ -77,6 +77,18 @@
     return sha.slice(0, 8);
   }
 
+  // GitLab job traces are full of ANSI color codes + section markers — strip to
+  // readable plain text.
+  function cleanTrace(s: string): string {
+    return s
+      .replace(/\[[0-9;]*m/g, "")
+      .replace(/\[\d*K/g, "")
+      .replace(/section_(?:start|end):\d+:[\w.-]+\r?/g, "")
+      .replace(/\r(?=[^\n])/g, "");
+  }
+
+  const jobsDone = $derived(jobs.filter((j) => !isRunning(j.status)).length);
+
   const stageGroups = $derived.by<Map<string, Job[]>>(() => {
     const m = new Map<string, Job[]>();
     for (const j of jobs) {
@@ -118,7 +130,7 @@
     if (document.hidden) return;
     try {
       const raw = await invoke<string>("glab_job_trace", { cwd, job: String(jobId) });
-      logContent = raw;
+      logContent = cleanTrace(raw);
       if (logEl) {
         logEl.scrollTop = logEl.scrollHeight;
       }
@@ -198,6 +210,26 @@
 
   function openInGitLab(p: Pipeline) {
     onRunCommand?.(`open "${p.web_url}"`);
+  }
+
+  async function retryJob(j: Job) {
+    try {
+      await invoke("glab_job_retry", { cwd, job: String(j.id) });
+      toast(`Retrying ${j.name}`, "success");
+      if (selectedPipeline) await loadJobs(selectedPipeline.id);
+    } catch (e) {
+      toast(String(e).slice(0, 120), "error");
+    }
+  }
+
+  async function playJob(j: Job) {
+    try {
+      await invoke("glab_job_play", { cwd, job: String(j.id) });
+      toast(`Started ${j.name}`, "success");
+      if (selectedPipeline) await loadJobs(selectedPipeline.id);
+    } catch (e) {
+      toast(String(e).slice(0, 120), "error");
+    }
   }
 
   let secondsAgo = $state(0);
@@ -312,6 +344,7 @@
         <div class="jobs-head">
           <span class="jobs-title">Pipeline #{selectedPipeline.iid}</span>
           <span class="jobs-status" style="color:{statusColor(selectedPipeline.status)}">{selectedPipeline.status}</span>
+          {#if jobs.length}<span class="jobs-prog">{jobsDone}/{jobs.length}</span>{/if}
           <span class="spacer"></span>
           <button class="iconbtn" onclick={() => { selectedPipeline = null; jobs = []; closeLog(); }} title="Close">
             <Icon name="close" size={13} />
@@ -335,6 +368,17 @@
                   <span class="dot" class:running={isRunning(j.status)} style="background:{statusColor(j.status)}"></span>
                   <span class="job-name">{j.name}</span>
                   <span class="job-dur muted">{fmtDuration(j.duration)}</span>
+                  <span class="job-acts">
+                    {#if j.status === "manual"}
+                      <button class="jact" title="Play job" onclick={(e) => { e.stopPropagation(); playJob(j); }}>
+                        <Icon name="play" size={10} />
+                      </button>
+                    {:else if !isRunning(j.status)}
+                      <button class="jact" title="Retry job" onclick={(e) => { e.stopPropagation(); retryJob(j); }}>
+                        <Icon name="refresh" size={10} />
+                      </button>
+                    {/if}
+                  </span>
                 </div>
               {/each}
             {/each}
@@ -461,6 +505,7 @@
   }
   .jobs-title { color: var(--text3); font-size: 11px; font-weight: 500; flex: 0 0 auto; }
   .jobs-status { font-size: 11px; flex: 0 0 auto; }
+  .jobs-prog { font-family: var(--font-mono); font-size: 10px; color: var(--text3); opacity: 0.7; flex: 0 0 auto; }
   .jobs-body { flex: 1; overflow-y: auto; }
 
   .stage-label {
@@ -482,6 +527,14 @@
   .job-row.selected { background: var(--sel); }
   .job-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
   .job-dur { font-family: var(--font-mono); font-size: 10.5px; }
+  .job-acts { display: flex; align-items: center; flex: 0 0 auto; width: 18px; justify-content: flex-end; }
+  .jact {
+    display: none; align-items: center; justify-content: center;
+    width: 16px; height: 15px; border: 1px solid var(--border);
+    background: var(--panel2); color: var(--text2); border-radius: 4px; cursor: default;
+  }
+  .job-row:hover .jact { display: inline-flex; }
+  .jact:hover { color: var(--text); border-color: var(--text3); }
 
   /* Log panel */
   .log-panel { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
