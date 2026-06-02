@@ -1591,6 +1591,97 @@ fn glab_pipeline_get(cwd: String, id: String) -> Result<String, String> {
     Ok(s)
 }
 
+/// GitLab pipelines as JSON via `glab api` (25 most recent, sorted by updated_at desc).
+#[tauri::command]
+fn glab_pipelines_json(cwd: String) -> Result<String, String> {
+    let out = std::process::Command::new("glab")
+        .current_dir(&cwd)
+        .args([
+            "api",
+            "projects/:id/pipelines?per_page=25&order_by=updated_at&sort=desc",
+        ])
+        .output()
+        .map_err(|e| format!("glab not found: {e}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+        s.push_str(&String::from_utf8_lossy(&out.stderr));
+        Err(s)
+    }
+}
+
+/// Jobs for one pipeline as JSON via `glab api`.
+#[tauri::command]
+fn glab_pipeline_jobs(cwd: String, pipeline: String) -> Result<String, String> {
+    let path = format!("projects/:id/pipelines/{pipeline}/jobs?per_page=100");
+    let out = std::process::Command::new("glab")
+        .current_dir(&cwd)
+        .args(["api", &path])
+        .output()
+        .map_err(|e| format!("glab not found: {e}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+        s.push_str(&String::from_utf8_lossy(&out.stderr));
+        Err(s)
+    }
+}
+
+/// Raw log trace for one job. Returns partial content if the job is still running.
+#[tauri::command]
+fn glab_job_trace(cwd: String, job: String) -> Result<String, String> {
+    let path = format!("projects/:id/jobs/{job}/trace");
+    let out = std::process::Command::new("glab")
+        .current_dir(&cwd)
+        .args(["api", &path])
+        .output()
+        .map_err(|e| format!("glab not found: {e}"))?;
+    let s = String::from_utf8_lossy(&out.stdout).into_owned();
+    if out.status.success() || !s.is_empty() {
+        Ok(s)
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).into_owned())
+    }
+}
+
+/// Retry a pipeline via `glab api -X POST`.
+#[tauri::command]
+fn glab_pipeline_retry(cwd: String, pipeline: String) -> Result<String, String> {
+    let path = format!("projects/:id/pipelines/{pipeline}/retry");
+    let out = std::process::Command::new("glab")
+        .current_dir(&cwd)
+        .args(["api", "-X", "POST", &path])
+        .output()
+        .map_err(|e| format!("glab not found: {e}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+        s.push_str(&String::from_utf8_lossy(&out.stderr));
+        Err(s)
+    }
+}
+
+/// Cancel a pipeline via `glab api -X POST`.
+#[tauri::command]
+fn glab_pipeline_cancel(cwd: String, pipeline: String) -> Result<String, String> {
+    let path = format!("projects/:id/pipelines/{pipeline}/cancel");
+    let out = std::process::Command::new("glab")
+        .current_dir(&cwd)
+        .args(["api", "-X", "POST", &path])
+        .output()
+        .map_err(|e| format!("glab not found: {e}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+        s.push_str(&String::from_utf8_lossy(&out.stderr));
+        Err(s)
+    }
+}
+
 /// Full log for one Actions run (#53). `gh run view <id> --log`.
 #[tauri::command]
 fn gh_run_log(cwd: String, id: String) -> Result<String, String> {
@@ -2057,6 +2148,11 @@ pub fn run() {
             gh_run_log,
             glab_pipelines,
             glab_pipeline_get,
+            glab_pipelines_json,
+            glab_pipeline_jobs,
+            glab_job_trace,
+            glab_pipeline_retry,
+            glab_pipeline_cancel,
             terraform_apply,
             git_blame,
             gh_prs,
