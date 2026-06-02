@@ -2448,3 +2448,10 @@ Tests updated: `build_section_*` tests replaced with `context_section_*` tests; 
   as a drift badge ('+a ~c -d' or '✓'), so pending changes are visible without
   re-planning each stack. Pure plan parsing + line classification → iac-plan.ts
   + 10 tests. Mirrors the GitOps loop's "state visible without typing" approach.
+
+- 2026-06-02 — Sharpened beat-target 3 (PR+CI triage, decision 0006).
+  New ci.rs gh_prs_json (gh pr list --json …statusCheckRollup). DevOps.svelte PR
+  list now rolls up each PR's checks (worst-wins), sorts failing-first, shows a
+  red/yellow/green status dot, and offers one-click re-run on failed PRs. Pure
+  rollup/sort/parse → pr-checks.ts + 13 tests. Closes the "is this PR red?"
+  browser trip. All three beat-targets now have a first sharpening pass.
