@@ -13,7 +13,7 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { activeTheme, themes } from "$lib/themes";
   import { windowOpacity } from "$lib/window-opacity";
-  import { termFontSize, termCursorBlink, termCursorStyle, termLineHeight, termLetterSpacing, termScrollback } from "$lib/terminal-settings";
+  import { termFontSize, termCursorBlink, termCursorStyle, termLineHeight, termLetterSpacing, termScrollback, termCmdSep } from "$lib/terminal-settings";
   import { monoFont, termBold } from "$lib/fonts";
   import { registerTerminal, unregisterTerminal, broadcastInput, liveTerminals } from "$lib/term-registry";
   import { feedInput } from "$lib/command-history";
@@ -30,6 +30,21 @@
   let fit: FitAddon;
   let search: SearchAddon;
   let unlisten: UnlistenFn[] = [];
+  let atBottom = $state(true); // false → show the "jump to bottom" pill
+  let cmdDecos: { dispose: () => void }[] = [];
+  // Draw a faint separator above the current prompt line (OSC 133 A). Markers
+  // auto-dispose when their line scrolls out of the buffer; cap the list anyway.
+  function addCmdSeparator() {
+    try {
+      const marker = term.registerMarker(0);
+      if (!marker) return;
+      const deco = term.registerDecoration({ marker, width: term.cols });
+      if (!deco) return;
+      deco.onRender((el: HTMLElement) => el.classList.add("cmd-sep"));
+      cmdDecos.push(deco);
+      if (cmdDecos.length > 600) cmdDecos.shift()?.dispose();
+    } catch { /* decorations unavailable */ }
+  }
   let ro: ResizeObserver;
   let resizeRaf = 0;
   let lastCols = 0, lastRows = 0;
@@ -89,6 +104,11 @@
       // at full opacity (the common case) keep the WebGL renderer opaque/fast.
       allowTransparency: get(windowOpacity) < 1,
       scrollback: get(termScrollback),
+      // Snappy + crisp: instant scroll, faster wheel with a modifier, rescale
+      // overlapping wide glyphs, and a lighter outline cursor when unfocused.
+      smoothScrollDuration: 0,
+      rescaleOverlappingGlyphs: true,
+      cursorInactiveStyle: "outline",
     });
 
     unsubTheme = activeTheme.subscribe((name) => {
@@ -106,11 +126,13 @@
     // Inline images (#14): sixel + iTerm inline-image protocol.
     try { term.loadAddon(new ImageAddon({ sixelSupport: true })); } catch { /* webgl needed; ignore if unavailable */ }
     // Command blocks (#12): capture OSC 133 A (prompt) / D;<code> (exit) marks.
+    // Also draw a faint separator line above each prompt so commands are visually
+    // grouped (only when shell integration emits OSC 133 + the setting is on).
     term.parser.registerOscHandler(133, (data: string) => {
       const buf = term.buffer.active;
       const line = buf.baseY + buf.cursorY;
       const parts = data.split(";");
-      if (parts[0] === "A") recordPrompt(id, line);
+      if (parts[0] === "A") { recordPrompt(id, line); if (get(termCmdSep)) addCmdSeparator(); }
       else if (parts[0] === "D") recordExit(id, Number(parts[1] ?? "0") || 0);
       return true;
     });
@@ -223,9 +245,10 @@
         const PX_PER_LINE = e.deltaMode === 1 ? 1 : e.deltaMode === 2 ? Math.max(1, term.rows) : 24;
         wheelAccum += e.deltaY / PX_PER_LINE;
         const dir = wheelAccum >= 0 ? 1 : -1; // +1 = scroll down / toward newest
-        const n = Math.floor(Math.abs(wheelAccum));
+        let n = Math.floor(Math.abs(wheelAccum));
         if (!n) return;
         wheelAccum -= dir * n;
+        if (e.altKey) n *= 5; // fast-scroll modifier
         if (onAlt) {
           const appCursor = !!modes?.applicationCursorKeysMode;
           const key = dir > 0 ? (appCursor ? "\x1bOB" : "\x1b[B") : appCursor ? "\x1bOA" : "\x1b[A";
@@ -236,6 +259,12 @@
       },
       { passive: false },
     );
+
+    // Track scroll position so we can offer a "jump to bottom" pill.
+    term.onScroll(() => {
+      const b = term.buffer.active;
+      atBottom = b.viewportY >= b.baseY;
+    });
 
     ro = new ResizeObserver(() => {
       // Coalesce resize bursts (window drag fires many callbacks/sec) into one
@@ -341,6 +370,10 @@
   async function pasteClip() { try { const t = await navigator.clipboard.readText(); if (t) invoke("pty_write", { id, data: t }); } catch (e) { console.warn("clipboard read failed", e); } menu = null; term?.focus(); }
   function selectAllTerm() { term?.selectAll(); menu = null; }
   function clearTerm() { term?.clear(); menu = null; term?.focus(); }
+  // Clear existing separators when the setting is turned off (new ones simply
+  // stop being added). New prompts re-add them when it's on.
+  $effect(() => { if (!$termCmdSep) { cmdDecos.forEach((d) => d.dispose()); cmdDecos = []; } });
+  function jumpToBottom() { term?.scrollToBottom(); atBottom = true; term?.focus(); }
   function runSel() {
     const s = term?.getSelection();
     if (s) invoke("pty_write", { id, data: s.replace(/\n+$/, "") + "\r" });
@@ -349,6 +382,9 @@
 </script>
 
 <div class="term-host" oncontextmenu={ctx} role="presentation">
+  {#if !atBottom}
+    <button class="jump-bottom" onclick={jumpToBottom} title="Jump to bottom">↓</button>
+  {/if}
   {#if searchOpen}
     <div class="search">
       <input
@@ -381,6 +417,23 @@
 <style>
   .term-host { position: relative; width: 100%; height: 100%; }
   .xterm-host { width: 100%; height: 100%; }
+  /* Faint separator line above each shell prompt (OSC 133). The decoration
+     element spans the prompt row; a top border reads as a divider between the
+     previous command's output and the next prompt. */
+  :global(.xterm .cmd-sep) {
+    border-top: 1px solid var(--border);
+    opacity: 0.35;
+    pointer-events: none;
+  }
+  /* Jump-to-bottom pill, shown when scrolled up into history. */
+  .jump-bottom {
+    position: absolute; right: 12px; bottom: 10px; z-index: 12;
+    width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid var(--border); border-radius: 50%; background: var(--bg1);
+    color: var(--text2); cursor: default; box-shadow: 0 3px 10px rgba(0,0,0,0.32);
+    font-size: 13px; line-height: 1;
+  }
+  .jump-bottom:hover { background: var(--sel); color: var(--text); }
   .ctxscrim { position: fixed; inset: 0; z-index: 40; }
   .ctxmenu {
     position: fixed; z-index: 41; min-width: 140px; padding: 4px;

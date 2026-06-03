@@ -20,6 +20,13 @@ function loadStr<T extends string>(key: string, def: T, allowed: readonly T[]): 
 
 export const termFontSize = writable<number>(loadNum("anvil-term-fs", 13, 8, 28));
 export const termCursorBlink = writable<boolean>(loadBool("anvil-term-blink", true));
+// Faint separator line above each shell prompt (needs OSC 133 shell integration).
+export const termCmdSep = writable<boolean>(loadBool("anvil-term-cmdsep", true));
+export function toggleTermCmdSep() {
+  const v = !get(termCmdSep);
+  if (typeof localStorage !== "undefined") localStorage.setItem("anvil-term-cmdsep", String(v));
+  termCmdSep.set(v);
+}
 export const CURSOR_STYLES: CursorStyle[] = ["block", "bar", "underline"];
 export const termCursorStyle = writable<CursorStyle>(loadStr("anvil-term-cursor", "block", CURSOR_STYLES));
 export const termLineHeight = writable<number>(loadNum("anvil-term-lh", 1.2, 1.0, 2.0));

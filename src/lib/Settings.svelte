@@ -23,7 +23,7 @@
     editorFontSize, editorTabSize, editorWordWrap, editorMinimap, editorLigatures, editorLineHeight, editorLetterSpacing, editorStickyScroll, editorInlayHints, editorFormatOnSave, editorBlameAlways,
     bumpEditorFontSize, setEditorTabSize, toggleWordWrap, toggleMinimap, toggleLigatures, bumpEditorLineHeight, bumpEditorLetterSpacing, toggleStickyScroll, toggleInlayHints, toggleFormatOnSave, toggleBlameAlways,
   } from "$lib/editor-settings";
-  import { termFontSize, termCursorBlink, termCursorStyle, CURSOR_STYLES, termLineHeight, termLetterSpacing, termScrollback, bumpTermFontSize, toggleTermBlink, setTermCursorStyle, bumpTermLineHeight, bumpTermLetterSpacing, setTermScrollback } from "$lib/terminal-settings";
+  import { termFontSize, termCursorBlink, termCursorStyle, CURSOR_STYLES, termLineHeight, termLetterSpacing, termScrollback, bumpTermFontSize, toggleTermBlink, setTermCursorStyle, bumpTermLineHeight, bumpTermLetterSpacing, setTermScrollback, termCmdSep, toggleTermCmdSep } from "$lib/terminal-settings";
   import { uiScale, bumpScale, resetScale } from "$lib/scale";
   import { windowOpacity, applyOpacity } from "$lib/window-opacity";
   import { uiFont, monoFont, editorBold, termBold, UI_FONTS, MONO_FONTS, setUiFont, setMonoFont, toggleEditorBold, toggleTermBold } from "$lib/fonts";
@@ -302,6 +302,9 @@
         </div>
         <div class="opt"><span class="opt-lbl">Cursor blink</span>
           <button class="btn {$termCursorBlink ? 'active' : ''}" onclick={toggleTermBlink}>{$termCursorBlink ? "On" : "Off"}</button>
+        </div>
+        <div class="opt"><span class="opt-lbl">Command separators</span>
+          <button class="btn {$termCmdSep ? 'active' : ''}" onclick={toggleTermCmdSep}>{$termCmdSep ? "On" : "Off"}</button>
         </div>
         <div class="opt"><span class="opt-lbl">Bold text</span>
           <button class="btn {$termBold ? 'active' : ''}" onclick={toggleTermBold}>{$termBold ? "On" : "Off"}</button>
