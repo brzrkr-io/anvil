@@ -319,6 +319,7 @@ pub fn run() {
             git::git_log_range,
             git::git_rebase_run,
             git::git_checkout_side,
+            git::git_branch_commit_push,
             git::git_op_state,
             git::git_op_abort,
             git::git_op_continue,

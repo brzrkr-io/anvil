@@ -952,6 +952,29 @@
     paletteOpen = true;
   }
 
+  // #15 GitOps: route the active manifest edit through a branch + PR instead of
+  // `kubectl apply`. The change lands in git and reconciles from there — never
+  // touches the cluster directly. Requires the file saved to disk first.
+  async function proposeManifestPr() {
+    if (rail !== "editor" || !activeFile) { toast("Open a manifest in the editor first", "info"); return; }
+    if (dirtyFiles[activeFile]) { toast("Save the file first (⌘S), then propose the PR", "info"); return; }
+    const rel = activeFile.startsWith(cwd + "/") ? activeFile.slice(cwd.length + 1) : activeFile;
+    const base = baseName(activeFile).replace(/\.[^.]+$/, "");
+    const branch = await askText({ title: "Propose change as PR", placeholder: "branch name", value: `manifest/${base}` });
+    if (!branch) return;
+    const message = await askText({ title: "Commit message", value: `Update ${baseName(activeFile)}` });
+    if (!message) return;
+    toast("Pushing branch + opening PR…", "info");
+    try {
+      await invoke("git_branch_commit_push", { cwd, branch, paths: [rel], message });
+      const out = await invoke<string>("gh_pr_create", { cwd });
+      const url = String(out).trim().split("\n").find((l) => l.startsWith("http")) || "PR opened";
+      toast(`PR opened: ${url}`, "success");
+    } catch (e) {
+      toast(String(e).slice(0, 160) || "PR failed", "error");
+    }
+  }
+
   function openCommands() {
     palettePlaceholder = "Run a command…";
     paletteItems = [
@@ -963,6 +986,7 @@
       { label: "New Terminal: sh", run: () => newTermProfile("/bin/sh", "sh") },
       { label: "New Terminal: custom shell…", run: () => { const s = prompt("Shell path:", "/bin/zsh"); if (s) newTermProfile(s, s.split("/").pop() || "shell"); } },
       { label: "Toggle Bottom Terminal", hint: "⌘J", run: () => (bottomDock = !bottomDock) },
+      { label: "GitOps: Propose Manifest Change as PR…", hint: "branch + commit + push + gh pr", run: proposeManifestPr },
       { label: `Terminal: Broadcast Input ${get(broadcastInput) ? "(on)" : "(off)"}`, run: () => { const v = !get(broadcastInput); broadcastInput.set(v); toast(v ? "Broadcast input ON — keystrokes go to all terminals" : "Broadcast input off", v ? "info" : "success"); } },
       { label: "Terminal: Command History…", run: () => { const h = getHistory(); if (!h.length) { toast("No commands recorded yet", "info"); return; } palettePlaceholder = `${h.length} command${h.length === 1 ? "" : "s"} — Enter to rerun`; paletteItems = [...h].reverse().map((c) => ({ label: c, hint: "⏎ rerun", run: () => { rail = "term"; invoke("pty_write", { id: activeTerm, data: c + "\r" }).catch(() => toast("No active terminal", "error")); } })); paletteItems.push({ label: "Clear command history", hint: "irreversible", run: () => { clearHistory(); toast("Command history cleared", "success"); } }); paletteOpen = true; } },
       { label: `Terminal: Auto-cd to File's Folder ${get(terminalAutoCd) ? "(on)" : "(off)"}`, run: () => { toggleTerminalAutoCd(); toast(get(terminalAutoCd) ? "Active terminal follows the open file" : "Auto-cd off", "success"); } },

@@ -147,6 +147,43 @@ pub async fn git_checkout_side(cwd: String, path: String, side: String) -> Resul
     .map_err(|e| e.to_string())?
 }
 
+/// #15 GitOps manifest → PR: stage the given paths onto a (new or existing)
+/// branch, commit, and push — the declarative alternative to `kubectl apply`.
+/// The frontend follows up with `gh_pr_create` to open the review. Never
+/// touches the cluster; the change lands in git and reconciles from there.
+#[tauri::command]
+pub async fn git_branch_commit_push(
+    cwd: String,
+    branch: String,
+    paths: Vec<String>,
+    message: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if branch.trim().is_empty() {
+            return Err("branch name is required".into());
+        }
+        if paths.is_empty() {
+            return Err("no files to commit".into());
+        }
+        // Switch to the branch, creating it if it doesn't exist yet.
+        let exists = git(&cwd, &["rev-parse", "--verify", "--quiet", &branch]).is_ok();
+        if exists {
+            git_io(&cwd, &["checkout", &branch], &[])?;
+        } else {
+            git_io(&cwd, &["checkout", "-b", &branch], &[])?;
+        }
+        let mut add_args = vec!["add", "--"];
+        for p in &paths {
+            add_args.push(p.as_str());
+        }
+        git_io(&cwd, &add_args, &[])?;
+        git_io(&cwd, &["commit", "-m", &message], &[])?;
+        git_io(&cwd, &["push", "-u", "origin", &branch], &[])
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 // Like git(), but captures stderr too (merge/rebase progress lands there) and
 // allows env overrides (to disable editors on --continue).
 fn git_io(cwd: &str, args: &[&str], env: &[(&str, &str)]) -> Result<String, String> {
