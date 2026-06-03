@@ -371,6 +371,29 @@ pub async fn glab_pipelines_json(cwd: String) -> Result<String, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// Open GitLab merge requests as JSON via `glab api` (#46 cross-provider review).
+#[tauri::command]
+pub async fn glab_mrs_json(cwd: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut cmd = crate::shared::command("glab");
+        cmd.current_dir(&cwd).args([
+            "api",
+            "projects/:id/merge_requests?state=opened&per_page=20&order_by=updated_at&sort=desc",
+        ]);
+        let out =
+            crate::shared::exec_capture(cmd, 25).map_err(|e| format!("glab not found: {e}"))?;
+        if out.status.success() {
+            Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        } else {
+            let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+            s.push_str(&String::from_utf8_lossy(&out.stderr));
+            Err(s)
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Jobs for one pipeline as JSON via `glab api`.
 #[tauri::command]
 pub async fn glab_pipeline_jobs(cwd: String, pipeline: String) -> Result<String, String> {

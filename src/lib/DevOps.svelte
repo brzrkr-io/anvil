@@ -7,6 +7,8 @@
   import { ACCOUNTS, getValue } from "$lib/accounts";
   import Icon from "$lib/Icon.svelte";
   import Skeleton from "$lib/Skeleton.svelte";
+  import { openUrl } from "@tauri-apps/plugin-opener";
+  import { parseMrRows, type MrRow } from "$lib/gl-mrs";
   import { toast } from "$lib/toast";
   import { askText, askConfirm } from "$lib/dialog";
   import { parsePrRows, orderStacks, type PrRow } from "$lib/pr-checks";
@@ -16,8 +18,8 @@
 
   let { cwd, onRunCommand, onInvestigate }: { cwd: string; onRunCommand?: (cmd: string) => void; onInvestigate?: (prompt: string) => void } = $props();
 
-  type DevTab = "prs" | "actions" | "gitlab" | "docker" | "aws" | "inc";
-  const DEV_TABS = ["prs", "actions", "gitlab", "docker", "aws", "inc"];
+  type DevTab = "prs" | "actions" | "gitlab" | "mrs" | "docker" | "aws" | "inc";
+  const DEV_TABS = ["prs", "actions", "gitlab", "mrs", "docker", "aws", "inc"];
   let tab = $state<DevTab>(
     (() => { try { const t = localStorage.getItem("anvil-devops-tab"); return (t && DEV_TABS.includes(t) ? t : "prs") as DevTab; } catch { return "prs"; } })(),
   );
@@ -275,6 +277,16 @@
     catch (e) { glabOut = String(e); }
     busy = false;
   }
+
+  // #46 GitLab merge requests (read-only; open in browser).
+  let mrRows = $state<MrRow[]>([]);
+  let mrErr = $state("");
+  async function loadMrs() {
+    busy = true;
+    try { mrRows = parseMrRows(await invoke<string>("glab_mrs_json", { cwd })); mrErr = ""; }
+    catch (e) { mrErr = String(e); mrRows = []; }
+    busy = false;
+  }
   function refresh() {
     if (tab === "prs") loadPRs();
   }
@@ -295,6 +307,7 @@
     <button class:on={tab === "prs"} onclick={() => (tab = "prs")}><Icon name="pr" size={14} /> Pull Requests</button>
     <button class:on={tab === "actions"} onclick={() => { tab = "actions"; if (!runs.length) loadActions(); }}><Icon name="ci" size={14} /> Actions{#if runFails}<span class="tabbadge">{runFails}</span>{/if}</button>
     <button class:on={tab === "gitlab"} onclick={() => { tab = "gitlab"; if (!glabOut) loadGlab(); }}><Icon name="ci" size={14} /> GitLab CI</button>
+    <button class:on={tab === "mrs"} onclick={() => { tab = "mrs"; if (!mrRows.length) loadMrs(); }}><Icon name="pr" size={14} /> GitLab MRs</button>
     <button class:on={tab === "docker"} onclick={() => (tab = "docker")}><Icon name="docker" size={14} /> Docker</button>
     <button class:on={tab === "aws"} onclick={() => { tab = "aws"; if (!awsOut) loadAws(); }}><Icon name="devops" size={14} /> AWS</button>
     <button class:on={tab === "inc"} onclick={() => (tab = "inc")}><Icon name="alert" size={14} /> Incident</button>
@@ -387,6 +400,31 @@
       <button class="refresh" title="Retry pipeline in terminal" onclick={() => runCmd("glab ci retry")}>retry</button>
     </div>
     <pre class="out">{glabOut || "Loading… (needs glab + a GitLab remote)"}</pre>
+  {:else if tab === "mrs"}
+    <div class="bar"><span class="lbl">GitLab MRs · {cwd.split("/").pop()}</span>
+      <span class="grow"></span>
+      <button class="refresh" disabled={busy} onclick={() => runCmd("glab mr create --fill")} title="Open an MR for the current branch">+ New MR</button>
+      <button class="refresh" disabled={busy} onclick={loadMrs} title="Refresh"><Icon name="refresh" size={13} /></button>
+    </div>
+    {#if mrErr}
+      <pre class="out">{mrErr.slice(0, 200)}</pre>
+    {:else if mrRows.length}
+      <div class="podlist">
+        {#each mrRows as r (r.iid)}
+          <div class="podrow" role="button" tabindex="0" title="Open in browser"
+            onclick={() => openUrl(r.url).catch(() => toast("Could not open URL", "error"))}
+            onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), openUrl(r.url).catch(() => {}))}>
+            <span class="bdg" style="color:var(--accent)">!{r.iid}</span>
+            <span class="pnm">{r.title}{r.draft ? " · draft" : ""}</span>
+            <span class="basechip" title="{r.source} → {r.target}">{r.source} → {r.target}</span>
+          </div>
+        {/each}
+      </div>
+    {:else if busy}
+      <Skeleton rows={6} />
+    {:else}
+      <pre class="out">No open merge requests / glab unavailable.</pre>
+    {/if}
   {:else if tab === "docker"}
     <Docker {cwd} {onRunCommand} />
   {:else if tab === "aws"}

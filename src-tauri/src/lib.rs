@@ -423,6 +423,7 @@ pub fn run() {
             ci::glab_pipelines,
             ci::glab_pipeline_get,
             ci::glab_pipelines_json,
+            ci::glab_mrs_json,
             ci::glab_pipeline_jobs,
             ci::glab_job_trace,
             ci::glab_pipeline_retry,
