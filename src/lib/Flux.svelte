@@ -31,7 +31,8 @@
   let items = $state<FluxItem[]>([]);
   let loading = $state(false);
   let err = $state("");
-  let present = $state(true); // false → cluster has no Flux CRDs; hide the panel
+  let present = $state(true);     // Flux installed (core CRDs exist) → show the panel + tabs
+  let tabPresent = $state(true);  // the ACTIVE tab's CRD exists → only gates the body
   let busyRow = $state("");
 
   const TABS: { id: Tab; label: string }[] = [
@@ -68,8 +69,9 @@
     try {
       const p = await invoke<FluxListPayload>("kube_snapshot", { kind: `flux:${t}` });
       if (t !== tab) return;
-      present = p.present; items = p.rows; err = p.error; loading = false;
-      onPresence?.(present);
+      // Per-tab presence only — a missing Images/Sources CRD must NOT hide the
+      // whole Flux panel (that's `present`, owned by the health watcher).
+      tabPresent = p.present; items = p.rows; err = p.error; loading = false;
     } catch (e) { err = String(e); loading = false; }
   }
 
@@ -82,8 +84,8 @@
     try {
       unlistenList = await listen<FluxListPayload>(`kube://flux:${t}`, (e) => {
         if (watchedTab !== t) return;
-        present = e.payload.present; items = e.payload.rows; err = e.payload.error;
-        loading = false; onPresence?.(present);
+        tabPresent = e.payload.present; items = e.payload.rows; err = e.payload.error;
+        loading = false;
       });
     } catch { /* no Tauri event bus (browser preview) */ }
     invoke("kube_watch_start", { kind: `flux:${t}`, intervalMs: 6000 }).catch(() => {});
@@ -136,17 +138,23 @@
   let clusterFails = $state(0);
   let unlistenHealth: (() => void) | undefined;
   let healthOn = false;
+  // The health watcher is the single source of truth for "is Flux installed":
+  // it sets `present` (panel visibility) + notifies the parent, so a per-tab CRD
+  // gap can never collapse the panel.
+  function applyHealth(h: { failing: number; present: boolean }) {
+    clusterFails = h.failing;
+    present = h.present;
+    onPresence?.(present);
+  }
   async function refreshHealth() {
-    try {
-      const h = await invoke<{ failing: number; present: boolean }>("kube_snapshot", { kind: "flux:health" });
-      clusterFails = h.failing;
-    } catch { /* ignore */ }
+    try { applyHealth(await invoke<{ failing: number; present: boolean }>("kube_snapshot", { kind: "flux:health" })); }
+    catch { /* ignore */ }
   }
   async function startHealth() {
     if (healthOn) return;
     healthOn = true;
     try {
-      unlistenHealth = await listen<{ failing: number }>("kube://flux:health", (e) => { clusterFails = e.payload.failing; });
+      unlistenHealth = await listen<{ failing: number; present: boolean }>("kube://flux:health", (e) => applyHealth(e.payload));
     } catch { /* no event bus */ }
     invoke("kube_watch_start", { kind: "flux:health", intervalMs: 18000 }).catch(() => {});
     refreshHealth();
@@ -198,6 +206,8 @@
     <div class="fx-body">
         {#if loading && !items.length}
           <div class="fx-empty">Loading…</div>
+        {:else if !tabPresent}
+          <div class="fx-empty">No {tab} CRDs in this cluster.</div>
         {:else if !shown.length}
           <div class="fx-empty">No {nsFilter ? `${tab} in ${nsFilter}` : tab} found.</div>
         {:else}
