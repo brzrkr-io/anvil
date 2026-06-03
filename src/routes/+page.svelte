@@ -1750,7 +1750,7 @@
       <div class="sect">Explorer <button class="sect-x" title="Hide explorer (⌘B)" onclick={() => (explorerOpen = false)}><Icon name="close" size={11} /></button></div>
       {#if cwd}<FileBrowser bind:path={cwd} onOpenFile={openInEditor} />{/if}
     </aside>
-    <Resizer bind:size={sideW} min={160} max={480} storeKey="anvil-side-w" />
+    <Resizer bind:size={sideW} min={160} max={480} def={230} storeKey="anvil-side-w" />
     {/if}
 
     <svelte:boundary onerror={(e) => { console.error("view crashed", e); toast("This view hit an error — use Reload view", "error"); }}>

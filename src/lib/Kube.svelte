@@ -505,7 +505,7 @@
 
     <!-- Inline log/describe panel -->
     {#if panel}
-      <Resizer bind:size={podsW} min={320} max={1100} storeKey="anvil-kube-podsw" />
+      <Resizer bind:size={podsW} min={320} max={1100} def={640} storeKey="anvil-kube-podsw" />
       <div class="log-panel">
         <div class="log-head">
           <span class="log-title">{panel.title}</span>

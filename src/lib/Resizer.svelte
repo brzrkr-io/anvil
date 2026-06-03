@@ -15,7 +15,15 @@
     max = 900,
     edge = "left",
     storeKey = "",
-  }: { size: number; min?: number; max?: number; edge?: "left" | "right" | "top" | "bottom"; storeKey?: string } = $props();
+    def = 0,
+  }: { size: number; min?: number; max?: number; edge?: "left" | "right" | "top" | "bottom"; storeKey?: string; def?: number } = $props();
+
+  // Double-click resets to the default size (if one was given).
+  function reset() {
+    if (!def) return;
+    size = def;
+    if (storeKey) { try { localStorage.setItem(storeKey, String(def)); } catch { /* ignore */ } }
+  }
 
   const vertical = $derived(edge === "top" || edge === "bottom"); // divider drags up/down
   let dragging = $state(false);
@@ -50,7 +58,9 @@
   role="separator"
   tabindex="-1"
   aria-orientation={vertical ? "horizontal" : "vertical"}
+  title={def ? "Drag to resize · double-click to reset" : "Drag to resize"}
   onpointerdown={onDown}
+  ondblclick={reset}
 ></div>
 
 <style>

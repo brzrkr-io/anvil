@@ -446,7 +446,7 @@
     </div>
   </aside>
 
-  <Resizer bind:size={sideW} min={220} max={620} storeKey="anvil-scm-sidew" />
+  <Resizer bind:size={sideW} min={220} max={620} def={300} storeKey="anvil-scm-sidew" />
 
   <!-- RIGHT: header + filters + stashes + tags + history + commit detail -->
   <main class="scm-main">
