@@ -3,6 +3,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import Icon from "$lib/Icon.svelte";
   import Skeleton from "$lib/Skeleton.svelte";
+  import EmptyState from "$lib/EmptyState.svelte";
   import { toast } from "$lib/toast";
   import { askConfirm } from "$lib/dialog";
   import { readCache, writeCache } from "$lib/cache";
@@ -351,7 +352,7 @@
       {#if !ciErr && pipelines.length === 0 && busy}
         <Skeleton rows={12} />
       {:else if !ciErr && pipelines.length === 0 && !busy}
-        <div class="empty">No pipelines found.</div>
+        <EmptyState icon="ci" title="No pipelines found" hint="No recent GitLab pipelines for this project." />
       {:else if !ciErr}
         <div class="pl-header">
           <span class="col-dot"></span>

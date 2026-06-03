@@ -5,6 +5,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import Icon from "$lib/Icon.svelte";
   import Skeleton from "$lib/Skeleton.svelte";
+  import EmptyState from "$lib/EmptyState.svelte";
   import { toast } from "$lib/toast";
   import { askConfirm, askText } from "$lib/dialog";
   import Flux from "$lib/Flux.svelte";
@@ -466,9 +467,11 @@
           </div>
         {/each}
       {:else if !busy}
-        <div class="empty">
-          {k8sErr ? k8sErr : "No pods found."}
-        </div>
+        {#if k8sErr}
+          <div class="empty">{k8sErr}</div>
+        {:else}
+          <EmptyState icon="kube" title="No pods found" hint="This namespace has no pods, or a filter is hiding them." />
+        {/if}
       {:else}
         <Skeleton rows={10} />
       {/if}
