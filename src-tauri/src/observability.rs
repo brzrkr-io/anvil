@@ -2,13 +2,11 @@
 /// JSON from `/api/v1/query`. no_proxy so it works behind the corporate proxy.
 #[tauri::command]
 pub async fn prom_query(base: String, query: String) -> Result<String, String> {
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = crate::shared::http();
     let url = format!("{}/api/v1/query", base.trim_end_matches('/'));
     let r = client
         .get(url)
+        .timeout(std::time::Duration::from_secs(20))
         .query(&[("query", query.as_str())])
         .send()
         .await
@@ -27,13 +25,11 @@ pub async fn prom_query_range(base: String, query: String, minutes: u64) -> Resu
     let span = minutes.max(1) * 60;
     let start = now.saturating_sub(span);
     let step = (span / 60).max(15);
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = crate::shared::http();
     let url = format!("{}/api/v1/query_range", base.trim_end_matches('/'));
     let r = client
         .get(url)
+        .timeout(std::time::Duration::from_secs(20))
         .query(&[
             ("query", query.as_str()),
             ("start", start.to_string().as_str()),
@@ -46,12 +42,8 @@ pub async fn prom_query_range(base: String, query: String, minutes: u64) -> Resu
     r.text().await.map_err(|e| e.to_string())
 }
 
-fn http_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .no_proxy()
-        .timeout(std::time::Duration::from_secs(20))
-        .build()
-        .map_err(|e| e.to_string())
+fn http_client() -> &'static reqwest::Client {
+    crate::shared::http()
 }
 
 /// Walk the full error-source chain so transport failures show the ROOT cause
@@ -77,7 +69,9 @@ pub async fn grafana_dashboards(base: String, token: String) -> Result<String, S
         "{}/api/search?type=dash-db&limit=1000",
         base.trim_end_matches('/')
     );
-    let mut req = http_client()?.get(url);
+    let mut req = http_client()
+        .get(url)
+        .timeout(std::time::Duration::from_secs(20));
     if !token.is_empty() {
         req = req.bearer_auth(token);
     }
@@ -98,8 +92,9 @@ pub async fn grafana_dashboards(base: String, token: String) -> Result<String, S
 #[tauri::command]
 pub async fn signoz_query(base: String, api_key: String, body: String) -> Result<String, String> {
     let url = format!("{}/api/v3/query_range", base.trim_end_matches('/'));
-    let mut req = http_client()?
+    let mut req = http_client()
         .post(url)
+        .timeout(std::time::Duration::from_secs(20))
         .header("Content-Type", "application/json")
         .body(body);
     if !api_key.is_empty() {
@@ -135,8 +130,9 @@ pub async fn signoz_services(base: String, api_key: String, mins: u64) -> Result
     })
     .to_string();
     let url = format!("{}/api/v1/services", base.trim_end_matches('/'));
-    let mut req = http_client()?
+    let mut req = http_client()
         .post(url)
+        .timeout(std::time::Duration::from_secs(20))
         .header("Content-Type", "application/json")
         .body(body);
     if !api_key.is_empty() {
@@ -163,10 +159,7 @@ pub async fn sentry_issues(
     project: String,
     token: String,
 ) -> Result<String, String> {
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = crate::shared::http();
     let host = if base.trim().is_empty() {
         "https://sentry.io".to_string()
     } else {
@@ -177,6 +170,7 @@ pub async fn sentry_issues(
     );
     let r = client
         .get(url)
+        .timeout(std::time::Duration::from_secs(20))
         .header("Authorization", format!("Bearer {token}"))
         .send()
         .await
@@ -190,12 +184,10 @@ pub async fn sentry_issues(
 /// I88 Slack — post a plain-text message to an incoming-webhook URL.
 #[tauri::command]
 pub async fn slack_post(webhook: String, text: String) -> Result<(), String> {
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = crate::shared::http();
     let r = client
         .post(webhook)
+        .timeout(std::time::Duration::from_secs(10))
         .json(&serde_json::json!({ "text": text }))
         .send()
         .await

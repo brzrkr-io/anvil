@@ -12,11 +12,8 @@ fn llm_base(base: &Option<String>) -> String {
 }
 
 /// reqwest client that never routes loopback through a system/corporate proxy.
-fn llm_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .no_proxy()
-        .build()
-        .map_err(|e| e.to_string())
+fn llm_client() -> &'static reqwest::Client {
+    crate::shared::http()
 }
 
 /// List models from an OpenAI-compatible server. `base`/`api_key` come from the
@@ -27,7 +24,7 @@ pub async fn llm_models(
     base: Option<String>,
     api_key: Option<String>,
 ) -> Result<Vec<String>, String> {
-    let mut req = llm_client()?.get(format!("{}/models", llm_base(&base)));
+    let mut req = llm_client().get(format!("{}/models", llm_base(&base)));
     if let Some(k) = api_key.filter(|k| !k.is_empty()) {
         req = req.bearer_auth(k);
     }
@@ -55,7 +52,7 @@ pub async fn llm_chat(
     let body = serde_json::json!({
         "model": model, "messages": messages, "temperature": 0.4, "stream": false
     });
-    let mut req = llm_client()?
+    let mut req = llm_client()
         .post(format!("{}/chat/completions", llm_base(&base)))
         .json(&body);
     if let Some(k) = api_key.filter(|k| !k.is_empty()) {
@@ -84,7 +81,7 @@ pub async fn llm_chat_stream(
     let body = serde_json::json!({
         "model": model, "messages": messages, "temperature": 0.4, "stream": true
     });
-    let mut req = llm_client()?
+    let mut req = llm_client()
         .post(format!("{}/chat/completions", llm_base(&base)))
         .json(&body);
     if let Some(k) = api_key.filter(|k| !k.is_empty()) {

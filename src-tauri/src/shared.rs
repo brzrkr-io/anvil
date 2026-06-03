@@ -95,6 +95,24 @@ pub(crate) fn command(program: &str) -> Command {
     c
 }
 
+/// Shared pooled HTTP client. Built once so TCP/TLS connections are kept alive
+/// and reused across every integration request (Prometheus, LLM, Sentry, …)
+/// instead of a cold handshake per call. `.no_proxy()` matches the rest of the
+/// app — direct egress, since the corporate proxy breaks these connections from
+/// inside the GUI. Per-request timeouts are applied by callers (they vary: short
+/// for a metrics query, none for a streaming LLM response).
+pub(crate) fn http() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .no_proxy()
+            .user_agent("Anvil")
+            .pool_idle_timeout(Duration::from_secs(90))
+            .build()
+            .expect("build shared reqwest client")
+    })
+}
+
 /// Run a command capturing stdout+stderr, killing it after `secs` so a hung
 /// external CLI (unreachable cluster, VPN down, auth prompt) can't block forever.
 /// Reader threads drain the pipes so a chatty child can't deadlock on a full pipe.
