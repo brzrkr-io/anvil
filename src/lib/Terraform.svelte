@@ -3,6 +3,8 @@
   import { readCache, writeCache } from "$lib/cache";
   import { invoke } from "@tauri-apps/api/core";
   import Icon from "$lib/Icon.svelte";
+  import Skeleton from "$lib/Skeleton.svelte";
+  import EmptyState from "$lib/EmptyState.svelte";
   import { toast } from "$lib/toast";
   import { parsePlanSummary, planBadge, lineClass, type PlanSummary } from "$lib/iac-plan";
   import { terraformInvestigation } from "$lib/agent-ops";
@@ -334,12 +336,9 @@
       <div class="pane-h"><span>Stacks</span><span class="count">{stacks.length}</span></div>
       <div class="stacks-body">
         {#if scanning}
-          <div class="empty">Scanning…</div>
+          <Skeleton rows={7} />
         {:else if stacks.length === 0}
-          <div class="empty">
-            No Terraform / Terragrunt found in this repo.<br /><br />
-            Open a repo with <code>*.tf</code>, <code>terragrunt.hcl</code>, or <code>terragrunt.stack.hcl</code> files.
-          </div>
+          <EmptyState icon="terraform" title="No Terraform / Terragrunt found" hint="Open a repo with *.tf, terragrunt.hcl, or terragrunt.stack.hcl files." />
         {:else}
           {#each stacks as s (s.path)}
             <div
@@ -370,9 +369,9 @@
       <div class="pane-h"><span>Resources</span><span class="count">{resources.length}</span></div>
       <div class="state-body">
         {#if !activeStack}
-          <div class="empty">Pick a stack.</div>
+          <EmptyState icon="terraform" title="Pick a stack" hint="Select a stack on the left to view its state resources." />
         {:else if resources.length === 0}
-          <div class="empty">No state yet. Run <b>Init</b> then <b>Plan</b>.</div>
+          <EmptyState icon="terraform" title="No state yet" hint="Run Init, then Plan to populate state." />
         {:else}
           {#each groups as g (g.module)}
             <div class="mod" onclick={() => toggle(g.module)} role="button" tabindex="0"
