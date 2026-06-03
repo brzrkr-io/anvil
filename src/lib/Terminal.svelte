@@ -197,11 +197,40 @@
     };
 
     await invoke("pty_spawn", { id, cols: term.cols, rows: term.rows, cwd, shell, onData });
-    term.onData((d) => {
+    const sendInput = (d: string) => {
       feedInput(id, d);
       if (get(broadcastInput)) { for (const tid of liveTerminals()) invoke("pty_write", { id: tid, data: d }); }
       else invoke("pty_write", { id, data: d });
-    });
+    };
+    term.onData(sendInput);
+
+    // Mouse-wheel scrolling inside full-screen TUI apps (Claude Code, hermes,
+    // vim, less, man). In the alternate screen there is no scrollback buffer,
+    // so a wheel notch does nothing by default. When the app hasn't enabled its
+    // own mouse tracking, translate the wheel into arrow-key presses so the
+    // app scrolls its own view — matching iTerm/kitty "alternate scroll".
+    let wheelAccum = 0;
+    host.addEventListener(
+      "wheel",
+      (e: WheelEvent) => {
+        const modes = (term as unknown as { modes?: { mouseTrackingMode?: string; applicationCursorKeysMode?: boolean } }).modes;
+        const onAlt = term.buffer.active.type === "alternate";
+        // Normal screen → let xterm's native scrollback handle it.
+        // Mouse tracking on → the app wants the raw wheel events; don't intercept.
+        if (!onAlt || (modes?.mouseTrackingMode && modes.mouseTrackingMode !== "none")) return;
+        e.preventDefault();
+        const PX_PER_LINE = e.deltaMode === 1 ? 1 : 24; // line vs pixel delta
+        wheelAccum += e.deltaY / PX_PER_LINE;
+        const dir = wheelAccum >= 0 ? 1 : -1; // +1 = scroll down
+        const n = Math.floor(Math.abs(wheelAccum));
+        if (!n) return;
+        wheelAccum -= dir * n;
+        const appCursor = !!modes?.applicationCursorKeysMode;
+        const key = dir > 0 ? (appCursor ? "\x1bOB" : "\x1b[B") : appCursor ? "\x1bOA" : "\x1b[A";
+        sendInput(key.repeat(Math.min(n, 8)));
+      },
+      { passive: false },
+    );
 
     ro = new ResizeObserver(() => {
       // Coalesce resize bursts (window drag fires many callbacks/sec) into one

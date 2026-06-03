@@ -83,6 +83,24 @@
     return sha.slice(0, 8);
   }
 
+  // GitLab pipeline sources are verbose (merge_request_event, …). Show a short
+  // readable label so the column never truncates.
+  function srcLabel(src: string): string {
+    const map: Record<string, string> = {
+      merge_request_event: "merge request",
+      external_pull_request_event: "external PR",
+      push: "push",
+      web: "web",
+      schedule: "schedule",
+      trigger: "trigger",
+      pipeline: "pipeline",
+      api: "api",
+      chat: "chat",
+      parent_pipeline: "parent",
+    };
+    return map[src] ?? src.replace(/_event$/, "").replace(/_/g, " ");
+  }
+
   // GitLab job traces are full of ANSI color codes + section markers — strip to
   // readable plain text.
   function cleanTrace(s: string): string {
@@ -361,7 +379,7 @@
             </span>
             <span class="col-iid muted">#{p.iid}</span>
             <span class="col-ref mono">{p.ref}</span>
-            <span class="col-src muted">{p.source}</span>
+            <span class="col-src muted" title={p.source}>{srcLabel(p.source)}</span>
             <span class="col-sha mono muted">{shortSha(p.sha)}</span>
             <span class="col-age muted">{relativeAge(p.updated_at)}</span>
             <span class="col-dur muted">{fmtDuration(dur)}</span>
@@ -536,7 +554,7 @@
 
   .pl-header, .pl-row {
     display: grid;
-    grid-template-columns: 16px 44px minmax(0,1fr) 72px 72px 44px 56px 56px;
+    grid-template-columns: 18px 56px minmax(0,1fr) 132px 96px 56px 80px 56px;
     align-items: center; column-gap: 8px; height: 22px; padding: 0 10px;
     border-bottom: 1px solid var(--hairline); position: relative;
   }
