@@ -49,7 +49,14 @@
   // and capped at 400 in Rust off the UI thread, then pushed over `kube://pods`
   // only when they change. The frontend is a dumb subscriber — no polling, no
   // parse, no jank. Render straight from `livePods`.
-  let livePods = $state<Pod[]>(readCache<Pod[]>("kube-pods") ?? []);
+  // Guard the cache: a pre-migration cache stored the raw pods TEXT, not Pod[].
+  // Reject anything that isn't an array of rows with a name, so a stale value
+  // can't feed undefined keys into the {#each} (each_key_duplicate crash).
+  function cachedPods(): Pod[] {
+    const c = readCache<unknown>("kube-pods");
+    return Array.isArray(c) && c.every((p) => p && typeof (p as Pod).name === "string" && (p as Pod).name) ? (c as Pod[]) : [];
+  }
+  let livePods = $state<Pod[]>(cachedPods());
   const podRows = $derived(livePods);
 
   // Client-side filter only (cap already applied in Rust).
@@ -391,7 +398,7 @@
           <span class="col-age">Age</span>
           <span class="col-acts"></span>
         </div>
-        {#each shownPods as p (`${p.ns}/${p.name}`)}
+        {#each shownPods as p, i (`${p.ns}/${p.name}/${i}`)}
           <div class="pod-row" role="button" tabindex="0"
             onclick={() => openLogs(p)}
             onkeydown={(e) => e.key === "Enter" && openLogs(p)}
