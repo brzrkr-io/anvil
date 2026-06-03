@@ -24,6 +24,7 @@
     zoomId = null,
     dim = false,
     depth = 0,
+    solo = false,
   }: {
     node: PaneNode;
     view: Snippet<[Leaf]>;
@@ -50,6 +51,9 @@
     // Focus dimming (#65): fade inactive leaves.
     dim?: boolean;
     depth?: number;
+    // True when the whole tree is a single leaf — hide the pane header so a lone
+    // pane is a clean full-bleed view (no "floating workspace box" chrome).
+    solo?: boolean;
   } = $props();
 
   const VIEWS: { k: ViewKind; label: string }[] = [
@@ -117,7 +121,8 @@
   </div>
 {:else}
   {@const lf = node}
-  <div class="leaf {lf.id === activeId ? 'active' : ''}" class:dimmed={dim && lf.id !== activeId} onpointerdowncapture={() => onFocusLeaf?.(lf.id)}>
+  <div class="leaf {lf.id === activeId && !solo ? 'active' : ''}" class:dimmed={dim && lf.id !== activeId} onpointerdowncapture={() => onFocusLeaf?.(lf.id)}>
+    {#if !solo}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       class="phead"
@@ -144,6 +149,7 @@
       <button class="pbtn" title="Split down" onclick={() => onSplit(lf.id, "bottom", lf.view, lf.ref)}>⊞</button>
       <button class="pbtn close" title="Close pane" onclick={() => onClose(lf.id)}>✕</button>
     </div>
+    {/if}
     <div
       class="pbody"
       role="group"

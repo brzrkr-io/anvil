@@ -1902,7 +1902,7 @@
             {/key}
             </div>
           {/snippet}
-          <PaneGrid node={paneTree} view={paneView} drag={paneDrag} activeId={activeLeaf}
+          <PaneGrid node={paneTree} view={paneView} drag={paneDrag} activeId={activeLeaf} solo={paneTree.kind === "leaf"}
             onSplit={wsSplit} onClose={wsClose} onSetView={wsSetView} onResize={wsResize} onDock={wsDock}
             onSetActiveTab={wsSetActiveTab} onCloseTab={wsCloseTab} onAddTab={wsAddTab}
             extDrag={tabDragView} onDropExternal={wsDropTab} zoomId={zoomedLeaf} dim={$focusDimming}
