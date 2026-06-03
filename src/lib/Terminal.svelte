@@ -234,14 +234,17 @@
     // — unless the app has grabbed the mouse (then let it have the raw event,
     // Shift overrides to force-scroll).
     let wheelAccum = 0;
-    host.addEventListener(
-      "wheel",
-      (e: WheelEvent) => {
+    const onWheel = (e: WheelEvent) => {
+      try {
         const modes = (term as unknown as { modes?: { mouseTrackingMode?: string; applicationCursorKeysMode?: boolean } }).modes;
         const onAlt = term.buffer.active.type === "alternate";
         const mouseOn = !!(modes?.mouseTrackingMode && modes.mouseTrackingMode !== "none");
         if (mouseOn && !e.shiftKey) return; // app wants the wheel
+        // We own this scroll — prevent the default + stop xterm's own handler so
+        // there's no double scroll, and do it in capture phase so nothing can
+        // swallow the event first.
         e.preventDefault();
+        e.stopPropagation();
         const PX_PER_LINE = e.deltaMode === 1 ? 1 : e.deltaMode === 2 ? Math.max(1, term.rows) : 24;
         wheelAccum += e.deltaY / PX_PER_LINE;
         const dir = wheelAccum >= 0 ? 1 : -1; // +1 = scroll down / toward newest
@@ -256,9 +259,11 @@
         } else {
           term.scrollLines(dir * n);
         }
-      },
-      { passive: false },
-    );
+      } catch { /* ignore */ }
+    };
+    // Capture phase on the outer host so the handler runs before xterm's canvas
+    // / viewport listeners (which were swallowing the wheel before it scrolled).
+    host.addEventListener("wheel", onWheel, { passive: false, capture: true });
 
     // Track scroll position so we can offer a "jump to bottom" pill.
     term.onScroll(() => {
