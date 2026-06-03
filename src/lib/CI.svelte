@@ -46,6 +46,9 @@
   let logPollInterval: ReturnType<typeof setInterval> | null = null;
   let logEl = $state<HTMLDivElement | null>(null);
   let logWrap = $state(false);
+  // #25 Pipeline DAG: lay stages out as left→right columns with edges between
+  // them (GitLab's default stage-sequential graph), vs. the flat list.
+  let dagView = $state(true);
 
   const RUNNING_STATUSES = new Set(["running", "pending", "created", "waiting_for_resource", "preparing", "scheduled"]);
 
@@ -135,6 +138,8 @@
     }
     return m;
   });
+
+  const stageList = $derived([...stageGroups.entries()]);
 
   async function loadPipelines() {
     if (document.hidden || !active) return;
@@ -392,6 +397,7 @@
           <span class="jobs-status" style="color:{statusColor(selectedPipeline.status)}">{selectedPipeline.status}</span>
           {#if jobs.length}<span class="jobs-prog">{jobsDone}/{jobs.length}</span>{/if}
           <span class="spacer"></span>
+          {#if jobs.length}<button class="iconbtn" class:on={dagView} onclick={() => (dagView = !dagView)} title="{dagView ? 'List view' : 'DAG view'}">{dagView ? '☰' : '⛓'}</button>{/if}
           <button class="iconbtn" onclick={() => { selectedPipeline = null; jobs = []; closeLog(); }} title="Close">
             <Icon name="close" size={13} />
           </button>
@@ -399,8 +405,36 @@
         <div class="jobs-body">
           {#if jobs.length === 0}
             <div class="empty">No jobs.</div>
+          {:else if dagView}
+            <div class="dag">
+              {#each stageList as [stage, stageJobs], si (stage)}
+                {#if si > 0}<div class="dag-link" aria-hidden="true"></div>{/if}
+                <div class="dag-stage">
+                  <div class="dag-stage-head"><span>{stage}</span><span class="stage-count">{stageJobs.length}</span></div>
+                  {#each stageJobs as j (j.id)}
+                    <div
+                      class="dag-node"
+                      class:selected={selectedJob?.id === j.id}
+                      role="button"
+                      tabindex="0"
+                      onclick={() => selectJob(j)}
+                      onkeydown={(e) => e.key === "Enter" && selectJob(j)}
+                      style="border-left-color:{statusColor(j.status)}"
+                    >
+                      <span class="dot" class:running={isRunning(j.status)} style="background:{statusColor(j.status)}"></span>
+                      <span class="job-name" title={j.name}>{j.name}</span>
+                      {#if j.status === "manual"}
+                        <button class="jact" title="Play job" onclick={(e) => { e.stopPropagation(); playJob(j); }}><Icon name="play" size={10} /></button>
+                      {:else if !isRunning(j.status)}
+                        <button class="jact" title="Retry job" onclick={(e) => { e.stopPropagation(); retryJob(j); }}><Icon name="refresh" size={10} /></button>
+                      {/if}
+                    </div>
+                  {/each}
+                </div>
+              {/each}
+            </div>
           {:else}
-            {#each [...stageGroups.entries()] as [stage, stageJobs] (stage)}
+            {#each stageList as [stage, stageJobs] (stage)}
               <div class="stage-label"><span>{stage}</span><span class="stage-count">{stageJobs.length}</span></div>
               {#each stageJobs as j (j.id)}
                 <div
@@ -594,6 +628,36 @@
   }
   .job-row:hover .jact { display: inline-flex; }
   .jact:hover { color: var(--text); border-color: var(--text3); }
+
+  /* #25 Pipeline DAG — stages as left→right columns with edges between them. */
+  .dag {
+    display: flex; align-items: flex-start; gap: 0;
+    padding: 14px 12px; overflow-x: auto; min-height: 100%;
+  }
+  .dag-stage { display: flex; flex-direction: column; gap: 8px; min-width: 150px; flex: 0 0 auto; }
+  .dag-stage-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 6px;
+    font-size: 10px; font-weight: 500; color: var(--text3);
+    text-transform: uppercase; letter-spacing: 0.05em; padding: 0 2px 2px;
+  }
+  .dag-link {
+    flex: 0 0 28px; align-self: center; height: 1px; margin-top: 18px;
+    background: var(--border); position: relative;
+  }
+  .dag-link::after {
+    content: ""; position: absolute; right: 0; top: -3px;
+    border-left: 5px solid var(--border);
+    border-top: 3.5px solid transparent; border-bottom: 3.5px solid transparent;
+  }
+  .dag-node {
+    display: flex; align-items: center; gap: 7px; padding: 0 8px; height: 28px;
+    font-size: 11.5px; cursor: default; border: 1px solid var(--border);
+    border-left: 3px solid var(--border); border-radius: 6px; background: var(--panel2);
+  }
+  .dag-node:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
+  .dag-node.selected { background: var(--sel); border-color: var(--text3); }
+  .dag-node .jact { display: none; }
+  .dag-node:hover .jact { display: inline-flex; }
 
   /* Log panel */
   .log-panel { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
