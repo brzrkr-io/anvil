@@ -8,6 +8,7 @@
   import Icon from "$lib/Icon.svelte";
   import Skeleton from "$lib/Skeleton.svelte";
   import EmptyState from "$lib/EmptyState.svelte";
+  import Resizer from "$lib/Resizer.svelte";
   import { toast } from "$lib/toast";
   import { askConfirm, askText } from "$lib/dialog";
   import Flux from "$lib/Flux.svelte";
@@ -36,6 +37,8 @@
   }
   let namespaces = $state<string[]>([]);
   let currentNs = $state("default");
+  // Resizable width of the pods table when the log/describe panel is open.
+  let podsW = $state((() => { try { return Number(localStorage.getItem("anvil-kube-podsw")) || 640; } catch { return 640; } })());
   // #24 Pin favorite namespaces to the top of the switcher (mirrors contexts).
   const PIN_NS_KEY = "anvil-kube-pinned-ns";
   let pinnedNs = $state<string[]>(
@@ -424,7 +427,7 @@
   <!-- Main pod table / panel split -->
   <div class="body">
     <!-- Pod table -->
-    <div class="pods" class:split={!!panel} class:stale={authErr && livePods.length}>
+    <div class="pods" class:split={!!panel} class:stale={authErr && livePods.length} style={panel ? `flex:0 0 ${podsW}px` : ""}>
       {#if k8sErr && !authErr}
         <div class="empty">{k8sErr}</div>
       {:else if podRows.length}
@@ -502,6 +505,7 @@
 
     <!-- Inline log/describe panel -->
     {#if panel}
+      <Resizer bind:size={podsW} min={320} max={1100} storeKey="anvil-kube-podsw" />
       <div class="log-panel">
         <div class="log-head">
           <span class="log-title">{panel.title}</span>

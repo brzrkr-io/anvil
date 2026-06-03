@@ -4,8 +4,12 @@
   import { parseLog, parseStatus, parseConventional, relTime, buildGraph, buildFileTree, type Commit, type Change, type FileNode } from "$lib/git";
   import Icon from "$lib/Icon.svelte";
   import HunkStage from "$lib/HunkStage.svelte";
+  import Resizer from "$lib/Resizer.svelte";
   import { llmCreds } from "$lib/accounts";
   import { askText } from "$lib/dialog";
+
+  // Resizable width of the changes/commit panel (persisted).
+  let sideW = $state((() => { try { return Number(localStorage.getItem("anvil-scm-sidew")) || 300; } catch { return 300; } })());
 
   let { cwd, onOpenDiff }: {
     cwd: string;
@@ -337,7 +341,7 @@
   {/snippet}
 
   <!-- LEFT: commit composer + changed files -->
-  <aside class="scm-side">
+  <aside class="scm-side" style="flex:0 0 {sideW}px">
     {#if branch && !error}
       <div class="side-commit">
         <div class="ci-card">
@@ -441,6 +445,8 @@
       {/if}
     </div>
   </aside>
+
+  <Resizer bind:size={sideW} min={220} max={620} storeKey="anvil-scm-sidew" />
 
   <!-- RIGHT: header + filters + stashes + tags + history + commit detail -->
   <main class="scm-main">
