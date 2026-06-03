@@ -72,6 +72,16 @@
   const shownPods = $derived(filteredPods.slice(0, POD_CAP));
 
   const AUTH_RE = /expired|credentials|unauthorized|not logged in|sso session|reauthenticate|InvalidIdentityToken|token has expired|failed to get token/i;
+  // #5 Classify non-auth errors so the user knows whether it's permissions vs a
+  // network reach problem vs something raw.
+  const RBAC_RE = /forbidden|cannot (list|get|watch)|is forbidden/i;
+  const NET_RE = /timeout|timed out|connection refused|no route to host|dial tcp|i\/o timeout|unreachable|could not resolve|EOF/i;
+  function friendlyErr(e: string): string {
+    if (!e) return "";
+    if (RBAC_RE.test(e)) return "Access denied (RBAC) — this context can't list resources here.";
+    if (NET_RE.test(e)) return "Can't reach the cluster — check your network / VPN, then Retry.";
+    return e;
+  }
   const authErr = $derived(AUTH_RE.test(k8sErr));
 
   const statusDot = (s: string): string =>
@@ -468,7 +478,7 @@
         {/each}
       {:else if !busy}
         {#if k8sErr}
-          <div class="empty">{k8sErr}</div>
+          <div class="empty" title={k8sErr}>{friendlyErr(k8sErr)}</div>
         {:else}
           <EmptyState icon="kube" title="No pods found" hint="This namespace has no pods, or a filter is hiding them." />
         {/if}
