@@ -2,8 +2,10 @@ import { writable, get } from "svelte/store";
 
 function loadNum(key: string, def: number, lo: number, hi: number): number {
   if (typeof localStorage === "undefined") return def;
-  const n = Number(localStorage.getItem(key));
-  return n >= lo && n <= hi ? n : def;
+  const raw = localStorage.getItem(key);
+  if (raw === null || raw === "") return def;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= lo && n <= hi ? n : def;
 }
 function loadBool(key: string, def: boolean): boolean {
   if (typeof localStorage === "undefined") return def;
