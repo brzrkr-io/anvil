@@ -167,6 +167,10 @@
         if (sel) navigator.clipboard.writeText(sel).catch((e) => console.warn("clipboard write failed", e));
       }, 150);
     });
+    // onMount is async (font loading awaits above); if the pane was re-keyed or
+    // destroyed during that await, `host` is detached and xterm's open() throws
+    // "Terminal requires a parent element". Bail cleanly instead of crashing.
+    if (destroyed || !host || !host.isConnected) { try { term.dispose(); } catch { /* noop */ } return; }
     term.open(host);
     fit.fit();
     // GPU renderer for crisp, fast text. If WebGL is unavailable/lost, fall back
