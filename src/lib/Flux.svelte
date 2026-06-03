@@ -3,6 +3,8 @@
   import { listen } from "@tauri-apps/api/event";
   import { invoke } from "@tauri-apps/api/core";
   import Icon from "$lib/Icon.svelte";
+  import Skeleton from "$lib/Skeleton.svelte";
+  import EmptyState from "$lib/EmptyState.svelte";
   import { toast } from "$lib/toast";
   import { askConfirm } from "$lib/dialog";
   import { failingCount, oneLine, shortRev } from "$lib/flux-health";
@@ -205,11 +207,11 @@
 
     <div class="fx-body">
         {#if loading && !items.length}
-          <div class="fx-empty">Loading…</div>
+          <Skeleton rows={8} />
         {:else if !tabPresent}
-          <div class="fx-empty">No {tab} CRDs in this cluster.</div>
+          <EmptyState icon="flux" title="No {tab} CRDs in this cluster" hint="Flux's {tab} controller isn't installed here." />
         {:else if !shown.length}
-          <div class="fx-empty">No {nsFilter ? `${tab} in ${nsFilter}` : tab} found.</div>
+          <EmptyState icon="flux" title="No {nsFilter ? `${tab} in ${nsFilter}` : tab} found" />
         {:else}
           {#each shown as it (it.ns + "/" + it.apiKind + "/" + it.name)}
             <div class="fx-row" class:busy={busyRow === it.ns + "/" + it.name}>
