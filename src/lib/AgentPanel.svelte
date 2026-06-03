@@ -176,10 +176,22 @@
     messages.length;
     const last = messages[messages.length - 1];
     void last?.text;
-    if (stick && msgsEl) {
-      const el = msgsEl;
-      requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
-    }
+    if (!stick || !msgsEl) return;
+    const el = msgsEl;
+    // Two frames so the just-rendered rows have laid out before we measure
+    // scrollHeight (a single frame scrolls a still-short box → lands at top).
+    requestAnimationFrame(() => requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; }));
+  });
+  // The panel is mounted before its view is shown, so the content effect above
+  // can run while the box is 0-height (hidden) and no-op. A ResizeObserver
+  // re-pins to the bottom the moment the panel gains height (becomes visible)
+  // or its content reflows — as long as the user is still following along.
+  $effect(() => {
+    if (!msgsEl) return;
+    const el = msgsEl;
+    const ro = new ResizeObserver(() => { if (stick) el.scrollTop = el.scrollHeight; });
+    ro.observe(el);
+    return () => ro.disconnect();
   });
   // #8 Archive the finished conversation as a reopenable run before clearing.
   let runs = $state<RunMeta[]>(listRuns());
