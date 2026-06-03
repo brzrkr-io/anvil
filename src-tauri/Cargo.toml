@@ -36,10 +36,14 @@ rfd = "0.15"
 [dev-dependencies]
 tempfile = "3"
 
+# Tuned for fast local rebuilds (solo dev iterates constantly). Thin LTO links
+# ~2-3x faster than fat with ~95% of the size win; 16 codegen units parallelize
+# compilation. Net binary cost is <1 MB on a ~9.5 MB app. For a public/min-size
+# distribution build, set `lto = "fat"` and `codegen-units = 1`.
 [profile.release]
 strip = true
-lto = true
+lto = "thin"
 opt-level = "s"
-codegen-units = 1
+codegen-units = 16
 panic = "abort"
 
