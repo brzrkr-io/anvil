@@ -152,6 +152,22 @@ pub async fn kube_pods(context: String) -> Result<String, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// #14 Rollout status across the cluster: `kubectl get deploy -A` — the
+/// READY / UP-TO-DATE / AVAILABLE columns are the live rollout progress (e.g.
+/// READY 2/3 = a rollout in flight).
+#[tauri::command]
+pub async fn kube_deployments(context: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if context.is_empty() {
+            kubectl(&["get", "deploy", "-A"])
+        } else {
+            kubectl(&["--context", &context, "get", "deploy", "-A"])
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub async fn kube_logs(context: String, namespace: String, pod: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {

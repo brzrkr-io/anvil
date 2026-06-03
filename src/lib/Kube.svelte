@@ -159,6 +159,14 @@
       panel = { pod: current || "cluster", content: out, title: "Nodes" };
     } catch (e) { panel = { pod: current || "cluster", content: String(e), title: "Nodes" }; }
   }
+  // #14 Rollout status: deployment READY/UP-TO-DATE/AVAILABLE columns.
+  async function openRollouts() {
+    panel = { pod: current || "cluster", content: "Loading…", title: "Rollouts" };
+    try {
+      const out = await invoke<string>("kube_deployments", { context: current });
+      panel = { pod: current || "cluster", content: out, title: "Rollouts" };
+    } catch (e) { panel = { pod: current || "cluster", content: String(e), title: "Rollouts" }; }
+  }
 
   async function openDescribe(p: Pod) {
     panel = { pod: `${p.ns}/${p.name}`, content: "Loading…", title: "Describe" };
@@ -268,6 +276,9 @@
     </select>
     <span class="spacer"></span>
     {#if busy}<span class="spin">…</span>{/if}
+    <button class="iconbtn" onclick={openRollouts} title="Rollout status (deployments READY/UP-TO-DATE)">
+      <Icon name="workspace" size={13} />
+    </button>
     <button class="iconbtn" onclick={openNodes} title="Node capacity & usage (kubectl top nodes)">
       <Icon name="chart" size={13} />
     </button>
