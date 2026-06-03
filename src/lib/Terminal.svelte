@@ -6,7 +6,6 @@
   import { WebLinksAddon } from "@xterm/addon-web-links";
   import { WebglAddon } from "@xterm/addon-webgl";
   import { CanvasAddon } from "@xterm/addon-canvas";
-  import { ImageAddon } from "@xterm/addon-image";
   import "@xterm/xterm/css/xterm.css";
   import { invoke, Channel } from "@tauri-apps/api/core";
   import { openUrl } from "@tauri-apps/plugin-opener";
@@ -45,6 +44,7 @@
       if (cmdDecos.length > 600) cmdDecos.shift()?.dispose();
     } catch { /* decorations unavailable */ }
   }
+  let destroyed = false;
   let ro: ResizeObserver;
   let resizeRaf = 0;
   let lastCols = 0, lastRows = 0;
@@ -123,8 +123,6 @@
     term.loadAddon(fit);
     search = new SearchAddon();
     term.loadAddon(search);
-    // Inline images (#14): sixel + iTerm inline-image protocol.
-    try { term.loadAddon(new ImageAddon({ sixelSupport: true })); } catch { /* webgl needed; ignore if unavailable */ }
     // Command blocks (#12): capture OSC 133 A (prompt) / D;<code> (exit) marks.
     // Also draw a faint separator line above each prompt so commands are visually
     // grouped (only when shell integration emits OSC 133 + the setting is on).
@@ -183,6 +181,12 @@
     if (!webglOk) {
       try { term.loadAddon(new CanvasAddon()); } catch { /* DOM renderer — slowest, last resort */ }
     }
+    // Inline-image (sixel / iTerm) support is a ~150KB WASM decoder most sessions
+    // never need — load it lazily so it neither bloats the main chunk nor blocks
+    // terminal startup.
+    import("@xterm/addon-image")
+      .then(({ ImageAddon }) => { if (!destroyed) try { term.loadAddon(new ImageAddon({ sixelSupport: true })); } catch { /* webgl needed */ } })
+      .catch(() => { /* addon unavailable */ });
 
     // ⌘F opens the terminal search box (intercept before the key reaches the PTY).
     term.attachCustomKeyEventHandler((e) => {
@@ -362,6 +366,7 @@
   });
 
   onDestroy(() => {
+    destroyed = true;
     unsubTheme?.();
     unsubOpacity?.();
     clearTimeout(selTimer);
