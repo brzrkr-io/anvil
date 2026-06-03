@@ -116,6 +116,16 @@
     return out;
   });
 
+  const hasErr = $derived(logLines.some((l) => l.cls === "err"));
+
+  // Scroll the first ERROR line into view (#23). Returns false if none found.
+  function scrollToError(): boolean {
+    const el = logEl?.querySelector<HTMLElement>(".lg.err");
+    if (!el) return false;
+    el.scrollIntoView({ block: "center" });
+    return true;
+  }
+
   const stageGroups = $derived.by<Map<string, Job[]>>(() => {
     const m = new Map<string, Job[]>();
     for (const j of jobs) {
@@ -159,9 +169,10 @@
     try {
       const raw = await invoke<string>("glab_job_trace", { cwd, job: String(jobId) });
       logContent = cleanTrace(raw);
-      if (logEl) {
-        logEl.scrollTop = logEl.scrollHeight;
-      }
+      // Jump to the first error on a failed trace; otherwise tail to bottom (#23).
+      requestAnimationFrame(() => {
+        if (!scrollToError() && logEl) logEl.scrollTop = logEl.scrollHeight;
+      });
     } catch (e) {
       logContent = String(e);
     }
@@ -430,6 +441,7 @@
           <span class="log-status" style="color:{statusColor(selectedJob.status)}">{selectedJob.status}</span>
           <span class="log-lines">{logLines.length} lines</span>
           <span class="spacer"></span>
+          {#if hasErr}<button class="iconbtn err-jump" onclick={scrollToError} title="Jump to first error">↡ error</button>{/if}
           <button class="iconbtn" class:on={logWrap} onclick={() => (logWrap = !logWrap)} title="Toggle wrap">⤶</button>
           <button class="iconbtn" onclick={closeLog} title="Close">
             <Icon name="close" size={13} />
@@ -467,6 +479,8 @@
     background: transparent; color: var(--text3); cursor: default;
   }
   .iconbtn:hover { background: var(--sel); color: var(--text); }
+  .iconbtn.err-jump { width: auto; padding: 0 7px; gap: 4px; font-size: 11px; color: var(--red); }
+  .iconbtn.err-jump:hover { background: color-mix(in srgb, var(--red) 16%, transparent); color: var(--red); }
 
   .ci-err {
     display: flex; flex-direction: column; gap: 4px;

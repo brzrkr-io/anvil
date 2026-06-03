@@ -152,6 +152,22 @@
   let prComment = $state("");
   let prBusy = $state(false);
   let prRows = $state<PrRow[]>([]);
+  // Prior check state per PR, to fire a desktop notification when a PR's CI
+  // flips red → green between polls (#22). Not seeded on first load.
+  const prevChecks = new Map<string, string>();
+  let prSeeded = false;
+  function notifyChecksGreen(rows: PrRow[]) {
+    for (const r of rows) {
+      const before = prevChecks.get(r.num);
+      if (prSeeded && before === "fail" && r.checks === "pass" && "Notification" in window) {
+        if (Notification.permission === "granted")
+          new Notification("Anvil · CI passed", { body: `PR #${r.num} ${r.title}`.slice(0, 120) });
+        else if (Notification.permission !== "denied") Notification.requestPermission();
+      }
+      prevChecks.set(r.num, r.checks);
+    }
+    prSeeded = true;
+  }
   async function openPr(num: string) {
     prSel = num; prDetail = "Loading…";
     try { prDetail = await invoke<string>("gh_pr_view", { cwd, num }); } catch (e) { prDetail = String(e); }
@@ -206,6 +222,7 @@
     try {
       prs = await invoke<string>("gh_prs_json", { cwd });
       prRows = parsePrRows(prs);
+      notifyChecksGreen(prRows);
     } catch (e) {
       prs = String(e);
       prRows = [];
