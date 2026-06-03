@@ -50,7 +50,8 @@
   let logWrap = $state(false);
   // #25 Pipeline DAG: lay stages out as left→right columns with edges between
   // them (GitLab's default stage-sequential graph), vs. the flat list.
-  let dagView = $state(true);
+  let dagView = $state((() => { try { return localStorage.getItem("anvil-ci-dag") !== "0"; } catch { return true; } })());
+  $effect(() => { try { localStorage.setItem("anvil-ci-dag", dagView ? "1" : "0"); } catch { /* ignore */ } });
 
   // Draggable widths for the list | jobs | log columns (persisted).
   let listBasis = $state(480);
