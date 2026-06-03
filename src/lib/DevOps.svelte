@@ -16,7 +16,12 @@
 
   let { cwd, onRunCommand, onInvestigate }: { cwd: string; onRunCommand?: (cmd: string) => void; onInvestigate?: (prompt: string) => void } = $props();
 
-  let tab = $state<"prs" | "actions" | "gitlab" | "docker" | "aws" | "inc">("prs");
+  type DevTab = "prs" | "actions" | "gitlab" | "docker" | "aws" | "inc";
+  const DEV_TABS = ["prs", "actions", "gitlab", "docker", "aws", "inc"];
+  let tab = $state<DevTab>(
+    (() => { try { const t = localStorage.getItem("anvil-devops-tab"); return (t && DEV_TABS.includes(t) ? t : "prs") as DevTab; } catch { return "prs"; } })(),
+  );
+  $effect(() => { try { localStorage.setItem("anvil-devops-tab", tab); } catch { /* ignore */ } });
   // #59 AWS in-pane resource browser.
   let awsSvc = $state<"ec2" | "s3" | "lambda" | "rds" | "ecs" | "eks">("ec2");
   let awsOut = $state("");
