@@ -290,6 +290,9 @@
   // first time the cluster reports Flux CRDs (GitOps-first), but never trap the
   // user there if Flux disappears.
   let view = $state<"flux" | "workloads" | "helm">("workloads");
+  // Bumped by Refresh/Retry to force the Flux child to re-fetch immediately
+  // (e.g. recover right after the user re-auths in a terminal).
+  let fluxNonce = $state(0);
   let fluxPresent = $state(false);
   let fluxDefaulted = false;
   function onFluxPresence(p: boolean) {
@@ -367,20 +370,22 @@
     <button class="iconbtn" onclick={openNodes} title="Node capacity & usage (kubectl top nodes)">
       <Icon name="chart" size={13} />
     </button>
-    <button class="iconbtn" onclick={() => { load(); refreshPods(); refreshPf(); }} title="Refresh" disabled={busy}>
+    <button class="iconbtn" onclick={() => { load(); refreshPods(); refreshPf(); fluxNonce++; }} title="Refresh" disabled={busy}>
       <Icon name="refresh" size={13} />
     </button>
   </div>
 
-  <!-- Auth error bar -->
-  {#if authErr}
+  <!-- Auth error bar. Hidden in the Flux view — that error comes from the pod
+       watcher; Flux shows its own per-tab error so a stale pod failure doesn't
+       paint a false banner over a healthy Flux list. -->
+  {#if authErr && view !== "flux"}
     <div class="authbar">
       <Icon name="alert" size={13} />
       <span>Cloud credentials expired or missing.</span>
       {#each reauthActions(current) as a, i (a.cmd + '#' + i)}
         <button onclick={() => onRunCommand?.(a.cmd)}>{a.label}</button>
       {/each}
-      <button class="ghost" onclick={() => { load(); refreshPods(); }}>Retry</button>
+      <button class="ghost" onclick={() => { load(); refreshPods(); fluxNonce++; }}>Retry</button>
       {#if onCheckConnections}<button class="ghost" onclick={onCheckConnections}>Check connections</button>{/if}
       {#if livePods.length}<span class="stale">showing last-known pods</span>{/if}
     </div>
@@ -398,7 +403,7 @@
   <!-- FluxCD (GitOps) view. Always mounted (to detect Flux CRDs), shown only in
        the Flux view. Self-hides if the cluster has no Flux. -->
   <div class="kpane" style:display={view === "flux" && fluxPresent ? "flex" : "none"}>
-    <Flux {onRunCommand} onPresence={onFluxPresence} {onHealth} {onInvestigate} {active} visible={active && view === "flux"} />
+    <Flux {onRunCommand} onPresence={onFluxPresence} {onHealth} {onInvestigate} {active} visible={active && view === "flux"} refreshNonce={fluxNonce} />
   </div>
 
   <!-- Helm releases view. -->

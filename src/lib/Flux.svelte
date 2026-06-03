@@ -10,11 +10,11 @@
   import { failingCount, oneLine, shortRev } from "$lib/flux-health";
   import { fluxInvestigation } from "$lib/agent-ops";
 
-  let { onRunCommand, onPresence, onHealth, onInvestigate, active = true, visible = true }:
+  let { onRunCommand, onPresence, onHealth, onInvestigate, active = true, visible = true, refreshNonce = 0 }:
     { onRunCommand?: (cmd: string) => void; onPresence?: (present: boolean) => void; onHealth?: (failing: number) => void; onInvestigate?: (prompt: string) => void;
       // active = the Kubernetes view is open; visible = the Flux list is the shown
       // sub-view. Polling is gated on these so a backgrounded panel does no work.
-      active?: boolean; visible?: boolean } = $props();
+      active?: boolean; visible?: boolean; refreshNonce?: number } = $props();
 
   type Tab = "kustomizations" | "helmreleases" | "sources" | "images";
   interface FluxItem {
@@ -182,6 +182,14 @@
     refreshList(tab);
     if (v) subscribeTab(tab);
     else stopListWatch();
+  });
+
+  // Parent Refresh/Retry bumps refreshNonce → force an immediate re-fetch, so
+  // the list recovers the instant the user re-auths instead of waiting on the
+  // (idle-throttled) watcher.
+  $effect(() => {
+    refreshNonce; // track
+    if (active) { refreshList(tab); refreshHealth(); }
   });
 </script>
 
