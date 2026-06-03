@@ -100,6 +100,9 @@
     current = cur.status === "fulfilled" ? cur.value.trim() : "";
     currentNs = curNs.status === "fulfilled" ? curNs.value.trim() || "default" : "default";
     namespaces = nss.status === "fulfilled" ? nss.value.split("\n").filter(Boolean) : [];
+    // No active context but kubeconfig has some → tell the user to pick one
+    // instead of leaving the page blank with no explanation.
+    if (!current && contexts.length) k8sErr = "Select a context above to load resources.";
     busy = false;
   }
 
@@ -109,7 +112,11 @@
   async function refreshPods() {
     try {
       const p = await invoke<PodPayload>("kube_snapshot", { kind: "pods" });
-      livePods = Array.isArray(p.rows) ? p.rows : []; k8sErr = p.error ?? "";
+      const rows = Array.isArray(p.rows) ? p.rows : [];
+      k8sErr = p.error ?? "";
+      // Keep last-known rows on a failed snapshot (see listen handler).
+      if (k8sErr && rows.length === 0 && livePods.length) return;
+      livePods = rows;
       writeCache("kube-pods", livePods);
     } catch {
       try {
@@ -284,8 +291,15 @@
     refreshPf();
     try {
       unlistenPods = await listen<PodPayload>("kube://pods", (e) => {
-        livePods = Array.isArray(e.payload?.rows) ? e.payload.rows : [];
-        k8sErr = e.payload?.error ?? "";
+        const rows = Array.isArray(e.payload?.rows) ? e.payload.rows : [];
+        const err = e.payload?.error ?? "";
+        k8sErr = err;
+        // Keep the last good rows on a failed poll (expired creds, transient
+        // network) so the page stays populated (dimmed) instead of blanking
+        // out mid-session. Only replace when we actually got data, or when the
+        // cluster legitimately has no pods (no error).
+        if (err && rows.length === 0 && livePods.length) return;
+        livePods = rows;
         writeCache("kube-pods", livePods);
       });
     } catch { /* no Tauri event bus (e.g. browser preview) — snapshot still works */ }
@@ -334,8 +348,9 @@
       <span>Cloud credentials expired or missing.</span>
       <button onclick={() => onRunCommand?.("aws sso login")}>aws sso login</button>
       <button onclick={() => onRunCommand?.(`aws eks update-kubeconfig --name "${current}"`)}>refresh kubeconfig</button>
-      <button class="ghost" onclick={load}>Retry</button>
+      <button class="ghost" onclick={() => { load(); refreshPods(); }}>Retry</button>
       {#if onCheckConnections}<button class="ghost" onclick={onCheckConnections}>Check connections</button>{/if}
+      {#if livePods.length}<span class="stale">showing last-known pods</span>{/if}
     </div>
   {/if}
 
@@ -380,7 +395,7 @@
   <!-- Main pod table / panel split -->
   <div class="body">
     <!-- Pod table -->
-    <div class="pods" class:split={!!panel}>
+    <div class="pods" class:split={!!panel} class:stale={authErr && livePods.length}>
       {#if k8sErr && !authErr}
         <div class="empty">{k8sErr}</div>
       {:else if podRows.length}
@@ -530,6 +545,9 @@
   }
   .authbar button.ghost { background: transparent; color: var(--text2); border-color: var(--border); }
   .authbar button:hover { filter: brightness(1.08); }
+  .authbar .stale { color: var(--text3); font-style: italic; margin-left: auto; }
+  /* Stale data (creds expired) — dim the last-known rows until they refresh. */
+  .pods.stale { opacity: 0.5; transition: opacity 0.2s; }
 
   /* Port-forwards */
   .section-head {

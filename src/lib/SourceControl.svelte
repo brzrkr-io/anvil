@@ -84,6 +84,18 @@
   function onLogScroll() {
     if (logViewport) { logScrollTop = logViewport.scrollTop; logViewH = logViewport.clientHeight; }
   }
+  // Measure the viewport on mount + resize, not only on scroll. Otherwise the
+  // window height stays at its 600px default until the first scroll, so on a
+  // tall panel the history appears to "cut off" partway down (only the first
+  // ~viewport-at-600px rows render; the rest is blank until you scroll).
+  $effect(() => {
+    if (!logViewport) return;
+    const measure = () => { logViewH = logViewport!.clientHeight; logScrollTop = logViewport!.scrollTop; };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(logViewport);
+    return () => ro.disconnect();
+  });
 
   // Commit popover (click a history row → card with meta + changed files;
   // click a file → that file's diff at the commit).
