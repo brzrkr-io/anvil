@@ -200,16 +200,7 @@
       return true;
     });
 
-    unlisten.push(
-      await listen<{ id: string }>("pty://exit", (e) => {
-        if (e.payload.id === id) term.writeln("\r\n\x1b[2m[process exited]\x1b[0m");
-      }),
-    );
-
     // Raw PTY bytes stream over a per-terminal binary channel (no base64).
-    // Accept whatever concrete shape the IPC layer hands us (ArrayBuffer for
-    // raw bodies, typed/number arrays, or a string) so a transport change can't
-    // silently blank the terminal.
     const onData = new Channel<ArrayBuffer | ArrayBufferView | number[] | string>();
     onData.onmessage = (msg) => {
       if (typeof msg === "string") term.write(msg);
@@ -218,7 +209,6 @@
       else term.write(new Uint8Array(msg));
     };
 
-    await invoke("pty_spawn", { id, cols: term.cols, rows: term.rows, cwd, shell, onData });
     const sendInput = (d: string) => {
       feedInput(id, d);
       if (get(broadcastInput)) { for (const tid of liveTerminals()) invoke("pty_write", { id: tid, data: d }); }
@@ -226,49 +216,40 @@
     };
     term.onData(sendInput);
 
-    // Mouse-wheel scrolling — handled explicitly so it works reliably regardless
-    // of zoom transforms / renderer quirks (xterm's built-in viewport scroll was
-    // unreliable here). Normal screen → scroll the scrollback buffer directly.
-    // Alternate screen (Claude Code, hermes, vim, less) → translate to arrow
-    // keys so the full-screen app scrolls its own view (iTerm/kitty "alt scroll")
-    // — unless the app has grabbed the mouse (then let it have the raw event,
-    // Shift overrides to force-scroll).
+    // Mouse-wheel scrolling — explicit so it works regardless of zoom/renderer.
+    // Normal screen → scroll the scrollback buffer; alternate screen (Claude
+    // Code, hermes, vim, less) → arrow keys (iTerm/kitty "alternate scroll"),
+    // unless the app grabbed the mouse (Shift overrides to force-scroll).
+    // IMPORTANT: attached BEFORE the pty_spawn / listen awaits below — if one of
+    // those rejected, onMount aborted here and the terminal was left with no
+    // wheel handler, which read as "scroll-back doesn't work".
     let wheelAccum = 0;
     const onWheel = (e: WheelEvent) => {
       try {
-        // Only act on wheel events over THIS terminal. Window-level + capture so
-        // the handler runs before any element listener can swallow the event.
         if (!host || !(e.target instanceof Node) || !host.contains(e.target)) return;
         const modes = (term as unknown as { modes?: { mouseTrackingMode?: string; applicationCursorKeysMode?: boolean } }).modes;
         const onAlt = term.buffer.active.type === "alternate";
         const mouseOn = !!(modes?.mouseTrackingMode && modes.mouseTrackingMode !== "none");
-        if (mouseOn && !e.shiftKey) return; // app wants the wheel
-        // We own this scroll — prevent the default + stop xterm's own handler so
-        // there's no double scroll, and do it in capture phase so nothing can
-        // swallow the event first.
+        if (mouseOn && !e.shiftKey) return;
         e.preventDefault();
         e.stopPropagation();
         const PX_PER_LINE = e.deltaMode === 1 ? 1 : e.deltaMode === 2 ? Math.max(1, term.rows) : 24;
         wheelAccum += e.deltaY / PX_PER_LINE;
-        const dir = wheelAccum >= 0 ? 1 : -1; // +1 = scroll down / toward newest
+        const dir = wheelAccum >= 0 ? 1 : -1;
         let n = Math.floor(Math.abs(wheelAccum));
         if (!n) return;
         wheelAccum -= dir * n;
-        if (e.altKey) n *= 5; // fast-scroll modifier
+        if (e.altKey) n *= 5;
         if (onAlt) {
           const appCursor = !!modes?.applicationCursorKeysMode;
           const key = dir > 0 ? (appCursor ? "\x1bOB" : "\x1b[B") : appCursor ? "\x1bOA" : "\x1b[A";
           sendInput(key.repeat(Math.min(n, 8)));
         } else {
           term.scrollLines(dir * n);
-          // Force a repaint — the WebGL renderer can skip redrawing on a
-          // programmatic scroll, which looks like "scroll does nothing".
           term.refresh(0, term.rows - 1);
         }
       } catch { /* ignore */ }
     };
-    // Window + capture so nothing between window and the terminal can swallow
-    // the wheel first. Removed on destroy.
     window.addEventListener("wheel", onWheel, { passive: false, capture: true });
     unlisten.push(() => window.removeEventListener("wheel", onWheel, true));
 
@@ -277,6 +258,13 @@
       const b = term.buffer.active;
       atBottom = b.viewportY >= b.baseY;
     });
+
+    unlisten.push(
+      await listen<{ id: string }>("pty://exit", (e) => {
+        if (e.payload.id === id) term.writeln("\r\n\x1b[2m[process exited]\x1b[0m");
+      }),
+    );
+    await invoke("pty_spawn", { id, cols: term.cols, rows: term.rows, cwd, shell, onData });
 
     ro = new ResizeObserver(() => {
       // Coalesce resize bursts (window drag fires many callbacks/sec) into one
