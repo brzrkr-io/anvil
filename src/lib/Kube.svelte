@@ -34,6 +34,21 @@
   }
   let namespaces = $state<string[]>([]);
   let currentNs = $state("default");
+  // #24 Pin favorite namespaces to the top of the switcher (mirrors contexts).
+  const PIN_NS_KEY = "anvil-kube-pinned-ns";
+  let pinnedNs = $state<string[]>(
+    (() => { try { return JSON.parse(localStorage.getItem(PIN_NS_KEY) || "[]"); } catch { return []; } })(),
+  );
+  const sortedNamespaces = $derived(
+    [...namespaces].sort((a, b) => {
+      const pa = pinnedNs.includes(a), pb = pinnedNs.includes(b);
+      return pa === pb ? a.localeCompare(b) : pa ? -1 : 1;
+    }),
+  );
+  function togglePinNs(name: string) {
+    pinnedNs = pinnedNs.includes(name) ? pinnedNs.filter((p) => p !== name) : [...pinnedNs, name];
+    localStorage.setItem(PIN_NS_KEY, JSON.stringify(pinnedNs));
+  }
   let busy = $state(false);
   let k8sErr = $state("");
 
@@ -342,8 +357,11 @@
     <span class="lbl">Namespace</span>
     <select value={currentNs} onchange={(e) => useNs((e.currentTarget as HTMLSelectElement).value)} disabled={busy}>
       {#if !namespaces.includes(currentNs)}<option value={currentNs}>{currentNs}</option>{/if}
-      {#each namespaces as n (n)}<option value={n}>{n}</option>{/each}
+      {#each sortedNamespaces as n (n)}<option value={n}>{pinnedNs.includes(n) ? "★ " : ""}{n}</option>{/each}
     </select>
+    {#if currentNs}
+      <button class="pin" class:on={pinnedNs.includes(currentNs)} title={pinnedNs.includes(currentNs) ? "Unpin namespace" : "Pin namespace to top"} onclick={() => togglePinNs(currentNs)}>★</button>
+    {/if}
     <span class="spacer"></span>
     {#if busy}<span class="spin">…</span>{/if}
     <button class="iconbtn" onclick={openRollouts} title="Rollout status (deployments READY/UP-TO-DATE)">
