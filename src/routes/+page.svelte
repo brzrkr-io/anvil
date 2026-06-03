@@ -158,6 +158,7 @@
   import { railEnabled, extEnabled } from "$lib/extensions";
   import { agentSeed, agentInvestigate } from "$lib/agent-seed";
   import { getSnippets, addSnippet, removeSnippet } from "$lib/snippets";
+  import { integrationFor, type IntegrationShell } from "$lib/shell-integration";
   import { rankItems, withTracking } from "$lib/palette-rank";
   import { keyOverrides, comboOf, KEY_PRESETS, applyKeymapPreset } from "$lib/keymap";
 
@@ -995,6 +996,14 @@
       { label: "New Terminal: sh", run: () => newTermProfile("/bin/sh", "sh") },
       { label: "New Terminal: custom shell…", run: () => { const s = prompt("Shell path:", "/bin/zsh"); if (s) newTermProfile(s, s.split("/").pop() || "shell"); } },
       { label: "Toggle Bottom Terminal", hint: "⌘J", run: () => (bottomDock = !bottomDock) },
+      { label: "Terminal: Enable Command Separators (shell setup)…", hint: "copies OSC 133 snippet", run: () => {
+        palettePlaceholder = "Pick your shell — the setup is copied to the clipboard";
+        paletteItems = (["zsh", "bash", "fish"] as IntegrationShell[]).map((sh) => ({
+          label: sh, hint: integrationFor(sh).rc,
+          run: async () => { const { snippet, rc } = integrationFor(sh); try { await navigator.clipboard.writeText(snippet + "\n"); toast(`Copied — paste into ${rc}, then restart the shell`, "success"); } catch { toast("Clipboard unavailable", "error"); } },
+        }));
+        paletteOpen = true;
+      } },
       { label: "GitOps: Propose Manifest Change as PR…", hint: "branch + commit + push + gh pr", run: proposeManifestPr },
       { label: `Terminal: Broadcast Input ${get(broadcastInput) ? "(on)" : "(off)"}`, run: () => { const v = !get(broadcastInput); broadcastInput.set(v); toast(v ? "Broadcast input ON — keystrokes go to all terminals" : "Broadcast input off", v ? "info" : "success"); } },
       { label: "Terminal: Command History…", run: () => { const h = getHistory(); if (!h.length) { toast("No commands recorded yet", "info"); return; } palettePlaceholder = `${h.length} command${h.length === 1 ? "" : "s"} — Enter to rerun`; paletteItems = [...h].reverse().map((c) => ({ label: c, hint: "⏎ rerun", run: () => { rail = "term"; invoke("pty_write", { id: activeTerm, data: c + "\r" }).catch(() => toast("No active terminal", "error")); } })); paletteItems.push({ label: "Clear command history", hint: "irreversible", run: () => { clearHistory(); toast("Command history cleared", "success"); } }); paletteOpen = true; } },
