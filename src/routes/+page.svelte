@@ -1768,6 +1768,7 @@
           {/each}
         </div>
       {/if}
+      {#if rail !== "workspace"}
       <div class="pane-head">
         {#if rail === "scm"}<span class="ph-ic accent"><Icon name="branch" /></span> Source Control — {baseName(cwd)}
         {:else if rail === "diff"}<span class="accent">±</span> Diff — {diffTarget?.rev ?? diffTarget?.path}
@@ -1785,6 +1786,7 @@
         {:else if rail === "panel"}{@const ap = panels.find((p) => p.id === activePanel)}<span class="ph-ic accent"><Icon name={ap ? panelIcon(ap.kind) : "globe"} /></span> {ap?.title ?? ""}
         {:else}<span class="ph-ic accent"><Icon name="terminal" /></span> {terms.find((t) => t.id === activeTerm)?.title ?? "zsh"}{/if}
       </div>
+      {/if}
 
       <div class="term-row" style:display={rail === "term" ? "flex" : "none"}>
         {#if terms.length === 0}
@@ -1851,6 +1853,7 @@
       {:else if rail === "workspace"}
         <div class="view ws">
           {#snippet paneView(lf: Leaf)}
+            <div class="pane-view">
             {#key lf.tabs[lf.active]?.id}
             {#if lf.view === "term"}
               <Terminal id={lf.ref ?? lf.id} {cwd} active={rail === "workspace"} />
@@ -1888,6 +1891,7 @@
               <div class="ws-empty">Pick a view ↑ or open a file</div>
             {/if}
             {/key}
+            </div>
           {/snippet}
           <PaneGrid node={paneTree} view={paneView} drag={paneDrag} activeId={activeLeaf}
             onSplit={wsSplit} onClose={wsClose} onSetView={wsSetView} onResize={wsResize} onDock={wsDock}
@@ -2090,6 +2094,11 @@
   .bdock-term { flex: 1; min-height: 0; padding: 4px 8px; }
   .bdock-term.hidden { display: none; }
   .view.ws { padding: 6px; gap: 0; }
+  /* Every pane's content fills the pane (was rendering content-sized → a tiny
+     floating card for non-editor views like DevOps/Kube). Force the rendered
+     view component to flex-fill. */
+  .pane-view { height: 100%; width: 100%; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+  .pane-view > :global(*) { flex: 1 1 auto; min-width: 0; min-height: 0; }
   .ws-empty { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text3); font-size: 12.5px; }
   .term-row { flex: 1; min-height: 0; }
 .difftop { padding: 6px 12px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
