@@ -230,7 +230,6 @@
         const modes = (term as unknown as { modes?: { mouseTrackingMode?: string; applicationCursorKeysMode?: boolean } }).modes;
         const onAlt = term.buffer.active.type === "alternate";
         const mouseOn = !!(modes?.mouseTrackingMode && modes.mouseTrackingMode !== "none");
-        if (mouseOn && !e.shiftKey) return;
         e.preventDefault();
         e.stopPropagation();
         const PX_PER_LINE = e.deltaMode === 1 ? 1 : e.deltaMode === 2 ? Math.max(1, term.rows) : 24;
@@ -240,10 +239,22 @@
         if (!n) return;
         wheelAccum -= dir * n;
         if (e.altKey) n *= 5;
-        if (onAlt) {
+        const cap = Math.min(n, 8);
+        if (mouseOn && !e.shiftKey) {
+          // App grabbed the mouse (claude code, hermes, less, vim with `mouse`):
+          // forward the wheel as SGR mouse events so the app scrolls its OWN
+          // viewport. 64 = wheel up, 65 = wheel down. Previously we returned here,
+          // which is why scrolling those apps did nothing.
+          const rect = host.getBoundingClientRect();
+          const col = Math.min(term.cols, Math.max(1, Math.floor((e.clientX - rect.left) / (rect.width / term.cols)) + 1));
+          const row = Math.min(term.rows, Math.max(1, Math.floor((e.clientY - rect.top) / (rect.height / term.rows)) + 1));
+          const btn = dir > 0 ? 65 : 64;
+          sendInput(`\x1b[<${btn};${col};${row}M`.repeat(cap));
+        } else if (onAlt) {
+          // Alternate screen, no mouse tracking: legacy "alternate scroll" → arrows.
           const appCursor = !!modes?.applicationCursorKeysMode;
           const key = dir > 0 ? (appCursor ? "\x1bOB" : "\x1b[B") : appCursor ? "\x1bOA" : "\x1b[A";
-          sendInput(key.repeat(Math.min(n, 8)));
+          sendInput(key.repeat(cap));
         } else {
           term.scrollLines(dir * n);
           term.refresh(0, term.rows - 1);
