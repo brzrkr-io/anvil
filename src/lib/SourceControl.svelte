@@ -7,6 +7,7 @@
   import Resizer from "$lib/Resizer.svelte";
   import { llmCreds } from "$lib/accounts";
   import { askText } from "$lib/dialog";
+  import { readCache, writeCache } from "$lib/cache";
 
   // Resizable width of the changes/commit panel (persisted).
   let sideW = $state((() => { try { return Number(localStorage.getItem("anvil-scm-sidew")) || 300; } catch { return 300; } })());
@@ -237,45 +238,72 @@
   let tagsOpen = $state(false);
   let historyOpen = $state(true);
 
+  // Parse the three core git outputs into the first-paint state.
+  function applyCore(log: string, st: string, br: string) {
+    commits = parseLog(log);
+    const s = parseStatus(st);
+    branch = s.branch;
+    changes = s.changes;
+    branches = br.split("\n").filter(Boolean).map((l) => {
+      const [h, n] = l.split("\t");
+      return { name: n ?? "", cur: h === "*" };
+    });
+  }
+
   async function load() {
+    const cacheKey = `scm:${cwd}`;
+    // Cache-first paint: show last-known status/log/branches instantly so the
+    // page never opens blank while git runs. Refreshed below.
+    if (!commits.length) {
+      const c = readCache<{ log: string; st: string; br: string }>(cacheKey);
+      if (c) applyCore(c.log, c.st, c.br);
+    }
     try {
-      const log = await invoke<string>("git_log", { cwd, author: fAuthor || null, grep: fGrep || null, path: fPath || null });
-      const st = await invoke<string>("git_status", { cwd });
-      const br = await invoke<string>("git_branches", { cwd });
-      commits = parseLog(log);
-      try {
-        const raw = await invoke<string>("git_log_stats", { cwd, author: fAuthor || null, grep: fGrep || null, path: fPath || null });
-        const out: Record<string, { add: number; del: number }> = {};
-        let cur = "";
-        for (const line of raw.split("\n")) {
-          if (line.startsWith("\x01")) { cur = line.slice(1).trim(); continue; }
-          if (!cur) continue;
-          const ins = /(\d+) insertion/.exec(line), del = /(\d+) deletion/.exec(line);
-          if (ins || del) out[cur] = { add: ins ? +ins[1] : 0, del: del ? +del[1] : 0 };
-        }
-        commitStats = out;
-      } catch { commitStats = {}; }
-      const s = parseStatus(st);
-      branch = s.branch;
-      changes = s.changes;
-      try { opState = (await invoke<string>("git_op_state", { cwd })).trim(); } catch { opState = "none"; }
-      branches = br.split("\n").filter(Boolean).map((l) => {
-        const [h, n] = l.split("\t");
-        return { name: n ?? "", cur: h === "*" };
-      });
-      const stl = await invoke<string>("git_stash_list", { cwd });
-      stashes = stl.split("\n").filter(Boolean);
-      const tg = await invoke<string>("git_tags", { cwd });
-      tags = tg.split("\n").filter(Boolean).slice(0, 30);
-      try {
-        const ab = (await invoke<string>("git_ahead_behind", { cwd })).trim().split(/\s+/).map(Number);
-        aheadBehind = (ab[0] || ab[1]) ? { a: ab[0] || 0, b: ab[1] || 0 } : null;
-      } catch { aheadBehind = null; }
-      try { repoFeatures = (await invoke<string>("git_repo_features", { cwd })).split(",").filter(Boolean); } catch { repoFeatures = []; }
-      if (!commits.length && !branch) error = "Not a git repository";
+      // Critical paint: the three commands the first screen needs, in PARALLEL
+      // (was 9 sequential awaits → wall time was the sum). git_log_stats and the
+      // rest are secondary and load after, off the critical path.
+      const [st, log, br] = await Promise.all([
+        invoke<string>("git_status", { cwd }),
+        invoke<string>("git_log", { cwd, author: fAuthor || null, grep: fGrep || null, path: fPath || null }),
+        invoke<string>("git_branches", { cwd }),
+      ]);
+      applyCore(log, st, br);
+      if (!commits.length && !branch) { error = "Not a git repository"; return; }
+      error = "";
+      writeCache(cacheKey, { log, st, br });
+      void loadDetail();
     } catch (e) {
       error = String(e);
     }
+  }
+
+  // Secondary detail (per-commit stats, stashes, tags, ahead/behind, repo
+  // features, in-progress op). Runs in parallel, after the first paint, so a
+  // slow `git log --shortstat` over deep history never blocks the page opening.
+  async function loadDetail() {
+    const [stats, op, stl, tg, ab, rf] = await Promise.all([
+      invoke<string>("git_log_stats", { cwd, author: fAuthor || null, grep: fGrep || null, path: fPath || null }).catch(() => ""),
+      invoke<string>("git_op_state", { cwd }).then((x) => x.trim()).catch(() => "none"),
+      invoke<string>("git_stash_list", { cwd }).catch(() => ""),
+      invoke<string>("git_tags", { cwd }).catch(() => ""),
+      invoke<string>("git_ahead_behind", { cwd }).then((x) => x.trim()).catch(() => ""),
+      invoke<string>("git_repo_features", { cwd }).catch(() => ""),
+    ]);
+    const out: Record<string, { add: number; del: number }> = {};
+    let cur = "";
+    for (const line of stats.split("\n")) {
+      if (line.startsWith("\x01")) { cur = line.slice(1).trim(); continue; }
+      if (!cur) continue;
+      const ins = /(\d+) insertion/.exec(line), del = /(\d+) deletion/.exec(line);
+      if (ins || del) out[cur] = { add: ins ? +ins[1] : 0, del: del ? +del[1] : 0 };
+    }
+    commitStats = out;
+    opState = op;
+    stashes = stl.split("\n").filter(Boolean);
+    tags = tg.split("\n").filter(Boolean).slice(0, 30);
+    const abn = ab.split(/\s+/).map(Number);
+    aheadBehind = (abn[0] || abn[1]) ? { a: abn[0] || 0, b: abn[1] || 0 } : null;
+    repoFeatures = rf.split(",").filter(Boolean);
   }
   onMount(load);
 
