@@ -298,6 +298,17 @@
     });
     ro.observe(host);
     term.focus();
+    // Belt-and-suspenders: when this terminal is born inside a freshly-created
+    // grid pane (drag-to-split), the flexbox can still be collapsing on the first
+    // frame, so the initial fit() measures a stale/small box and the terminal
+    // renders as a tiny floating panel. Re-fit a couple times as layout settles.
+    for (const ms of [60, 200, 450]) {
+      setTimeout(() => {
+        if (destroyed || !term || !host || host.clientHeight < 2 || host.clientWidth < 2) return;
+        fit?.fit();
+        invoke("pty_resize", { id, cols: term.cols, rows: term.rows }).catch(() => {});
+      }, ms);
+    }
   });
 
   // #78 Tell the backend to throttle this PTY's coalescer while off-screen.
