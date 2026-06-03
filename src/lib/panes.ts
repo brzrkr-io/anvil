@@ -5,7 +5,8 @@
 
 export type ViewKind =
   | "term" | "editor" | "files" | "scm" | "search"
-  | "agent" | "devops" | "settings" | "welcome";
+  | "agent" | "devops" | "settings" | "welcome"
+  | "k8s" | "ci" | "terraform" | "obs";
 
 export type Dir = "row" | "col"; // row = side-by-side, col = stacked
 export type Edge = "left" | "right" | "top" | "bottom" | "center";

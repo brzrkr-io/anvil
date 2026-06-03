@@ -533,8 +533,8 @@
   function currentMainView(): { view: ViewKind; ref?: string } {
     if (rail === "editor" && activeFile) return { view: "editor", ref: activeFile };
     if (rail === "term") return { view: "term" };
-    if (["scm", "search", "agent", "settings"].includes(rail)) return { view: rail as ViewKind };
-    if (["devops", "k8s", "ci", "terraform", "obs"].includes(rail)) return { view: "devops" };
+    if (["scm", "search", "agent", "settings", "devops", "k8s", "ci", "terraform", "obs"].includes(rail))
+      return { view: rail as ViewKind };
     return { view: "term" };
   }
   // Drag a top-strip tab to a content edge → enter the multipane workspace with a
@@ -1846,6 +1846,14 @@
                 onRunCommand={(c) => invoke("pty_write", { id: activeTerm, data: c + "\n" })} />{/await}
             {:else if lf.view === "devops"}
               {#key cwd}{#await DevOps() then M}<M.default {cwd} onRunCommand={(c) => invoke("pty_write", { id: activeTerm, data: c + "\n" })} onInvestigate={investigate} />{/await}{/key}
+            {:else if lf.view === "k8s"}
+              {#key cwd}{#await Kube() then M}<M.default {cwd} active={true} onRunCommand={sendToTerm} onHealth={(n) => (kubeFails = n)} onInvestigate={investigate} onCheckConnections={() => (doctorOpen = true)} />{:catch e}<div class="view-err">Kubernetes view failed to load: {e}</div>{/await}{/key}
+            {:else if lf.view === "ci"}
+              {#key cwd}{#await CI() then M}<M.default {cwd} active={true} onRunCommand={sendToTerm} onInvestigate={investigate} />{/await}{/key}
+            {:else if lf.view === "terraform"}
+              {#key cwd}{#await Terraform() then M}<M.default {cwd} onRunCommand={sendToTerm} onInvestigate={investigate} />{/await}{/key}
+            {:else if lf.view === "obs"}
+              {#await Observability() then M}<M.default />{/await}
             {:else if lf.view === "editor" && (lf.ref || activeFile)}
               {@const p = lf.ref || activeFile}
               {#if isNonText(p)}

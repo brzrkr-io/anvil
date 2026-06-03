@@ -56,7 +56,9 @@
     { k: "term", label: "Terminal" }, { k: "editor", label: "Editor" },
     { k: "files", label: "Explorer" }, { k: "scm", label: "Source Control" },
     { k: "search", label: "Search" }, { k: "agent", label: "Agent" },
-    { k: "devops", label: "DevOps" },
+    { k: "devops", label: "DevOps" }, { k: "k8s", label: "Kubernetes" },
+    { k: "ci", label: "CI / Pipelines" }, { k: "terraform", label: "Terraform" },
+    { k: "obs", label: "Observability" },
   ];
   const labelOf = (k: ViewKind) => VIEWS.find((v) => v.k === k)?.label ?? k;
 
