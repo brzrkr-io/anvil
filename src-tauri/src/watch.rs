@@ -320,6 +320,7 @@ pub fn kube_watch_start(app: AppHandle, kind: String, interval_ms: u64) {
     std::thread::spawn(move || {
         let mut last = 0u64;
         let mut backoff = 0u32;
+        let mut idle = 0u32;
         while !stop.load(Ordering::Relaxed) {
             let payload = snapshot(&kind);
             let has_err = payload
@@ -330,13 +331,24 @@ pub fn kube_watch_start(app: AppHandle, kind: String, interval_ms: u64) {
             let h = hash_payload(&payload);
             if h != last {
                 last = h;
+                idle = 0;
                 let _ = app.emit(&topic, payload);
+            } else {
+                idle = (idle + 1).min(2);
             }
-            // Back off on persistent errors (expired creds / unreachable cluster)
-            // so we stop forking kubectl every interval; reset the instant data
-            // flows again. interval → up to 16× interval, capped at 60s.
-            backoff = if has_err { (backoff + 1).min(4) } else { 0 };
-            let effective = interval.saturating_mul(1u64 << backoff).min(60_000);
+            // Two adaptive slowdowns, error wins:
+            //  - errors: back off hard (up to 16×, cap 60s) so a dead cluster
+            //    stops forking kubectl every interval.
+            //  - stable data: ease off (up to 4×, cap 20s) so an idle cluster is
+            //    light on CPU; any change snaps straight back to the base rate.
+            let (mult, cap) = if has_err {
+                backoff = (backoff + 1).min(4);
+                (1u64 << backoff, 60_000)
+            } else {
+                backoff = 0;
+                (1u64 << idle, 20_000)
+            };
+            let effective = interval.saturating_mul(mult).min(cap);
             // Sleep in small slices so a stop is honored promptly.
             let mut waited = 0u64;
             while waited < effective && !stop.load(Ordering::Relaxed) {
