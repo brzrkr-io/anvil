@@ -180,10 +180,12 @@
   .divider.row::after { content: ""; position: absolute; width: 7px; margin-left: -3px; top: 0; bottom: 0; cursor: col-resize; }
   .divider:hover { background: var(--accent); }
 
+  /* Flush panes (no card look): no border/radius, no gap — panes meet at the
+     1px .divider only. Active pane gets a subtle inset accent that adds no layout. */
   .leaf { display: flex; flex-direction: column; width: 100%; height: 100%; min-width: 0; min-height: 0;
-    border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: var(--bg); }
+    overflow: hidden; background: var(--bg); }
   .leaf.dimmed > .pbody { opacity: 0.5; transition: opacity 0.15s ease; }
-  .leaf.active { border-color: var(--accent); }
+  .leaf.active { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent); }
   .leaf.active > .phead { background: var(--sel); }
   .phead { display: flex; align-items: center; gap: 6px; height: 24px; flex: 0 0 auto; padding: 0 6px;
     background: var(--panel); border-bottom: 1px solid var(--border); cursor: grab; }

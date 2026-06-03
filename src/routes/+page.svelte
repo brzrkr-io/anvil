@@ -2114,7 +2114,7 @@
   .bdock-head .x:hover { color: var(--text); }
   .bdock-term { flex: 1; min-height: 0; padding: 4px 8px; }
   .bdock-term.hidden { display: none; }
-  .view.ws { padding: 6px; gap: 0; }
+  .view.ws { padding: 0; gap: 0; }
   /* Every pane's content fills the pane (was rendering content-sized → a tiny
      floating card for non-editor views like DevOps/Kube). Force the rendered
      view component to flex-fill. */
