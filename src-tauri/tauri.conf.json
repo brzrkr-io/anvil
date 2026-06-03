@@ -40,7 +40,7 @@
       "entitlements": "entitlements.plist",
       "minimumSystemVersion": "11.0"
     },
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": false
   },
   "plugins": {
     "updater": {
