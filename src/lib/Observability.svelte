@@ -2,6 +2,8 @@
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import Icon from "$lib/Icon.svelte";
+  import Skeleton from "$lib/Skeleton.svelte";
+  import EmptyState from "$lib/EmptyState.svelte";
   import { askText } from "$lib/dialog";
   import { toast } from "$lib/toast";
 
@@ -215,8 +217,10 @@
             <span class="svc-n">{s.callRate}</span>
           </div>
         {/each}
-      {:else if !sigErr && !sigBusy}
-        <div class="empty">Services overview (last 30m). Use <b>Open SigNoz ↗</b> for logs &amp; traces.</div>
+      {:else if sigBusy}
+        <Skeleton rows={6} />
+      {:else if !sigErr}
+        <EmptyState icon="chart" title="Services overview (last 30m)" hint="Use Open SigNoz ↗ for logs & traces." />
       {/if}
     </div>
   {:else}
@@ -236,8 +240,10 @@
           <span class="dash-open"><Icon name="zoom" size={11} /></span>
         </div>
       {/each}
-      {#if !dashboards.length && !grafErr && !grafBusy}
-        <div class="empty">Set the Grafana URL + token and click <b>Load</b>. Dashboards open in their own window.</div>
+      {#if grafBusy && !dashboards.length}
+        <Skeleton rows={6} />
+      {:else if !dashboards.length && !grafErr}
+        <EmptyState icon="chart" title="No dashboards loaded" hint="Set the Grafana URL + token and click Load. Dashboards open in their own window." />
       {/if}
     </div>
   {/if}
@@ -269,7 +275,6 @@
   .sec-h { display: flex; align-items: center; gap: 7px; padding: 7px 12px 4px; font-size: 10px; font-weight: 500; color: var(--text3); text-transform: uppercase; letter-spacing: 0.05em; }
   .cnt { font-family: var(--font-mono); font-size: 9.5px; opacity: 0.7; letter-spacing: 0; }
   .err { padding: 8px 12px; font-size: 11.5px; color: var(--red); font-family: var(--font-mono); white-space: pre-wrap; }
-  .empty { padding: 18px 14px; color: var(--text3); font-size: 12px; line-height: 1.5; }
 
   .alert { display: flex; align-items: center; gap: 8px; padding: 0 12px; height: 24px; border-bottom: 1px solid var(--hairline); font-size: 11.5px; }
   .adot { width: 7px; height: 7px; border-radius: 50%; background: var(--yellow); flex: 0 0 auto; }
