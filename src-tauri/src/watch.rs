@@ -319,16 +319,27 @@ pub fn kube_watch_start(app: AppHandle, kind: String, interval_ms: u64) {
     let interval = interval_ms.max(1000);
     std::thread::spawn(move || {
         let mut last = 0u64;
+        let mut backoff = 0u32;
         while !stop.load(Ordering::Relaxed) {
             let payload = snapshot(&kind);
+            let has_err = payload
+                .get("error")
+                .and_then(|e| e.as_str())
+                .map(|s| !s.is_empty())
+                .unwrap_or(false);
             let h = hash_payload(&payload);
             if h != last {
                 last = h;
                 let _ = app.emit(&topic, payload);
             }
+            // Back off on persistent errors (expired creds / unreachable cluster)
+            // so we stop forking kubectl every interval; reset the instant data
+            // flows again. interval → up to 16× interval, capped at 60s.
+            backoff = if has_err { (backoff + 1).min(4) } else { 0 };
+            let effective = interval.saturating_mul(1u64 << backoff).min(60_000);
             // Sleep in small slices so a stop is honored promptly.
             let mut waited = 0u64;
-            while waited < interval && !stop.load(Ordering::Relaxed) {
+            while waited < effective && !stop.load(Ordering::Relaxed) {
                 std::thread::sleep(Duration::from_millis(150));
                 waited += 150;
             }

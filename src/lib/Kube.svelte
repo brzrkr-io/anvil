@@ -100,9 +100,13 @@
     current = cur.status === "fulfilled" ? cur.value.trim() : "";
     currentNs = curNs.status === "fulfilled" ? curNs.value.trim() || "default" : "default";
     namespaces = nss.status === "fulfilled" ? nss.value.split("\n").filter(Boolean) : [];
-    // No active context but kubeconfig has some → tell the user to pick one
-    // instead of leaving the page blank with no explanation.
-    if (!current && contexts.length) k8sErr = "Select a context above to load resources.";
+    // No active context but kubeconfig has some → restore the last one we used
+    // (#7) so the page just works; only prompt if we have nothing to restore.
+    if (!current && contexts.length) {
+      const remembered = (() => { try { return localStorage.getItem("anvil-kube-context") || ""; } catch { return ""; } })();
+      if (remembered && contexts.includes(remembered)) { busy = false; await useCtx(remembered); return; }
+      k8sErr = "Select a context above to load resources.";
+    }
     busy = false;
   }
 
@@ -154,7 +158,7 @@
   async function useCtx(name: string) {
     if (!name || name === current) return;
     busy = true;
-    try { await invoke("kube_use_context", { name }); current = name; await load(); refreshPods(); }
+    try { await invoke("kube_use_context", { name }); current = name; try { localStorage.setItem("anvil-kube-context", name); } catch { /* ignore */ } await load(); refreshPods(); }
     catch (e) { k8sErr = String(e); }
     busy = false;
   }
