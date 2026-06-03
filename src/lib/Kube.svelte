@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
+  import { listen } from "@tauri-apps/api/event";
   import { readCache, writeCache } from "$lib/cache";
   import { invoke } from "@tauri-apps/api/core";
   import Icon from "$lib/Icon.svelte";
@@ -31,7 +32,6 @@
   }
   let namespaces = $state<string[]>([]);
   let currentNs = $state("default");
-  let pods = $state("");
   let busy = $state(false);
   let k8sErr = $state("");
 
@@ -43,32 +43,16 @@
     restarts: string;
     age: string;
   }
+  interface PodPayload { rows: Pod[]; error: string }
 
-  const podRows = $derived.by<Pod[]>(() => {
-    const lines = pods.split("\n").filter(Boolean);
-    if (!lines.length || !/^NAMESPACE\s/.test(lines[0])) return [];
-    return lines.slice(1).map((l) => {
-      const c = l.split(/\s+/);
-      return {
-        ns: c[0] ?? "",
-        name: c[1] ?? "",
-        ready: c[2] ?? "",
-        status: c[3] ?? "",
-        restarts: c[4] ?? "0",
-        age: c[5] ?? "",
-      };
-    }).filter((p) => p.name).sort((a, b) => podRank(a) - podRank(b) || restartNum(b.restarts) - restartNum(a.restarts) || a.name.localeCompare(b.name));
-  });
-  // A6: surface broken workloads — not-running first, then high restart counts.
-  function restartNum(r: string): number { const n = parseInt(r, 10); return Number.isNaN(n) ? 0 : n; }
-  function podRank(p: Pod): number {
-    if (/Error|CrashLoop|Failed|Evicted|ImagePull|Pending|Unknown|Init:|Terminating/i.test(p.status)) return 0;
-    if (restartNum(p.restarts) > 0) return 1;
-    return 2; // Running / Completed
-  }
+  // Pods arrive from the backend watcher (watch.rs): parsed, sorted broken-first,
+  // and capped at 400 in Rust off the UI thread, then pushed over `kube://pods`
+  // only when they change. The frontend is a dumb subscriber — no polling, no
+  // parse, no jank. Render straight from `livePods`.
+  let livePods = $state<Pod[]>(readCache<Pod[]>("kube-pods") ?? []);
+  const podRows = $derived(livePods);
 
-  // Filter + cap the rendered rows so a cluster with thousands of pods doesn't
-  // build thousands of DOM nodes at once (the render-side freeze).
+  // Client-side filter only (cap already applied in Rust).
   let podFilter = $state("");
   const POD_CAP = 400;
   const filteredPods = $derived(
@@ -79,7 +63,7 @@
   const shownPods = $derived(filteredPods.slice(0, POD_CAP));
 
   const AUTH_RE = /expired|credentials|unauthorized|not logged in|sso session|reauthenticate|InvalidIdentityToken|token has expired|failed to get token/i;
-  const authErr = $derived(AUTH_RE.test(pods) || AUTH_RE.test(k8sErr));
+  const authErr = $derived(AUTH_RE.test(k8sErr));
 
   const statusDot = (s: string): string =>
     s === "Running" || s === "Completed" ? "var(--green)"
@@ -98,24 +82,28 @@
 
   async function load() {
     busy = true;
-    k8sErr = "";
-    // Fire all five kubectl calls at once (they're independent) instead of
-    // sequentially — wall time becomes the slowest call, not the sum. pods uses
-    // the current context implicitly (context: "").
-    const [ctxs, cur, curNs, nss, podsOut] = await Promise.allSettled([
+    // Context/namespace metadata (cheap). Pods stream in from the watcher.
+    const [ctxs, cur, curNs, nss] = await Promise.allSettled([
       invoke<string>("kube_contexts"),
       invoke<string>("kube_current_context"),
       invoke<string>("kube_current_namespace"),
       invoke<string>("kube_namespaces"),
-      invoke<string>("kube_pods", { context: "" }),
     ]);
     contexts = ctxs.status === "fulfilled" ? ctxs.value.split("\n").filter(Boolean) : [];
     current = cur.status === "fulfilled" ? cur.value.trim() : "";
     currentNs = curNs.status === "fulfilled" ? curNs.value.trim() || "default" : "default";
     namespaces = nss.status === "fulfilled" ? nss.value.split("\n").filter(Boolean) : [];
-    if (podsOut.status === "fulfilled") { pods = podsOut.value; writeCache("kube-pods", pods); }
-    else { k8sErr = String(podsOut.reason); }
     busy = false;
+  }
+
+  // One-shot shaped snapshot for instant pod refresh (Refresh button, context
+  // switch) without waiting for the next watcher tick.
+  async function refreshPods() {
+    try {
+      const p = await invoke<PodPayload>("kube_snapshot", { kind: "pods" });
+      livePods = p.rows; k8sErr = p.error;
+      writeCache("kube-pods", p.rows);
+    } catch (e) { k8sErr = String(e); }
   }
 
   async function refreshPf() {
@@ -130,7 +118,7 @@
   async function useCtx(name: string) {
     if (!name || name === current) return;
     busy = true;
-    try { await invoke("kube_use_context", { name }); current = name; await load(); }
+    try { await invoke("kube_use_context", { name }); current = name; await load(); refreshPods(); }
     catch (e) { k8sErr = String(e); }
     busy = false;
   }
@@ -138,7 +126,7 @@
   async function useNs(ns: string) {
     if (!ns || ns === currentNs) return;
     busy = true;
-    try { await invoke("kube_set_namespace", { namespace: ns }); currentNs = ns; await load(); }
+    try { await invoke("kube_set_namespace", { namespace: ns }); currentNs = ns; await load(); refreshPods(); }
     catch (e) { k8sErr = String(e); }
     busy = false;
   }
@@ -246,24 +234,39 @@
     else if (!p && view === "flux") view = "workloads";
   }
 
-  // Render last-known pods instantly from cache, then refresh in the background.
-  // #9: auto-refresh the Workloads view while it's actually on-screen, so a
-  // rollout/crash-loop is watched live — gated on active + view + visibility so
-  // a backgrounded panel never spawns kubectl. Flux/Helm own their own polling.
-  const POLL_MS = 8000;
-  let timer: ReturnType<typeof setInterval> | undefined;
-  function tick() {
-    if (!active || view !== "workloads" || busy) return;
-    if (typeof document !== "undefined" && document.hidden) return;
-    load();
+  // Data layer: the backend pushes shaped pod rows over `kube://pods`. We start
+  // the watcher only while the Kubernetes view is on-screen and stop it when it
+  // isn't, so nothing runs in the background. Last-known rows render instantly
+  // from cache on mount.
+  let unlistenPods: (() => void) | undefined;
+  let watching = false;
+  function startPodWatch() {
+    if (watching) return;
+    watching = true;
+    invoke("kube_watch_start", { kind: "pods", intervalMs: 5000 }).catch(() => {});
   }
-  onMount(() => {
-    pods = readCache<string>("kube-pods") ?? pods;
+  function stopPodWatch() {
+    if (!watching) return;
+    watching = false;
+    invoke("kube_watch_stop", { kind: "pods" }).catch(() => {});
+  }
+  onMount(async () => {
     load();
     refreshPf();
-    timer = setInterval(tick, POLL_MS);
+    try {
+      unlistenPods = await listen<PodPayload>("kube://pods", (e) => {
+        livePods = e.payload.rows;
+        k8sErr = e.payload.error;
+        writeCache("kube-pods", e.payload.rows);
+      });
+    } catch { /* no Tauri event bus (e.g. browser preview) — snapshot still works */ }
   });
-  onDestroy(() => clearInterval(timer));
+  onDestroy(() => { stopPodWatch(); unlistenPods?.(); });
+  // Start/stop the watcher with view visibility; refresh instantly on (re)entry.
+  $effect(() => {
+    if (active) { refreshPods(); startPodWatch(); }
+    else stopPodWatch();
+  });
 </script>
 
 <div class="kube">
@@ -290,7 +293,7 @@
     <button class="iconbtn" onclick={openNodes} title="Node capacity & usage (kubectl top nodes)">
       <Icon name="chart" size={13} />
     </button>
-    <button class="iconbtn" onclick={() => { load(); refreshPf(); }} title="Refresh" disabled={busy}>
+    <button class="iconbtn" onclick={() => { load(); refreshPods(); refreshPf(); }} title="Refresh" disabled={busy}>
       <Icon name="refresh" size={13} />
     </button>
   </div>
@@ -415,7 +418,7 @@
         {/each}
       {:else if !busy}
         <div class="empty">
-          {pods ? pods : "No pods found in this namespace."}
+          {k8sErr ? k8sErr : "No pods found."}
         </div>
       {:else}
         <div class="empty">Loading…</div>

@@ -18,6 +18,7 @@ mod lsp;
 mod observability;
 mod pty;
 mod shared;
+mod watch;
 mod window;
 
 use tauri::Emitter;
@@ -518,6 +519,9 @@ pub fn run() {
             kube::kube_nodes,
             kube::kube_deployments,
             kube::kube_events,
+            watch::kube_watch_start,
+            watch::kube_watch_stop,
+            watch::kube_snapshot,
             kube::kube_logs,
             kube::kube_logs_selector,
             kube::kube_pf_start,
