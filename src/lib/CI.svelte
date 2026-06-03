@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import Icon from "$lib/Icon.svelte";
+  import Skeleton from "$lib/Skeleton.svelte";
   import { toast } from "$lib/toast";
   import { askConfirm } from "$lib/dialog";
   import { readCache, writeCache } from "$lib/cache";
@@ -347,7 +348,9 @@
   <div class="body">
     <!-- Pipeline list -->
     <div class="pipelines" class:has-jobs={!!selectedPipeline}>
-      {#if !ciErr && pipelines.length === 0 && !busy}
+      {#if !ciErr && pipelines.length === 0 && busy}
+        <Skeleton rows={12} />
+      {:else if !ciErr && pipelines.length === 0 && !busy}
         <div class="empty">No pipelines found.</div>
       {:else if !ciErr}
         <div class="pl-header">

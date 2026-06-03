@@ -4,6 +4,7 @@
   import { readCache, writeCache } from "$lib/cache";
   import { invoke } from "@tauri-apps/api/core";
   import Icon from "$lib/Icon.svelte";
+  import Skeleton from "$lib/Skeleton.svelte";
   import { toast } from "$lib/toast";
   import { askConfirm, askText } from "$lib/dialog";
   import Flux from "$lib/Flux.svelte";
@@ -469,7 +470,7 @@
           {k8sErr ? k8sErr : "No pods found."}
         </div>
       {:else}
-        <div class="empty">Loading…</div>
+        <Skeleton rows={10} />
       {/if}
     </div>
 
