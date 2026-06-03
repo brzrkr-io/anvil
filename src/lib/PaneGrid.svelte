@@ -122,7 +122,7 @@
     <div
       class="phead"
       draggable="true"
-      ondragstart={() => onDragStart(lf.id)}
+      ondragstart={(e) => { onDragStart(lf.id); if (e.dataTransfer) { e.dataTransfer.setData('text/plain', lf.id); e.dataTransfer.effectAllowed = 'move'; } }}
       ondragend={onDragEnd}
     >
       <span class="grip">⠿</span>

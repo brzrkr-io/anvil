@@ -1632,7 +1632,7 @@
     {#each terms as t (t.id)}
       <div class="tab {rail === 'term' && activeTerm === t.id ? 'on' : ''}" role="button" tabindex="0" onclick={() => selectTerm(t.id)} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), selectTerm(t.id))} title={t.title}
         draggable="true" class:drag={dragTab?.kind === 'term' && dragTab.id === t.id}
-        ondragstart={() => { dragTab = { kind: 'term', id: t.id }; tabDragView = { view: 'term', ref: t.id }; }}
+        ondragstart={(e) => { dragTab = { kind: 'term', id: t.id }; tabDragView = { view: 'term', ref: t.id }; if (e.dataTransfer) { e.dataTransfer.setData('text/plain', t.id); e.dataTransfer.effectAllowed = 'move'; } }}
         ondragend={() => { dragTab = null; tabDragView = null; }} ondragover={(e) => e.preventDefault()}
         ondrop={() => tabDrop('term', t.id)} oncontextmenu={(e) => tabCtx(e, 'term', t.id)}>
         <span class="tt">{t.title}</span>
@@ -1643,7 +1643,7 @@
       <div class="tab {rail === 'editor' && activeFile === f ? 'on' : ''}" class:pinned-tab={pinnedFiles.includes(f)} role="button" tabindex="0" onclick={() => { activeFile = f; rail = 'editor'; }} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (activeFile = f, rail = 'editor'))} title={tabGroups[f] ? `${f}  ·  group: ${tabGroups[f]}` : f}
         style={tabGroups[f] ? `box-shadow: inset 0 -2px 0 ${groupColor(tabGroups[f])}` : ''}
         draggable="true" class:drag={dragTab?.kind === 'file' && dragTab.id === f}
-        ondragstart={() => { dragTab = { kind: 'file', id: f }; tabDragView = { view: 'editor', ref: f }; }}
+        ondragstart={(e) => { dragTab = { kind: 'file', id: f }; tabDragView = { view: 'editor', ref: f }; if (e.dataTransfer) { e.dataTransfer.setData('text/plain', f); e.dataTransfer.effectAllowed = 'move'; } }}
         ondragend={() => { dragTab = null; tabDragView = null; }} ondragover={(e) => e.preventDefault()}
         ondrop={() => tabDrop('file', f)} oncontextmenu={(e) => tabCtx(e, 'file', f)}>
         {#if pinnedFiles.includes(f)}<span class="pin" role="button" tabindex="0" onclick={(e) => { e.stopPropagation(); togglePin(f); }} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), e.stopPropagation(), togglePin(f))} title="Unpin"><Icon name="pin" size={9} /></span>{/if}
