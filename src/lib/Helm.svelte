@@ -5,6 +5,7 @@
   import { readCache, writeCache } from "$lib/cache";
   import { toast } from "$lib/toast";
   import CodeView from "$lib/CodeView.svelte";
+  import { applyRedaction } from "$lib/redaction";
 
   interface Release {
     name: string; namespace: string; revision: string;
@@ -46,7 +47,7 @@
         content = "";
       } else {
         const cmd = detail === "values" ? "helm_values" : detail === "all" ? "helm_values_all" : detail === "status" ? "helm_status" : "helm_manifest";
-        content = await invoke<string>(cmd, { name, namespace });
+        content = applyRedaction(await invoke<string>(cmd, { name, namespace }));
       }
     } catch (e) {
       content = String(e);

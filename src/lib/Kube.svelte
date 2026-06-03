@@ -8,6 +8,7 @@
   import Flux from "$lib/Flux.svelte";
   import Helm from "$lib/Helm.svelte";
   import CodeView from "$lib/CodeView.svelte";
+  import { applyRedaction } from "$lib/redaction";
 
   let { cwd, onRunCommand, onHealth, onInvestigate, onCheckConnections, active = true }: { cwd: string; onRunCommand?: (cmd: string) => void; onHealth?: (failing: number) => void; onInvestigate?: (prompt: string) => void; onCheckConnections?: () => void; active?: boolean } = $props();
 
@@ -146,7 +147,7 @@
     panel = { pod: `${p.ns}/${p.name}`, content: "Loading…", title: "Logs" };
     try {
       const out = await invoke<string>("kube_logs", { context: current, namespace: p.ns, pod: p.name });
-      panel = { pod: `${p.ns}/${p.name}`, content: out, title: "Logs" };
+      panel = { pod: `${p.ns}/${p.name}`, content: applyRedaction(out), title: "Logs" };
     } catch (e) { panel = { pod: `${p.ns}/${p.name}`, content: String(e), title: "Logs" }; }
   }
 
@@ -154,7 +155,7 @@
     panel = { pod: `${p.ns}/${p.name}`, content: "Loading…", title: "Describe" };
     try {
       const out = await invoke<string>("kube_describe", { context: current, namespace: p.ns, pod: p.name });
-      panel = { pod: `${p.ns}/${p.name}`, content: out, title: "Describe" };
+      panel = { pod: `${p.ns}/${p.name}`, content: applyRedaction(out), title: "Describe" };
     } catch (e) { panel = { pod: `${p.ns}/${p.name}`, content: String(e), title: "Describe" }; }
   }
 
