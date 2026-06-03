@@ -1144,7 +1144,6 @@
       { label: "View: Helm", hint: "in Kubernetes", run: () => openView("k8s") },
       { label: "View: Observability (Metrics / Logs)", run: () => openView("obs") },
       { label: "View: DevOps (Terraform / Helm / Observability)", run: () => (rail = "devops") },
-      { label: "View: Workspace (multipane)", run: () => (rail = "workspace") },
       { label: "Workspace: Balance Panes", run: () => { paneTree = balanceTree(paneTree); rail = "workspace"; } },
       { label: "Workspace: Close Other Panes", run: () => { paneTree = closeOtherPanes(paneTree, activeLeaf); rail = "workspace"; } },
       { label: "Workspace: Save Layout As…", run: saveLayoutAs },
@@ -1628,7 +1627,10 @@
 
 <div class="app" class:zen class:rail-auto={$autoHideRail}>
   {#if zen}<div class="zen-bar" data-tauri-drag-region></div>{/if}
-  <div class="tabs" data-tauri-drag-region>
+  <!-- No data-tauri-drag-region here: it would hijack mousedown on the draggable
+       tab pills into an OS window-drag, breaking tab→pane drag-and-drop. The
+       empty .spacer below carries the drag region for moving the window. -->
+  <div class="tabs">
     {#each terms as t (t.id)}
       <div class="tab {rail === 'term' && activeTerm === t.id ? 'on' : ''}" role="button" tabindex="0" onclick={() => selectTerm(t.id)} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), selectTerm(t.id))} title={t.title}
         draggable="true" class:drag={dragTab?.kind === 'term' && dragTab.id === t.id}
@@ -1734,7 +1736,6 @@
       {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'terraform' ? 'on' : ''}" role="button" tabindex="0" title="Terraform / Terragrunt" onclick={() => openView('terraform')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('terraform'))}><Icon name="terraform" /></div>{/if}
       {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'obs' ? 'on' : ''}" role="button" tabindex="0" title="Observability (Metrics / Logs)" onclick={() => openView('obs')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('obs'))}><Icon name="chart" /></div>{/if}
       {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'devops' ? 'on' : ''}" role="button" tabindex="0" title="DevOps (PRs / GitLab / AWS / Incidents)" onclick={() => openView('devops')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('devops'))}><Icon name="devops" /></div>{/if}
-      <div class="i {rail === 'workspace' ? 'on' : ''}" role="button" tabindex="0" title="Workspace (multipane)" onclick={() => (rail = 'workspace')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'workspace'))}><Icon name="workspace" /></div>
       <div class="i grow {rail === 'settings' ? 'on' : ''}" role="button" tabindex="0" title="Settings" onclick={openSettings} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openSettings())}><Icon name="settings" /></div>
     </nav>
     {/if}
