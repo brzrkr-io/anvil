@@ -653,6 +653,32 @@ export const themes: Record<string, Theme> = {
       regexp: "#a9b665", escape: "#e78a4e", heading: "#a9b665", link: "#7daea3", meta: "#7c6f64",
     },
   },
+  // Ferra (casperstorm) — warm, muted, low-contrast. Authentic palette: night,
+  // ash, umber, bark, mist, sage, blush, coral, rose, ember, honey. Blue/teal/
+  // purple are muted fills tuned to the warm palette (Ferra's core lacks them).
+  "ferra": {
+    ui: {
+      bg: "#2b292d", panel: "#322f33", panel2: "#383539", border: "#4d424b",
+      text: "#d1d1e0", text2: "#a89ba0", text3: "#6f5d63", sel: "#4d424b",
+      accent: "#ffa07a", accent2: "#e06b75", green: "#b1b695", red: "#e06b75",
+      blue: "#8aa9c4", purple: "#c9a3c9", teal: "#9bb5a8", yellow: "#f5d76e",
+    },
+    xterm: {
+      background: "#2b292d", foreground: "#d1d1e0", cursor: "#ffa07a",
+      cursorAccent: "#2b292d", selectionBackground: "#4d424b",
+      black: "#383539", red: "#e06b75", green: "#b1b695", yellow: "#f5d76e",
+      blue: "#8aa9c4", magenta: "#f6b6c9", cyan: "#9bb5a8", white: "#d1d1e0",
+      brightBlack: "#6f5d63", brightRed: "#e8838b", brightGreen: "#c3c7a8",
+      brightYellow: "#f8e08a", brightBlue: "#a3bdd4", brightMagenta: "#f9cad8",
+      brightCyan: "#b1c7bb", brightWhite: "#e6e6f0",
+    },
+    syntax: {
+      comment: "#6f5d63", keyword: "#e06b75", string: "#b1b695", number: "#f5d76e",
+      type: "#9bb5a8", function: "#ffa07a", property: "#fecdb2", variable: "#d1d1e0",
+      constant: "#f5d76e", operator: "#a89ba0", tag: "#e06b75", attribute: "#f5d76e",
+      regexp: "#9bb5a8", escape: "#ffa07a", heading: "#ffa07a", link: "#8aa9c4", meta: "#6f5d63",
+    },
+  },
 };
 
 export const THEME_LABELS: Record<string, string> = {
@@ -684,6 +710,7 @@ export const THEME_LABELS: Record<string, string> = {
   "one-light": "One Light",
   "oxocarbon": "Oxocarbon",
   "gruvbox-material": "Gruvbox Material",
+  "ferra": "Ferra",
 };
 
 export function themeLabel(key: string): string {
