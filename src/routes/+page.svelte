@@ -7,6 +7,7 @@
   import Problems from "$lib/Problems.svelte";
   const SourceControl = () => import("$lib/SourceControl.svelte");
   import FileBrowser from "$lib/FileBrowser.svelte";
+  import Resizer from "$lib/Resizer.svelte";
   // Editor + DiffView pull in Monaco (~4 MB); load them lazily on first use
   // so app startup stays fast (#90).
   const Editor = () => import("$lib/Editor.svelte");
@@ -313,6 +314,8 @@
   // stays open while you're in the editor/terminal instead of being a `rail`
   // mode that other views replace.
   let explorerOpen = $state(false);
+  // Resizable explorer/sessions sidebar width (persisted).
+  let sideW = $state((() => { try { return Number(localStorage.getItem("anvil-side-w")) || 230; } catch { return 230; } })());
   function toggleSide() { explorerOpen = !explorerOpen; }
   // Explorer is the doorway into IDE mode: the first click shows the file tree +
   // the editor surface (Welcome with open/create actions when nothing's open),
@@ -1737,7 +1740,7 @@
     {/if}
 
     {#if explorerOpen}
-    <aside class="side">
+    <aside class="side" style="width:{sideW}px">
       <div class="sect">Sessions <span class="n">{terms.length}</span></div>
       {#each terms as t (t.id)}
         <div class="row {activeTerm === t.id ? 'cur' : ''}" role="button" tabindex="0" onclick={() => selectTerm(t.id)} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), selectTerm(t.id))}>
@@ -1747,6 +1750,7 @@
       <div class="sect">Explorer <button class="sect-x" title="Hide explorer (⌘B)" onclick={() => (explorerOpen = false)}><Icon name="close" size={11} /></button></div>
       {#if cwd}<FileBrowser bind:path={cwd} onOpenFile={openInEditor} />{/if}
     </aside>
+    <Resizer bind:size={sideW} min={160} max={480} storeKey="anvil-side-w" />
     {/if}
 
     <svelte:boundary onerror={(e) => { console.error("view crashed", e); toast("This view hit an error — use Reload view", "error"); }}>
