@@ -38,6 +38,7 @@
 
   let host: HTMLDivElement;
   let view: EditorView | undefined;
+  let ro: ResizeObserver | undefined;
   let loadedPath = "";
   let unsub: () => void;
 
@@ -554,6 +555,12 @@
     unsub = activeTheme.subscribe((n) => view?.dispatch({ effects: themeComp.reconfigure(cmTheme(n)) }));
     watchTimer = setInterval(pollExternalChanges, 2000);
     load(path);
+    // A fresh editor mounted into a just-created split pane can measure 0×0
+    // before the flexbox settles, leaving CodeMirror blank. Re-measure on host
+    // resize (and a few times right after mount) so the editor always paints.
+    ro = new ResizeObserver(() => view?.requestMeasure());
+    ro.observe(host);
+    for (const ms of [0, 60, 200, 450]) setTimeout(() => view?.requestMeasure(), ms);
   });
 
   $effect(() => { load(path); });
@@ -579,6 +586,7 @@
   onDestroy(() => {
     if (view && loadedPath) { saveFolds(loadedPath, view.state); saveViewPos(loadedPath); }
     unsub?.();
+    ro?.disconnect();
     if (watchTimer) clearInterval(watchTimer);
     if (changeTimer) clearTimeout(changeTimer);
     if (gutterTimer) clearTimeout(gutterTimer);
