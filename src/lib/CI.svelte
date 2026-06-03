@@ -52,6 +52,39 @@
   // them (GitLab's default stage-sequential graph), vs. the flat list.
   let dagView = $state(true);
 
+  // Draggable widths for the list | jobs | log columns (persisted).
+  let listBasis = $state(480);
+  let jobsBasis = $state(360);
+  (() => {
+    try {
+      const s = JSON.parse(localStorage.getItem("anvil-ci-panes") || "{}");
+      if (typeof s.listBasis === "number") listBasis = s.listBasis;
+      if (typeof s.jobsBasis === "number") jobsBasis = s.jobsBasis;
+    } catch { /* ignore */ }
+  })();
+  let resizing = $state<null | "list" | "jobs">(null);
+  let startX = 0;
+  let startBasis = 0;
+  function onResize(e: PointerEvent) {
+    const dx = e.clientX - startX;
+    if (resizing === "list") listBasis = Math.max(300, Math.min(900, startBasis + dx));
+    else if (resizing === "jobs") jobsBasis = Math.max(220, Math.min(720, startBasis + dx));
+  }
+  function endResize() {
+    resizing = null;
+    window.removeEventListener("pointermove", onResize);
+    window.removeEventListener("pointerup", endResize);
+    try { localStorage.setItem("anvil-ci-panes", JSON.stringify({ listBasis, jobsBasis })); } catch { /* ignore */ }
+  }
+  function startResize(which: "list" | "jobs", e: PointerEvent) {
+    resizing = which;
+    startX = e.clientX;
+    startBasis = which === "list" ? listBasis : jobsBasis;
+    window.addEventListener("pointermove", onResize);
+    window.addEventListener("pointerup", endResize);
+    e.preventDefault();
+  }
+
   const RUNNING_STATUSES = new Set(["running", "pending", "created", "waiting_for_resource", "preparing", "scheduled"]);
 
   function isRunning(status: string) {
@@ -348,7 +381,7 @@
   <!-- Body: pipeline list + jobs + log -->
   <div class="body">
     <!-- Pipeline list -->
-    <div class="pipelines" class:has-jobs={!!selectedPipeline}>
+    <div class="pipelines" class:has-jobs={!!selectedPipeline} style={selectedPipeline ? `flex:0 0 ${listBasis}px` : ""}>
       {#if !ciErr && pipelines.length === 0 && busy}
         <Skeleton rows={12} />
       {:else if !ciErr && pipelines.length === 0 && !busy}
@@ -413,7 +446,8 @@
 
     <!-- Jobs panel (right side when pipeline selected) -->
     {#if selectedPipeline}
-      <div class="jobs-panel" class:has-log={!!selectedJob}>
+      <div class="vresize" class:active={resizing === "list"} role="separator" aria-label="Resize pipeline list" onpointerdown={(e) => startResize("list", e)}></div>
+      <div class="jobs-panel" class:has-log={!!selectedJob} style={selectedJob ? `flex:0 0 ${jobsBasis}px` : ""}>
         <div class="jobs-head">
           <span class="jobs-title">Pipeline #{selectedPipeline.iid}</span>
           <span class="jobs-status" style="color:{statusColor(selectedPipeline.status)}">{selectedPipeline.status}</span>
@@ -491,6 +525,7 @@
 
     <!-- Log panel -->
     {#if selectedJob}
+      <div class="vresize" class:active={resizing === "jobs"} role="separator" aria-label="Resize jobs panel" onpointerdown={(e) => startResize("jobs", e)}></div>
       <div class="log-panel">
         <div class="log-head">
           <span class="log-title">{selectedJob.name}</span>
@@ -552,9 +587,20 @@
   /* Body layout: pipeline list left, jobs center, log right */
   .body { flex: 1; min-height: 0; display: flex; overflow: hidden; }
 
+  /* Draggable column dividers. */
+  .vresize {
+    flex: 0 0 5px; align-self: stretch; cursor: col-resize; background: transparent;
+    position: relative; z-index: 2; touch-action: none;
+  }
+  .vresize::before {
+    content: ""; position: absolute; top: 0; bottom: 0; left: 2px; width: 1px;
+    background: var(--border); transition: background 0.12s, width 0.12s, left 0.12s;
+  }
+  .vresize:hover::before, .vresize.active::before { background: var(--accent); width: 2px; left: 1.5px; }
+
   /* Pipeline list */
   .pipelines { flex: 1; min-width: 0; overflow-y: auto; }
-  .pipelines.has-jobs { flex: 0 0 45%; border-right: 1px solid var(--border); }
+  .pipelines.has-jobs { flex: 0 0 45%; }
 
   .pl-header, .pl-row {
     display: grid;
@@ -611,7 +657,6 @@
   /* Jobs panel */
   .jobs-panel {
     flex: 0 0 30%; min-width: 180px; display: flex; flex-direction: column;
-    border-right: 1px solid var(--border);
   }
   .jobs-panel.has-log { flex: 0 0 22%; }
   .jobs-head {
@@ -662,14 +707,16 @@
     font-size: 10px; font-weight: 500; color: var(--text3);
     text-transform: uppercase; letter-spacing: 0.05em; padding: 0 2px 2px;
   }
+  /* Connector sits at the vertical centre of the first job node, level with the
+     stage columns — not centred in the whole (tall) container. */
   .dag-link {
-    flex: 0 0 28px; align-self: center; height: 1px; margin-top: 18px;
-    background: var(--border); position: relative;
+    flex: 0 0 26px; align-self: flex-start; height: 2px; margin-top: 36px;
+    border-radius: 2px; background: var(--border); position: relative;
   }
   .dag-link::after {
-    content: ""; position: absolute; right: 0; top: -3px;
-    border-left: 5px solid var(--border);
-    border-top: 3.5px solid transparent; border-bottom: 3.5px solid transparent;
+    content: ""; position: absolute; right: -1px; top: -3.5px;
+    border-left: 6px solid var(--border);
+    border-top: 4px solid transparent; border-bottom: 4px solid transparent;
   }
   .dag-node {
     display: flex; align-items: center; gap: 7px; padding: 0 8px; height: 28px;
