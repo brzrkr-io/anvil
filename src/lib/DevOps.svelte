@@ -6,6 +6,7 @@
   const offlineMsg = "Offline — reconnect to query cluster / observability.";
   import { ACCOUNTS, getValue } from "$lib/accounts";
   import Icon from "$lib/Icon.svelte";
+  import Skeleton from "$lib/Skeleton.svelte";
   import { toast } from "$lib/toast";
   import { askText, askConfirm } from "$lib/dialog";
   import { parsePrRows, orderStacks, type PrRow } from "$lib/pr-checks";
@@ -343,6 +344,8 @@
           <button class="refresh" disabled={prBusy || !prComment.trim()} onclick={postPrComment} title="Post comment"><Icon name="play" size={13} /></button>
         </div>
       {/if}
+    {:else if busy && !prs}
+      <Skeleton rows={6} />
     {:else}
       <pre class="out">{prs.trimStart().startsWith("[") ? "No open PRs." : prs || "No open PRs / gh unavailable."}</pre>
     {/if}
