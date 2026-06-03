@@ -108,7 +108,7 @@ pub async fn gh_prs_json(cwd: String) -> Result<String, String> {
             "-L",
             "20",
             "--json",
-            "number,title,headRefName,isDraft,statusCheckRollup",
+            "number,title,headRefName,baseRefName,isDraft,statusCheckRollup",
         ]);
         let out = crate::shared::exec_capture(cmd, 25).map_err(|e| e.to_string())?;
         if !out.status.success() {
@@ -211,10 +211,15 @@ pub async fn gh_pr_diff(cwd: String, num: String) -> Result<String, String> {
 
 /// Open a PR for the current branch via `gh pr create --fill` (#66).
 #[tauri::command]
-pub async fn gh_pr_create(cwd: String) -> Result<String, String> {
+pub async fn gh_pr_create(cwd: String, base: Option<String>) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut cmd = gh_cmd(&cwd);
         cmd.args(["pr", "create", "--fill"]);
+        // #27 Stacked PRs: target an arbitrary base branch instead of the
+        // default, so a PR can sit on top of another open PR's branch.
+        if let Some(b) = base.as_deref().filter(|b| !b.trim().is_empty()) {
+            cmd.args(["--base", b]);
+        }
         let out = crate::shared::exec_capture(cmd, 30).map_err(|e| e.to_string())?;
         let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
         s.push_str(&String::from_utf8_lossy(&out.stderr));

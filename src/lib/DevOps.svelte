@@ -8,7 +8,7 @@
   import Icon from "$lib/Icon.svelte";
   import { toast } from "$lib/toast";
   import { askText, askConfirm } from "$lib/dialog";
-  import { parsePrRows, type PrRow } from "$lib/pr-checks";
+  import { parsePrRows, orderStacks, type PrRow } from "$lib/pr-checks";
   import { githubInvestigation, actionsInvestigation } from "$lib/agent-ops";
   import { parseRuns, failingRuns, type RunRow } from "$lib/actions-runs";
   import Docker from "$lib/Docker.svelte";
@@ -204,17 +204,21 @@
     finally { prBusy = false; }
   }
   // Open a PR for the current branch (gh pr create --fill).
-  async function createPr() {
+  async function createPr(base?: string) {
     if (busy) return;
     busy = true;
     try {
-      const out = await invoke<string>("gh_pr_create", { cwd });
+      // #27 Stacked PR: when `base` is given, the new PR targets that branch
+      // instead of the default, sitting on top of an existing PR.
+      const out = await invoke<string>("gh_pr_create", { cwd, base });
       const url = out.trim().split("\n").find((l) => l.startsWith("http")) || "PR created";
-      toast(url, "success");
+      toast(base ? `Stacked PR on ${base}: ${url}` : url, "success");
       await loadPRs();
     } catch (e) { toast(String(e).slice(0, 160) || "gh pr create failed", "error"); }
     finally { busy = false; }
   }
+  // PRs reordered so a stacked PR nests under the PR it targets (#27).
+  const stackedRows = $derived(orderStacks(prRows));
   async function loadPRs() {
     busy = true;
     // JSON variant carries CI check status so we can sort failing-first; keep the
@@ -304,15 +308,18 @@
   {#if tab === "prs"}
     <div class="bar"><span class="lbl">Open PRs · {cwd.split("/").pop()}</span>
       <span class="grow"></span>
-      <button class="refresh" disabled={busy} onclick={createPr} title="Open a PR for the current branch (gh pr create --fill)">+ New PR</button>
+      <button class="refresh" disabled={busy} onclick={() => createPr()} title="Open a PR for the current branch (gh pr create --fill)">+ New PR</button>
       <button class="refresh" disabled={busy} onclick={loadPRs} title="Refresh"><Icon name="refresh" size={13} /></button>
     </div>
     {#if prRows.length}
       <div class="podlist">
-        {#each prRows as r (r.num)}
-          <div class="podrow" class:cur={prSel === r.num} role="button" tabindex="0" onclick={() => openPr(r.num)} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), openPr(r.num))}>
+        {#each stackedRows as r (r.num)}
+          <div class="podrow" class:cur={prSel === r.num} class:stacked={r.depth > 0} style="padding-left:{10 + r.depth * 16}px" role="button" tabindex="0" onclick={() => openPr(r.num)} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), openPr(r.num))}>
+            {#if r.depth > 0}<span class="stack-edge" title="Stacked on {r.base}">⌐</span>{/if}
             <span class="ck ck-{r.checks}" title={r.checks === "none" ? "No checks" : `Checks: ${r.checks}`}></span>
             <span class="bdg" style="color:var(--accent)">#{r.num}</span><span class="pnm">{r.title}{r.draft ? " · draft" : ""}</span>
+            {#if r.depth > 0}<span class="basechip" title="Targets {r.base}">← {r.base}</span>{/if}
+            <button class="rerun" title="Open a PR stacked on this branch ({r.branch})" onclick={(e) => { e.stopPropagation(); createPr(r.branch); }}>⨁</button>
             {#if r.checks === "fail"}
               {#if onInvestigate}<button class="rerun ai" title="Investigate failing checks with the agent" onclick={(e) => { e.stopPropagation(); onInvestigate(githubInvestigation(r.num, r.branch)); }}><Icon name="agent" size={11} /></button>{/if}
               <button class="rerun" title="Re-run failed checks (in terminal)" onclick={(e) => { e.stopPropagation(); rerunChecks(r); }}><Icon name="refresh" size={11} /></button>
@@ -481,6 +488,10 @@
   .podrow { display: flex; align-items: center; gap: 10px; width: 100%; border: 0; background: transparent;
     padding: 5px 12px; cursor: default; text-align: left; font-family: var(--font-mono); font-size: 11.5px; }
   .podrow:hover { background: var(--panel); }
+  .podrow.stacked { border-left: 2px solid var(--border); }
+  .stack-edge { flex: 0 0 auto; color: var(--text3); font-size: 11px; margin-right: -4px; }
+  .basechip { flex: 0 0 auto; font-size: 9.5px; color: var(--text3); padding: 0 5px; border: 1px solid var(--hairline);
+    border-radius: 8px; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pnm { flex: 1; min-width: 0; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pst { flex: 0 0 auto; width: 92px; text-align: right; }
   .tabbadge { margin-left: 5px; padding: 0 5px; border-radius: 8px; font-size: 9.5px; font-weight: 600;

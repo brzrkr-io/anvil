@@ -58,6 +58,7 @@ export interface PrRow {
   num: string;
   title: string;
   branch: string;
+  base: string; // target branch (#27 stacked PRs)
   draft: boolean;
   checks: CheckState;
 }
@@ -66,6 +67,7 @@ interface RawPr {
   number: number;
   title: string;
   headRefName?: string;
+  baseRefName?: string;
   isDraft?: boolean;
   statusCheckRollup?: RollupItem[] | null;
 }
@@ -85,8 +87,43 @@ export function parsePrRows(raw: string): PrRow[] {
       num: String(p.number),
       title: p.title ?? String(p.number),
       branch: p.headRefName ?? "",
+      base: p.baseRefName ?? "",
       draft: p.isDraft === true,
       checks: rollupChecks(p.statusCheckRollup),
     }))
     .sort((a, b) => prRank(a.checks) - prRank(b.checks) || Number(a.num) - Number(b.num));
+}
+
+export type StackedPr = PrRow & { depth: number };
+
+// #27 Stacked PRs: a PR is "stacked" when its base branch is another open PR's
+// head branch (it sits on top of that PR instead of the default branch).
+// Reorders rows so each child follows its parent, indented by `depth`, while
+// roots keep their incoming (failing-first) order. Orphans/cycles fall back to
+// depth 0 so no PR is ever dropped.
+export function orderStacks(rows: PrRow[]): StackedPr[] {
+  const heads = new Set(rows.map((r) => r.branch).filter(Boolean));
+  const childrenOf = new Map<string, PrRow[]>(); // parent head branch → child rows
+  const roots: PrRow[] = [];
+  for (const r of rows) {
+    if (r.base && heads.has(r.base) && r.base !== r.branch) {
+      const arr = childrenOf.get(r.base) ?? [];
+      arr.push(r);
+      childrenOf.set(r.base, arr);
+    } else {
+      roots.push(r);
+    }
+  }
+  const out: StackedPr[] = [];
+  const seen = new Set<string>();
+  const walk = (r: PrRow, depth: number) => {
+    if (seen.has(r.num)) return; // guard against cycles
+    seen.add(r.num);
+    out.push({ ...r, depth });
+    for (const c of childrenOf.get(r.branch) ?? []) walk(c, depth + 1);
+  };
+  for (const r of roots) walk(r, 0);
+  // Any row not reached (e.g. its parent was itself a child in a cycle) lands flat.
+  for (const r of rows) if (!seen.has(r.num)) out.push({ ...r, depth: 0 });
+  return out;
 }
