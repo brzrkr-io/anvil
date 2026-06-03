@@ -67,7 +67,7 @@
     { id: "appearance", label: "Appearance", icon: "theme", kw: "theme color font density scale zoom system light dark auto-hide custom palette" },
     { id: "editor", label: "Editor", icon: "pencil", kw: "font size tab wrap minimap ligatures line height letter spacing sticky scroll inlay hints format save blame" },
     { id: "terminal", label: "Terminal", icon: "terminal", kw: "font size cursor style blink bold line height letter spacing shell" },
-    { id: "extensions", label: "Extensions", icon: "devops", kw: "extension kubernetes github actions grafana terraform aws caldera plugin store enable disable" },
+    { id: "extensions", label: "Extensions", icon: "devops", kw: "extension kubernetes github actions grafana terraform aws plugin store enable disable" },
     { id: "accounts", label: "Accounts", icon: "key", kw: "llm api key github token aws grafana keychain secret" },
     { id: "keymap", label: "Keymap", icon: "command", kw: "keyboard shortcut binding hotkey" },
     { id: "about", label: "About", icon: "info", kw: "version anvil" },

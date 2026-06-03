@@ -90,7 +90,7 @@ describe("snippets", () => {
 
 describe("extensions enable logic", () => {
   it("applies the built-in default when a value is unset, else the explicit value", () => {
-    expect(isExtEnabled("caldera", {})).toBe(true);   // builtin
+    expect(isExtEnabled("kubernetes", {})).toBe(true);   // builtin
     expect(isExtEnabled("grafana", {})).toBe(false);  // not builtin
     expect(isExtEnabled("grafana", { grafana: true })).toBe(true);
   });

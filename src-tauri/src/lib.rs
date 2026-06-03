@@ -196,120 +196,6 @@ async fn delete_path(path: String) -> Result<(), String> {
     .map_err(|e| e.to_string())?
 }
 
-// ── Caldera bridge (#53) ──────────────────────────────────────────────────
-// Polls the local Caldera control-plane daemon (127.0.0.1:4175) over its GET
-// API and returns a neutral snapshot. Everything is best-effort: if the daemon
-// is down, `online` is false and the rest is empty — the UI shows "offline"
-// rather than erroring. API shape ported from the Zig `caldera.zig` poller.
-// Daemon listens on IPv4 loopback only; use 127.0.0.1 explicitly so we don't
-// resolve `localhost` to ::1 (IPv6) first and fail.
-const CALDERA_BASE: &str = "http://127.0.0.1:4175";
-
-#[derive(serde::Serialize, Default)]
-struct CalderaRun {
-    agent: String,
-    step: String,
-    status: String,
-    summary: String,
-}
-
-#[derive(serde::Serialize, Default)]
-struct CalderaSnapshot {
-    online: bool,
-    project: String,
-    branch: String,
-    runs: Vec<CalderaRun>,
-    attention: Vec<String>,
-}
-
-#[tauri::command]
-async fn caldera_snapshot() -> CalderaSnapshot {
-    let mut snap = CalderaSnapshot::default();
-    // `.no_proxy()`: never route loopback through a system/corporate HTTP proxy
-    // (e.g. FortiClient). reqwest honors system proxy env by default, which
-    // breaks localhost connections inside the GUI app even though curl works.
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
-        .no_proxy()
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => return snap,
-    };
-    let get = |path: &str| client.get(format!("{CALDERA_BASE}{path}")).send();
-
-    // Health gate: daemon must answer with "ok".
-    match get("/health").await {
-        Ok(r) => match r.text().await {
-            Ok(b) if b.contains("ok") => {}
-            _ => return snap,
-        },
-        Err(_) => return snap,
-    }
-    snap.online = true;
-
-    if let Ok(r) = get("/api/project").await {
-        if let Ok(v) = r.json::<serde_json::Value>().await {
-            let p = &v["project"];
-            snap.project = p["project_name"]
-                .as_str()
-                .or_else(|| p["name"].as_str())
-                .unwrap_or("")
-                .to_string();
-            snap.branch = p["mode"].as_str().unwrap_or("").to_string();
-        }
-    }
-    if let Ok(r) = get("/api/agent-runs").await {
-        if let Ok(v) = r.json::<serde_json::Value>().await {
-            if let Some(arr) = v["agent_runs"].as_array() {
-                for run in arr {
-                    let summary = run["events"]
-                        .as_array()
-                        .and_then(|e| e.last())
-                        .and_then(|e| e["summary"].as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    snap.runs.push(CalderaRun {
-                        agent: run["agent"].as_str().unwrap_or("").to_string(),
-                        step: run["current_step"].as_str().unwrap_or("").to_string(),
-                        status: run["backend_status"].as_str().unwrap_or("").to_string(),
-                        summary,
-                    });
-                }
-            }
-        }
-    }
-    if let Ok(r) = get("/api/activity").await {
-        if let Ok(v) = r.json::<serde_json::Value>().await {
-            if let Some(arr) = v["attention"].as_array() {
-                for a in arr {
-                    if let Some(s) = a["summary"].as_str().or_else(|| a["title"].as_str()) {
-                        snap.attention.push(s.to_string());
-                    }
-                }
-            }
-        }
-    }
-    snap
-}
-
-#[cfg(test)]
-mod caldera_tests {
-    use super::*;
-    #[test]
-    #[ignore = "requires a live Caldera daemon on localhost:4175"]
-    fn reach() {
-        let s = tauri::async_runtime::block_on(caldera_snapshot());
-        eprintln!(
-            "CALDERA online={} project='{}' runs={} attn={}",
-            s.online,
-            s.project,
-            s.runs.len(),
-            s.attention.len()
-        );
-    }
-}
-
 /// On-demand update check. Returns Some(version) if an update is available,
 /// None if up to date, Err if the endpoint is unreachable/misconfigured. Never
 /// runs at startup, so a missing release host degrades gracefully.
@@ -402,7 +288,6 @@ pub fn run() {
             lsp::lsp_notify,
             check_update,
             install_update,
-            caldera_snapshot,
             git::git_log,
             git::git_log_stats,
             git::git_status,

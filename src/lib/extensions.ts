@@ -1,6 +1,6 @@
 import { writable, get } from "svelte/store";
 
-// Extension model (§F #69). DevOps/Caldera integrations are modelled as
+// Extension model (§F #69). DevOps integrations are modelled as
 // first-party extensions; the store UI (#71) enables/disables them and the rail
 // gates each integration's surface on whether its extension is enabled.
 
@@ -9,7 +9,7 @@ export interface ExtManifest {
   name: string;
   description: string;
   /** Which rail view this extension contributes to (if any). */
-  rail?: "devops" | "caldera";
+  rail?: "devops";
   /** Declared capabilities — surfaced to the user, enforced later by the host. */
   permissions?: string[];
   /** First-party extensions ship enabled; others are "available" to install. */
@@ -19,7 +19,6 @@ export interface ExtManifest {
 export const EXTENSIONS: ExtManifest[] = [
   { id: "kubernetes", name: "Kubernetes", description: "Contexts, pods, logs, exec.", rail: "devops", permissions: ["exec:kubectl"], builtin: true },
   { id: "github-actions", name: "GitHub Actions", description: "Workflow runs + re-run.", rail: "devops", permissions: ["exec:gh"], builtin: true },
-  { id: "caldera", name: "Caldera", description: "AI control-plane bridge.", rail: "caldera", permissions: ["net:127.0.0.1:4175"], builtin: true },
   { id: "grafana", name: "Grafana", description: "Dashboards (XFO proxy planned).", permissions: ["net"], builtin: false },
   { id: "terraform", name: "Terraform", description: "plan / apply (planned).", permissions: ["exec:terraform"], builtin: false },
   { id: "aws", name: "AWS", description: "Profiles + SSO (planned).", permissions: ["exec:aws"], builtin: false },

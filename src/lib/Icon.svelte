@@ -21,7 +21,6 @@
     docker: '<rect x="3.2" y="9.5" width="3.2" height="3.2" rx="0.4"/><rect x="7" y="9.5" width="3.2" height="3.2" rx="0.4"/><rect x="10.8" y="9.5" width="3.2" height="3.2" rx="0.4"/><rect x="7" y="5.9" width="3.2" height="3.2" rx="0.4"/><path d="M2 15.2c1.8 1.4 4.6 1.4 6.4 0 1.8 1.8 5.4 1.4 7.2-.8.4 1.8 2.6 1.5 3.4.4"/>',
     // Flux — GitOps reconcile loop around a source node.
     flux: '<path d="M19 12a7 7 0 1 1-2-4.9"/><path d="M19 5v3.2h-3.2"/><circle cx="12" cy="12" r="1.8"/>',
-    caldera: '<path d="M12 2.5l9.5 9.5L12 21.5 2.5 12z"/><path d="M12 8l4 4-4 4-4-4z"/>',
     workspace: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9.5h18"/><path d="M9.5 21V9.5"/>',
     settings: '<path d="M4 6h8"/><path d="M16 6h4"/><circle cx="14" cy="6" r="2"/><path d="M4 12h2"/><path d="M10 12h10"/><circle cx="8" cy="12" r="2"/><path d="M4 18h10"/><path d="M18 18h2"/><circle cx="16" cy="18" r="2"/>',
     theme: '<circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor" stroke="none"/>',

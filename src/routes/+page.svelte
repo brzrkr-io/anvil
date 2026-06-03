@@ -71,7 +71,7 @@
   import { getUserSnippets, addUserSnippet, removeUserSnippet } from "$lib/cm-snippets";
   // Settings is a large surface and never the startup view — load on demand (#74).
   const Settings = () => import("$lib/Settings.svelte");
-  // DevOps (kubectl/CI) and Caldera panes aren't the startup view; load them
+  // DevOps (kubectl/CI) panes aren't the startup view; load them
   // lazily so initial render stays cheap (#92).
   const DevOps = () => import("$lib/DevOps.svelte");
   const Kube = () => import("$lib/Kube.svelte");

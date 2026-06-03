@@ -13,7 +13,6 @@ describe("extensions model", () => {
   it("a rail shows when ≥1 of its extensions is enabled", () => {
     expect(railEnabled("devops", {})).toBe(true); // k8s + actions default on
     expect(railEnabled("devops", { kubernetes: false, "github-actions": false })).toBe(false);
-    expect(railEnabled("caldera", { caldera: false })).toBe(false);
   });
   it("a rail with no gating extensions is always shown", () => {
     expect(railEnabled("term", {})).toBe(true);
