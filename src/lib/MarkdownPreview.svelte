@@ -20,7 +20,10 @@
     if (live && live.path === path) { await render(live.text); return; }
     try { await render(await invoke<string>("read_file", { path })); } catch { html = ""; }
   }
-  onMount(() => { refresh(); timer = setInterval(refresh, 1500); });
+  // Live-reload poll for external edits — skip while the window is backgrounded
+  // so a hidden preview does no file reads. The live editor buffer (editorLive)
+  // updates instantly regardless.
+  onMount(() => { refresh(); timer = setInterval(() => { if (typeof document === "undefined" || !document.hidden) refresh(); }, 1500); });
   onDestroy(() => { if (timer) clearInterval(timer); });
   // Re-render on path change AND whenever the live buffer for this path updates.
   $effect(() => { void path; const live = $editorLive; if (live && live.path === path) render(live.text); else refresh(); });
