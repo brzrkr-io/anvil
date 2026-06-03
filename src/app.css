@@ -419,3 +419,6 @@ body {
 .crash-fallback .cf-btn { margin-top: 4px; border: 1px solid var(--border); border-radius: 6px;
   background: var(--panel2); color: var(--text); font-size: 12px; padding: 5px 14px; cursor: default; }
 .crash-fallback .cf-btn:hover { border-color: var(--accent); }
+.crash-fallback .cf-where { font-size: 11px; font-family: var(--font-mono); color: var(--accent);
+  max-width: 520px; white-space: pre-wrap; word-break: break-word; opacity: 0.85; }
+.crash-fallback .cf-actions { display: flex; gap: 8px; }

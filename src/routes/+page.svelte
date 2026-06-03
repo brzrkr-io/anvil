@@ -67,7 +67,7 @@
       toast("PR body copied to clipboard", "success");
     } catch (e) { toast(String(e).slice(0, 80) || "PR body generation failed", "error"); }
   }
-  import { installCrashHandlers, getCrashes, clearCrashes, diagnosticsReport } from "$lib/crash";
+  import { installCrashHandlers, getCrashes, clearCrashes, diagnosticsReport, originFrame } from "$lib/crash";
   import { redactionRules, addRedactionRule, removeRedactionRule, getAuditLog, clearAuditLog } from "$lib/redaction";
   import { getUserSnippets, addUserSnippet, removeUserSnippet } from "$lib/cm-snippets";
   // Settings is a large surface and never the startup view — load on demand (#74).
@@ -1962,7 +1962,13 @@
         <div class="crash-fallback">
           <div class="cf-title">This view hit an error.</div>
           <div class="cf-msg">{String(error)}</div>
-          <button class="cf-btn" onclick={reset}>Reload view</button>
+          {#if originFrame((error as Error)?.stack)}
+            <div class="cf-where">at {originFrame((error as Error)?.stack)}</div>
+          {/if}
+          <div class="cf-actions">
+            <button class="cf-btn" onclick={reset}>Reload view</button>
+            <button class="cf-btn" onclick={() => navigator.clipboard.writeText(`${String(error)}\n${(error as Error)?.stack ?? ""}`).then(() => toast("Error copied", "success"))}>Copy error</button>
+          </div>
         </div>
       </section>
     {/snippet}
