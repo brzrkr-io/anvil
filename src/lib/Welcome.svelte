@@ -60,7 +60,7 @@
         <p class="empty">No recent files yet.</p>
       {:else}
         <ul class="recent-list">
-          {#each shown as path (path)}
+          {#each shown as path, i (path + '#' + i)}
             <li>
               <button class="recent-item" onclick={() => onOpenRecent?.(path)}>
                 <span class="basename">{basename(path)}</span>

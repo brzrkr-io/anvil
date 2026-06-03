@@ -33,7 +33,7 @@
       <div class="nc-empty">No notifications</div>
     {:else}
       <ul class="nc-list">
-        {#each $notifications as n (n.id)}
+        {#each $notifications as n, i (n.id + '#' + i)}
           <li class="nc-item {n.kind}">
             <span class="nc-dot"></span>
             <span class="nc-text">{n.text}</span>

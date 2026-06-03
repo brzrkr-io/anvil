@@ -340,7 +340,7 @@
         {:else if stacks.length === 0}
           <EmptyState icon="terraform" title="No Terraform / Terragrunt found" hint="Open a repo with *.tf, terragrunt.hcl, or terragrunt.stack.hcl files." />
         {:else}
-          {#each stacks as s (s.path)}
+          {#each stacks as s, i (s.path + '#' + i)}
             <div
               class="stack-row"
               class:on={activeStack === s.path}
@@ -373,7 +373,7 @@
         {:else if resources.length === 0}
           <EmptyState icon="terraform" title="No state yet" hint="Run Init, then Plan to populate state." />
         {:else}
-          {#each groups as g (g.module)}
+          {#each groups as g, i (g.module + '#' + i)}
             <div class="mod" onclick={() => toggle(g.module)} role="button" tabindex="0"
               onkeydown={(e) => e.key === "Enter" && toggle(g.module)}>
               <span class="chev" class:open={!collapsed[g.module]}>▸</span>
@@ -381,7 +381,7 @@
               <span class="mod-count">{g.items.length}</span>
             </div>
             {#if !collapsed[g.module]}
-              {#each g.items as r (r)}
+              {#each g.items as r, i (r + '#' + i)}
                 {@const addr = g.module === "(root)" ? r : `${g.module}.${r}`}
                 <div class="res" role="button" tabindex="0" title="{addr} — click to plan -target"
                   onclick={() => sendCmd(`plan -target='${addr}'`)}

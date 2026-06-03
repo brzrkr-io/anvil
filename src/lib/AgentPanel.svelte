@@ -399,7 +399,7 @@
       <div class="ap-histscrim" role="presentation" onclick={() => (historyOpen = false)}></div>
       <div class="ap-hist">
         <div class="ap-hist-h">Past runs</div>
-        {#each runs as r (r.id)}
+        {#each runs as r, i (r.id + '#' + i)}
           <div class="ap-hist-row">
             <button class="ap-hist-open" onclick={() => openRun(r.id)} title={r.title}>
               <span class="ap-hist-title">{r.title}</span>
@@ -430,7 +430,7 @@
         </div>
       </div>
     {:else}
-      {#each messages as msg (msg)}
+      {#each messages as msg, i (msg + '#' + i)}
         <div class="msg-row {msg.role}">
           <div class="msg-label">{msg.role === "assistant" ? "agent" : "you"}</div>
           <div class="msg-body">
@@ -469,7 +469,7 @@
               {#if edits.length}
                 <div class="edits">
                   <div class="editshd">Proposed edits · {edits.length} file{edits.length === 1 ? "" : "s"}</div>
-                  {#each edits as ed (ed.path)}
+                  {#each edits as ed, i (ed.path + '#' + i)}
                     {@const full = ed.path.startsWith("/") ? ed.path : `${cwd.replace(/\/$/, "")}/${ed.path}`}
                     <button class="editrow" onclick={() => openReview(full, ed.content)}>
                       <Icon name="pencil" size={12} /> <span class="ep">{ed.path}</span>
@@ -536,7 +536,7 @@
   <div class="composer">
     {#if mentionQuery !== null && mentionHits.length}
       <div class="mentions">
-        {#each mentionHits as f, i (f)}
+        {#each mentionHits as f, i (f + '#' + i)}
           <button class="mention {i === mentionSel ? 'on' : ''}" onmousedown={(e) => { e.preventDefault(); pickMention(f); }}>
             <span class="mname">{f.split("/").pop()}</span><span class="mpath">{f}</span>
           </button>

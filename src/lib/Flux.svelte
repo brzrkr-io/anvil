@@ -194,7 +194,7 @@
       {#if namespaces.length > 1}
         <select class="fx-ns-sel" bind:value={nsFilter} title="Filter by namespace">
           <option value="">all namespaces</option>
-          {#each namespaces as ns (ns)}<option value={ns}>{ns}</option>{/each}
+          {#each namespaces as ns, i (ns + '#' + i)}<option value={ns}>{ns}</option>{/each}
         </select>
       {/if}
       <span class="spacer"></span>

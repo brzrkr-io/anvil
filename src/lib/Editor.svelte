@@ -603,7 +603,7 @@
   {#if crumbFile}
     <div class="breadcrumb">
       <span class="crumb file">{crumbFile}</span>
-      {#each crumbs as c (c.line + c.name)}
+      {#each crumbs as c, i (c.line + c.name + '#' + i)}
         <span class="sep">›</span>
         <button class="crumb sym" onclick={() => jumpLine(c.line)}>{c.name}</button>
       {/each}
@@ -628,7 +628,7 @@
   <div class="ed-host">
     {#if stickyRows.length}
       <div class="sticky">
-        {#each stickyRows as s (s.line)}
+        {#each stickyRows as s, i (s.line + '#' + i)}
           <button class="stickyrow mono" onclick={() => jumpLine(s.line)}>{s.text}</button>
         {/each}
       </div>

@@ -345,7 +345,7 @@
   <div class="topbar">
     <span class="lbl">Context</span>
     <select value={current} onchange={(e) => useCtx((e.currentTarget as HTMLSelectElement).value)} disabled={busy}>
-      {#each sortedContexts as c (c)}<option value={c}>{pinned.includes(c) ? "★ " : ""}{c}</option>{/each}
+      {#each sortedContexts as c, i (c + '#' + i)}<option value={c}>{pinned.includes(c) ? "★ " : ""}{c}</option>{/each}
       {#if !contexts.length && current}<option value={current}>{current}</option>{/if}
     </select>
     {#if current}
@@ -354,7 +354,7 @@
     <span class="lbl">Namespace</span>
     <select value={currentNs} onchange={(e) => useNs((e.currentTarget as HTMLSelectElement).value)} disabled={busy}>
       {#if !namespaces.includes(currentNs)}<option value={currentNs}>{currentNs}</option>{/if}
-      {#each sortedNamespaces as n (n)}<option value={n}>{pinnedNs.includes(n) ? "★ " : ""}{n}</option>{/each}
+      {#each sortedNamespaces as n, i (n + '#' + i)}<option value={n}>{pinnedNs.includes(n) ? "★ " : ""}{n}</option>{/each}
     </select>
     {#if currentNs}
       <button class="pin" class:on={pinnedNs.includes(currentNs)} title={pinnedNs.includes(currentNs) ? "Unpin namespace" : "Pin namespace to top"} onclick={() => togglePinNs(currentNs)}>★</button>
@@ -377,7 +377,7 @@
     <div class="authbar">
       <Icon name="alert" size={13} />
       <span>Cloud credentials expired or missing.</span>
-      {#each reauthActions(current) as a (a.cmd)}
+      {#each reauthActions(current) as a, i (a.cmd + '#' + i)}
         <button onclick={() => onRunCommand?.(a.cmd)}>{a.label}</button>
       {/each}
       <button class="ghost" onclick={() => { load(); refreshPods(); }}>Retry</button>
@@ -414,7 +414,7 @@
       <span class="sect-cnt">{pfList.length}</span>
     </div>
     <div class="pflist">
-      {#each pfList as f (f.pid)}
+      {#each pfList as f, i (f.pid + '#' + i)}
         <div class="pfrow">
           <span class="pf-dot"></span>
           <span class="pf-desc">{f.desc || f.pid}</span>

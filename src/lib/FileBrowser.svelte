@@ -55,7 +55,7 @@
   <div class="row up" onclick={up} role="button" tabindex="0" onkeydown={(e) => e.key === "Enter" && up()}>
     <span class="ic folder" style="display:inline-flex"><Icon name="up" size={12} /></span><span class="nm">..</span>
   </div>
-  {#each entries.slice(0, cap) as e (e.path)}
+  {#each entries.slice(0, cap) as e, i (e.path + '#' + i)}
     <TreeNode entry={e} depth={0} {onOpenFile} onReload={() => load(path)} />
   {/each}
   {#if entries.length > cap}

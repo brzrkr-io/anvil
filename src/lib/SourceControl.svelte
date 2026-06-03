@@ -312,7 +312,7 @@
 
 <div class="scm">
   {#snippet tree(nodes: FileNode[], isStaged: boolean, depth: number)}
-    {#each nodes as n (n.path)}
+    {#each nodes as n, i (n.path + '#' + i)}
       {#if n.dir}
         <div class="chg dir" style="padding-left:{14 + depth * 12}px" onclick={() => toggleDir(n.path)} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), toggleDir(n.path))} role="button" tabindex="0">
           <svg class="caret {collapsed.has(n.path) ? '' : 'open'}" viewBox="0 0 16 16" aria-hidden="true">
@@ -369,7 +369,7 @@
               <button onclick={() => { tplOpen = !tplOpen; moreOpen = false; }}>Templates…</button>
               {#if coAuthors.length}
                 <div class="mm-label">Co-author</div>
-                {#each coAuthors as a (a)}<button class="mm-sub" onclick={() => { addCoAuthor(a); moreOpen = false; }}>{a}</button>{/each}
+                {#each coAuthors as a, i (a + '#' + i)}<button class="mm-sub" onclick={() => { addCoAuthor(a); moreOpen = false; }}>{a}</button>{/each}
               {/if}
               {#if changes.length}
                 <div class="mm-sep"></div>
@@ -384,7 +384,7 @@
             <div class="mscrim" onclick={() => (tplOpen = false)} role="presentation"></div>
             <div class="tplmenu">
               <button onclick={() => { saveTemplate(); tplOpen = false; }}>+ Save current as template</button>
-              {#each templates as t (t)}
+              {#each templates as t, i (t + '#' + i)}
                 <div class="tplrow">
                   <button class="tpluse" title={t} onclick={() => { commitMsg = t; tplOpen = false; }}>{t.split("\n")[0]}</button>
                   <button class="tplx" title="Delete" onclick={() => { templates = templates.filter((x) => x !== t); persistTemplates(); }}>×</button>
@@ -411,7 +411,7 @@
       {#if conflicts.length}
         <div class="sect conf">Conflicts <span class="cnt">{conflicts.length}</span></div>
         <div class="changes">
-          {#each conflicts as c (c.path)}
+          {#each conflicts as c, i (c.path + '#' + i)}
             <div class="chg conflict" style="padding-left:14px">
               <span class="sdot" style="background:var(--red)" title="Conflict"></span>
               <span class="fname" title={c.path}
@@ -454,12 +454,12 @@
       <span class="accent hd-ic"><Icon name="branch" size={13} /></span>
       {#if branches.length}
         <select class="branchsel" value={branch} onchange={(e) => { const v = (e.currentTarget as HTMLSelectElement).value; if (v !== branch) act("git_checkout", { branch: v }); }}>
-          {#each branches as b (b.name)}<option value={b.name}>{b.name}</option>{/each}
+          {#each branches as b, i (b.name + '#' + i)}<option value={b.name}>{b.name}</option>{/each}
         </select>
       {:else}
         <span class="accent">{branch || "—"}</span>
       {/if}
-      {#each repoFeatures as f (f)}<button class="rfeat" title={f === "submodules" ? "git submodule update --init --recursive" : "git lfs pull"} disabled={busy} onclick={() => act(f === "submodules" ? "git_submodule_update" : "git_lfs_pull", {})}>{f}</button>{/each}
+      {#each repoFeatures as f, i (f + '#' + i)}<button class="rfeat" title={f === "submodules" ? "git submodule update --init --recursive" : "git lfs pull"} disabled={busy} onclick={() => act(f === "submodules" ? "git_submodule_update" : "git_lfs_pull", {})}>{f}</button>{/each}
       <span class="sync">
         <button class="syncbtn" class:on={filtersActive || filtersOpen} title="Filter commits (author / message / path)" onclick={() => (filtersOpen = !filtersOpen)}><Icon name="search" size={13} /></button>
         {#if aheadBehind}<span class="ab" title="ahead / behind upstream">↑{aheadBehind.a} ↓{aheadBehind.b}</span>{/if}
@@ -504,7 +504,7 @@
         </div>
         {#if tagsOpen}
           <div class="changes">
-            {#each tags as t (t)}
+            {#each tags as t, i (t + '#' + i)}
               <div class="chg"><span class="bdg" style="color:var(--green);display:inline-flex"><Icon name="tag" size={12} /></span><span class="path">{t}</span></div>
             {/each}
           </div>
@@ -558,7 +558,7 @@
         </div>
         <div class="cd-meta">{detail.commit.author} · {fullDate(detail.commit.ts)} · {detail.files.length} file{detail.files.length === 1 ? "" : "s"}</div>
         <div class="cd-files">
-          {#each detail.files as f (f.path)}
+          {#each detail.files as f, i (f.path + '#' + i)}
             <button class="cd-file" onclick={() => openFileAt(detail!.commit.short, f.path)}>
               <span class="cd-fbdg" style="color:{badge(f.code)}">{f.code}</span>
               <span class="cd-fname mono">{f.path.split("/").pop()}</span>

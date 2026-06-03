@@ -123,7 +123,7 @@
       {#if info.files.length}
         <div class="sect">Files <span class="cnt">{info.files.length}</span></div>
         <div class="files">
-          {#each info.files as f (f.path)}
+          {#each info.files as f, i (f.path + '#' + i)}
             <div class="file-row">
               <span class="fpath mono">{f.path}</span>
               <span class="counts">

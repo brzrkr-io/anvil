@@ -134,7 +134,7 @@
 {/if}
 
 {#if expanded}
-  {#each children.slice(0, shown) as child (child.path)}
+  {#each children.slice(0, shown) as child, i (child.path + '#' + i)}
     <TreeNode entry={child} depth={depth + 1} {onOpenFile} onReload={loadChildren} />
   {/each}
   {#if children.length > shown}

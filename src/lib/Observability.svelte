@@ -174,13 +174,13 @@
     <div class="scroll">
       {#if alerts.length}
         <div class="sec-h">Firing alerts <span class="cnt">{alerts.length}</span></div>
-        {#each alerts as a (a.name + a.labels)}
+        {#each alerts as a, i (a.name + a.labels + '#' + i)}
           <div class="alert"><span class="adot" class:crit={a.sev === "critical"}></span><span class="aname">{a.name}</span>{#if a.sev}<span class="asev">{a.sev}</span>{/if}<span class="albl">{a.labels}</span></div>
         {/each}
       {/if}
       {#if savedQs.length}
         <div class="sec-h">Saved</div>
-        {#each savedQs as s (s.q)}
+        {#each savedQs as s, i (s.q + '#' + i)}
           <div class="spark" role="button" tabindex="0" title={s.q} onclick={() => { promQuery = s.q; runProm(); }} onkeydown={(e) => e.key === "Enter" && (promQuery = s.q)}>
             <span class="sname">{s.name}</span>
             <svg class="sparksvg" viewBox="0 0 120 22" preserveAspectRatio="none"><path d={sparkPath(sparks[s.q] ?? [])} fill="none" stroke="var(--accent)" stroke-width="1.2" /></svg>
@@ -192,7 +192,7 @@
       {#if promErr}<div class="err">{promErr.slice(0, 200)}</div>{/if}
       {#if promRows.length}
         <div class="sec-h">Result <span class="cnt">{promRows.length}</span></div>
-        {#each promRows as r (r.metric)}
+        {#each promRows as r, i (r.metric + '#' + i)}
           <div class="mrow"><span class="mmetric mono">{r.metric}</span><span class="mval mono">{r.value}</span></div>
         {/each}
       {/if}
@@ -209,7 +209,7 @@
       {#if sigErr}<div class="err">{sigErr.slice(0, 240)}</div>{/if}
       {#if sigServices.length}
         <div class="svc-head"><span>Service</span><span>p99 (ms)</span><span>err/s</span><span>req/s</span></div>
-        {#each sigServices as s (s.serviceName)}
+        {#each sigServices as s, i (s.serviceName + '#' + i)}
           <div class="svc-row">
             <span class="svc-name mono">{s.serviceName}</span>
             <span class="svc-n">{s.p99}</span>
@@ -232,7 +232,7 @@
     </div>
     <div class="scroll">
       {#if grafErr}<div class="err">{grafErr.slice(0, 240)}</div>{/if}
-      {#each dashboards as d (d.url)}
+      {#each dashboards as d, i (d.url + '#' + i)}
         <div class="dash" role="button" tabindex="0" onclick={() => openDashboard(d.url)} onkeydown={(e) => e.key === "Enter" && openDashboard(d.url)}>
           <span class="dash-title">{d.title}</span>
           {#if d.folderTitle}<span class="dash-folder">{d.folderTitle}</span>{/if}

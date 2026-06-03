@@ -1639,7 +1639,7 @@
         <span class="x" role="button" tabindex="0" onclick={(e) => { e.stopPropagation(); closeTerm(t.id); }} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), e.stopPropagation(), closeTerm(t.id))}>×</span>
       </div>
     {/each}
-    {#each orderedFiles as f (f)}
+    {#each orderedFiles as f, i (f + '#' + i)}
       <div class="tab {rail === 'editor' && activeFile === f ? 'on' : ''}" class:pinned-tab={pinnedFiles.includes(f)} role="button" tabindex="0" onclick={() => { activeFile = f; rail = 'editor'; }} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (activeFile = f, rail = 'editor'))} title={tabGroups[f] ? `${f}  ·  group: ${tabGroups[f]}` : f}
         style={tabGroups[f] ? `box-shadow: inset 0 -2px 0 ${groupColor(tabGroups[f])}` : ''}
         draggable="true" class:drag={dragTab?.kind === 'file' && dragTab.id === f}
@@ -1711,7 +1711,7 @@
   {#if tabOverflow}
     <div class="ctxscrim" onclick={() => (tabOverflow = false)} role="presentation"></div>
     <div class="taboverflow">
-      {#each orderedFiles as f (f)}
+      {#each orderedFiles as f, i (f + '#' + i)}
         <button class:on={activeFile === f && rail === 'editor'} onclick={() => { activeFile = f; rail = 'editor'; tabOverflow = false; }} title={f}>
           {#if pinnedFiles.includes(f)}<span class="ofpin"><Icon name="pin" size={9} /></span>{/if}<span class="oftt">{baseName(f)}</span>{#if dirtyFiles[f]}<span class="dirty"></span>{/if}
         </button>

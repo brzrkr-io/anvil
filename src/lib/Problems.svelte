@@ -44,13 +44,13 @@
     {#if !$problems.length}
       <div class="empty">No problems detected. ✓</div>
     {:else}
-      {#each groups as g (g.path)}
+      {#each groups as g, i (g.path + '#' + i)}
         <div class="file" title={g.path}>
           <span class="fname">{g.name}</span>
           <span class="fpath">{g.path.replace(/\/[^/]+$/, "")}</span>
           <span class="fcnt">{g.items.length}</span>
         </div>
-        {#each g.items as d (d.line + d.message)}
+        {#each g.items as d, i (d.line + d.message + '#' + i)}
           <div
             class="prow"
             role="button"

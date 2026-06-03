@@ -101,9 +101,9 @@
     {#if !loading && !items.length}
       <div class="at-clear"><Icon name="check" size={22} /><span>Nothing failing. GitOps green, pods healthy, CI passing.</span></div>
     {/if}
-    {#each groups as grp (grp.g)}
+    {#each groups as grp, i (grp.g + '#' + i)}
       <div class="at-group">{grp.g}</div>
-      {#each grp.rows as it (it.group + it.label)}
+      {#each grp.rows as it, i (it.group + it.label + '#' + i)}
         <div class="at-row">
           <span class="at-dot"></span>
           <span class="at-ic"><Icon name={it.icon} size={14} /></span>

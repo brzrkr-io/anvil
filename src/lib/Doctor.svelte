@@ -56,7 +56,7 @@
   {#if err}<div class="dr-err">{err}</div>{/if}
 
   <div class="dr-list">
-    {#each probes as p (p.id)}
+    {#each probes as p, i (p.id + '#' + i)}
       <div class="dr-row" class:bad={!p.ok}>
         <span class="dr-dot" style="background:{dotColor(p)}"></span>
         <span class="dr-ic"><Icon name={ICONS[p.id] ?? "info"} size={15} /></span>

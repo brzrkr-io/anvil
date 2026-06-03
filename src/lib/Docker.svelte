@@ -77,7 +77,7 @@
     <pre class="out">{daemonErr ? "Docker not running or not installed." : err.slice(0, 200)}</pre>
   {:else if items.length}
     <div class="list">
-      {#each items as c (c.id)}
+      {#each items as c, i (c.id + '#' + i)}
         <div class="row" class:busy={busyRow === c.id}>
           <span class="dot s-{c.state}" title={c.status}></span>
           <span class="nm" title={c.image}>{c.name}</span>

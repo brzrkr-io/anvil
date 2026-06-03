@@ -332,7 +332,7 @@
     </div>
     {#if prRows.length}
       <div class="podlist">
-        {#each stackedRows as r (r.num)}
+        {#each stackedRows as r, i (r.num + '#' + i)}
           <div class="podrow" class:cur={prSel === r.num} class:stacked={r.depth > 0} style="padding-left:{10 + r.depth * 16}px" role="button" tabindex="0" onclick={() => openPr(r.num)} onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), openPr(r.num))}>
             {#if r.depth > 0}<span class="stack-edge" title="Stacked on {r.base}">⌐</span>{/if}
             <span class="ck ck-{r.checks}" title={r.checks === "none" ? "No checks" : `Checks: ${r.checks}`}></span>
@@ -377,7 +377,7 @@
       <pre class="out">{runsAuthErr ? "Not authenticated — run `gh auth login`." : runsErr.slice(0, 200)}</pre>
     {:else if runs.length}
       <div class="podlist">
-        {#each runs as r (r.id)}
+        {#each runs as r, i (r.id + '#' + i)}
           <div class="podrow">
             <span class="ck ck-{r.state === 'running' ? 'pending' : r.state}" title={r.state}></span>
             <span class="pnm">{r.workflow ? r.workflow + " · " : ""}{r.title}</span>
@@ -410,7 +410,7 @@
       <pre class="out">{mrErr.slice(0, 200)}</pre>
     {:else if mrRows.length}
       <div class="podlist">
-        {#each mrRows as r (r.iid)}
+        {#each mrRows as r, i (r.iid + '#' + i)}
           <div class="podrow" role="button" tabindex="0" title="Open in browser"
             onclick={() => openUrl(r.url).catch(() => toast("Could not open URL", "error"))}
             onkeydown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), openUrl(r.url).catch(() => {}))}>
@@ -460,7 +460,7 @@
     <div class="bar"><span class="lbl">Key metrics</span></div>
     {#if savedPromQs.length}
       <div class="sparks">
-        {#each savedPromQs as s (s.q)}
+        {#each savedPromQs as s, i (s.q + '#' + i)}
           <div class="spark" title={s.q}>
             <div class="spark-top"><span class="spark-nm">{s.name}</span><span class="spark-val">{sparkLast(sparks[s.q])}</span></div>
             <svg class="spark-svg" viewBox="0 0 120 22" preserveAspectRatio="none"><path d={sparkPath(sparks[s.q] ?? [])} fill="none" stroke="var(--accent)" stroke-width="1.5" /></svg>

@@ -372,7 +372,7 @@
           <span class="col-dur">Duration</span>
           <span class="col-acts"></span>
         </div>
-        {#each pipelines as p (p.id)}
+        {#each pipelines as p, i (p.id + '#' + i)}
           {@const dur = p.status === "success" || p.status === "failed" || p.status === "canceled"
             ? (p.updated_at && p.created_at
                 ? Math.round((new Date(p.updated_at).getTime() - new Date(p.created_at).getTime()) / 1000)
@@ -442,7 +442,7 @@
                 {#if si > 0}<div class="dag-link" aria-hidden="true"></div>{/if}
                 <div class="dag-stage">
                   <div class="dag-stage-head"><span>{stage}</span><span class="stage-count">{stageJobs.length}</span></div>
-                  {#each stageJobs as j (j.id)}
+                  {#each stageJobs as j, i (j.id + '#' + i)}
                     <div
                       class="dag-node"
                       class:selected={selectedJob?.id === j.id}
@@ -465,9 +465,9 @@
               {/each}
             </div>
           {:else}
-            {#each stageList as [stage, stageJobs] (stage)}
+            {#each stageList as [stage, stageJobs], si (stage + '#' + si)}
               <div class="stage-label"><span>{stage}</span><span class="stage-count">{stageJobs.length}</span></div>
-              {#each stageJobs as j (j.id)}
+              {#each stageJobs as j, i (j.id + '#' + i)}
                 <div
                   class="job-row"
                   class:selected={selectedJob?.id === j.id}
