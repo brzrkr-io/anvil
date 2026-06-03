@@ -386,14 +386,6 @@ body {
 .row .meta { margin-left: auto; color: var(--text3); font-size: 10.5px; }
 
 .content { flex: 1; min-width: 0; min-height: 0; position: relative; display: flex; flex-direction: column; overflow: hidden; background: color-mix(in srgb, var(--bg) calc(var(--win-alpha) * 100%), transparent); }
-/* Drag-to-dock: edge drop zones over the main content while a tab is dragged. */
-.dockzones { position: absolute; inset: 0; z-index: 40; pointer-events: none; }
-.dockzones .dz { position: absolute; pointer-events: auto; border-radius: 8px; transition: background 0.1s, box-shadow 0.1s; }
-.dockzones .dz-left { left: 0; top: 0; width: 30%; height: 100%; }
-.dockzones .dz-right { right: 0; top: 0; width: 30%; height: 100%; }
-.dockzones .dz-top { left: 30%; width: 40%; top: 0; height: 40%; }
-.dockzones .dz-bottom { left: 30%; width: 40%; bottom: 0; height: 40%; }
-.dockzones .dz.hot { background: color-mix(in srgb, var(--accent) 20%, transparent); box-shadow: inset 0 0 0 2px var(--accent); }
 .pane-head {
   height: var(--head-h); flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
   padding: 0 var(--pad-x); color: var(--text2); font-size: 12px; border-bottom: 1px solid var(--hairline);

@@ -123,7 +123,8 @@
   }
   $effect(() => { if (cwd) prewarmLsp(cwd); });
   import PaneGrid from "$lib/PaneGrid.svelte";
-  import { leaf, splitLeaf, closeLeaf, resizeSplit, dockLeaf, setView as setLeafView, paneId, remapTermRefs, seedPaneSeq, firstLeaf, findLeaf, balanceTree, closeOthers as closeOtherPanes, leafIds, addTab, setActiveTab, closeTab, type PaneNode, type Leaf, type ViewKind, type Edge } from "$lib/panes";
+  import { leaf, splitLeaf, closeLeaf, resizeSplit, setView as setLeafView, paneId, remapTermRefs, seedPaneSeq, firstLeaf, findLeaf, balanceTree, closeOthers as closeOtherPanes, leafIds, addTab, setActiveTab, closeTab, type PaneNode, type Leaf, type ViewKind, type Edge } from "$lib/panes";
+  import { edgeFromRect, passedThreshold, dropAction, type TabDrag } from "$lib/tabdrag";
   import Palette, { type Item } from "$lib/Palette.svelte";
   import Toasts from "$lib/Toasts.svelte";
   import NotificationCenter from "$lib/NotificationCenter.svelte";
@@ -509,32 +510,96 @@
 
   // ── Dockable workspace (multipane) ──
   let paneTree = $state<PaneNode>(leaf("term", paneId("wt")));
-  let paneDrag = $state<{ id: string | null }>({ id: null });
-  // A top-strip tab being dragged into a workspace pane quadrant (#4/#5).
-  let tabDragView = $state<{ view: ViewKind; ref?: string } | null>(null);
-  let dockEdge = $state<Edge | null>(null); // which content edge is hovered during a tab drag
-  function wsDropTab(targetId: string, edge: Edge) {
-    if (!tabDragView) return;
-    if (edge === "center") {
-      paneTree = addTab(paneTree, targetId, tabDragView.view, paneRef(tabDragView.view, tabDragView.ref));
-    } else {
-      wsSplit(targetId, edge, tabDragView.view, tabDragView.ref);
-    }
-    tabDragView = null;
+
+  // ── Pointer-based tab drag-to-split (IDE-grade; #4/#5) ─────────────────────
+  // HTML5 drag-and-drop silently no-ops in the app's WebView, so dragging a tab
+  // onto a pane uses pointerdown/move/up + elementFromPoint hit-testing instead.
+  // Pure math + the drop decision live in tabdrag.ts; this is the DOM glue.
+  let tabDrag = $state<TabDrag | null>(null);       // the live drag (past threshold)
+  let dragXY = $state<{ x: number; y: number }>({ x: 0, y: 0 }); // ghost position
+  let dropHint = $state<{ leafId: string; edge: Edge } | null>(null); // pane+edge under cursor
+  let reorderTo = $state<string | null>(null); // file-tab strip reorder target (no pane hit)
+
+  function leafRectAt(x: number, y: number): { leafId: string; rect: DOMRect } | null {
+    const el = document.elementFromPoint(x, y)?.closest("[data-leaf-id]") as HTMLElement | null;
+    const id = el?.dataset.leafId;
+    return el && id ? { leafId: id, rect: el.getBoundingClientRect() } : null;
   }
 
-  // Drag a top-strip tab to a content edge while a modal-ish overlay is up →
-  // drop back into the grid, splitting the focused pane with the dragged tab so
-  // the persisted layout is kept (not replaced).
-  function dockDraggedTab(edge: Edge) {
-    if (!tabDragView || edge === "center") { tabDragView = null; dragTab = null; return; }
+  // Start a drag from any tab (top-strip file/view OR a pane's own tab). `from`
+  // marks a pane tab so a drop can MOVE it; absent → it came from the top strip.
+  function startTabDrag(e: PointerEvent, payload: TabDrag) {
+    if (e.button !== 0) return;
+    const startX = e.clientX, startY = e.clientY;
+    let active = false;
+    const move = (ev: PointerEvent) => {
+      if (!active) {
+        if (!passedThreshold(startX, startY, ev.clientX, ev.clientY)) return;
+        active = true;
+        tabDrag = payload; // commit the drag only past the click/drag threshold
+      }
+      ev.preventDefault(); // suppress text selection once dragging
+      dragXY = { x: ev.clientX, y: ev.clientY };
+      const hit = leafRectAt(ev.clientX, ev.clientY);
+      if (hit) {
+        dropHint = { leafId: hit.leafId, edge: edgeFromRect(hit.rect, ev.clientX, ev.clientY) };
+        reorderTo = null;
+      } else {
+        dropHint = null;
+        // Not over a pane → maybe over another file tab (strip reorder).
+        const tabEl = document.elementFromPoint(ev.clientX, ev.clientY)?.closest("[data-file-tab]") as HTMLElement | null;
+        reorderTo = !payload.from ? (tabEl?.dataset.fileTab ?? null) : null;
+      }
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      if (active) {
+        if (dropHint) applyTabDrop(payload, dropHint);
+        else if (reorderTo && payload.ref) openFiles = reorder(openFiles, payload.ref, reorderTo);
+      }
+      tabDrag = null; dropHint = null; reorderTo = null;
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
+  function applyTabDrop(drag: TabDrag, hint: { leafId: string; edge: Edge }) {
+    const act = dropAction(drag, hint);
     rail = "workspace";
-    const target = findLeaf(paneTree, activeLeaf) ?? firstLeaf(paneTree);
-    const res = splitLeaf(paneTree, target.id, edge, tabDragView.view, paneRef(tabDragView.view, tabDragView.ref));
-    paneTree = res.tree;
-    activeLeaf = res.newLeafId;
-    tabDragView = null;
-    dragTab = null;
+    switch (act.kind) {
+      case "addTab":
+        paneTree = addTab(paneTree, act.leafId, drag.view, paneRef(drag.view, drag.ref));
+        activeLeaf = act.leafId;
+        break;
+      case "moveTab": {
+        paneTree = addTab(paneTree, act.to, drag.view, drag.ref);
+        paneTree = closeTab(paneTree, act.from.leafId, act.from.index);
+        activeLeaf = act.to;
+        break;
+      }
+      case "split": {
+        const r = splitLeaf(paneTree, act.leafId, act.edge, drag.view, paneRef(drag.view, drag.ref));
+        paneTree = r.tree;
+        activeLeaf = r.newLeafId;
+        break;
+      }
+      case "splitFrom": {
+        const r = splitLeaf(paneTree, act.leafId, act.edge, drag.view, drag.ref);
+        paneTree = closeTab(r.tree, act.from.leafId, act.from.index);
+        activeLeaf = r.newLeafId;
+        break;
+      }
+    }
+  }
+
+  // A pane's own tab begins a drag (drag-to-split/move into another pane).
+  function paneTabPointerDown(e: PointerEvent, leafId: string, index: number) {
+    const lf = findLeaf(paneTree, leafId);
+    const t = lf?.tabs[index];
+    if (!t) return;
+    const label = t.view === "editor" && t.ref ? (t.ref.split("/").pop() ?? "Editor") : (VIEW_LABEL[t.view] ?? t.view);
+    startTabDrag(e, { view: t.view, ref: t.ref, label, from: { leafId, index } });
   }
 
   // Named workspace layout presets (#12), persisted in localStorage.
@@ -588,16 +653,6 @@
     paneTree = setLeafView(paneTree, id, v, paneRef(v));
   }
   function wsResize(sid: string, i: number, d: number) { paneTree = resizeSplit(paneTree, sid, i, d); }
-  function wsDock(dragId: string, targetId: string, edge: Edge) {
-    // Center drop moves the dragged pane's active view in as a new TAB (#2);
-    // edge drops still split.
-    if (edge === "center") {
-      const d = findLeaf(paneTree, dragId);
-      if (d) paneTree = closeLeaf(addTab(paneTree, targetId, d.view, d.ref), dragId);
-    } else {
-      paneTree = dockLeaf(paneTree, dragId, targetId, edge);
-    }
-  }
   function wsSetActiveTab(id: string, i: number) { paneTree = setActiveTab(paneTree, id, i); }
   function wsCloseTab(id: string, i: number) { paneTree = closeTab(paneTree, id, i); }
   function wsAddTab(id: string) { paneTree = addTab(paneTree, id, "term", paneId("wt")); }
@@ -666,6 +721,13 @@
     terraform: { title: "Terraform", icon: "terraform" },
     obs: { title: "Observability", icon: "chart" },
     devops: { title: "DevOps", icon: "devops" },
+  };
+  // Display label for every ViewKind (drag-ghost / pane-tab text). VIEW_META only
+  // covers rail views; this adds the file/terminal/explorer leaves.
+  const VIEW_LABEL: Record<ViewKind, string> = {
+    term: "Terminal", editor: "Editor", files: "Explorer", scm: "Source Control",
+    search: "Search", agent: "AI Agent", devops: "DevOps", settings: "Settings",
+    welcome: "Welcome", k8s: "Kubernetes", ci: "CI / Pipelines", terraform: "Terraform", obs: "Observability",
   };
   let viewTabs = $state<string[]>([]);
   // Views that can live inside a workspace pane (paneView renders these).
@@ -1604,11 +1666,11 @@
     saveTimer = setTimeout(saveState, 400);
   });
 
-  // ── File-tab drag-reorder + context menu (roadmap §A #15 / #16) ──
+  // ── File-tab reorder + context menu (roadmap §A #15 / #16) ──
   // Only file tabs live in the top strip now (terminals are grid panes), so the
-  // `kind` discriminant collapses to "file".
+  // `kind` discriminant collapses to "file". Reorder is driven by the pointer
+  // drag controller (startTabDrag → reorder) — no HTML5 drag here.
   type TabKind = "file";
-  let dragTab = $state<{ kind: TabKind; id: string } | null>(null);
   let tabMenu = $state<{ x: number; y: number; kind: TabKind; id: string } | null>(null);
 
   function reorder<T>(arr: T[], from: T, to: T): T[] {
@@ -1620,11 +1682,6 @@
     const ti = a.indexOf(to);
     a.splice(ti < 0 ? a.length : ti, 0, from);
     return a;
-  }
-  function tabDrop(_kind: TabKind, id: string) {
-    if (!dragTab) { dragTab = null; return; }
-    openFiles = reorder(openFiles, dragTab.id, id);
-    dragTab = null;
   }
   function tabCtx(e: MouseEvent, kind: TabKind, id: string) {
     e.preventDefault();
@@ -1656,10 +1713,8 @@
     {#each orderedFiles as f, i (f + '#' + i)}
       <div class="tab {activeFile === f ? 'on' : ''}" class:pinned-tab={pinnedFiles.includes(f)} role="button" tabindex="0" onclick={() => openInEditor(f)} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openInEditor(f))} title={tabGroups[f] ? `${f}  ·  group: ${tabGroups[f]}` : f}
         style={tabGroups[f] ? `box-shadow: inset 0 -2px 0 ${groupColor(tabGroups[f])}` : ''}
-        draggable="true" class:drag={dragTab?.kind === 'file' && dragTab.id === f}
-        ondragstart={(e) => { dragTab = { kind: 'file', id: f }; tabDragView = { view: 'editor', ref: f }; if (e.dataTransfer) { e.dataTransfer.setData('text/plain', f); e.dataTransfer.effectAllowed = 'move'; } }}
-        ondragend={() => { dragTab = null; tabDragView = null; }} ondragover={(e) => e.preventDefault()}
-        ondrop={() => tabDrop('file', f)} oncontextmenu={(e) => tabCtx(e, 'file', f)}>
+        data-file-tab={f} class:drag={tabDrag?.ref === f && !tabDrag?.from}
+        onpointerdown={(e) => startTabDrag(e, { view: 'editor', ref: f, label: baseName(f) })} oncontextmenu={(e) => tabCtx(e, 'file', f)}>
         {#if pinnedFiles.includes(f)}<span class="pin" role="button" tabindex="0" onclick={(e) => { e.stopPropagation(); togglePin(f); }} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), e.stopPropagation(), togglePin(f))} title="Unpin"><Icon name="pin" size={9} /></span>{/if}
         <span class="tt">{baseName(f)}</span>{#if dirtyFiles[f]}<span class="dirty"></span>{/if}
         <span class="x" role="button" tabindex="0" onclick={(e) => { e.stopPropagation(); closeFile(f); }} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), e.stopPropagation(), closeFile(f))}>×</span>
@@ -1673,8 +1728,9 @@
       </div>
     {/each}
     {#each viewTabs as vk (vk)}
-      <div class="tab {rail === vk ? 'on' : ''}" role="button" tabindex="0" title={VIEW_META[vk].title}
-        onclick={() => (rail = vk)} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = vk))}>
+      <div class="tab {rail === vk ? 'on' : ''}" class:drag={tabDrag?.view === vk && !tabDrag?.ref && !tabDrag?.from} role="button" tabindex="0" title={VIEW_META[vk].title}
+        onpointerdown={(e) => startTabDrag(e, { view: vk as ViewKind, label: VIEW_META[vk].title })}
+        onclick={() => openView(vk)} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView(vk))}>
         <span class="tab-ic"><Icon name={VIEW_META[vk].icon} size={12} /></span>
         <span class="tt">{VIEW_META[vk].title}</span>
         <span class="x" role="button" tabindex="0" onclick={(e) => { e.stopPropagation(); closeView(vk); }}
@@ -1762,18 +1818,6 @@
 
     <svelte:boundary onerror={(e) => { console.error("view crashed", e); toast("This view hit an error — use Reload view", "error"); }}>
     <section class="content">
-      {#if tabDragView && rail !== "workspace"}
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div class="dockzones" aria-hidden="true">
-          {#each (["left", "right", "top", "bottom"] as const) as edge}
-            <div class="dz dz-{edge}" class:hot={dockEdge === edge}
-              ondragenter={(e) => { e.preventDefault(); dockEdge = edge; }}
-              ondragover={(e) => e.preventDefault()}
-              ondragleave={() => { if (dockEdge === edge) dockEdge = null; }}
-              ondrop={(e) => { e.preventDefault(); dockEdge = null; dockDraggedTab(edge); }}></div>
-          {/each}
-        </div>
-      {/if}
       {#if rail !== "workspace"}
       <div class="pane-head">
         {#if rail === "diff"}<span class="accent">±</span> Diff — {diffTarget?.rev ?? diffTarget?.path}
@@ -1874,12 +1918,11 @@
             </div>
           {/snippet}
           <div class="grid-fill">
-          <PaneGrid node={paneTree} view={paneView} drag={paneDrag} activeId={activeLeaf} solo={paneTree.kind === "leaf"}
-            onSplit={wsSplit} onClose={wsClose} onSetView={wsSetView} onResize={wsResize} onDock={wsDock}
+          <PaneGrid node={paneTree} view={paneView} activeId={activeLeaf} solo={paneTree.kind === "leaf"}
+            onSplit={wsSplit} onClose={wsClose} onSetView={wsSetView} onResize={wsResize}
             onSetActiveTab={wsSetActiveTab} onCloseTab={wsCloseTab} onAddTab={wsAddTab}
-            extDrag={tabDragView} onDropExternal={wsDropTab} zoomId={zoomedLeaf} dim={$focusDimming}
-            onFocusLeaf={(id) => (activeLeaf = id)}
-            onDragStart={(id) => (paneDrag = { id })} onDragEnd={() => (paneDrag = { id: null })} />
+            {dropHint} onTabPointerDown={paneTabPointerDown} zoomId={zoomedLeaf} dim={$focusDimming}
+            onFocusLeaf={(id) => (activeLeaf = id)} />
           </div>
         </div>
 
@@ -2013,6 +2056,12 @@
       ⊚ broadcast · click to stop
     </button>
   {/if}
+
+  {#if tabDrag}
+    <!-- Floating drag ghost: follows the cursor while a tab is being dragged
+         onto a pane (the .dropzone highlight is rendered inside the target leaf). -->
+    <div class="dragghost" style:left="{dragXY.x}px" style:top="{dragXY.y}px" aria-hidden="true">{tabDrag.label}</div>
+  {/if}
 </div>
 
 <style>
@@ -2063,6 +2112,12 @@
   .tab .x:hover { color: var(--text); }
   .dirty { display: inline-block; width: 7px; height: 7px; margin-left: 7px; border-radius: 50%;
     background: var(--accent); vertical-align: middle; }
+  /* Floating drag ghost (pointer-based tab drag). Offset off the cursor so it
+     doesn't sit under elementFromPoint hit-testing. */
+  .dragghost { position: fixed; z-index: 100; pointer-events: none; transform: translate(10px, 10px);
+    background: var(--panel); color: var(--text); border: 1px solid var(--accent); border-radius: 6px;
+    padding: 3px 9px; font-family: var(--font-ui); font-size: 11.5px; white-space: nowrap;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35); max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
   .newtab { display: flex; align-items: center; padding: 0 12px; color: var(--text3); font-size: 16px;
     -webkit-app-region: no-drag; cursor: default; }
   .newtab:hover { color: var(--text); }

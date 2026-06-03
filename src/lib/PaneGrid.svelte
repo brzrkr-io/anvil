@@ -6,18 +6,14 @@
   let {
     node,
     view,
-    drag,
     activeId = "",
     onSplit,
     onClose,
     onSetView,
     onResize,
-    onDock,
     onFocusLeaf,
-    onDragStart,
-    onDragEnd,
-    extDrag = null,
-    onDropExternal,
+    onTabPointerDown,
+    dropHint = null,
     onSetActiveTab,
     onCloseTab,
     onAddTab,
@@ -28,19 +24,17 @@
   }: {
     node: PaneNode;
     view: Snippet<[Leaf]>;
-    drag: { id: string | null };
     activeId?: string;
     onSplit: (leafId: string, edge: Edge, v: ViewKind, srcRef?: string) => void;
     onClose: (leafId: string) => void;
     onSetView: (leafId: string, v: ViewKind) => void;
     onResize: (splitId: string, index: number, deltaFrac: number) => void;
-    onDock: (dragId: string, targetId: string, edge: Edge) => void;
     onFocusLeaf?: (leafId: string) => void;
-    onDragStart: (leafId: string) => void;
-    onDragEnd: () => void;
-    // A tab dragged from the top strip into a pane quadrant (#4/#5).
-    extDrag?: { view: ViewKind; ref?: string } | null;
-    onDropExternal?: (targetLeafId: string, edge: Edge) => void;
+    // Pointer-drag a pane's own tab into another pane (drag-to-split/move, #4/#5).
+    onTabPointerDown?: (e: PointerEvent, leafId: string, index: number) => void;
+    // The pane+edge currently highlighted by an in-flight tab drag (owned by the
+    // shell's pointer-drag controller). Renders the .dropzone overlay.
+    dropHint?: { leafId: string; edge: Edge } | null;
     // Per-pane tabs (#2).
     onSetActiveTab?: (leafId: string, idx: number) => void;
     onCloseTab?: (leafId: string, idx: number) => void;
@@ -90,53 +84,36 @@
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
   }
-
-  // ── dock drop zones ──
-  let hoverEdge = $state<Edge | null>(null);
-  function edgeFromPointer(el: HTMLElement, e: MouseEvent): Edge {
-    const r = el.getBoundingClientRect();
-    const x = (e.clientX - r.left) / r.width;
-    const y = (e.clientY - r.top) / r.height;
-    const m = 0.28;
-    if (x < m) return "left";
-    if (x > 1 - m) return "right";
-    if (y < m) return "top";
-    if (y > 1 - m) return "bottom";
-    return "center";
-  }
 </script>
 
 {#if node.kind === "split"}
   {@const sp = node}
-  <div class="split {sp.dir}" bind:this={splitEl}>
+  <div class="split dir-{sp.dir}" bind:this={splitEl}>
     {#each sp.children as child, i (child.id)}
       {@const hide = zoomId && !leafIds(child).includes(zoomId)}
       <div class="cell" style="flex: {hide ? 0 : zoomId ? 1 : sp.sizes[i]} 1 0; min-width:0; min-height:0; {hide ? 'display:none;' : ''}">
-        <PaneGrid node={child} {view} {drag} {activeId} {onSplit} {onClose} {onSetView} {onResize} {onDock} {onFocusLeaf} {onDragStart} {onDragEnd} {extDrag} {onDropExternal} {onSetActiveTab} {onCloseTab} {onAddTab} {zoomId} {dim} depth={depth + 1} />
+        <PaneGrid node={child} {view} {activeId} {onSplit} {onClose} {onSetView} {onResize} {onFocusLeaf} {onTabPointerDown} {dropHint} {onSetActiveTab} {onCloseTab} {onAddTab} {zoomId} {dim} depth={depth + 1} />
       </div>
       {#if i < sp.children.length - 1 && !zoomId}
-        <div class="divider {sp.dir}" onpointerdown={(e) => startResize(e, sp, i)} role="separator" tabindex="-1"></div>
+        <div class="divider dir-{sp.dir}" onpointerdown={(e) => startResize(e, sp, i)} role="separator" tabindex="-1"></div>
       {/if}
     {/each}
   </div>
 {:else}
   {@const lf = node}
-  <div class="leaf {lf.id === activeId && !solo ? 'active' : ''}" class:dimmed={dim && lf.id !== activeId} onpointerdowncapture={() => onFocusLeaf?.(lf.id)}>
+  <div class="leaf {lf.id === activeId && !solo ? 'active' : ''}" class:dimmed={dim && lf.id !== activeId} data-leaf-id={lf.id} onpointerdowncapture={() => onFocusLeaf?.(lf.id)}>
     {#if !solo}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="phead"
-      draggable="true"
-      ondragstart={(e) => { onDragStart(lf.id); if (e.dataTransfer) { e.dataTransfer.setData('text/plain', lf.id); e.dataTransfer.effectAllowed = 'move'; } }}
-      ondragend={onDragEnd}
-    >
+    <div class="phead">
       <span class="grip">⠿</span>
       <div class="ptabs">
         {#each lf.tabs as t, i (t.id)}
-          <button class="ptab {i === lf.active ? 'on' : ''}" onclick={() => onSetActiveTab?.(lf.id, i)} title={labelOf(t.view)}>
+          <!-- Pointer-drag (not HTML5) so a tab can be dragged into another pane
+               to split/move; a sub-threshold press still selects the tab. -->
+          <button class="ptab {i === lf.active ? 'on' : ''}" onpointerdown={(e) => onTabPointerDown?.(e, lf.id, i)} onclick={() => onSetActiveTab?.(lf.id, i)} title={labelOf(t.view)}>
             {t.view === "editor" && t.ref ? t.ref.split("/").pop() : labelOf(t.view)}
             <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-            {#if lf.tabs.length > 1}<span class="ptx" onclick={(e) => { e.stopPropagation(); onCloseTab?.(lf.id, i); }}>×</span>{/if}
+            {#if lf.tabs.length > 1}<span class="ptx" onpointerdown={(e) => e.stopPropagation()} onclick={(e) => { e.stopPropagation(); onCloseTab?.(lf.id, i); }}>×</span>{/if}
           </button>
         {/each}
         <button class="ptadd" title="New tab in pane" onclick={() => onAddTab?.(lf.id)}>+</button>
@@ -150,37 +127,28 @@
       <button class="pbtn close" title="Close pane" onclick={() => onClose(lf.id)}>✕</button>
     </div>
     {/if}
-    <div
-      class="pbody"
-      role="group"
-      ondragover={(e) => { if ((drag.id && drag.id !== lf.id) || extDrag) { e.preventDefault(); hoverEdge = edgeFromPointer(e.currentTarget as HTMLElement, e); } }}
-      ondragleave={() => (hoverEdge = null)}
-      ondrop={(e) => {
-        if (hoverEdge) {
-          if (extDrag) { e.preventDefault(); onDropExternal?.(lf.id, hoverEdge); }
-          else if (drag.id && drag.id !== lf.id) { e.preventDefault(); onDock(drag.id, lf.id, hoverEdge); }
-        }
-        hoverEdge = null;
-      }}
-    >
+    <div class="pbody" role="group">
       {@render view(lf)}
-      {#if ((drag.id && drag.id !== lf.id) || extDrag) && hoverEdge}
-        <div class="dropzone {hoverEdge}"></div>
+      {#if dropHint && dropHint.leafId === lf.id}
+        <div class="dropzone {dropHint.edge}"></div>
       {/if}
     </div>
   </div>
 {/if}
 
 <style>
-  .split { display: flex; width: 100%; height: 100%; }
-  .split.row { flex-direction: row; }
-  .split.col { flex-direction: column; }
+  /* Direction modifier is `dir-row`/`dir-col`, NOT `row`/`col`: a bare `.row`
+     collides with the global list-row utility in app.css (margin + align-items:
+     center), which floated split panes inset and vertically-centered (#fill-bug). */
+  .split { display: flex; width: 100%; height: 100%; align-items: stretch; }
+  .split.dir-row { flex-direction: row; }
+  .split.dir-col { flex-direction: column; }
   .cell { display: flex; flex-direction: column; position: relative; overflow: hidden; }
   .cell > :global(.leaf), .cell > :global(.split) { flex: 1 1 0%; min-width: 0; min-height: 0; }
   .divider { flex: 0 0 auto; background: var(--border); z-index: 3; }
-  .divider.row { width: 1px; cursor: col-resize; }
-  .divider.col { height: 1px; cursor: row-resize; }
-  .divider.row::after { content: ""; position: absolute; width: 7px; margin-left: -3px; top: 0; bottom: 0; cursor: col-resize; }
+  .divider.dir-row { width: 1px; cursor: col-resize; }
+  .divider.dir-col { height: 1px; cursor: row-resize; }
+  .divider.dir-row::after { content: ""; position: absolute; width: 7px; margin-left: -3px; top: 0; bottom: 0; cursor: col-resize; }
   .divider:hover { background: var(--accent); }
 
   /* Flush panes (no card look): no border/radius, no gap — panes meet at the
