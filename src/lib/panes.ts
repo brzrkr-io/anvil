@@ -115,6 +115,28 @@ export function remapTermRefs(node: PaneNode): PaneNode {
   return { ...node, children: node.children.map(remapTermRefs) };
 }
 
+/** Advance the id counter past every numeric id suffix in a tree. Persisted
+ *  layouts mint ids (`l1`, `tab2`, `wt3`, split ids) while `_seq` counts up from
+ *  0; on the next session `_seq` resets to 0, so a fresh paneId() would reproduce
+ *  a restored id and a keyed {#each} throws `each_key_duplicate`. Call this right
+ *  after adopting any tree that wasn't minted in the current session. */
+export function seedPaneSeq(node: PaneNode): void {
+  const bump = (id?: string) => {
+    const m = id && /(\d+)$/.exec(id);
+    if (m) _seq = Math.max(_seq, Number(m[1]));
+  };
+  const walk = (n: PaneNode) => {
+    bump(n.id);
+    if (n.kind === "leaf") {
+      bump(n.ref);
+      for (const t of n.tabs) { bump(t.id); bump(t.ref); }
+    } else {
+      n.children.forEach(walk);
+    }
+  };
+  walk(node);
+}
+
 /** Map a transform over the tree, returning a new tree (structural sharing). */
 function mapTree(node: PaneNode, fn: (n: PaneNode) => PaneNode): PaneNode {
   if (node.kind === "leaf") return fn(node);

@@ -129,7 +129,7 @@
   }
   $effect(() => { if (cwd) prewarmLsp(cwd); });
   import PaneGrid from "$lib/PaneGrid.svelte";
-  import { leaf, splitLeaf, closeLeaf, resizeSplit, dockLeaf, setView as setLeafView, paneId, remapTermRefs, firstLeaf, findLeaf, balanceTree, closeOthers as closeOtherPanes, leafIds, addTab, setActiveTab, closeTab, type PaneNode, type Leaf, type ViewKind, type Edge } from "$lib/panes";
+  import { leaf, splitLeaf, closeLeaf, resizeSplit, dockLeaf, setView as setLeafView, paneId, remapTermRefs, seedPaneSeq, firstLeaf, findLeaf, balanceTree, closeOthers as closeOtherPanes, leafIds, addTab, setActiveTab, closeTab, type PaneNode, type Leaf, type ViewKind, type Edge } from "$lib/panes";
   import Palette, { type Item } from "$lib/Palette.svelte";
   import Toasts from "$lib/Toasts.svelte";
   import NotificationCenter from "$lib/NotificationCenter.svelte";
@@ -574,7 +574,7 @@
     try { txt = await navigator.clipboard.readText(); } catch { /* ignore */ }
     if (!txt) { txt = prompt("Paste a workspace layout JSON:") || ""; }
     if (!txt.trim()) return;
-    try { paneTree = remapTermRefs(JSON.parse(txt)); rail = "workspace"; toast("Layout imported", "success"); }
+    try { paneTree = remapTermRefs(JSON.parse(txt)); seedPaneSeq(paneTree); rail = "workspace"; toast("Layout imported", "success"); }
     catch { toast("Invalid layout JSON", "error"); }
   }
   function openLayoutPalette() {
@@ -583,7 +583,7 @@
     palettePlaceholder = "Load workspace layout…";
     paletteItems = names.map((n) => ({
       label: n,
-      run: () => { try { paneTree = remapTermRefs(layoutPresets[n]); rail = "workspace"; } catch { /* ignore */ } },
+      run: () => { try { paneTree = remapTermRefs(layoutPresets[n]); seedPaneSeq(paneTree); rail = "workspace"; } catch { /* ignore */ } },
     }));
     paletteOpen = true;
   }
@@ -1541,7 +1541,7 @@
     if (Array.isArray(st.recentFiles)) recentFiles = st.recentFiles;
     if (Array.isArray(st.recentWorkspaces)) recentWorkspaces = st.recentWorkspaces;
     if (st.wsSettings && typeof st.wsSettings === "object") wsSettings = st.wsSettings;
-    if (st.paneTree && typeof st.paneTree === "object") { try { paneTree = remapTermRefs(st.paneTree); } catch { /* ignore */ } }
+    if (st.paneTree && typeof st.paneTree === "object") { try { paneTree = remapTermRefs(st.paneTree); seedPaneSeq(paneTree); } catch { /* ignore */ } }
     if (typeof st.activeLeaf === "string" && findLeaf(paneTree, st.activeLeaf)) activeLeaf = st.activeLeaf;
     if (st.rail && st.rail !== "diff") rail = st.rail;
     if (typeof st.explorerOpen === "boolean") explorerOpen = st.explorerOpen;

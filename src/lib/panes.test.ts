@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   leaf, splitLeaf, closeLeaf, resizeSplit, dockLeaf, setView,
   findLeaf, leafCount, firstLeaf, balanceTree, closeOthers, leafIds,
-  addTab, setActiveTab, closeTab, type PaneNode, type SplitNode,
+  addTab, setActiveTab, closeTab, seedPaneSeq, paneId, type PaneNode, type SplitNode,
 } from "./panes";
 
 describe("tabs in panes", () => {
@@ -204,5 +204,27 @@ describe("setView / helpers", () => {
     let tree: PaneNode = leaf("term", undefined, "A");
     tree = splitLeaf(tree, "A", "right", "files").tree;
     expect(firstLeaf(tree).id).toBe("A");
+  });
+});
+
+describe("seedPaneSeq — restored ids never collide with fresh ones", () => {
+  it("advances paneId past the largest numeric id in a restored tree", () => {
+    // A tree as if restored from a prior session: ids minted while _seq climbed.
+    const restored: PaneNode = {
+      kind: "split", dir: "row", id: "s40", sizes: [0.5, 0.5],
+      children: [
+        { kind: "leaf", id: "l12", view: "term", ref: "wt7", active: 0,
+          tabs: [{ id: "tab33", view: "term", ref: "wt7" }] },
+        { kind: "leaf", id: "l9", view: "files", active: 0,
+          tabs: [{ id: "tab5", view: "files" }] },
+      ],
+    } as PaneNode;
+    seedPaneSeq(restored);
+    // The next 20 minted ids must all carry a suffix greater than 40 (the max
+    // seen), so none can duplicate a restored leaf/tab/split id.
+    for (let i = 0; i < 20; i++) {
+      const n = Number(/(\d+)$/.exec(paneId("l"))![1]);
+      expect(n).toBeGreaterThan(40);
+    }
   });
 });
