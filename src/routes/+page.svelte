@@ -1835,7 +1835,7 @@
             <div class="pane-view">
             {#key lf.tabs[lf.active]?.id}
             {#if lf.view === "term"}
-              <Terminal id={lf.ref ?? lf.id} {cwd} shell={termShells[lf.ref ?? ""] ?? ""} active={rail === "workspace"} />
+              <Terminal id={lf.ref ?? lf.id} {cwd} shell={termShells[lf.ref ?? ""] ?? ""} active={rail === "workspace" && lf.id === activeLeaf} />
             {:else if lf.view === "files"}
               {#key cwd}<FileBrowser bind:path={cwd} onOpenFile={openInEditor} />{/key}
             {:else if lf.view === "scm"}
