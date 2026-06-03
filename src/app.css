@@ -314,7 +314,7 @@ body {
   background: var(--text3); opacity: 0.5; }
 .tabs .spacer { flex: 1; }
 
-.main { flex: 1; display: flex; min-height: 0; position: relative; }
+.main { flex: 1; display: flex; min-height: 0; min-width: 0; position: relative; overflow: hidden; }
 
 /* Auto-hide activity rail: float it off the left edge and slide it back on when
    the pointer hits the hot-zone or the rail itself. Content reclaims the space. */
@@ -385,7 +385,7 @@ body {
 .row .ic { width: 13px; color: var(--text2); font-size: 11px; flex: 0 0 auto; }
 .row .meta { margin-left: auto; color: var(--text3); font-size: 10.5px; }
 
-.content { flex: 1; min-width: 0; position: relative; display: flex; flex-direction: column; background: color-mix(in srgb, var(--bg) calc(var(--win-alpha) * 100%), transparent); }
+.content { flex: 1; min-width: 0; min-height: 0; position: relative; display: flex; flex-direction: column; overflow: hidden; background: color-mix(in srgb, var(--bg) calc(var(--win-alpha) * 100%), transparent); }
 /* Drag-to-dock: edge drop zones over the main content while a tab is dragged. */
 .dockzones { position: absolute; inset: 0; z-index: 40; pointer-events: none; }
 .dockzones .dz { position: absolute; pointer-events: auto; border-radius: 8px; transition: background 0.1s, box-shadow 0.1s; }
