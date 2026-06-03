@@ -57,7 +57,7 @@ pub(crate) fn shell_path() -> &'static str {
 
 /// Resolve the login shell's environment once. A Finder/Dock-launched GUI app
 /// gets a minimal env, so rc-defined vars the CLIs rely on (KUBECONFIG,
-/// AWS_REGION, DOCKER_HOST, HTTPS_PROXY, …) are missing. Capture `env` from a
+/// `AWS_REGION`, `DOCKER_HOST`, `HTTPS_PROXY`, …) are missing. Capture `env` from a
 /// login shell and keep every var EXCEPT PATH (owned by `shell_path`) and a few
 /// volatile ones that shouldn't be carried into child processes.
 fn shell_env() -> &'static Vec<(String, String)> {

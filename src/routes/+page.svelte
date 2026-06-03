@@ -1902,12 +1902,14 @@
             {/key}
             </div>
           {/snippet}
+          <div class="grid-fill">
           <PaneGrid node={paneTree} view={paneView} drag={paneDrag} activeId={activeLeaf} solo={paneTree.kind === "leaf"}
             onSplit={wsSplit} onClose={wsClose} onSetView={wsSetView} onResize={wsResize} onDock={wsDock}
             onSetActiveTab={wsSetActiveTab} onCloseTab={wsCloseTab} onAddTab={wsAddTab}
             extDrag={tabDragView} onDropExternal={wsDropTab} zoomId={zoomedLeaf} dim={$focusDimming}
             onFocusLeaf={(id) => (activeLeaf = id)}
             onDragStart={(id) => (paneDrag = { id })} onDragEnd={() => (paneDrag = { id: null })} />
+          </div>
         </div>
       {:else if rail === "settings"}
         <div class="view">{#await Settings() then M}<M.default />{/await}</div>
@@ -2114,7 +2116,13 @@
   .bdock-head .x:hover { color: var(--text); }
   .bdock-term { flex: 1; min-height: 0; padding: 4px 8px; }
   .bdock-term.hidden { display: none; }
-  .view.ws { padding: 0; gap: 0; }
+  .view.ws { padding: 0; gap: 0; position: relative; }
+  /* Pin the pane grid to a definite-size box. WebKit won't resolve height:100%
+     against a flex-stretched (indefinite) parent, so nested split panes floated
+     inset with open space. absolute inset:0 gives the grid a definite frame; the
+     flex .cell/.leaf chain then fills it edge-to-edge. */
+  .grid-fill { position: absolute; inset: 0; display: flex; }
+  .grid-fill > :global(.split), .grid-fill > :global(.leaf) { flex: 1 1 auto; min-width: 0; min-height: 0; }
   /* Every pane's content fills the pane (was rendering content-sized → a tiny
      floating card for non-editor views like DevOps/Kube). Force the rendered
      view component to flex-fill. */

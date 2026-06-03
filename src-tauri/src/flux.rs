@@ -75,7 +75,7 @@ fn flux_kind(kind: &str) -> Result<Vec<&'static str>, String> {
 }
 
 /// `flux reconcile <kind> <name> -n <ns> [--with-source]` — pull the latest from
-/// the source and re-apply now (the GitOps "force sync"). Non-destructive.
+/// the source and re-apply now (the `GitOps` "force sync"). Non-destructive.
 #[tauri::command]
 pub async fn flux_reconcile(
     kind: String,

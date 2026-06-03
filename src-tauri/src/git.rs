@@ -35,7 +35,7 @@ pub async fn git_log(
             args.push("--".into());
             args.push(p);
         }
-        let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let refs: Vec<&str> = args.iter().map(std::string::String::as_str).collect();
         git(&cwd, &refs)
     })
     .await
@@ -43,7 +43,7 @@ pub async fn git_log(
 }
 
 /// Per-commit insertion/deletion totals for the history view (Terax-style
-/// `+N -N` column). Mirrors git_log's filters so the commit set matches.
+/// `+N -N` column). Mirrors `git_log`'s filters so the commit set matches.
 /// Output is `--shortstat` interleaved with a `\x01<shorthash>` marker per
 /// commit; the frontend sums them by hash.
 #[tauri::command]
@@ -72,7 +72,7 @@ pub async fn git_log_stats(
             args.push("--".into());
             args.push(p);
         }
-        let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let refs: Vec<&str> = args.iter().map(std::string::String::as_str).collect();
         git(&cwd, &refs)
     })
     .await
@@ -97,7 +97,7 @@ pub async fn git_log_range(cwd: String, range: String) -> Result<String, String>
 }
 
 /// #21 Run a non-interactive rebase from a UI-built todo. The todo is dropped in
-/// as the rebase sequence via GIT_SEQUENCE_EDITOR (supports pick/fixup/drop +
+/// as the rebase sequence via `GIT_SEQUENCE_EDITOR` (supports pick/fixup/drop +
 /// reordering — no message editors open, so it never blocks). On failure the
 /// rebase is aborted so the tree is left clean. (Unix shells; Windows pending.)
 #[tauri::command]
@@ -147,7 +147,7 @@ pub async fn git_checkout_side(cwd: String, path: String, side: String) -> Resul
     .map_err(|e| e.to_string())?
 }
 
-/// #15 GitOps manifest → PR: stage the given paths onto a (new or existing)
+/// #15 `GitOps` manifest → PR: stage the given paths onto a (new or existing)
 /// branch, commit, and push — the declarative alternative to `kubectl apply`.
 /// The frontend follows up with `gh_pr_create` to open the review. Never
 /// touches the cluster; the change lands in git and reconciles from there.
@@ -334,8 +334,7 @@ pub async fn git_repo_features(cwd: String) -> Result<String, String> {
             f.push("submodules");
         }
         if std::fs::read_to_string(format!("{cwd}/.gitattributes"))
-            .map(|s| s.contains("filter=lfs"))
-            .unwrap_or(false)
+            .is_ok_and(|s| s.contains("filter=lfs"))
         {
             f.push("lfs");
         }
@@ -617,7 +616,7 @@ pub async fn git_stash_push(
                 args.push(p);
             }
         }
-        let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let refs: Vec<&str> = args.iter().map(std::string::String::as_str).collect();
         git(&cwd, &refs)
     })
     .await

@@ -1,5 +1,5 @@
 /// Instant Prometheus query (#77) — native HTTP, not an iframe. Returns the raw
-/// JSON from `/api/v1/query`. no_proxy so it works behind the corporate proxy.
+/// JSON from `/api/v1/query`. `no_proxy` so it works behind the corporate proxy.
 #[tauri::command]
 pub async fn prom_query(base: String, query: String) -> Result<String, String> {
     let client = crate::shared::http();
@@ -15,7 +15,7 @@ pub async fn prom_query(base: String, query: String) -> Result<String, String> {
 }
 
 /// Range Prometheus query (#55) for sparklines — `/api/v1/query_range` over the
-/// last `minutes`, with a step sized to ~60 points. Returns raw JSON. no_proxy.
+/// last `minutes`, with a step sized to ~60 points. Returns raw JSON. `no_proxy`.
 #[tauri::command]
 pub async fn prom_query_range(base: String, query: String, minutes: u64) -> Result<String, String> {
     let now = std::time::SystemTime::now()
@@ -62,7 +62,7 @@ fn req_err(e: reqwest::Error) -> String {
 
 /// List Grafana dashboards via the search API. `token` is a Grafana API token /
 /// service-account token (Bearer). Returns the raw JSON array of dashboards
-/// (title, uid, url, folderTitle, tags…). no_proxy.
+/// (title, uid, url, folderTitle, tags…). `no_proxy`.
 #[tauri::command]
 pub async fn grafana_dashboards(base: String, token: String) -> Result<String, String> {
     let url = format!(
@@ -86,9 +86,9 @@ pub async fn grafana_dashboards(base: String, token: String) -> Result<String, S
     r.text().await.map_err(|e| e.to_string())
 }
 
-/// SigNoz query — POST a builder query to `/api/v3/query_range`. `body` is the
-/// JSON request the frontend builds (logs/traces/metrics); `api_key` is a SigNoz
-/// API key (SIGNOZ-API-KEY header). Returns raw JSON. no_proxy.
+/// `SigNoz` query — POST a builder query to `/api/v3/query_range`. `body` is the
+/// JSON request the frontend builds (logs/traces/metrics); `api_key` is a `SigNoz`
+/// API key (SIGNOZ-API-KEY header). Returns raw JSON. `no_proxy`.
 #[tauri::command]
 pub async fn signoz_query(base: String, api_key: String, body: String) -> Result<String, String> {
     let url = format!("{}/api/v3/query_range", base.trim_end_matches('/'));
@@ -112,9 +112,9 @@ pub async fn signoz_query(base: String, api_key: String, body: String) -> Result
     Ok(text)
 }
 
-/// SigNoz services overview — POST `/api/v1/services` with a `{start,end,tags}`
+/// `SigNoz` services overview — POST `/api/v1/services` with a `{start,end,tags}`
 /// window (last `mins`, epoch nanoseconds). Returns the raw JSON array of
-/// services (serviceName, p99, errorRate, callRate…). no_proxy.
+/// services (serviceName, p99, errorRate, callRate…). `no_proxy`.
 #[tauri::command]
 pub async fn signoz_services(base: String, api_key: String, mins: u64) -> Result<String, String> {
     let now = std::time::SystemTime::now()

@@ -249,7 +249,7 @@ pub async fn gh_workflow_list(cwd: String) -> Result<String, String> {
     .map_err(|e| e.to_string())?
 }
 
-/// Trigger a workflow_dispatch run for `workflow` (name or file) on `git_ref`.
+/// Trigger a `workflow_dispatch` run for `workflow` (name or file) on `git_ref`.
 #[tauri::command]
 pub async fn gh_workflow_run(
     cwd: String,
@@ -348,7 +348,7 @@ pub async fn glab_pipeline_get(cwd: String, id: String) -> Result<String, String
     .map_err(|e| e.to_string())?
 }
 
-/// GitLab pipelines as JSON via `glab api` (25 most recent, sorted by updated_at desc).
+/// GitLab pipelines as JSON via `glab api` (25 most recent, sorted by `updated_at` desc).
 #[tauri::command]
 pub async fn glab_pipelines_json(cwd: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {

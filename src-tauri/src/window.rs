@@ -37,7 +37,7 @@ pub fn open_url_window(app: tauri::AppHandle, url: String) -> Result<(), String>
 /// (e.g. "grafana", "signoz"). If the window already exists, navigate it instead
 /// of opening a new one — so the user logs in to Grafana/SSO ONCE and every
 /// later dashboard reuses that authenticated session (cookies persist in the
-/// shared WKWebsiteDataStore across windows + restarts).
+/// shared `WKWebsiteDataStore` across windows + restarts).
 #[tauri::command]
 pub fn open_named_window(app: tauri::AppHandle, url: String, label: String) -> Result<(), String> {
     let u = tauri::Url::parse(&url).map_err(|e| e.to_string())?;
@@ -56,7 +56,7 @@ pub fn open_named_window(app: tauri::AppHandle, url: String, label: String) -> R
 }
 
 /// Swap the macOS window vibrancy material to match the active theme's light/dark
-/// mode. Dark themes get a dark frosted material (HudWindow); light themes get
+/// mode. Dark themes get a dark frosted material (`HudWindow`); light themes get
 /// Sidebar. Without this, the fixed light "sidebar" material washes out dark
 /// themes when window translucency is on. Called from the frontend on theme change.
 #[tauri::command]

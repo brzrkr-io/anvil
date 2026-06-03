@@ -149,7 +149,7 @@ pub async fn terraform_apply(cwd: String) -> Result<String, String> {
     .map_err(|e| e.to_string())?
 }
 
-/// Find IaC stacks under `cwd`, each classified by kind so the UI can pick the
+/// Find `IaC` stacks under `cwd`, each classified by kind so the UI can pick the
 /// right command. Returns JSON
 /// `[{"path":"infra/prod","kind":"tg-unit","runall":true}, ...]`, relative to cwd.
 /// `runall` = this terragrunt dir has descendant units, so `run --all` applies.
@@ -188,7 +188,7 @@ pub async fn tf_discover(cwd: String) -> Result<String, String> {
     .map_err(|e| e.to_string())?
 }
 
-/// Detect which IaC tooling fits this dir: presence of terragrunt.hcl picks
+/// Detect which `IaC` tooling fits this dir: presence of terragrunt.hcl picks
 /// terragrunt, otherwise terraform. Also reports which binaries are on PATH.
 #[tauri::command]
 pub async fn tf_detect(cwd: String) -> Result<String, String> {
@@ -201,8 +201,7 @@ pub async fn tf_detect(cwd: String) -> Result<String, String> {
             crate::shared::command(p)
                 .arg("version")
                 .output()
-                .map(|o| o.status.success() || !o.stdout.is_empty())
-                .unwrap_or(false)
+                .is_ok_and(|o| o.status.success() || !o.stdout.is_empty())
         };
         let prefer = if has_tg { "terragrunt" } else { "terraform" };
         // JSON so the frontend can pick a default and gray out missing tools.

@@ -175,12 +175,8 @@
   .split { display: flex; width: 100%; height: 100%; }
   .split.row { flex-direction: row; }
   .split.col { flex-direction: column; }
-  /* Absolutely fill the cell. Flex/height:100% kept failing to resolve against a
-     flex-stretched (indefinite) parent in WebKit, so the pane floated centered
-     with open space. position:absolute + inset:0 pins it edge-to-edge — it
-     physically cannot float or leave a gap. */
-  .cell { position: relative; overflow: hidden; }
-  .cell > :global(.leaf), .cell > :global(.split) { position: absolute; inset: 0; min-width: 0; min-height: 0; }
+  .cell { display: flex; flex-direction: column; position: relative; overflow: hidden; }
+  .cell > :global(.leaf), .cell > :global(.split) { flex: 1 1 0%; min-width: 0; min-height: 0; }
   .divider { flex: 0 0 auto; background: var(--border); z-index: 3; }
   .divider.row { width: 1px; cursor: col-resize; }
   .divider.col { height: 1px; cursor: row-resize; }

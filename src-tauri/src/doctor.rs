@@ -64,15 +64,15 @@ fn probe_kubectl() -> Probe {
         } else {
             String::new()
         },
-        fix_cmd: if !installed {
-            "brew install kubernetes-cli".into()
-        } else {
+        fix_cmd: if installed {
             "kubectl config get-contexts".into()
-        },
-        fix_label: if !installed {
-            "Install".into()
         } else {
+            "brew install kubernetes-cli".into()
+        },
+        fix_label: if installed {
             "Choose context".into()
+        } else {
+            "Install".into()
         },
     }
 }
@@ -116,15 +116,15 @@ fn probe_aws() -> Probe {
         } else {
             String::new()
         },
-        fix_cmd: if !installed {
+        fix_cmd: if installed {
+            "aws sso login".into()
+        } else {
             "brew install awscli".into()
-        } else {
-            "aws sso login".into()
         },
-        fix_label: if !installed {
-            "Install".into()
-        } else {
+        fix_label: if installed {
             "aws sso login".into()
+        } else {
+            "Install".into()
         },
     }
 }
@@ -155,15 +155,15 @@ fn probe_gh() -> Probe {
         } else {
             String::new()
         },
-        fix_cmd: if !installed {
+        fix_cmd: if installed {
+            "gh auth login".into()
+        } else {
             "brew install gh".into()
-        } else {
-            "gh auth login".into()
         },
-        fix_label: if !installed {
-            "Install".into()
-        } else {
+        fix_label: if installed {
             "gh auth login".into()
+        } else {
+            "Install".into()
         },
     }
 }
@@ -185,15 +185,15 @@ fn probe_glab() -> Probe {
         } else {
             String::new()
         },
-        fix_cmd: if !installed {
+        fix_cmd: if installed {
+            "glab auth login".into()
+        } else {
             "brew install glab".into()
-        } else {
-            "glab auth login".into()
         },
-        fix_label: if !installed {
-            "Install".into()
-        } else {
+        fix_label: if installed {
             "glab auth login".into()
+        } else {
+            "Install".into()
         },
     }
 }
@@ -232,9 +232,7 @@ fn probe_tool(id: &str, label: &str, prog: &str, args: &[&str], brew: &str) -> P
 /// with `command -v` (fast, no spawn of the server itself) and offer its install
 /// command as the one-click fix.
 fn probe_server(id: &str, label: &str, bin: &str, install: &str) -> Probe {
-    let present = run("sh", &["-lc", &format!("command -v {bin}")], 4)
-        .map(|(ok, _)| ok)
-        .unwrap_or(false);
+    let present = run("sh", &["-lc", &format!("command -v {bin}")], 4).is_some_and(|(ok, _)| ok);
     Probe {
         id: id.into(),
         label: label.into(),
@@ -295,15 +293,15 @@ fn probe_docker() -> Probe {
         } else {
             String::new()
         },
-        fix_cmd: if !installed {
-            String::new()
-        } else {
+        fix_cmd: if installed {
             "open -a Docker".into()
-        },
-        fix_label: if !installed {
-            String::new()
         } else {
+            String::new()
+        },
+        fix_label: if installed {
             "Start Docker".into()
+        } else {
+            String::new()
         },
     }
 }

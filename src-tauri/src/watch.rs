@@ -183,7 +183,7 @@ fn parse_flux(raw: &str) -> (Vec<FluxRow>, bool) {
                     .unwrap_or("")
                     .to_string(),
                 source,
-                deps: sp["dependsOn"].as_array().map(|a| a.len()).unwrap_or(0),
+                deps: sp["dependsOn"].as_array().map_or(0, std::vec::Vec::len),
                 depends_on: sp["dependsOn"]
                     .as_array()
                     .map(|a| {
@@ -251,7 +251,7 @@ fn snapshot_flux(tab: &str) -> Value {
     }
 }
 
-/// Cluster-wide failing count for the rail badge (Kustomizations + HelmReleases).
+/// Cluster-wide failing count for the rail badge (Kustomizations + `HelmReleases`).
 fn snapshot_flux_health() -> Value {
     let mut failing = 0usize;
     let mut present = false;
@@ -336,15 +336,14 @@ pub fn kube_watch_start(app: AppHandle, kind: String, interval_ms: u64) {
             let has_err = payload
                 .get("error")
                 .and_then(|e| e.as_str())
-                .map(|s| !s.is_empty())
-                .unwrap_or(false);
+                .is_some_and(|s| !s.is_empty());
             let h = hash_payload(&payload);
-            if h != last {
+            if h == last {
+                idle = (idle + 1).min(2);
+            } else {
                 last = h;
                 idle = 0;
                 let _ = app.emit(&topic, payload);
-            } else {
-                idle = (idle + 1).min(2);
             }
             // Two adaptive slowdowns, error wins:
             //  - errors: back off hard (up to 16×, cap 60s) so a dead cluster

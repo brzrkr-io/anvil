@@ -409,7 +409,7 @@ fn aws_profile_sso_session(cfg: &str, profile: &str) -> String {
 }
 
 /// Inspect one kubeconfig context: which cloud, and (for AWS) the profile /
-/// region / cluster / sso_session its exec-credential uses, plus whether that
+/// region / cluster / `sso_session` its exec-credential uses, plus whether that
 /// identity currently has valid credentials.
 #[tauri::command]
 pub async fn kube_context_cloud(context: String) -> Result<ContextCloud, String> {
@@ -477,9 +477,7 @@ pub async fn kube_context_cloud(context: String) -> Result<ContextCloud, String>
             if !cc.profile.is_empty() {
                 c.args(["--profile", &cc.profile]);
             }
-            cc.authed = crate::shared::exec_capture(c, 8)
-                .map(|o| o.status.success())
-                .unwrap_or(false);
+            cc.authed = crate::shared::exec_capture(c, 8).is_ok_and(|o| o.status.success());
         }
         Ok(cc)
     })

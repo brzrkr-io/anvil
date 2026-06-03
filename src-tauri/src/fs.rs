@@ -19,7 +19,7 @@ pub async fn list_dir(path: String) -> Result<Vec<Entry>, String> {
             if name.starts_with('.') {
                 continue;
             }
-            let is_dir = ent.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            let is_dir = ent.file_type().is_ok_and(|t| t.is_dir());
             out.push(Entry {
                 path: ent.path().to_string_lossy().into_owned(),
                 name,
@@ -84,7 +84,7 @@ fn walk(root: &std::path::Path, base: &std::path::Path, out: &mut Vec<String>, c
             continue;
         }
         let p = ent.path();
-        let is_dir = ent.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        let is_dir = ent.file_type().is_ok_and(|t| t.is_dir());
         if is_dir {
             if SKIP_DIRS.contains(&name.as_str()) {
                 continue;
@@ -135,8 +135,7 @@ pub async fn file_mtime(path: String) -> u64 {
             .and_then(|m| m.modified())
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
+            .map_or(0, |d| d.as_secs())
     })
     .await
     .unwrap_or(0)
@@ -148,8 +147,8 @@ pub fn home_dir() -> String {
 }
 
 /// Native folder picker (File ▸ Open Folder…). Returns the chosen path or null.
-/// Left synchronous: rfd::FileDialog dispatches to AppKit's NSOpenPanel, which
-/// must run on the main thread. Moving it into spawn_blocking would panic.
+/// Left synchronous: `rfd::FileDialog` dispatches to `AppKit`'s `NSOpenPanel`, which
+/// must run on the main thread. Moving it into `spawn_blocking` would panic.
 #[tauri::command]
 pub fn pick_folder(start: Option<String>) -> Option<String> {
     let mut d = rfd::FileDialog::new();
@@ -160,7 +159,7 @@ pub fn pick_folder(start: Option<String>) -> Option<String> {
 }
 
 /// Native file picker (File ▸ Open File…). Returns the chosen path or null.
-/// Left synchronous: same main-thread requirement as pick_folder.
+/// Left synchronous: same main-thread requirement as `pick_folder`.
 #[tauri::command]
 pub fn pick_file(start: Option<String>) -> Option<String> {
     let mut d = rfd::FileDialog::new();

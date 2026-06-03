@@ -22,7 +22,7 @@ struct LspHandle {
 
 impl LspHandle {
     /// Cheap clone of the shared channels so a request can run without holding
-    /// the LspState map lock for the whole round-trip.
+    /// the `LspState` map lock for the whole round-trip.
     fn share(&self) -> LspHandle {
         LspHandle {
             stdin: self.stdin.clone(),
@@ -134,12 +134,11 @@ fn request_blocking(
     h.pending.lock().unwrap().insert(id, tx);
     let msg = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
     write_message(&mut h.stdin.lock().unwrap(), &msg).map_err(|e| e.to_string())?;
-    match rx.recv_timeout(Duration::from_secs(secs)) {
-        Ok(v) => Ok(v),
-        Err(_) => {
-            h.pending.lock().unwrap().remove(&id);
-            Err(format!("lsp request '{method}' timed out"))
-        }
+    if let Ok(v) = rx.recv_timeout(Duration::from_secs(secs)) {
+        Ok(v)
+    } else {
+        h.pending.lock().unwrap().remove(&id);
+        Err(format!("lsp request '{method}' timed out"))
     }
 }
 
@@ -185,7 +184,7 @@ pub fn lsp_start(
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
         while let Some(msg) = read_message(&mut reader) {
-            if let Some(id) = msg.get("id").and_then(|v| v.as_i64()) {
+            if let Some(id) = msg.get("id").and_then(serde_json::Value::as_i64) {
                 if msg.get("method").is_some() {
                     // Server→client request: answer the few that block startup.
                     let resp = json!({ "jsonrpc": "2.0", "id": id, "result": null });
