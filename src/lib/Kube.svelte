@@ -109,8 +109,8 @@
   async function refreshPods() {
     try {
       const p = await invoke<PodPayload>("kube_snapshot", { kind: "pods" });
-      livePods = p.rows; k8sErr = p.error;
-      writeCache("kube-pods", p.rows);
+      livePods = Array.isArray(p.rows) ? p.rows : []; k8sErr = p.error ?? "";
+      writeCache("kube-pods", livePods);
     } catch {
       try {
         const text = await invoke<string>("kube_pods", { context: "" });
@@ -284,9 +284,9 @@
     refreshPf();
     try {
       unlistenPods = await listen<PodPayload>("kube://pods", (e) => {
-        livePods = e.payload.rows;
-        k8sErr = e.payload.error;
-        writeCache("kube-pods", e.payload.rows);
+        livePods = Array.isArray(e.payload?.rows) ? e.payload.rows : [];
+        k8sErr = e.payload?.error ?? "";
+        writeCache("kube-pods", livePods);
       });
     } catch { /* no Tauri event bus (e.g. browser preview) — snapshot still works */ }
   });

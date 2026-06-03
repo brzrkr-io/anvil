@@ -25,3 +25,13 @@ describe("cache", () => {
     expect(readCache("b")).toBe(2);
   });
 });
+
+import { readCache as rc } from "./cache.js";
+describe("cache versioning (shape-change safety)", () => {
+  beforeEach(() => localStorage.clear());
+  it("never returns a value stored under the legacy (unversioned) prefix", () => {
+    // Simulates the pre-migration pods cache (raw text under the old key).
+    localStorage.setItem("anvil-cache:kube-pods", JSON.stringify("NAMESPACE NAME ... text"));
+    expect(rc("kube-pods")).toBeNull();
+  });
+});

@@ -71,7 +71,7 @@
       if (t !== tab) return;
       // Per-tab presence only — a missing Images/Sources CRD must NOT hide the
       // whole Flux panel (that's `present`, owned by the health watcher).
-      tabPresent = p.present; items = p.rows; err = p.error; loading = false;
+      tabPresent = p.present; items = Array.isArray(p.rows) ? p.rows : []; err = p.error ?? ""; loading = false;
     } catch (e) { err = String(e); loading = false; }
   }
 
@@ -84,7 +84,7 @@
     try {
       unlistenList = await listen<FluxListPayload>(`kube://flux:${t}`, (e) => {
         if (watchedTab !== t) return;
-        tabPresent = e.payload.present; items = e.payload.rows; err = e.payload.error;
+        tabPresent = e.payload?.present ?? true; items = Array.isArray(e.payload?.rows) ? e.payload.rows : []; err = e.payload?.error ?? "";
         loading = false;
       });
     } catch { /* no Tauri event bus (browser preview) */ }
