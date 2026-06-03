@@ -27,6 +27,7 @@
     message: string;
     source: string; // sourceRef name (which Git/OCI/Helm source it reconciles from)
     deps: number;   // count of dependsOn entries
+    dependsOn?: string[]; // names of the objects this one waits on (#29)
   }
 
   let tab = $state<Tab>("kustomizations");
@@ -219,7 +220,7 @@
               <span class="fx-name" title={it.message}>{it.name}</span>
               <span class="fx-ns">{it.ns}</span>
               {#if it.source && !readonly}<span class="fx-src" title="reconciles from source: {it.source}">← {it.source}</span>{/if}
-              {#if it.deps}<span class="fx-deps" title="{it.deps} dependsOn">⇲{it.deps}</span>{/if}
+              {#if it.deps}<span class="fx-deps" title={it.dependsOn?.length ? `depends on: ${it.dependsOn.join(", ")}` : `${it.deps} dependsOn`}>⇲ {it.dependsOn?.length ? it.dependsOn.join(", ") : it.deps}</span>{/if}
               {#if readonly}<span class="fx-k">{it.apiKind}</span>{/if}
               {#if it.ready === "fail" && it.message}
                 <span class="fx-msg" title={it.message}>{oneLine(it.message)}</span>
@@ -277,7 +278,8 @@
   .fx-ns { color: var(--text3); font-size: 11px; }
   .fx-k { color: var(--accent); font-size: 10px; font-family: var(--font-mono); }
   .fx-src { color: var(--text3); font-size: 10px; font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 130px; }
-  .fx-deps { color: var(--status-trace); font-size: 9.5px; font-family: var(--font-mono); }
+  .fx-deps { color: var(--status-trace); font-size: 9.5px; font-family: var(--font-mono);
+    max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; }
   .fx-rev { color: var(--text2); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
   .fx-msg { flex: 1; min-width: 0; color: var(--status-failure); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .fx-fail-chip { color: var(--red); font-size: 11px; font-family: var(--font-ui); padding: 1px 7px; border-radius: 9px;

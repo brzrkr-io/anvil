@@ -108,6 +108,8 @@ struct FluxRow {
     message: String,
     source: String,
     deps: usize,
+    #[serde(rename = "dependsOn")]
+    depends_on: Vec<String>,
 }
 
 fn flux_absent(raw: &str) -> bool {
@@ -182,6 +184,14 @@ fn parse_flux(raw: &str) -> (Vec<FluxRow>, bool) {
                     .to_string(),
                 source,
                 deps: sp["dependsOn"].as_array().map(|a| a.len()).unwrap_or(0),
+                depends_on: sp["dependsOn"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|d| d["name"].as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             }
         })
         .collect();
