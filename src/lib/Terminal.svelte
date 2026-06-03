@@ -258,6 +258,9 @@
           sendInput(key.repeat(Math.min(n, 8)));
         } else {
           term.scrollLines(dir * n);
+          // Force a repaint — the WebGL renderer can skip redrawing on a
+          // programmatic scroll, which looks like "scroll does nothing".
+          term.refresh(0, term.rows - 1);
         }
       } catch { /* ignore */ }
     };
