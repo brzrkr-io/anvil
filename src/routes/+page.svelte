@@ -1852,7 +1852,7 @@
         <div class="view" style:display={rail === "search" ? "block" : "none"}>{#key cwd}{#await SearchPanel() then M}<M.default root={cwd} onOpen={(p) => openInEditor(p)} />{/await}{/key}</div>
       {/if}
       {#if mountedRails.k8s}
-        <div class="view" style:display={rail === "k8s" ? "block" : "none"}>{#key cwd}{#await Kube() then M}<M.default {cwd} active={rail === "k8s"} onRunCommand={sendToTerm} onHealth={(n) => (kubeFails = n)} onInvestigate={investigate} onCheckConnections={() => (doctorOpen = true)} />{/await}{/key}</div>
+        <div class="view" style:display={rail === "k8s" ? "block" : "none"}>{#key cwd}{#await Kube() then M}<M.default {cwd} active={rail === "k8s"} onRunCommand={sendToTerm} onHealth={(n) => (kubeFails = n)} onInvestigate={investigate} onCheckConnections={() => (doctorOpen = true)} />{:catch e}<div class="view-err">Kubernetes view failed to load: {e}</div>{/await}{/key}</div>
       {/if}
       {#if mountedRails.ci}
         <div class="view" style:display={rail === "ci" ? "block" : "none"}>{#key cwd}{#await CI() then M}<M.default {cwd} active={rail === "ci"} onRunCommand={sendToTerm} onInvestigate={investigate} />{/await}{/key}</div>
