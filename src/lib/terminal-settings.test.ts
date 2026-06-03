@@ -126,10 +126,10 @@ describe("setTermScrollback — clamp + persist", () => {
     expect(localStorage.getItem("anvil-term-scrollback")).toBe("0");
   });
 
-  it("clamps above 200000 to 200000", () => {
+  it("clamps above the ceiling to 500000", () => {
     setTermScrollback(999999);
-    expect(get(termScrollback)).toBe(200000);
-    expect(localStorage.getItem("anvil-term-scrollback")).toBe("200000");
+    expect(get(termScrollback)).toBe(500000);
+    expect(localStorage.getItem("anvil-term-scrollback")).toBe("500000");
   });
 
   it("persists a typical value", () => {
