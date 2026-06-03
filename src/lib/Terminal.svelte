@@ -204,30 +204,35 @@
     };
     term.onData(sendInput);
 
-    // Mouse-wheel scrolling inside full-screen TUI apps (Claude Code, hermes,
-    // vim, less, man). In the alternate screen there is no scrollback buffer,
-    // so a wheel notch does nothing by default. When the app hasn't enabled its
-    // own mouse tracking, translate the wheel into arrow-key presses so the
-    // app scrolls its own view — matching iTerm/kitty "alternate scroll".
+    // Mouse-wheel scrolling — handled explicitly so it works reliably regardless
+    // of zoom transforms / renderer quirks (xterm's built-in viewport scroll was
+    // unreliable here). Normal screen → scroll the scrollback buffer directly.
+    // Alternate screen (Claude Code, hermes, vim, less) → translate to arrow
+    // keys so the full-screen app scrolls its own view (iTerm/kitty "alt scroll")
+    // — unless the app has grabbed the mouse (then let it have the raw event,
+    // Shift overrides to force-scroll).
     let wheelAccum = 0;
     host.addEventListener(
       "wheel",
       (e: WheelEvent) => {
         const modes = (term as unknown as { modes?: { mouseTrackingMode?: string; applicationCursorKeysMode?: boolean } }).modes;
         const onAlt = term.buffer.active.type === "alternate";
-        // Normal screen → let xterm's native scrollback handle it.
-        // Mouse tracking on → the app wants the raw wheel events; don't intercept.
-        if (!onAlt || (modes?.mouseTrackingMode && modes.mouseTrackingMode !== "none")) return;
+        const mouseOn = !!(modes?.mouseTrackingMode && modes.mouseTrackingMode !== "none");
+        if (mouseOn && !e.shiftKey) return; // app wants the wheel
         e.preventDefault();
-        const PX_PER_LINE = e.deltaMode === 1 ? 1 : 24; // line vs pixel delta
+        const PX_PER_LINE = e.deltaMode === 1 ? 1 : e.deltaMode === 2 ? Math.max(1, term.rows) : 24;
         wheelAccum += e.deltaY / PX_PER_LINE;
-        const dir = wheelAccum >= 0 ? 1 : -1; // +1 = scroll down
+        const dir = wheelAccum >= 0 ? 1 : -1; // +1 = scroll down / toward newest
         const n = Math.floor(Math.abs(wheelAccum));
         if (!n) return;
         wheelAccum -= dir * n;
-        const appCursor = !!modes?.applicationCursorKeysMode;
-        const key = dir > 0 ? (appCursor ? "\x1bOB" : "\x1b[B") : appCursor ? "\x1bOA" : "\x1b[A";
-        sendInput(key.repeat(Math.min(n, 8)));
+        if (onAlt) {
+          const appCursor = !!modes?.applicationCursorKeysMode;
+          const key = dir > 0 ? (appCursor ? "\x1bOB" : "\x1b[B") : appCursor ? "\x1bOA" : "\x1b[A";
+          sendInput(key.repeat(Math.min(n, 8)));
+        } else {
+          term.scrollLines(dir * n);
+        }
       },
       { passive: false },
     );

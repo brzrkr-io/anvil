@@ -289,7 +289,13 @@
           <div class="stepper"><button onclick={() => bumpTermLetterSpacing(-0.5)}>−</button><span class="val">{$termLetterSpacing}px</span><button onclick={() => bumpTermLetterSpacing(0.5)}>+</button></div>
         </div>
         <div class="opt"><span class="opt-lbl">Scrollback lines</span>
-          <div class="stepper"><button onclick={() => setTermScrollback($termScrollback - 1000)}>−</button><span class="val">{$termScrollback === 0 ? "off" : $termScrollback.toLocaleString()}</span><button onclick={() => setTermScrollback($termScrollback + 1000)}>+</button></div>
+          <div class="stepper">
+            <button onclick={() => setTermScrollback($termScrollback - 10000)}>−</button>
+            <input class="num-in" type="number" min="0" max="500000" step="10000" value={$termScrollback}
+              onchange={(e) => setTermScrollback(Number((e.currentTarget as HTMLInputElement).value) || 0)}
+              title="0 = off · up to 500,000" />
+            <button onclick={() => setTermScrollback($termScrollback + 10000)}>+</button>
+          </div>
         </div>
         <div class="opt"><span class="opt-lbl">Cursor style</span>
           <div class="row2">{#each CURSOR_STYLES as s (s)}<button class="btn {$termCursorStyle === s ? 'active' : ''}" onclick={() => setTermCursorStyle(s)}>{s[0].toUpperCase() + s.slice(1)}</button>{/each}</div>
@@ -453,6 +459,9 @@
     background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text2); font-size: 14px; cursor: default; }
   .stepper button:hover { border-color: var(--text3); color: var(--text); }
   .stepper .val { font-family: var(--font-mono); font-size: 11.5px; color: var(--text); min-width: 38px; text-align: center; }
+  .stepper .num-in { width: 76px; height: 23px; text-align: center; font-family: var(--font-mono); font-size: 11.5px;
+    color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 5px; }
+  .stepper .num-in:focus { outline: none; border-color: var(--accent); }
   .stepper .reset { width: auto; padding: 0 9px; height: 23px; font-size: 11px; font-family: var(--font-ui); }
   .font-note { font-size: 12px; font-family: var(--font-mono); color: var(--text3); }
   .kbd-hint { font-family: var(--font-mono); font-size: 10px; color: var(--text3); margin-left: 6px; }

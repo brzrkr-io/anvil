@@ -25,9 +25,11 @@ export const termCursorStyle = writable<CursorStyle>(loadStr("anvil-term-cursor"
 export const termLineHeight = writable<number>(loadNum("anvil-term-lh", 1.2, 1.0, 2.0));
 export const termLetterSpacing = writable<number>(loadNum("anvil-term-ls", 0, -2, 4));
 // Scrollback ceiling (#76): caps per-terminal buffer memory. 0 = no scrollback.
-export const termScrollback = writable<number>(loadNum("anvil-term-scrollback", 10000, 0, 200000));
+// Default is generous (50k lines); the ceiling allows a huge 500k for users who
+// want to keep a ton of history.
+export const termScrollback = writable<number>(loadNum("anvil-term-scrollback", 50000, 0, 500000));
 export function setTermScrollback(n: number) {
-  const v = Math.max(0, Math.min(200000, Math.round(n)));
+  const v = Math.max(0, Math.min(500000, Math.round(n)));
   if (typeof localStorage !== "undefined") localStorage.setItem("anvil-term-scrollback", String(v));
   termScrollback.set(v);
 }
