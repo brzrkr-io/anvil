@@ -31,6 +31,7 @@
     chart: '<path d="M3 3v18h18"/><path d="M7 15l3-4 3 3 4-6"/>',
     plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
     close: '<path d="M6 6l12 12"/><path d="M18 6L6 18"/>',
+    bell: '<path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6"/><path d="M10.5 19a2 2 0 0 0 3 0"/>',
     play: '<path d="M7 4l12 8-12 8z"/>',
     refresh: '<path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/>',
     minus: '<path d="M5 12h14"/>',

@@ -131,6 +131,7 @@
   import { leaf, splitLeaf, closeLeaf, resizeSplit, dockLeaf, setView as setLeafView, paneId, remapTermRefs, firstLeaf, findLeaf, balanceTree, closeOthers as closeOtherPanes, leafIds, addTab, setActiveTab, closeTab, type PaneNode, type Leaf, type ViewKind, type Edge } from "$lib/panes";
   import Palette, { type Item } from "$lib/Palette.svelte";
   import Toasts from "$lib/Toasts.svelte";
+  import NotificationCenter from "$lib/NotificationCenter.svelte";
   import Dialog from "$lib/Dialog.svelte";
   import Welcome from "$lib/Welcome.svelte";
   import { askText } from "$lib/dialog";
@@ -141,7 +142,7 @@
   import Attention from "$lib/Attention.svelte";
   import MergeView3 from "$lib/MergeView3.svelte";
   import RebasePlan from "$lib/RebasePlan.svelte";
-  import { toast } from "$lib/toast";
+  import { toast, notifications } from "$lib/toast";
   import { get } from "svelte/store";
   import { activeTheme, initTheme, cycleTheme, applyTheme, themeLabel } from "$lib/themes";
   import { density, initDensity, toggleDensity, applyDensity, type Density } from "$lib/density";
@@ -452,6 +453,8 @@
   let keymapOpen = $state(false);
   let doctorOpen = $state(false);
   let attentionOpen = $state(false);
+  let notifOpen = $state(false);
+  const unreadCount = $derived($notifications.filter((n) => !n.read).length);
   let mergeView = $state<string | null>(null); // #25 path under 3-pane merge
   let rebaseTarget = $state<string | null>(null); // #21 interactive rebase editor
   let quakeOpen = $state(false); // #18 drop-down terminal overlay
@@ -1920,6 +1923,7 @@
     <div class="r">
       <span class="si" role="button" tabindex="0" onclick={toggleDensity} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), toggleDensity())} title="Toggle density" style="cursor:default">{$density}</span>
       <span class="si" role="button" tabindex="0" onclick={cycleTheme} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), cycleTheme())} title="Cycle theme" style="cursor:default">{themeLabel($activeTheme)}</span>
+      <span class="si bell" role="button" tabindex="0" onclick={() => (notifOpen = !notifOpen)} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), notifOpen = !notifOpen)} title="Notifications" style="cursor:default"><Icon name="bell" size={12} />{#if unreadCount}<span class="bell-badge">{unreadCount > 9 ? "9+" : unreadCount}</span>{/if}</span>
       <span class="ok" title="Ready">●</span>
       <span>UTF-8</span>
     </div>
@@ -1929,6 +1933,7 @@
   <Palette bind:open={paletteOpen} items={paletteItems} placeholder={palettePlaceholder} />
   <Dialog />
   <Toasts />
+  <NotificationCenter bind:open={notifOpen} />
 
   {#if !onboarded}
     <div class="onboard-scrim" role="presentation">
@@ -2001,6 +2006,10 @@
 <style>
   .pane-head .ph-ic { display: inline-flex; align-items: center; vertical-align: -2px; margin-right: 3px; }
   .status .si { display: inline-flex; align-items: center; gap: 4px; }
+  .status .si.bell { position: relative; }
+  .status .si.bell .bell-badge { position: absolute; top: -4px; right: -6px; min-width: 13px; height: 13px;
+    padding: 0 3px; border-radius: 7px; background: var(--red); color: #fff; font-size: 9px; line-height: 13px;
+    text-align: center; font-variant-numeric: tabular-nums; }
   .view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   /* Bottom terminal dock (⌘J) — sits under the active view. */
   .bdock { flex: 0 0 auto; display: flex; flex-direction: column; min-height: 0;

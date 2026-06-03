@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import { get } from "svelte/store";
-import { toasts, toast, dismiss } from "./toast";
+import { toasts, toast, dismiss, notifications, markAllRead, clearNotifications } from "./toast";
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -78,5 +78,40 @@ describe("auto-expire via TTL", () => {
     toast("pending", "info", 5000);
     vi.advanceTimersByTime(4999);
     expect(get(toasts)).toHaveLength(1);
+  });
+});
+
+describe("notification history (#94)", () => {
+  beforeEach(() => {
+    clearNotifications();
+    localStorage.clear();
+  });
+
+  it("archives every toast newest-first with an unread flag", () => {
+    toast("first", "info", 3500, 1000);
+    toast("second", "error", 3500, 2000);
+    const all = get(notifications);
+    expect(all.map((n) => n.text)).toEqual(["second", "first"]);
+    expect(all[0]).toMatchObject({ kind: "error", ts: 2000, read: false });
+  });
+
+  it("persists to localStorage so history survives reload", () => {
+    toast("kept", "success", 3500, 5000);
+    const raw = JSON.parse(localStorage.getItem("anvil-notifications") || "[]");
+    expect(raw[0]).toMatchObject({ text: "kept", kind: "success" });
+  });
+
+  it("markAllRead flips every unread entry", () => {
+    toast("a", "info", 3500, 1);
+    toast("b", "info", 3500, 2);
+    markAllRead();
+    expect(get(notifications).every((n) => n.read)).toBe(true);
+  });
+
+  it("clearNotifications empties the feed and storage", () => {
+    toast("gone", "info", 3500, 1);
+    clearNotifications();
+    expect(get(notifications)).toEqual([]);
+    expect(localStorage.getItem("anvil-notifications")).toBe("[]");
   });
 });
