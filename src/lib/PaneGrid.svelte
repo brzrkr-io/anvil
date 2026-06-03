@@ -169,7 +169,11 @@
   .split { display: flex; width: 100%; height: 100%; }
   .split.row { flex-direction: row; }
   .split.col { flex-direction: column; }
-  .cell { display: flex; position: relative; overflow: hidden; }
+  /* Column flex so the pane child fills via flex-grow, not height:100% (which
+     WebKit fails to resolve against a flex-stretched parent → the pane floats
+     vertically-inset with open space). */
+  .cell { display: flex; flex-direction: column; position: relative; overflow: hidden; }
+  .cell > :global(.leaf), .cell > :global(.split) { flex: 1 1 0%; min-width: 0; min-height: 0; height: auto; }
   .divider { flex: 0 0 auto; background: var(--border); z-index: 3; }
   .divider.row { width: 1px; cursor: col-resize; }
   .divider.col { height: 1px; cursor: row-resize; }
