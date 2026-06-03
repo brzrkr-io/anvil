@@ -46,6 +46,16 @@ describe("store load branches", () => {
     expect(get(m.termCursorStyle)).toBe("block");
   });
 
+  it("scrollback defaults to 50000 when never set — not 0 (no-scroll-back bug)", async () => {
+    // Regression: a missing key was coerced via Number(null) === 0, which slipped
+    // past the lo=0 bound and returned 0, giving fresh installs a 0-line buffer
+    // that could not scroll up at all. A user who never touched the slider must
+    // get a real, scrollable buffer.
+    localStorage.removeItem("anvil-term-scrollback");
+    const m = await import("./terminal-settings.js");
+    expect(get(m.termScrollback)).toBe(50000);
+  });
+
   it("fonts restore persisted families and reject unknown ones", async () => {
     localStorage.setItem("anvil-ui-font", "Inter");
     localStorage.setItem("anvil-mono-font", "not-a-font");
