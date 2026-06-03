@@ -203,11 +203,33 @@ fn flux_crd(tab: &str) -> Option<&'static str> {
     }
 }
 
+// Short-TTL memo for `kubectl get <crd> -A -o json`. The Flux list watcher and
+// the health watcher both want kustomizations/helmreleases each cycle; within
+// the TTL they share one fetch instead of forking kubectl twice. TTL < the poll
+// interval so each cycle still gets fresh data.
+fn flux_get_cached(crd: &'static str) -> Result<String, String> {
+    static CACHE: OnceLock<Mutex<HashMap<&'static str, (std::time::Instant, String)>>> =
+        OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    const TTL: Duration = Duration::from_millis(2500);
+    if let Some((at, raw)) = cache.lock().unwrap().get(crd) {
+        if at.elapsed() < TTL {
+            return Ok(raw.clone());
+        }
+    }
+    let raw = kubectl(&["get", crd, "-A", "-o", "json"])?;
+    cache
+        .lock()
+        .unwrap()
+        .insert(crd, (std::time::Instant::now(), raw.clone()));
+    Ok(raw)
+}
+
 fn snapshot_flux(tab: &str) -> Value {
     let Some(crd) = flux_crd(tab) else {
         return json!({ "rows": [], "present": false, "error": format!("unknown flux tab: {tab}") });
     };
-    match kubectl(&["get", crd, "-A", "-o", "json"]) {
+    match flux_get_cached(crd) {
         Ok(raw) if is_auth_err(&raw) => {
             json!({ "rows": [], "present": true, "error": "Cloud credentials expired or missing." })
         }
@@ -224,7 +246,7 @@ fn snapshot_flux_health() -> Value {
     let mut failing = 0usize;
     let mut present = false;
     for crd in [KUSTOMIZATIONS, HELMRELEASES] {
-        if let Ok(raw) = kubectl(&["get", crd, "-A", "-o", "json"]) {
+        if let Ok(raw) = flux_get_cached(crd) {
             let (rows, ok) = parse_flux(&raw);
             if ok {
                 present = true;
