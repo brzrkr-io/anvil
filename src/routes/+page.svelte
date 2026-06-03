@@ -679,7 +679,16 @@
     devops: { title: "DevOps", icon: "devops" },
   };
   let viewTabs = $state<string[]>([]);
+  // Views that can live inside a workspace pane (paneView renders these).
+  const PANE_VIEWS = new Set(["term", "editor", "files", "scm", "search", "agent", "devops", "k8s", "ci", "terraform", "obs"]);
   function openView(kind: string) {
+    // Whole-app-as-workspace: when the grid is up, the rail drives the ACTIVE
+    // pane instead of switching to a separate full-screen mode (no PTY churn).
+    if (rail === "workspace" && PANE_VIEWS.has(kind) && findLeaf(paneTree, activeLeaf)) {
+      wsSetView(activeLeaf, kind as ViewKind);
+      explorerOpen = false;
+      return;
+    }
     if (!viewTabs.includes(kind)) viewTabs = [...viewTabs, kind];
     rail = kind;
     // App views (SCM/Search/k8s/CI/…) take the full pane — the Explorer sidebar
