@@ -4,6 +4,7 @@
   import Icon from "$lib/Icon.svelte";
   import Skeleton from "$lib/Skeleton.svelte";
   import EmptyState from "$lib/EmptyState.svelte";
+  import Resizer from "$lib/Resizer.svelte";
   import { toast } from "$lib/toast";
   import { askConfirm } from "$lib/dialog";
   import { readCache, writeCache } from "$lib/cache";
@@ -53,38 +54,11 @@
   let dagView = $state((() => { try { return localStorage.getItem("anvil-ci-dag") !== "0"; } catch { return true; } })());
   $effect(() => { try { localStorage.setItem("anvil-ci-dag", dagView ? "1" : "0"); } catch { /* ignore */ } });
 
-  // Draggable widths for the list | jobs | log columns (persisted).
-  let listBasis = $state(480);
-  let jobsBasis = $state(360);
-  (() => {
-    try {
-      const s = JSON.parse(localStorage.getItem("anvil-ci-panes") || "{}");
-      if (typeof s.listBasis === "number") listBasis = s.listBasis;
-      if (typeof s.jobsBasis === "number") jobsBasis = s.jobsBasis;
-    } catch { /* ignore */ }
-  })();
-  let resizing = $state<null | "list" | "jobs">(null);
-  let startX = 0;
-  let startBasis = 0;
-  function onResize(e: PointerEvent) {
-    const dx = e.clientX - startX;
-    if (resizing === "list") listBasis = Math.max(300, Math.min(900, startBasis + dx));
-    else if (resizing === "jobs") jobsBasis = Math.max(220, Math.min(720, startBasis + dx));
-  }
-  function endResize() {
-    resizing = null;
-    window.removeEventListener("pointermove", onResize);
-    window.removeEventListener("pointerup", endResize);
-    try { localStorage.setItem("anvil-ci-panes", JSON.stringify({ listBasis, jobsBasis })); } catch { /* ignore */ }
-  }
-  function startResize(which: "list" | "jobs", e: PointerEvent) {
-    resizing = which;
-    startX = e.clientX;
-    startBasis = which === "list" ? listBasis : jobsBasis;
-    window.addEventListener("pointermove", onResize);
-    window.addEventListener("pointerup", endResize);
-    e.preventDefault();
-  }
+  // Draggable widths for the list | jobs | log columns (persisted), via the
+  // shared <Resizer> component.
+  const ciW = (k: string, d: number) => { try { return Number(localStorage.getItem(k)) || d; } catch { return d; } };
+  let listBasis = $state(ciW("anvil-ci-listw", 480));
+  let jobsBasis = $state(ciW("anvil-ci-jobsw", 360));
 
   const RUNNING_STATUSES = new Set(["running", "pending", "created", "waiting_for_resource", "preparing", "scheduled"]);
 
@@ -447,7 +421,7 @@
 
     <!-- Jobs panel (right side when pipeline selected) -->
     {#if selectedPipeline}
-      <div class="vresize" class:active={resizing === "list"} role="separator" aria-label="Resize pipeline list" onpointerdown={(e) => startResize("list", e)}></div>
+      <Resizer bind:size={listBasis} min={300} max={900} def={480} storeKey="anvil-ci-listw" />
       <div class="jobs-panel" class:has-log={!!selectedJob} style={selectedJob ? `flex:0 0 ${jobsBasis}px` : ""}>
         <div class="jobs-head">
           <span class="jobs-title">Pipeline #{selectedPipeline.iid}</span>
@@ -526,7 +500,7 @@
 
     <!-- Log panel -->
     {#if selectedJob}
-      <div class="vresize" class:active={resizing === "jobs"} role="separator" aria-label="Resize jobs panel" onpointerdown={(e) => startResize("jobs", e)}></div>
+      <Resizer bind:size={jobsBasis} min={220} max={720} def={360} storeKey="anvil-ci-jobsw" />
       <div class="log-panel">
         <div class="log-head">
           <span class="log-title">{selectedJob.name}</span>
@@ -587,17 +561,6 @@
 
   /* Body layout: pipeline list left, jobs center, log right */
   .body { flex: 1; min-height: 0; display: flex; overflow: hidden; }
-
-  /* Draggable column dividers. */
-  .vresize {
-    flex: 0 0 5px; align-self: stretch; cursor: col-resize; background: transparent;
-    position: relative; z-index: 2; touch-action: none;
-  }
-  .vresize::before {
-    content: ""; position: absolute; top: 0; bottom: 0; left: 2px; width: 1px;
-    background: var(--border); transition: background 0.12s, width 0.12s, left 0.12s;
-  }
-  .vresize:hover::before, .vresize.active::before { background: var(--accent); width: 2px; left: 1.5px; }
 
   /* Pipeline list */
   .pipelines { flex: 1; min-width: 0; overflow-y: auto; }
