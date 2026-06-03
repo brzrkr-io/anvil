@@ -227,6 +227,31 @@ fn probe_tool(id: &str, label: &str, prog: &str, args: &[&str], brew: &str) -> P
     }
 }
 
+/// Presence-only probe for a language server. LSP servers are stdio programs
+/// that would hang waiting on stdin if run directly, so we resolve the binary
+/// with `command -v` (fast, no spawn of the server itself) and offer its install
+/// command as the one-click fix.
+fn probe_server(id: &str, label: &str, bin: &str, install: &str) -> Probe {
+    let present = run("sh", &["-lc", &format!("command -v {bin}")], 4)
+        .map(|(ok, _)| ok)
+        .unwrap_or(false);
+    Probe {
+        id: id.into(),
+        label: label.into(),
+        installed: present,
+        version: String::new(),
+        detail: if present { "installed".into() } else { String::new() },
+        ok: present,
+        note: if present {
+            String::new()
+        } else {
+            format!("{bin} not found")
+        },
+        fix_cmd: if present { String::new() } else { install.into() },
+        fix_label: if present { String::new() } else { "Install".into() },
+    }
+}
+
 fn probe_docker() -> Probe {
     // Server version succeeds only when the daemon is running — the real signal.
     let server = run("docker", &["version", "--format", "{{.Server.Version}}"], 5);
@@ -309,6 +334,17 @@ pub async fn doctor_check() -> Result<Vec<Probe>, String> {
                 )
             },
             probe_docker,
+            // Language servers (editor LSP). Presence-checked; one-click install.
+            || probe_server("lsp-go", "LSP · Go (gopls)", "gopls", "go install golang.org/x/tools/gopls@latest"),
+            || probe_server("lsp-python", "LSP · Python (pyright)", "pyright-langserver", "npm i -g pyright"),
+            || probe_server("lsp-ts", "LSP · TypeScript", "typescript-language-server", "npm i -g typescript typescript-language-server"),
+            || probe_server("lsp-rust", "LSP · Rust (rust-analyzer)", "rust-analyzer", "rustup component add rust-analyzer"),
+            || probe_server("lsp-terraform", "LSP · Terraform (terraform-ls)", "terraform-ls", "brew install hashicorp/tap/terraform-ls"),
+            || probe_server("lsp-yaml", "LSP · YAML", "yaml-language-server", "npm i -g yaml-language-server"),
+            || probe_server("lsp-json", "LSP · JSON", "vscode-json-language-server", "npm i -g vscode-langservers-extracted"),
+            || probe_server("lsp-bash", "LSP · Shell (bash)", "bash-language-server", "npm i -g bash-language-server"),
+            || probe_server("lsp-docker", "LSP · Dockerfile", "docker-langserver", "npm i -g dockerfile-language-server-nodejs"),
+            || probe_server("lsp-lua", "LSP · Lua", "lua-language-server", "brew install lua-language-server"),
         ];
         let handles: Vec<_> = builders.into_iter().map(std::thread::spawn).collect();
         handles

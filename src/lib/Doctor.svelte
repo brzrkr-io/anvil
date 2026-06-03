@@ -39,6 +39,15 @@
       : "var(--status-attention, var(--yellow, #d8a657))";
 
   const okCount = $derived(probes.filter((p) => p.ok).length);
+  // Missing language servers → offer a single "install everything" action that
+  // chains each install command in one terminal pane (`;` so one failure doesn't
+  // abort the rest).
+  const missingServers = $derived(probes.filter((p) => p.id.startsWith("lsp-") && !p.ok && p.fix_cmd));
+  function installAllServers() {
+    if (!missingServers.length) return;
+    onRunCommand?.(missingServers.map((p) => p.fix_cmd).join(" ; "));
+    onClose();
+  }
 </script>
 
 <div class="dr-scrim" onclick={onClose} role="presentation"></div>
@@ -49,6 +58,9 @@
       <span class="dr-sub">{loading ? "checking…" : `${okCount}/${probes.length} ready`} · tools &amp; auth for your environment</span>
     </div>
     <span class="spacer"></span>
+    {#if missingServers.length}
+      <button class="dr-btn primary" onclick={installAllServers} title={missingServers.map((p) => p.fix_cmd).join(" ; ")}>Install {missingServers.length} server{missingServers.length > 1 ? "s" : ""}</button>
+    {/if}
     <button class="dr-btn" onclick={check} disabled={loading}>{loading ? "…" : "Re-check"}</button>
     <button class="dr-x" onclick={onClose} title="Close"><Icon name="close" size={13} /></button>
   </div>
@@ -95,6 +107,8 @@
     border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; cursor: default; }
   .dr-btn:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
   .dr-btn:disabled { opacity: 0.5; }
+  .dr-btn.primary { color: var(--bg); background: var(--accent); border-color: var(--accent); font-weight: 600; }
+  .dr-btn.primary:hover { filter: brightness(1.08); }
   .dr-x { background: none; border: 0; color: var(--text3); cursor: default; padding: 2px; display: inline-flex; }
   .dr-x:hover { color: var(--text); }
   .dr-err { margin: 10px 16px 0; padding: 8px 10px; font-size: 12px; color: var(--status-failure, #e5484d);
