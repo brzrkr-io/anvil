@@ -236,6 +236,9 @@
     let wheelAccum = 0;
     const onWheel = (e: WheelEvent) => {
       try {
+        // Only act on wheel events over THIS terminal. Window-level + capture so
+        // the handler runs before any element listener can swallow the event.
+        if (!host || !(e.target instanceof Node) || !host.contains(e.target)) return;
         const modes = (term as unknown as { modes?: { mouseTrackingMode?: string; applicationCursorKeysMode?: boolean } }).modes;
         const onAlt = term.buffer.active.type === "alternate";
         const mouseOn = !!(modes?.mouseTrackingMode && modes.mouseTrackingMode !== "none");
@@ -264,9 +267,10 @@
         }
       } catch { /* ignore */ }
     };
-    // Capture phase on the outer host so the handler runs before xterm's canvas
-    // / viewport listeners (which were swallowing the wheel before it scrolled).
-    host.addEventListener("wheel", onWheel, { passive: false, capture: true });
+    // Window + capture so nothing between window and the terminal can swallow
+    // the wheel first. Removed on destroy.
+    window.addEventListener("wheel", onWheel, { passive: false, capture: true });
+    unlisten.push(() => window.removeEventListener("wheel", onWheel, true));
 
     // Track scroll position so we can offer a "jump to bottom" pill.
     term.onScroll(() => {
