@@ -370,8 +370,10 @@
           </div>
         {/each}
       </div>
+    {:else if runsBusy}
+      <Skeleton rows={6} />
     {:else}
-      <pre class="out">{runsBusy ? "Loading…" : "No recent runs / gh unavailable."}</pre>
+      <pre class="out">No recent runs / gh unavailable.</pre>
     {/if}
   {:else if tab === "gitlab"}
     <div class="bar"><span class="lbl">GitLab CI · {cwd.split("/").pop()}</span>
