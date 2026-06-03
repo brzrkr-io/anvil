@@ -19,7 +19,7 @@
   import { editorVimMode } from "$lib/editor-settings";
   import { monoFont, editorBold } from "$lib/fonts";
   import { parseConflicts, resolvedLines, resolveAll, type MergeChoice } from "$lib/merge";
-  import { lspLang, ensureLsp, didOpen, didChange, lspStatus, restartLsp } from "$lib/lsp";
+  import { lspLang, ensureLsp, didOpen, didChange, restartLsp } from "$lib/lsp";
   import { problems } from "$lib/diagnostics";
   import { cmLsp, formatDoc, cmInlayHints, fetchSymbols, enclosingSymbols, type RefLoc, type OutlineSym } from "$lib/cm-lsp";
   import { editorStickyScroll } from "$lib/editor-settings";
@@ -80,8 +80,6 @@
   // Reactive mirror of loadedPath for the LSP status + problem-count chip.
   let curPath = $state("");
   const curLang = $derived(lspLang(curPath));
-  const LANG_LABEL: Record<string, string> = { rust: "rust-analyzer", go: "gopls", typescript: "tsserver", python: "pyright", cpp: "clangd" };
-  const lspState = $derived(curLang ? ($lspStatus[curLang] ?? "down") : null);
   const fileProblems = $derived(curPath ? $problems.filter((d) => d.path === curPath) : []);
   const errCount = $derived(fileProblems.filter((d) => d.severity === 1).length);
   const warnCount = $derived(fileProblems.filter((d) => d.severity === 2).length);
@@ -123,12 +121,6 @@
     view.focus();
   }
 
-  function restartCurrentLsp() {
-    if (!curLang || !curPath || !view) return;
-    const lang = curLang, path = curPath, text = view.state.doc.toString();
-    const dir = path.slice(0, path.lastIndexOf("/")) || "/";
-    restartLsp(lang, dir).then((ok) => { if (ok) { versions.set(path, 1); didOpen(lang, path, text, 1); } });
-  }
   // Cycle to the next diagnostic below the cursor (wraps). Errors first, then warns.
   function jumpToProblem() {
     if (!view || !fileProblems.length) return;
@@ -614,15 +606,7 @@
           {#if warnCount}<span class="diag warn">▲ {warnCount}</span>{/if}
         </button>
       {/if}
-      {#if curLang}
-        <button
-          class="lsp-chip {lspState}"
-          onclick={restartCurrentLsp}
-          title={lspState === "up" ? `${LANG_LABEL[curLang]} connected — click to restart` : lspState === "starting" ? `${LANG_LABEL[curLang]} starting…` : `${LANG_LABEL[curLang]} not running — click to start`}
-        >
-          <span class="lsp-dot"></span>{LANG_LABEL[curLang]}
-        </button>
-      {/if}
+      <!-- LSP status moved to the global bottom status bar (one place, less noise). -->
     </div>
   {/if}
   <div class="ed-host">
@@ -658,18 +642,6 @@
   .diag-chip:hover { background: var(--sel); }
   .diag.err { color: var(--red); }
   .diag.warn { color: var(--yellow); }
-  .lsp-chip {
-    display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border);
-    background: var(--panel2); color: var(--text3); cursor: default;
-    padding: 1px 7px 1px 6px; border-radius: 4px; font-family: var(--font-mono); font-size: 10px;
-  }
-  .lsp-chip:hover { color: var(--text2); border-color: var(--text3); }
-  .lsp-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text3); flex: 0 0 auto; }
-  .lsp-chip.up .lsp-dot { background: var(--green); }
-  .lsp-chip.up { color: var(--text2); }
-  .lsp-chip.starting .lsp-dot { background: var(--yellow); animation: lsp-pulse 1s ease-in-out infinite; }
-  .lsp-chip.down .lsp-dot { background: var(--red); }
-  @keyframes lsp-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
   .sticky {
     position: absolute; top: 0; left: 0; right: 0; z-index: 4; pointer-events: auto;
     background: var(--panel); border-bottom: 1px solid var(--border); box-shadow: 0 4px 8px rgba(0,0,0,0.18);

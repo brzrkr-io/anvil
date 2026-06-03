@@ -153,7 +153,13 @@
   import { autoHideRail, focusDimming, toggleFocusDimming, terminalAutoCd, toggleTerminalAutoCd } from "$lib/layout-settings";
   import Icon from "$lib/Icon.svelte";
   import { bumpEditorFontSize, setEditorFontSize, editorGoto, editorFormatOnSave, editorTabSize, editorWordWrap, editorGhostText, toggleGhostText, editorGhostSource, setGhostSource } from "$lib/editor-settings";
-  import { lspLang, ensureLsp } from "$lib/lsp";
+  import { lspLang, ensureLsp, lspStatus, restartLsp } from "$lib/lsp";
+  // Server label per language for the status-bar LSP indicator.
+  const LSP_LABEL: Record<string, string> = {
+    rust: "rust-analyzer", go: "gopls", typescript: "tsserver", python: "pyright",
+    cpp: "clangd", terraform: "terraform-ls", yaml: "yaml-ls", json: "json-ls",
+    shellscript: "bash-ls", lua: "lua-ls", dockerfile: "docker-ls",
+  };
   import { fetchSymbols, searchWorkspaceSymbols } from "$lib/cm-lsp";
   import { problems } from "$lib/diagnostics";
   import { railEnabled, extEnabled } from "$lib/extensions";
@@ -623,6 +629,9 @@
   // Editor: multiple open files, one active, dirty tracked per path.
   let openFiles = $state<string[]>([]);
   let activeFile = $state("");
+  // Active file's language-server status for the bottom status-bar indicator.
+  const lspCurLang = $derived(activeFile ? lspLang(activeFile) : null);
+  const lspCurState = $derived(lspCurLang ? ($lspStatus[lspCurLang] ?? "down") : null);
   let dirtyFiles = $state<Record<string, boolean>>({});
   // #64 Pinned tabs: pinned paths sort first + survive "close others"; persisted.
   let pinnedFiles = $state<string[]>(typeof localStorage !== "undefined" ? (() => { try { return JSON.parse(localStorage.getItem("anvil-pinned-tabs") || "[]"); } catch { return []; } })() : []);
@@ -1989,6 +1998,13 @@
       <span class="si" role="button" tabindex="0" onclick={toggleDensity} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), toggleDensity())} title="Toggle density" style="cursor:default">{$density}</span>
       <span class="si" role="button" tabindex="0" onclick={cycleTheme} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), cycleTheme())} title="Cycle theme" style="cursor:default">{themeLabel($activeTheme)}</span>
       <span class="si bell" role="button" tabindex="0" onclick={() => (notifOpen = !notifOpen)} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), notifOpen = !notifOpen)} title="Notifications" style="cursor:default"><Icon name="bell" size={12} />{#if unreadCount}<span class="bell-badge">{unreadCount > 9 ? "9+" : unreadCount}</span>{/if}</span>
+      {#if lspCurLang}
+        <span class="si lsp {lspCurState}" role="button" tabindex="0" style="cursor:default"
+          title={lspCurState === "up" ? `${LSP_LABEL[lspCurLang] ?? lspCurLang} connected — click to restart` : lspCurState === "starting" ? `${LSP_LABEL[lspCurLang] ?? lspCurLang} starting…` : `${LSP_LABEL[lspCurLang] ?? lspCurLang} not running — click to start`}
+          onclick={() => restartLsp(lspCurLang!, cwd)} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), restartLsp(lspCurLang!, cwd))}>
+          <span class="lsp-dot"></span>{LSP_LABEL[lspCurLang] ?? lspCurLang}
+        </span>
+      {/if}
       <span class="ok" title="Ready">●</span>
       <span>UTF-8</span>
     </div>
@@ -2071,6 +2087,11 @@
 <style>
   .pane-head .ph-ic { display: inline-flex; align-items: center; vertical-align: -2px; margin-right: 3px; }
   .status .si { display: inline-flex; align-items: center; gap: 4px; }
+  .status .si.lsp .lsp-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text3); flex: 0 0 auto; }
+  .status .si.lsp.up .lsp-dot { background: var(--status-verified, var(--green, #3fb950)); }
+  .status .si.lsp.starting .lsp-dot { background: var(--status-attention, var(--yellow, #d8a657)); animation: lsp-pulse 1s ease-in-out infinite; }
+  .status .si.lsp.down .lsp-dot { background: var(--status-risk, var(--red, #e5484d)); }
+  @keyframes lsp-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
   .status .si.bell { position: relative; }
   .status .si.bell .bell-badge { position: absolute; top: -4px; right: -6px; min-width: 13px; height: 13px;
     padding: 0 3px; border-radius: 7px; background: var(--red); color: #fff; font-size: 9px; line-height: 13px;
