@@ -19,6 +19,9 @@ function setStatus(lang: string, s: LspState) {
 }
 
 export function lspLang(path: string): string | null {
+  const base = path.split("/").pop()?.toLowerCase() ?? "";
+  // Dockerfile is matched by name, not extension.
+  if (base === "dockerfile" || base.startsWith("dockerfile.") || base.endsWith(".dockerfile")) return "dockerfile";
   const ext = path.split(".").pop()?.toLowerCase();
   switch (ext) {
     case "rs": return "rust";
@@ -26,6 +29,13 @@ export function lspLang(path: string): string | null {
     case "ts": case "tsx": case "js": case "jsx": case "mjs": case "cjs": return "typescript";
     case "py": case "pyi": return "python";
     case "c": case "h": case "cpp": case "cc": case "hpp": case "cxx": case "hxx": return "cpp";
+    // DevOps languages (servers are optional; lspLang only names the language,
+    // ensureLsp fails soft if the server binary isn't installed).
+    case "tf": case "tfvars": case "hcl": return "terraform";
+    case "yaml": case "yml": return "yaml";
+    case "json": case "jsonc": return "json";
+    case "sh": case "bash": case "zsh": return "shellscript";
+    case "lua": return "lua";
     default: return null;
   }
 }

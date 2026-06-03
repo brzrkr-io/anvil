@@ -55,6 +55,17 @@ describe("lspLang", () => {
   it("maps .hpp to cpp", () => expect(lspLang("app.hpp")).toBe("cpp"));
   it("maps .cxx to cpp", () => expect(lspLang("app.cxx")).toBe("cpp"));
   it("maps .hxx to cpp", () => expect(lspLang("app.hxx")).toBe("cpp"));
+  it("maps .tf to terraform", () => expect(lspLang("main.tf")).toBe("terraform"));
+  it("maps .tfvars to terraform", () => expect(lspLang("prod.tfvars")).toBe("terraform"));
+  it("maps .hcl to terraform", () => expect(lspLang("config.hcl")).toBe("terraform"));
+  it("maps .yaml to yaml", () => expect(lspLang("deploy.yaml")).toBe("yaml"));
+  it("maps .yml to yaml", () => expect(lspLang(".github/ci.yml")).toBe("yaml"));
+  it("maps .json to json", () => expect(lspLang("tsconfig.json")).toBe("json"));
+  it("maps .sh to shellscript", () => expect(lspLang("deploy.sh")).toBe("shellscript"));
+  it("maps .bash to shellscript", () => expect(lspLang("run.bash")).toBe("shellscript"));
+  it("maps .lua to lua", () => expect(lspLang("init.lua")).toBe("lua"));
+  it("maps Dockerfile by name", () => expect(lspLang("build/Dockerfile")).toBe("dockerfile"));
+  it("maps Dockerfile.dev by name", () => expect(lspLang("Dockerfile.dev")).toBe("dockerfile"));
   it("returns null for unknown extensions", () => expect(lspLang("readme.md")).toBeNull());
   it("returns null for extensionless files", () => expect(lspLang("Makefile")).toBeNull());
 });

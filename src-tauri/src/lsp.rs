@@ -83,6 +83,37 @@ fn server_command(lang: &str) -> Option<Command> {
             Some(c)
         }
         "cpp" => Some(Command::new("clangd")),
+        // DevOps stack. Each fails soft: a missing binary just disables LSP for
+        // that language. Install hints surface in the Doctor (Check connections).
+        "terraform" => {
+            // HashiCorp terraform-ls (.tf/.tfvars/.hcl).
+            let mut c = Command::new("terraform-ls");
+            c.arg("serve");
+            Some(c)
+        }
+        "yaml" => {
+            // redhat yaml-language-server (k8s/CI/compose schemas).
+            let mut c = Command::new("yaml-language-server");
+            c.arg("--stdio");
+            Some(c)
+        }
+        "json" => {
+            let mut c = Command::new("vscode-json-language-server");
+            c.arg("--stdio");
+            Some(c)
+        }
+        "shellscript" => {
+            // bash-language-server (uses shellcheck for diagnostics if present).
+            let mut c = Command::new("bash-language-server");
+            c.arg("start");
+            Some(c)
+        }
+        "dockerfile" => {
+            let mut c = Command::new("docker-langserver");
+            c.arg("--stdio");
+            Some(c)
+        }
+        "lua" => Some(Command::new("lua-language-server")),
         _ => None,
     }
 }
