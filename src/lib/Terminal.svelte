@@ -46,6 +46,7 @@
   }
   let destroyed = false;
   let ro: ResizeObserver;
+  let fitTimer: ReturnType<typeof setInterval> | undefined;
   let resizeRaf = 0;
   let lastCols = 0, lastRows = 0;
   let unsubTheme: () => void;
@@ -313,6 +314,18 @@
         invoke("pty_resize", { id, cols: term.cols, rows: term.rows }).catch(() => {});
       }, ms);
     }
+    // Guarantee the terminal keeps filling its pane after ANY later layout change
+    // the ResizeObserver can miss — notably a pane RE-DOCK (drag a pane to a new
+    // spot moves the element without a clean resize), which otherwise leaves the
+    // terminal as a small box in a big empty pane. Cheap size poll → fit on change.
+    let fitW = 0, fitH = 0;
+    fitTimer = setInterval(() => {
+      if (destroyed || !term || !host) return;
+      const w = host.clientWidth, h = host.clientHeight;
+      if (w < 2 || h < 2 || (w === fitW && h === fitH)) return;
+      fitW = w; fitH = h;
+      try { fit?.fit(); invoke("pty_resize", { id, cols: term.cols, rows: term.rows }).catch(() => {}); } catch { /* noop */ }
+    }, 300);
   });
 
   // #78 Tell the backend to throttle this PTY's coalescer while off-screen.
@@ -385,6 +398,7 @@
     unsubTheme?.();
     unsubOpacity?.();
     clearTimeout(selTimer);
+    clearInterval(fitTimer);
     if (resizeRaf) cancelAnimationFrame(resizeRaf);
     ro?.disconnect();
     unlisten.forEach((u) => u());

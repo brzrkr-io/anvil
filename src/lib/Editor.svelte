@@ -278,7 +278,14 @@
         pushChange(p2);
         if (/\.(md|markdown)$/i.test(p2)) editorLive.set({ path: p2, text: u.state.doc.toString() }); // #6
       }),
-      EditorView.domEventHandlers({ scroll() { queueScope(); return false; } }),
+      EditorView.domEventHandlers({
+        scroll() { queueScope(); return false; },
+        // Don't let a pane/tab drag (which carries the pane id as text/plain for
+        // WKWebView drop reliability) get inserted into the document. preventDefault
+        // stops CM's text insert; the event still bubbles to the pane's drop handler
+        // so re-docking a pane onto an editor still works.
+        drop(e) { e.preventDefault(); return true; },
+      }),
     ];
   }
 
