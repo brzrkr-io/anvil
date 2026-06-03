@@ -156,6 +156,31 @@
   $effect(() => {
     if (typeof localStorage !== "undefined") localStorage.setItem("anvil-agent-chat", JSON.stringify(messages));
   });
+
+  // Auto-follow the streaming response: keep the transcript pinned to the bottom
+  // as tokens arrive, unless the user has scrolled up to read history. A
+  // "jump to latest" affordance reappears when they're not at the bottom.
+  let msgsEl = $state<HTMLElement>();
+  let stick = $state(true);
+  function onMsgsScroll() {
+    if (!msgsEl) return;
+    stick = msgsEl.scrollHeight - msgsEl.scrollTop - msgsEl.clientHeight < 48;
+  }
+  function jumpToLatest() {
+    stick = true;
+    if (msgsEl) msgsEl.scrollTop = msgsEl.scrollHeight;
+  }
+  $effect(() => {
+    // Re-run when a message is appended (length) AND while the last message
+    // streams in (its text grows) — both are reactive reads.
+    messages.length;
+    const last = messages[messages.length - 1];
+    void last?.text;
+    if (stick && msgsEl) {
+      const el = msgsEl;
+      requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
+    }
+  });
   // #8 Archive the finished conversation as a reopenable run before clearing.
   let runs = $state<RunMeta[]>(listRuns());
   let historyOpen = $state(false);
@@ -380,7 +405,7 @@
     </select>
   </div>
 
-  <div class="msgs">
+  <div class="msgs" bind:this={msgsEl} onscroll={onMsgsScroll}>
     {#if messages.length === 0}
       <div class="empty">
         <p class="hint">Ask the agent anything about your workspace.</p>
@@ -492,6 +517,10 @@
     </div>
   {/if}
 
+  {#if !stick && messages.length}
+    <button class="jump-latest" onclick={jumpToLatest} title="Jump to latest">↓ latest</button>
+  {/if}
+
   <div class="composer">
     {#if mentionQuery !== null && mentionHits.length}
       <div class="mentions">
@@ -517,6 +546,7 @@
 
 <style>
   .ap {
+    position: relative;
     display: flex;
     flex-direction: column;
     height: 100%;
@@ -782,6 +812,26 @@
     font-family: var(--font-ui); font-size: 11px; padding: 3px 9px; border-radius: 20px; cursor: default;
   }
   .attach.on { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+
+  .jump-latest {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    bottom: 76px;
+    z-index: 4;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 12px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--bg1);
+    color: var(--text2);
+    font-size: 11px;
+    cursor: default;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+  }
+  .jump-latest:hover { background: var(--sel); color: var(--text); }
 
   .composer {
     position: relative;
