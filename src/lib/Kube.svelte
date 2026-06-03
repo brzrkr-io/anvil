@@ -3,6 +3,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { readCache, writeCache } from "$lib/cache";
   import { classifyK8sError, friendlyK8sError } from "$lib/k8s-errors";
+  import { reauthActions } from "$lib/kube-cloud";
   import { invoke } from "@tauri-apps/api/core";
   import Icon from "$lib/Icon.svelte";
   import Skeleton from "$lib/Skeleton.svelte";
@@ -373,8 +374,9 @@
     <div class="authbar">
       <Icon name="alert" size={13} />
       <span>Cloud credentials expired or missing.</span>
-      <button onclick={() => onRunCommand?.("aws sso login")}>aws sso login</button>
-      <button onclick={() => onRunCommand?.(`aws eks update-kubeconfig --name "${current}"`)}>refresh kubeconfig</button>
+      {#each reauthActions(current) as a (a.cmd)}
+        <button onclick={() => onRunCommand?.(a.cmd)}>{a.label}</button>
+      {/each}
       <button class="ghost" onclick={() => { load(); refreshPods(); }}>Retry</button>
       {#if onCheckConnections}<button class="ghost" onclick={onCheckConnections}>Check connections</button>{/if}
       {#if livePods.length}<span class="stale">showing last-known pods</span>{/if}
