@@ -3,7 +3,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { readCache, writeCache } from "$lib/cache";
   import { classifyK8sError, friendlyK8sError } from "$lib/k8s-errors";
-  import { reauthActions } from "$lib/kube-cloud";
+  import { reauthActions, type CloudAuth } from "$lib/kube-cloud";
   import { invoke } from "@tauri-apps/api/core";
   import Icon from "$lib/Icon.svelte";
   import Skeleton from "$lib/Skeleton.svelte";
@@ -56,6 +56,7 @@
   }
   let busy = $state(false);
   let k8sErr = $state("");
+  let cloudInfo = $state<CloudAuth | null>(null); // per-context AWS/cloud auth detail
 
   interface Pod {
     ns: string;
@@ -124,6 +125,13 @@
     current = cur.status === "fulfilled" ? cur.value.trim() : "";
     currentNs = curNs.status === "fulfilled" ? curNs.value.trim() || "default" : "default";
     namespaces = nss.status === "fulfilled" ? nss.value.split("\n").filter(Boolean) : [];
+    // Per-context AWS/cloud auth detail (profile, region, cluster, sso_session,
+    // live auth status) for the CURRENT context only — drives precise SSO login.
+    if (current) {
+      invoke<CloudAuth>("kube_context_cloud", { context: current })
+        .then((ci) => (cloudInfo = ci))
+        .catch(() => (cloudInfo = null));
+    } else cloudInfo = null;
     // No active context but kubeconfig has some → restore the last one we used
     // (#7) so the page just works; only prompt if we have nothing to restore.
     if (!current && contexts.length) {
@@ -381,8 +389,8 @@
   {#if authErr && view !== "flux"}
     <div class="authbar">
       <Icon name="alert" size={13} />
-      <span>Cloud credentials expired or missing.</span>
-      {#each reauthActions(current) as a, i (a.cmd + '#' + i)}
+      <span>{cloudInfo?.profile ? `Sign in to AWS SSO for "${cloudInfo.profile}"` : "Cloud credentials expired or missing."}</span>
+      {#each reauthActions(current, cloudInfo ?? undefined) as a, i (a.cmd + '#' + i)}
         <button onclick={() => onRunCommand?.(a.cmd)}>{a.label}</button>
       {/each}
       <button class="ghost" onclick={() => { load(); refreshPods(); fluxNonce++; }}>Retry</button>

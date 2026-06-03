@@ -36,4 +36,21 @@ describe("reauthActions (#8)", () => {
     expect(a[0].cmd).toBe("az login");
     expect(a[1].cmd).toContain("az aks get-credentials");
   });
+
+  it("uses the context's AWS profile for a precise sso login + refresh", () => {
+    const a = reauthActions("arn:aws:eks:us-east-2:511:cluster/firemon-core-eks", {
+      cloud: "aws", profile: "dev-core", region: "us-east-2", cluster: "firemon-core-eks",
+    });
+    expect(a[0].cmd).toBe("aws sso login --profile dev-core");
+    expect(a[1].cmd).toBe(
+      'aws eks update-kubeconfig --name "firemon-core-eks" --region us-east-2 --profile dev-core',
+    );
+  });
+
+  it("prefers --sso-session when the profile shares one (re-auths all profiles)", () => {
+    const a = reauthActions("arn:aws:eks:us-east-2:511:cluster/x", {
+      cloud: "aws", profile: "dev-core", ssoSession: "corp-sso",
+    });
+    expect(a[0].cmd).toBe("aws sso login --sso-session corp-sso");
+  });
 });

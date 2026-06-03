@@ -387,6 +387,7 @@ pub fn run() {
             delete_path,
             fs::file_mtime,
             kube::kube_contexts,
+            kube::kube_context_cloud,
             kube::kube_diff,
             kube::kube_current_context,
             kube::kube_use_context,

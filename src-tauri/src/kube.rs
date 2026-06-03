@@ -369,3 +369,147 @@ pub async fn kube_pf_stop(pid: u32) -> Result<(), String> {
     .await
     .map_err(|e| e.to_string())?
 }
+
+// ── AWS SSO / per-context cloud auth (#8 follow-up) ───────────────────────────
+// EKS kubeconfig entries bake the AWS profile + region + cluster into the user's
+// `exec` block (e.g. `aws --region us-east-2 eks get-token --cluster-name X`,
+// env AWS_PROFILE=dev-core). Surfacing those lets the UI offer a PRECISE
+// `aws sso login --profile <P>` (or --sso-session) and a live auth check, instead
+// of a profile-blind `aws sso login` that authenticates the wrong identity.
+
+#[derive(serde::Serialize, Default, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextCloud {
+    pub cloud: String,   // aws | gcp | azure | unknown
+    pub profile: String, // AWS_PROFILE from the context's exec, if any
+    pub region: String,
+    pub cluster: String,
+    pub sso_session: String, // ~/.aws/config sso_session for that profile, if any
+    pub authed: bool,        // `aws sts get-caller-identity` succeeded for it
+}
+
+/// Find the `sso_session = <name>` for `[profile <name>]` in an `~/.aws/config`
+/// body. Pure (no IO) so it's unit-testable.
+fn aws_profile_sso_session(cfg: &str, profile: &str) -> String {
+    let header = format!("[profile {profile}]");
+    let mut in_section = false;
+    for line in cfg.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            in_section = t == header;
+            continue;
+        }
+        if in_section {
+            if let Some(rest) = t.strip_prefix("sso_session") {
+                return rest.trim_start_matches([' ', '=']).trim().to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+/// Inspect one kubeconfig context: which cloud, and (for AWS) the profile /
+/// region / cluster / sso_session its exec-credential uses, plus whether that
+/// identity currently has valid credentials.
+#[tauri::command]
+pub async fn kube_context_cloud(context: String) -> Result<ContextCloud, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut cc = ContextCloud::default();
+        let raw = kubectl(&[
+            "config",
+            "view",
+            "--minify",
+            "--context",
+            &context,
+            "-o",
+            "json",
+        ])?;
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+            let exec = &v["users"][0]["user"]["exec"];
+            if let Some(envs) = exec["env"].as_array() {
+                for e in envs {
+                    if e["name"].as_str() == Some("AWS_PROFILE") {
+                        cc.profile = e["value"].as_str().unwrap_or_default().to_string();
+                    }
+                }
+            }
+            if let Some(args) = exec["args"].as_array() {
+                let args: Vec<&str> = args.iter().filter_map(|a| a.as_str()).collect();
+                for w in args.windows(2) {
+                    match w[0] {
+                        "--region" => cc.region = w[1].to_string(),
+                        "--cluster-name" => cc.cluster = w[1].to_string(),
+                        _ => {}
+                    }
+                }
+                let cmd = exec["command"].as_str().unwrap_or_default();
+                if cmd == "aws" || args.iter().any(|a| a.contains("eks")) {
+                    cc.cloud = "aws".into();
+                } else if cmd.contains("gke") || cmd.contains("gcloud") {
+                    cc.cloud = "gcp".into();
+                } else if cmd.contains("kubelogin") || args.iter().any(|a| a.contains("azure")) {
+                    cc.cloud = "azure".into();
+                }
+            }
+        }
+        if cc.cloud.is_empty() {
+            cc.cloud = if context.starts_with("arn:aws") || context.contains("eks") {
+                "aws"
+            } else if context.starts_with("gke_") {
+                "gcp"
+            } else {
+                "unknown"
+            }
+            .into();
+        }
+        if cc.cloud == "aws" {
+            if !cc.profile.is_empty() {
+                if let Some(home) = std::env::var_os("HOME") {
+                    let path = std::path::Path::new(&home).join(".aws/config");
+                    if let Ok(txt) = std::fs::read_to_string(path) {
+                        cc.sso_session = aws_profile_sso_session(&txt, &cc.profile);
+                    }
+                }
+            }
+            // Live auth probe for exactly this identity.
+            let mut c = crate::shared::command("aws");
+            c.args(["sts", "get-caller-identity", "--output", "json"]);
+            if !cc.profile.is_empty() {
+                c.args(["--profile", &cc.profile]);
+            }
+            cc.authed = crate::shared::exec_capture(c, 8)
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+        }
+        Ok(cc)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod cloud_tests {
+    use super::aws_profile_sso_session;
+
+    const CONFIG: &str = "\
+[profile dev-core]
+sso_session = corp-sso
+region = us-east-2
+
+[profile other]
+region = us-west-2
+";
+
+    #[test]
+    fn finds_sso_session_for_profile() {
+        assert_eq!(aws_profile_sso_session(CONFIG, "dev-core"), "corp-sso");
+    }
+    #[test]
+    fn empty_when_profile_has_no_sso_session() {
+        assert_eq!(aws_profile_sso_session(CONFIG, "other"), "");
+    }
+    #[test]
+    fn empty_when_profile_absent() {
+        assert_eq!(aws_profile_sso_session(CONFIG, "nope"), "");
+    }
+}

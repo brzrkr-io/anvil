@@ -9,6 +9,16 @@ export interface ReauthAction {
   label: string;
 }
 
+/** Per-context cloud auth detail from the backend (`kube_context_cloud`). */
+export interface CloudAuth {
+  cloud?: string;
+  profile?: string;
+  region?: string;
+  cluster?: string;
+  ssoSession?: string;
+  authed?: boolean;
+}
+
 /** Best-effort cloud detection from a context name. */
 export function detectCloud(context: string): Cloud {
   const c = (context || "").trim();
@@ -37,8 +47,8 @@ function gkeParts(context: string): { project: string; location: string; cluster
  * Ordered re-auth actions for a context: first the credential login, then the
  * kubeconfig refresh. Falls back to AWS SSO when the cloud is unknown.
  */
-export function reauthActions(context: string): ReauthAction[] {
-  switch (detectCloud(context)) {
+export function reauthActions(context: string, info?: CloudAuth): ReauthAction[] {
+  switch ((info?.cloud as Cloud) || detectCloud(context)) {
     case "gcp": {
       const g = gkeParts(context);
       const refresh = g
@@ -55,10 +65,29 @@ export function reauthActions(context: string): ReauthAction[] {
         { cmd: `az aks get-credentials --name ${context}`, label: "refresh kubeconfig" },
       ];
     case "aws":
-    default:
+    default: {
+      // SSO login for the exact identity the context uses. One `aws sso login
+      // --sso-session <S>` re-auths every profile sharing that session; else fall
+      // back to the profile, then to a bare login.
+      const login = info?.ssoSession
+        ? `aws sso login --sso-session ${info.ssoSession}`
+        : info?.profile
+          ? `aws sso login --profile ${info.profile}`
+          : "aws sso login";
+      const loginLabel = info?.ssoSession
+        ? `aws sso login (${info.ssoSession})`
+        : info?.profile
+          ? `aws sso login (${info.profile})`
+          : "aws sso login";
+      const cluster = info?.cluster || eksCluster(context);
+      const refresh =
+        `aws eks update-kubeconfig --name "${cluster}"` +
+        (info?.region ? ` --region ${info.region}` : "") +
+        (info?.profile ? ` --profile ${info.profile}` : "");
       return [
-        { cmd: "aws sso login", label: "aws sso login" },
-        { cmd: `aws eks update-kubeconfig --name "${eksCluster(context)}"`, label: "refresh kubeconfig" },
+        { cmd: login, label: loginLabel },
+        { cmd: refresh, label: "refresh kubeconfig" },
       ];
+    }
   }
 }
