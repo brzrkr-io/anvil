@@ -35,7 +35,7 @@ Also available in-app: press **⌘/** or run the palette command **"Help: Keyboa
 | Shortcut | Action |
 | --- | --- |
 | ⌘T | New terminal |
-| ⌘D | Split / unsplit |
+| ⌘D | Split pane with terminal |
 | ⌘J | Toggle bottom terminal |
 | Ctrl+` | Quake drop-down terminal |
 

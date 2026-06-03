@@ -40,7 +40,7 @@
     floodT0 = performance.now();
     toast("Flooding terminal (seq 1 1000000)…", "info");
     invoke("pty_write", { id: activeTerm, data: "seq 1 1000000\r" }).catch((e) => console.warn("ptyFloodBench pty_write failed", e));
-    rail = "term";
+    focusTerm();
   }
   import { getHistory, clearHistory } from "$lib/command-history";
   import { agentQueue, enqueueAgent, dequeueAgent, removeQueued, clearQueue } from "$lib/agent-queue";
@@ -80,19 +80,13 @@
   const Terraform = () => import("$lib/Terraform.svelte");
   const Observability = () => import("$lib/Observability.svelte");
 
-  // Keep-alive for the DevOps rail views: mount each once visited, then toggle
-  // with display instead of unmount/remount. Re-mounting re-ran kubectl/glab/etc
-  // on every page switch — that round-trip was the switching lag.
-  const KEEPALIVE_RAILS = ["k8s", "ci", "terraform", "obs", "devops", "scm", "search"];
-  let mountedRails = $state<Record<string, boolean>>({});
-  $effect(() => { if (KEEPALIVE_RAILS.includes(rail) && !mountedRails[rail]) mountedRails = { ...mountedRails, [rail]: true }; });
   // Unified tabs: any path that shows a rail view (rail icon, palette, shortcut,
   // diff-back) registers it as a closable tab. Single source of truth so we don't
   // touch every call site. VIEW_META is defined below; referenced lazily here.
   $effect(() => { if (VIEW_META[rail] && !viewTabs.includes(rail)) viewTabs = [...viewTabs, rail]; });
   function sendToTerm(cmd: string) {
     invoke("pty_write", { id: activeTerm, data: cmd + "\n" });
-    rail = "term";
+    focusTerm();
     toast("Sent to terminal", "info");
   }
   // Command snippets (roadmap E41): save / manage reusable terminal commands.
@@ -269,12 +263,15 @@
   let palettePlaceholder = $state("");
   let diffTarget = $state<{ path?: string; staged?: boolean; rev?: string } | null>(null);
 
-  let rail = $state("term");
+  // Whole-app-as-workspace (Zed model): the multipane grid is the permanent
+  // content surface. `rail` starts on — and overwhelmingly stays — "workspace";
+  // only modal-ish surfaces (settings/diff/panel) ever set it elsewhere.
+  let rail = $state("workspace");
   // Flux failing-object count, surfaced on the k8s rail icon so trouble is
   // visible without opening the panel. Reflects the Flux panel's active tab.
   let kubeFails = $state(0);
   // Agent-driven ops: a failing resource seeds a live, gated investigation.
-  function investigate(prompt: string) { agentInvestigate.set(prompt); rail = "agent"; }
+  function investigate(prompt: string) { agentInvestigate.set(prompt); openView("agent"); }
   let cwd = $state("");
 
   // Detach-pane → new OS window (#17). A detached window carries a `?detach=`
@@ -300,18 +297,13 @@
 
   let settingsOpen = $state(false);
   let zen = $state(false);
-  let zenPrevRail = "term";
-  // Zen is always a distraction-free terminal: entering forces the terminal view
-  // (creating one if none exists) regardless of the current page; exiting restores
-  // wherever you were.
+  // Zen is a distraction-free terminal: entering focuses a terminal pane in the
+  // grid (creating one if none exists); exiting just drops the chrome-hiding flag.
   function toggleZen() {
     if (zen) {
       zen = false;
-      rail = zenPrevRail;
     } else {
-      zenPrevRail = rail;
-      rail = "term";
-      if (!activeTerm) newTerm();
+      focusTerm();
       zen = true;
     }
   }
@@ -323,17 +315,10 @@
   // Resizable explorer/sessions sidebar width (persisted).
   let sideW = $state((() => { try { return Number(localStorage.getItem("anvil-side-w")) || 230; } catch { return 230; } })());
   function toggleSide() { explorerOpen = !explorerOpen; }
-  // Explorer is the doorway into IDE mode: the first click shows the file tree +
-  // the editor surface (Welcome with open/create actions when nothing's open),
-  // instead of leaving whatever non-file view was up. A second click toggles the
-  // tree like a normal sidebar.
+  // The grid is always the IDE surface now, so the Explorer is just a toggleable
+  // left dock alongside it.
   function openExplorer() {
-    if (rail !== "editor" && rail !== "files") {
-      explorerOpen = true;
-      rail = activeFile ? "editor" : "files";
-    } else {
-      explorerOpen = !explorerOpen;
-    }
+    explorerOpen = !explorerOpen;
   }
   async function newRootFile() {
     const name = await askText({ title: "New file", placeholder: "name.ext" });
@@ -538,25 +523,16 @@
     tabDragView = null;
   }
 
-  // Map the current single-pane main view to a workspace ViewKind + ref, so a
-  // tab dragged to a screen edge can seed a split that keeps what's on screen.
-  function currentMainView(): { view: ViewKind; ref?: string } {
-    if (rail === "editor" && activeFile) return { view: "editor", ref: activeFile };
-    if (rail === "term") return { view: "term" };
-    if (["scm", "search", "agent", "settings", "devops", "k8s", "ci", "terraform", "obs"].includes(rail))
-      return { view: rail as ViewKind };
-    return { view: "term" };
-  }
-  // Drag a top-strip tab to a content edge → enter the multipane workspace with a
-  // split: the current view on one side, the dragged tab on the other.
+  // Drag a top-strip tab to a content edge while a modal-ish overlay is up →
+  // drop back into the grid, splitting the focused pane with the dragged tab so
+  // the persisted layout is kept (not replaced).
   function dockDraggedTab(edge: Edge) {
     if (!tabDragView || edge === "center") { tabDragView = null; dragTab = null; return; }
-    const cur = currentMainView();
-    const base = leaf(cur.view, paneRef(cur.view, cur.ref), paneId("wt"));
-    const res = splitLeaf(base, base.id, edge, tabDragView.view, paneRef(tabDragView.view, tabDragView.ref));
+    rail = "workspace";
+    const target = findLeaf(paneTree, activeLeaf) ?? firstLeaf(paneTree);
+    const res = splitLeaf(paneTree, target.id, edge, tabDragView.view, paneRef(tabDragView.view, tabDragView.ref));
     paneTree = res.tree;
     activeLeaf = res.newLeafId;
-    rail = "workspace";
     tabDragView = null;
     dragTab = null;
   }
@@ -672,7 +648,7 @@
     panels = panels.filter((p) => p.id !== id);
     if (activePanel === id) {
       activePanel = panels.at(-1)?.id ?? "";
-      rail = activePanel ? "panel" : terms.length ? "term" : "term";
+      rail = activePanel ? "panel" : "workspace";
     }
   }
 
@@ -714,18 +690,18 @@
       const next = viewTabs.at(-1);
       if (next) rail = next;
       else if (panels.length) { activePanel = panels.at(-1)!.id; rail = "panel"; }
-      else rail = "term";
+      else rail = "workspace";
     }
   }
   // Close whichever tab is currently active. Single source of truth for both the
   // ⌘W shortcut and the "close-tab" menu command so they can never drift.
   function closeActiveTab() {
     if (rail === "editor" && activeFile) closeFile(activeFile);
-    else if (rail === "term") closeTerm(activeTerm);
     else if (rail === "panel") closePanel(activePanel);
+    else if (rail === "diff") rail = "workspace";
     else if (viewTabs.includes(rail)) closeView(rail);
     else if (rail === "workspace") wsClose(activeLeaf);
-    else if (rail === "settings") { settingsOpen = false; rail = "term"; }
+    else if (rail === "settings") { settingsOpen = false; rail = "workspace"; }
   }
   let recentFiles = $state<string[]>([]);
   let recentWorkspaces = $state<string[]>([]);
@@ -759,7 +735,7 @@
       for (const line of log.split("\n").slice(0, 25)) {
         const p = line.split("\x1f");
         const sh = p[1], an = p[2], subj = p[7];
-        if (sh) items.push({ label: subj || sh, hint: `◆ ${sh} · ${an}`, run: () => { rail = "scm"; } });
+        if (sh) items.push({ label: subj || sh, hint: `◆ ${sh} · ${an}`, run: () => { openView("scm"); } });
       }
     } catch { /* not a git repo */ }
     paletteItems = items;
@@ -775,9 +751,55 @@
     paletteOpen = true;
   }
 
+  // Legacy terminal list — kept only so older persisted sessions round-trip
+  // through saveState/read_state unchanged. In the always-grid model terminals
+  // live as pane leaves whose PTY id is the leaf `ref`; nothing renders this
+  // list anymore. `activeTerm` is DERIVED from the grid so every
+  // `pty_write({ id: activeTerm })` targets the focused (or most-recent) grid
+  // terminal.
   let terms = $state<{ id: string; title: string; shell?: string }[]>([{ id: "t1", title: "zsh" }]);
-  let activeTerm = $state("t1");
-  let splitTerm = $state<string | null>(null);
+  // Shell override per terminal PTY ref, for "New Terminal: bash/fish/…" profiles
+  // (#48) — the grid <Terminal> reads it to spawn the chosen shell.
+  let termShells = $state<Record<string, string>>({});
+  // The most-recently focused grid terminal's PTY id (= its leaf ref), so
+  // `activeTerm` keeps pointing at "the terminal you were just in" even after you
+  // focus a non-terminal pane.
+  let lastTermRef = $state("");
+  // All terminal leaves in document order.
+  function termLeaves(node: PaneNode): Leaf[] {
+    if (node.kind === "leaf") return node.view === "term" && node.ref ? [node] : [];
+    return node.children.flatMap(termLeaves);
+  }
+  // Active terminal = the focused leaf's ref when it's a terminal, else the most
+  // recent grid terminal, else the first terminal leaf, else "" (none).
+  const activeTerm = $derived.by(() => {
+    const lf = findLeaf(paneTree, activeLeaf);
+    if (lf?.view === "term" && lf.ref) return lf.ref;
+    const terms = termLeaves(paneTree);
+    if (lastTermRef && terms.some((t) => t.ref === lastTermRef)) return lastTermRef;
+    return terms[0]?.ref ?? "";
+  });
+  // Remember the last terminal you focused, so activeTerm survives a jump to a
+  // non-terminal pane.
+  $effect(() => {
+    const lf = findLeaf(paneTree, activeLeaf);
+    if (lf?.view === "term" && lf.ref) lastTermRef = lf.ref;
+  });
+  // Make a terminal the visible/active pane: focus the current leaf if it's
+  // already a terminal, else focus the most-recent/first terminal leaf, else
+  // spawn one in the active pane. Replaces the old `rail = "term"` flip now that
+  // the grid is the permanent surface.
+  function focusTerm() {
+    const lf = findLeaf(paneTree, activeLeaf);
+    if (lf?.view === "term") return;
+    const terms = termLeaves(paneTree);
+    const target = terms.find((t) => t.ref === lastTermRef) ?? terms[0];
+    if (target) { activeLeaf = target.id; return; }
+    wsAddTab(activeLeaf); // no terminal yet — open one in the focused pane
+  }
+  // The focused pane's view — drives the activity-rail active-state highlight now
+  // that `rail` is effectively pinned to "workspace".
+  const activeView = $derived(findLeaf(paneTree, activeLeaf)?.view ?? "");
   let seq = 1;
 
   // Detach the active pane (or current view) into a new OS window (#17).
@@ -791,13 +813,10 @@
     invoke("new_window", { seed }).catch((e) => toast("Could not open new window: " + String(e).slice(0, 60), "error"));
   }
 
+  // Split the active pane to the right with a fresh terminal (⌘D).
   function toggleSplit() {
-    if (splitTerm) { splitTerm = null; return; }
-    seq += 1;
-    const id = `t${seq}`;
-    terms = [...terms, { id, title: "zsh" }];
-    splitTerm = id;
-    rail = "term";
+    const lf = findLeaf(paneTree, activeLeaf);
+    if (lf) wsSplit(lf.id, "right", "term");
   }
 
   const baseName = (p: string) => p.split("/").pop() ?? p;
@@ -853,37 +872,31 @@
     } catch { /* ignore */ }
   }
 
+  // Open a new terminal as a tab in the focused grid pane.
   function newTerm() {
     logEvent("terminal.new");
-    seq += 1;
-    const id = `t${seq}`;
-    terms = [...terms, { id, title: "zsh" }];
-    activeTerm = id;
-    rail = "term";
+    wsAddTab(activeLeaf);
   }
-  // Terminal profile (#48): spawn a session with a specific shell.
-  function newTermProfile(shell: string, title: string) {
-    seq += 1;
-    const id = `t${seq}`;
-    terms = [...terms, { id, title, shell }];
-    activeTerm = id;
-    rail = "term";
-  }
-  function closeTerm(id: string) {
-    terms = terms.filter((t) => t.id !== id);
-    if (splitTerm === id) splitTerm = null;
-    if (activeTerm === id) activeTerm = terms.at(-1)?.id ?? "";
-  }
-  function selectTerm(id: string) {
-    activeTerm = id;
-    rail = "term";
+  // Terminal profile (#48): open a terminal tab running a specific shell. The
+  // shell is keyed by the new terminal's PTY ref so the grid <Terminal> spawns it.
+  function newTermProfile(shell: string, _title: string) {
+    const ref = paneId("wt");
+    termShells = { ...termShells, [ref]: shell };
+    paneTree = addTab(paneTree, activeLeaf, "term", ref);
   }
 
   // Editor navigation history (#13): back/forward through visited files (⌘⌥←/→).
   let navHistory = $state<string[]>([]);
   let navPtr = $state(-1);
-  function navBack() { if (navPtr > 0) { navPtr -= 1; activeFile = navHistory[navPtr]; rail = "editor"; } }
-  function navForward() { if (navPtr < navHistory.length - 1) { navPtr += 1; activeFile = navHistory[navPtr]; rail = "editor"; } }
+  // Show a file in the focused grid pane without touching nav history (used by
+  // back/forward and "go to line/symbol" which target the already-open file).
+  function showInGrid(p: string) {
+    activeFile = p;
+    if (rail !== "workspace") rail = "workspace";
+    if (findLeaf(paneTree, activeLeaf)) paneTree = setLeafView(paneTree, activeLeaf, "editor", p);
+  }
+  function navBack() { if (navPtr > 0) { navPtr -= 1; showInGrid(navHistory[navPtr]); } }
+  function navForward() { if (navPtr < navHistory.length - 1) { navPtr += 1; showInGrid(navHistory[navPtr]); } }
 
   function openInEditor(p: string) {
     logEvent("file.open", { ext: p.split(".").pop() });
@@ -894,13 +907,10 @@
       navHistory = [...navHistory.slice(0, navPtr + 1), p].slice(-50);
       navPtr = navHistory.length - 1;
     }
-    // In the multipane workspace, route the file into the focused pane instead
-    // of switching to the single-editor view.
-    if (rail === "workspace" && findLeaf(paneTree, activeLeaf)) {
-      paneTree = setLeafView(paneTree, activeLeaf, "editor", p);
-    } else {
-      rail = "editor";
-    }
+    // The grid is the home: open the file in the focused pane. If a modal-ish
+    // surface (settings/diff/panel) is up, drop back to the grid first.
+    if (rail !== "workspace") rail = "workspace";
+    if (findLeaf(paneTree, activeLeaf)) paneTree = setLeafView(paneTree, activeLeaf, "editor", p);
   }
 
   function openRecent() {
@@ -917,7 +927,7 @@
     dirtyFiles = rest;
     closedFiles = [p, ...closedFiles.filter((f) => f !== p)].slice(0, 20);
     if (activeFile === p) activeFile = openFiles.at(-1) ?? "";
-    if (openFiles.length === 0 && rail === "editor") rail = "term";
+    if (openFiles.length === 0 && rail === "editor") rail = "workspace";
   }
   function reopenClosed() {
     const p = closedFiles.find((f) => !openFiles.includes(f));
@@ -939,7 +949,7 @@
 
   function explainCode(code: string, p: string) {
     agentSeed.set(`Explain this code from ${p.split("/").pop()}:\n\n\`\`\`\n${code}\n\`\`\``);
-    rail = "agent";
+    openView("agent");
   }
 
   async function goToWorkspaceSymbol() {
@@ -969,7 +979,7 @@
     paletteItems = syms.map((s) => ({
       label: `${"  ".repeat(s.depth)}${s.name}`,
       hint: s.detail,
-      run: () => { rail = "editor"; editorGoto.set(s.line); },
+      run: () => { showInGrid(activeFile); editorGoto.set(s.line); },
     }));
     paletteOpen = true;
   }
@@ -978,7 +988,7 @@
   // `kubectl apply`. The change lands in git and reconciles from there — never
   // touches the cluster directly. Requires the file saved to disk first.
   async function proposeManifestPr() {
-    if (rail !== "editor" || !activeFile) { toast("Open a manifest in the editor first", "info"); return; }
+    if (!activeFile) { toast("Open a manifest in the editor first", "info"); return; }
     if (dirtyFiles[activeFile]) { toast("Save the file first (⌘S), then propose the PR", "info"); return; }
     const rel = activeFile.startsWith(cwd + "/") ? activeFile.slice(cwd.length + 1) : activeFile;
     const base = baseName(activeFile).replace(/\.[^.]+$/, "");
@@ -1018,12 +1028,12 @@
       } },
       { label: "GitOps: Propose Manifest Change as PR…", hint: "branch + commit + push + gh pr", run: proposeManifestPr },
       { label: `Terminal: Broadcast Input ${get(broadcastInput) ? "(on)" : "(off)"}`, run: () => { const v = !get(broadcastInput); broadcastInput.set(v); toast(v ? "Broadcast input ON — keystrokes go to all terminals" : "Broadcast input off", v ? "info" : "success"); } },
-      { label: "Terminal: Command History…", run: () => { const h = getHistory(); if (!h.length) { toast("No commands recorded yet", "info"); return; } palettePlaceholder = `${h.length} command${h.length === 1 ? "" : "s"} — Enter to rerun`; paletteItems = [...h].reverse().map((c) => ({ label: c, hint: "⏎ rerun", run: () => { rail = "term"; invoke("pty_write", { id: activeTerm, data: c + "\r" }).catch(() => toast("No active terminal", "error")); } })); paletteItems.push({ label: "Clear command history", hint: "irreversible", run: () => { clearHistory(); toast("Command history cleared", "success"); } }); paletteOpen = true; } },
+      { label: "Terminal: Command History…", run: () => { const h = getHistory(); if (!h.length) { toast("No commands recorded yet", "info"); return; } palettePlaceholder = `${h.length} command${h.length === 1 ? "" : "s"} — Enter to rerun`; paletteItems = [...h].reverse().map((c) => ({ label: c, hint: "⏎ rerun", run: () => { focusTerm(); invoke("pty_write", { id: activeTerm, data: c + "\r" }).catch(() => toast("No active terminal", "error")); } })); paletteItems.push({ label: "Clear command history", hint: "irreversible", run: () => { clearHistory(); toast("Command history cleared", "success"); } }); paletteOpen = true; } },
       { label: `Terminal: Auto-cd to File's Folder ${get(terminalAutoCd) ? "(on)" : "(off)"}`, run: () => { toggleTerminalAutoCd(); toast(get(terminalAutoCd) ? "Active terminal follows the open file" : "Auto-cd off", "success"); } },
-      { label: "Terminal: cd to Current File's Folder", run: () => { if (!activeFile) { toast("Open a file first", "info"); return; } const dir = activeFile.replace(/\/[^/]*$/, "") || "/"; invoke("pty_write", { id: activeTerm, data: `cd ${dir.includes(" ") ? `'${dir}'` : dir}\r` }).then(() => { rail = "term"; }).catch(() => toast("No active terminal", "error")); } },
-      { label: "k8s: Diff Current Manifest vs Cluster", hint: "read-only · GitOps", run: async () => { if (!activeFile || !/\.(ya?ml)$/i.test(activeFile)) { toast("Open a YAML manifest first", "info"); return; } let diff = ""; try { diff = await invoke<string>("kube_diff", { path: activeFile }); } catch (e) { toast(String(e).slice(0, 80) || "kubectl diff failed", "error"); return; } if (!diff.trim()) { toast("No drift — manifest matches the cluster", "success"); return; } agentSeed.set(`Live cluster differs from ${baseName(activeFile)}. This is GitOps — do NOT kubectl apply; the change must land via a git commit that Flux reconciles. Here's the drift:\n\n\`\`\`diff\n${diff.slice(0, 4000)}\n\`\`\``); rail = "agent"; } },
-      { label: "SSH: Connect to Host…", run: async () => { let hosts: string[] = []; try { hosts = (await invoke<string>("ssh_hosts")).split("\n").filter(Boolean); } catch { /* ignore */ } if (!hosts.length) { toast("No hosts in ~/.ssh/config", "info"); return; } palettePlaceholder = `${hosts.length} ssh host${hosts.length === 1 ? "" : "s"}`; paletteItems = hosts.map((h) => ({ label: h, hint: "ssh", run: () => { rail = "term"; invoke("pty_write", { id: activeTerm, data: `ssh ${h}\r` }).catch(() => toast("No active terminal", "error")); } })); paletteOpen = true; } },
-      { label: "Close Tab", hint: "⌘W", run: () => (rail === "editor" ? closeFile(activeFile) : closeTerm(activeTerm)) },
+      { label: "Terminal: cd to Current File's Folder", run: () => { if (!activeFile) { toast("Open a file first", "info"); return; } const dir = activeFile.replace(/\/[^/]*$/, "") || "/"; invoke("pty_write", { id: activeTerm, data: `cd ${dir.includes(" ") ? `'${dir}'` : dir}\r` }).then(() => { focusTerm(); }).catch(() => toast("No active terminal", "error")); } },
+      { label: "k8s: Diff Current Manifest vs Cluster", hint: "read-only · GitOps", run: async () => { if (!activeFile || !/\.(ya?ml)$/i.test(activeFile)) { toast("Open a YAML manifest first", "info"); return; } let diff = ""; try { diff = await invoke<string>("kube_diff", { path: activeFile }); } catch (e) { toast(String(e).slice(0, 80) || "kubectl diff failed", "error"); return; } if (!diff.trim()) { toast("No drift — manifest matches the cluster", "success"); return; } agentSeed.set(`Live cluster differs from ${baseName(activeFile)}. This is GitOps — do NOT kubectl apply; the change must land via a git commit that Flux reconciles. Here's the drift:\n\n\`\`\`diff\n${diff.slice(0, 4000)}\n\`\`\``); openView("agent"); } },
+      { label: "SSH: Connect to Host…", run: async () => { let hosts: string[] = []; try { hosts = (await invoke<string>("ssh_hosts")).split("\n").filter(Boolean); } catch { /* ignore */ } if (!hosts.length) { toast("No hosts in ~/.ssh/config", "info"); return; } palettePlaceholder = `${hosts.length} ssh host${hosts.length === 1 ? "" : "s"}`; paletteItems = hosts.map((h) => ({ label: h, hint: "ssh", run: () => { focusTerm(); invoke("pty_write", { id: activeTerm, data: `ssh ${h}\r` }).catch(() => toast("No active terminal", "error")); } })); paletteOpen = true; } },
+      { label: "Close Tab", hint: "⌘W", run: closeActiveTab },
       { label: "Find File…", hint: "⌘P", run: openFilesPalette },
       { label: "Go to Anything…", run: goToAnything },
       { label: "Recent Files…", hint: "⌘E", run: openRecent },
@@ -1035,13 +1045,13 @@
       { label: "Git: Reflog…", hint: "recover lost commits", run: gitReflog },
       { label: "Git: Compare to Branch…", hint: "ahead/behind + files", run: gitBranchCompare },
       { label: `Problems… (${$problems.length})`, hint: "⇧⌘M", run: () => { bottomDock = true; dockTab = "problems"; } },
-      { label: "Go to Line…", run: () => { if (!activeFile) { toast("Open a file first", "info"); return; } const n = prompt("Go to line:"); if (n && +n > 0) { rail = "editor"; editorGoto.set(Math.floor(+n)); } } },
-      { label: "Ask Agent…", hint: "⌘I", run: () => { const q = prompt("Ask the agent:"); if (q && q.trim()) { agentSeed.set(q.trim()); rail = "agent"; } } },
+      { label: "Go to Line…", run: () => { if (!activeFile) { toast("Open a file first", "info"); return; } const n = prompt("Go to line:"); if (n && +n > 0) { showInGrid(activeFile); editorGoto.set(Math.floor(+n)); } } },
+      { label: "Ask Agent…", hint: "⌘I", run: () => { const q = prompt("Ask the agent:"); if (q && q.trim()) { agentSeed.set(q.trim()); openView("agent"); } } },
       { label: "Agent: Enqueue Task…", run: () => { const q = prompt("Queue an agent task:"); if (q && q.trim()) { enqueueAgent(q.trim()); toast(`Queued (${get(agentQueue).length} pending)`, "success"); } } },
-      { label: `Agent: Run Next Queued (${get(agentQueue).length})`, run: () => { const t = dequeueAgent(); if (!t) { toast("Queue is empty", "info"); return; } agentSeed.set(t.prompt); rail = "agent"; } },
-      { label: "Agent: View Queue…", run: () => { const q = get(agentQueue); if (!q.length) { toast("Queue is empty", "info"); return; } palettePlaceholder = `${q.length} queued task${q.length === 1 ? "" : "s"}`; paletteItems = q.map((t) => ({ label: t.prompt, hint: "✕ remove", run: () => { removeQueued(t.id); toast("Removed from queue", "success"); } })); paletteItems.push({ label: "Run all (seed first, rest stay queued)", hint: "", run: () => { const n = dequeueAgent(); if (n) { agentSeed.set(n.prompt); rail = "agent"; } } }); paletteItems.push({ label: "Clear queue", hint: "irreversible", run: () => { clearQueue(); toast("Queue cleared", "success"); } }); paletteOpen = true; } },
-      { label: "Agent: Run Tests & Fix", run: () => { agentSeed.set("Enable Agent mode, then: detect and run this project's test suite using your run tool (e.g. `npm test`, `cargo test`, `pytest`), read the failures, and propose minimal fixes as per-hunk diffs. Iterate until tests pass."); rail = "agent"; } },
-      { label: "Agent: Diagnose Terminal Output", hint: "last failure", run: () => { const t = readTerminal(activeTerm).slice(-4000).trim(); if (!t) { toast("Active terminal is empty", "info"); return; } agentSeed.set(`Diagnose the problem in this terminal output and propose a fix. Use your run tool to investigate (logs, status, describe, plan) before concluding — don't guess.\n\n\`\`\`\n${t}\n\`\`\``); rail = "agent"; } },
+      { label: `Agent: Run Next Queued (${get(agentQueue).length})`, run: () => { const t = dequeueAgent(); if (!t) { toast("Queue is empty", "info"); return; } agentSeed.set(t.prompt); openView("agent"); } },
+      { label: "Agent: View Queue…", run: () => { const q = get(agentQueue); if (!q.length) { toast("Queue is empty", "info"); return; } palettePlaceholder = `${q.length} queued task${q.length === 1 ? "" : "s"}`; paletteItems = q.map((t) => ({ label: t.prompt, hint: "✕ remove", run: () => { removeQueued(t.id); toast("Removed from queue", "success"); } })); paletteItems.push({ label: "Run all (seed first, rest stay queued)", hint: "", run: () => { const n = dequeueAgent(); if (n) { agentSeed.set(n.prompt); openView("agent"); } } }); paletteItems.push({ label: "Clear queue", hint: "irreversible", run: () => { clearQueue(); toast("Queue cleared", "success"); } }); paletteOpen = true; } },
+      { label: "Agent: Run Tests & Fix", run: () => { agentSeed.set("Enable Agent mode, then: detect and run this project's test suite using your run tool (e.g. `npm test`, `cargo test`, `pytest`), read the failures, and propose minimal fixes as per-hunk diffs. Iterate until tests pass."); openView("agent"); } },
+      { label: "Agent: Diagnose Terminal Output", hint: "last failure", run: () => { const t = readTerminal(activeTerm).slice(-4000).trim(); if (!t) { toast("Active terminal is empty", "info"); return; } agentSeed.set(`Diagnose the problem in this terminal output and propose a fix. Use your run tool to investigate (logs, status, describe, plan) before concluding — don't guess.\n\n\`\`\`\n${t}\n\`\`\``); openView("agent"); } },
       { label: "Agent: Set Utility Model (fast tasks)…", run: () => { const cur = (typeof localStorage !== "undefined" && localStorage.getItem("anvil-util-model")) || ""; const m = prompt("Model id for quick tasks like commit messages (blank = use default):", cur); if (m === null) return; try { if (m.trim()) localStorage.setItem("anvil-util-model", m.trim()); else localStorage.removeItem("anvil-util-model"); } catch { /* ignore */ } toast(m.trim() ? `Utility model: ${m.trim()}` : "Utility model cleared", "success"); } },
       { label: "Agent: Set Reasoning Model (agent chat)…", run: () => { const cur = (typeof localStorage !== "undefined" && localStorage.getItem("anvil-reasoning-model")) || ""; const m = prompt("Model id for agent reasoning/chat (blank = use default; reopen agent to apply):", cur); if (m === null) return; try { if (m.trim()) localStorage.setItem("anvil-reasoning-model", m.trim()); else localStorage.removeItem("anvil-reasoning-model"); } catch { /* ignore */ } toast(m.trim() ? `Reasoning model: ${m.trim()}` : "Reasoning model cleared", "success"); } },
       { label: "Terminal: Run Snippet…", hint: "quick commands", run: () => { palettePlaceholder = "Run snippet in terminal"; paletteItems = getSnippets().map((s) => ({ label: s.label, hint: s.command, run: () => sendToTerm(s.command) })); paletteItems.push({ label: "➕ Save a snippet…", hint: "", run: saveSnippetFlow }); paletteItems.push({ label: "🗑 Manage snippets…", hint: "", run: manageSnippetsFlow }); paletteOpen = true; } },
@@ -1058,7 +1068,7 @@
         const list = (mine.length ? mine : $problems).slice(0, 20).map((p) => `${p.path.split("/").pop()}:${p.line}  ${p.message}`).join("\n");
         if (!list) { toast("No diagnostics to explain", "info"); return; }
         agentSeed.set(`Explain these errors and suggest fixes:\n\n${list}`);
-        rail = "agent";
+        openView("agent");
       } },
       { label: "Save Command…", run: saveCommand },
       { label: "Run Saved Command…", run: runSavedCommand },
@@ -1098,25 +1108,25 @@
       { label: "Export Settings to File", run: exportSettings },
       { label: "Import Settings from File", run: importSettings },
       { label: "Pin Theme + Density to Workspace", run: pinWorkspace },
-      { label: "View: Terminal", run: () => (rail = "term") },
+      { label: "View: Terminal", run: focusTerm },
       { label: "Toggle Explorer Sidebar", hint: "⌘B", run: toggleSide },
       { label: `Workspace: Focus Dimming ${get(focusDimming) ? "(on)" : "(off)"}`, run: () => { toggleFocusDimming(); toast(get(focusDimming) ? "Inactive panes dimmed" : "Focus dimming off", "success"); } },
-      { label: "View: Source Control", run: () => (rail = "scm") },
+      { label: "View: Source Control", run: () => openView("scm") },
       { label: "Git: Pull (fast-forward)", run: async () => { try { await invoke("git_pull", { cwd }); toast("Pulled", "success"); } catch (e) { toast(String(e).slice(0, 80) || "Pull failed", "error"); } } },
       { label: "Git: Push", run: async () => { try { await invoke("git_push", { cwd }); toast("Pushed", "success"); } catch (e) { toast(String(e).slice(0, 80) || "Push failed", "error"); } } },
       { label: "Git: Fetch All", run: async () => { try { await invoke("git_fetch", { cwd }); toast("Fetched", "success"); } catch { toast("Fetch failed", "error"); } } },
       { label: "Git: 3-Pane Merge (current file)", run: () => { if (!activeFile) { toast("Open the conflicted file first", "info"); return; } mergeView = activeFile; } },
       { label: "Git: Generate PR Body (agent → clipboard)", run: generatePrBody },
       { label: "Git: Interactive Rebase onto…", run: () => { const target = prompt("Rebase onto (branch / ref / commit):", "origin/main"); if (target) rebaseTarget = target; } },
-      { label: "Git: Interactive Rebase in Terminal…", run: () => { const target = prompt("Rebase onto (branch / ref / commit):", "origin/main"); if (!target) return; rail = "term"; invoke("pty_write", { id: activeTerm, data: `git rebase -i ${target}\r` }).catch(() => toast("No active terminal", "error")); } },
+      { label: "Git: Interactive Rebase in Terminal…", run: () => { const target = prompt("Rebase onto (branch / ref / commit):", "origin/main"); if (!target) return; focusTerm(); invoke("pty_write", { id: activeTerm, data: `git rebase -i ${target}\r` }).catch(() => toast("No active terminal", "error")); } },
       { label: "Git: Worktrees…", run: async () => { let raw = ""; try { raw = await invoke<string>("git_worktrees", { cwd }); } catch { toast("Not a git repository", "error"); return; } const rows = raw.split("\n").filter(Boolean).map((l) => { const [p, b] = l.split("\t"); return { p, b }; }); palettePlaceholder = `${rows.length} worktree${rows.length === 1 ? "" : "s"}`; paletteItems = rows.map((w) => ({ label: w.b, hint: w.p + (w.p === cwd ? "  (current)" : ""), run: () => { cwd = w.p; explorerOpen = true; toast(`Switched to ${w.b}`, "success"); } })); paletteItems.push({ label: "➕ Add worktree…", hint: "branch → sibling dir", run: async () => { const br = prompt("Branch for the new worktree:"); if (!br) return; const path = prompt("Path for the worktree:", `${cwd}-${br.replace(/[^\w.-]+/g, "-")}`); if (!path) return; try { await invoke("git_worktree_add", { cwd, path, branch: br }); toast("Worktree added", "success"); } catch (e) { toast(String(e).slice(0, 80) || "add failed", "error"); } } }); paletteOpen = true; } },
       { label: "Git: Amend Last Commit (staged)", run: async () => { try { await invoke("git_amend", { cwd }); toast("Amended last commit", "success"); } catch (e) { toast(String(e).slice(0, 80) || "Amend failed", "error"); } } },
       { label: "GitHub: Create PR (gh pr create --fill)", run: async () => { try { const r = await invoke<string>("gh_pr_create", { cwd }); toast(r.split("\n").find(Boolean)?.slice(0, 80) || "PR created", "success"); } catch (e) { toast(String(e).slice(0, 90) || "PR create failed", "error"); } } },
       { label: "GitHub: View PR in Browser", run: async () => { try { await invoke("gh_pr_web", { cwd }); } catch (e) { toast(String(e).slice(0, 80) || "No PR for this branch", "error"); } } },
-      { label: "AWS: SSO Login", run: () => { invoke("pty_write", { id: activeTerm, data: "aws sso login\n" }); rail = "term"; } },
-      { label: "AWS: EC2 Instances", run: () => { invoke("pty_write", { id: activeTerm, data: "aws ec2 describe-instances --query 'Reservations[].Instances[].{ID:InstanceId,Type:InstanceType,State:State.Name,Name:Tags[?Key==`Name`]|[0].Value}' --output table\n" }); rail = "term"; } },
-      { label: "AWS: S3 Buckets", run: () => { invoke("pty_write", { id: activeTerm, data: "aws s3 ls\n" }); rail = "term"; } },
-      { label: "AWS: Lambda Functions", run: () => { invoke("pty_write", { id: activeTerm, data: "aws lambda list-functions --query 'Functions[].{Name:FunctionName,Runtime:Runtime,Mem:MemorySize}' --output table\n" }); rail = "term"; } },
+      { label: "AWS: SSO Login", run: () => { invoke("pty_write", { id: activeTerm, data: "aws sso login\n" }); focusTerm(); } },
+      { label: "AWS: EC2 Instances", run: () => { invoke("pty_write", { id: activeTerm, data: "aws ec2 describe-instances --query 'Reservations[].Instances[].{ID:InstanceId,Type:InstanceType,State:State.Name,Name:Tags[?Key==`Name`]|[0].Value}' --output table\n" }); focusTerm(); } },
+      { label: "AWS: S3 Buckets", run: () => { invoke("pty_write", { id: activeTerm, data: "aws s3 ls\n" }); focusTerm(); } },
+      { label: "AWS: Lambda Functions", run: () => { invoke("pty_write", { id: activeTerm, data: "aws lambda list-functions --query 'Functions[].{Name:FunctionName,Runtime:Runtime,Mem:MemorySize}' --output table\n" }); focusTerm(); } },
       { label: "Secrets: Read → Copy…", hint: "ssm · vault · 1password · keychain", run: () => { palettePlaceholder = "Secret source — value is copied, never shown or stored"; paletteItems = [
         { label: "AWS SSM Parameter", hint: "ssm", run: () => readSecret("ssm", "SSM parameter name (e.g. /prod/db/url):") },
         { label: "Vault", hint: "vault", run: () => readSecret("vault", "Vault path (e.g. secret/data/app):") },
@@ -1126,10 +1136,10 @@
       { label: "GitHub: Run Workflow…", hint: "workflow_dispatch", run: runWorkflow },
       { label: "Sentry: Recent Issues…", hint: "unresolved · 14d", run: sentryIssues },
       { label: "Slack: Post Message…", hint: "incoming webhook", run: slackPost },
-      { label: "AWS: RDS Instances", run: () => { invoke("pty_write", { id: activeTerm, data: "aws rds describe-db-instances --query 'DBInstances[].{ID:DBInstanceIdentifier,Engine:Engine,Class:DBInstanceClass,Status:DBInstanceStatus}' --output table\n" }); rail = "term"; } },
-      { label: "Secrets: SSM Get Parameter…", run: () => { const k = prompt("SSM parameter name (e.g. /app/db/password):"); if (k) { invoke("pty_write", { id: activeTerm, data: `aws ssm get-parameter --name '${k}' --with-decryption --query Parameter.Value --output text\n` }); rail = "term"; } } },
-      { label: "Secrets: Vault Read…", run: () => { const k = prompt("Vault path (e.g. secret/data/app):"); if (k) { invoke("pty_write", { id: activeTerm, data: `vault kv get '${k}'\n` }); rail = "term"; } } },
-      { label: "Secrets: Keychain Find…", run: () => { const k = prompt("Keychain service name:"); if (k) { invoke("pty_write", { id: activeTerm, data: `security find-generic-password -s '${k}' -w\n` }); rail = "term"; } } },
+      { label: "AWS: RDS Instances", run: () => { invoke("pty_write", { id: activeTerm, data: "aws rds describe-db-instances --query 'DBInstances[].{ID:DBInstanceIdentifier,Engine:Engine,Class:DBInstanceClass,Status:DBInstanceStatus}' --output table\n" }); focusTerm(); } },
+      { label: "Secrets: SSM Get Parameter…", run: () => { const k = prompt("SSM parameter name (e.g. /app/db/password):"); if (k) { invoke("pty_write", { id: activeTerm, data: `aws ssm get-parameter --name '${k}' --with-decryption --query Parameter.Value --output text\n` }); focusTerm(); } } },
+      { label: "Secrets: Vault Read…", run: () => { const k = prompt("Vault path (e.g. secret/data/app):"); if (k) { invoke("pty_write", { id: activeTerm, data: `vault kv get '${k}'\n` }); focusTerm(); } } },
+      { label: "Secrets: Keychain Find…", run: () => { const k = prompt("Keychain service name:"); if (k) { invoke("pty_write", { id: activeTerm, data: `security find-generic-password -s '${k}' -w\n` }); focusTerm(); } } },
       { label: "AWS: Switch Profile…", run: async () => {
         let profiles: string[] = [];
         try { profiles = (await invoke<string>("aws_profiles")).split("\n").filter(Boolean); } catch { /* ignore */ }
@@ -1142,9 +1152,9 @@
         } }));
         paletteOpen = true;
       } },
-      { label: "GitLab: CI Pipelines (glab ci list)", run: () => { invoke("pty_write", { id: activeTerm, data: "glab ci list\n" }); rail = "term"; } },
-      { label: "GitLab: Pipeline Logs (glab ci trace)", run: () => { invoke("pty_write", { id: activeTerm, data: "glab ci trace\n" }); rail = "term"; } },
-      { label: "GitLab: Retry Pipeline (glab ci retry)", run: () => { invoke("pty_write", { id: activeTerm, data: "glab ci retry\n" }); rail = "term"; } },
+      { label: "GitLab: CI Pipelines (glab ci list)", run: () => { invoke("pty_write", { id: activeTerm, data: "glab ci list\n" }); focusTerm(); } },
+      { label: "GitLab: Pipeline Logs (glab ci trace)", run: () => { invoke("pty_write", { id: activeTerm, data: "glab ci trace\n" }); focusTerm(); } },
+      { label: "GitLab: Retry Pipeline (glab ci retry)", run: () => { invoke("pty_write", { id: activeTerm, data: "glab ci retry\n" }); focusTerm(); } },
       { label: "View: Search", run: () => openView("search") },
       { label: "View: AI Agent", run: () => openView("agent") },
       { label: "View: Kubernetes", run: () => openView("k8s") },
@@ -1152,7 +1162,7 @@
       { label: "View: Terraform / Terragrunt", run: () => openView("terraform") },
       { label: "View: Helm", hint: "in Kubernetes", run: () => openView("k8s") },
       { label: "View: Observability (Metrics / Logs)", run: () => openView("obs") },
-      { label: "View: DevOps (Terraform / Helm / Observability)", run: () => (rail = "devops") },
+      { label: "View: DevOps (Terraform / Helm / Observability)", run: () => openView("devops") },
       { label: "Workspace: Balance Panes", run: () => { paneTree = balanceTree(paneTree); rail = "workspace"; } },
       { label: "Workspace: Close Other Panes", run: () => { paneTree = closeOtherPanes(paneTree, activeLeaf); rail = "workspace"; } },
       { label: "Workspace: Save Layout As…", run: saveLayoutAs },
@@ -1181,7 +1191,7 @@
     palettePlaceholder = "Run saved command…";
     paletteItems = savedCommands.map((c) => ({
       label: c,
-      run: () => { invoke("pty_write", { id: activeTerm, data: c + "\n" }); rail = "term"; },
+      run: () => { invoke("pty_write", { id: activeTerm, data: c + "\n" }); focusTerm(); },
     }));
     paletteOpen = true;
   }
@@ -1317,7 +1327,7 @@
     "bottom-dock": () => { bottomDock = !bottomDock; },
     "explorer": toggleSide,
     "zen": () => { toggleZen(); },
-    "search": () => { rail = "search"; },
+    "search": () => { openView("search"); },
   };
   function onCustomKey(e: KeyboardEvent) {
     const ov = get(keyOverrides);
@@ -1347,12 +1357,12 @@
     else if (e.key === "d") { e.preventDefault(); toggleSplit(); }
     else if (e.key === "j") { e.preventDefault(); bottomDock = !bottomDock; }
     else if (e.shiftKey && (e.key === "a" || e.key === "A")) { e.preventDefault(); attentionOpen = true; }
-    else if (e.shiftKey && (e.key === "f" || e.key === "F")) { e.preventDefault(); rail = "search"; }
+    else if (e.shiftKey && (e.key === "f" || e.key === "F")) { e.preventDefault(); openView("search"); }
     else if (e.shiftKey && (e.key === "b" || e.key === "B")) { e.preventDefault(); toggleRail(); }
     else if (e.shiftKey && (e.key === "o" || e.key === "O")) { e.preventDefault(); goToSymbol(); }
     else if (e.shiftKey && (e.key === "m" || e.key === "M")) { e.preventDefault(); bottomDock = true; dockTab = "problems"; }
     else if (e.shiftKey && (e.key === "v" || e.key === "V")) { if (isMarkdown(activeFile)) { e.preventDefault(); mdPreview = !mdPreview; rail = "editor"; } }
-    else if (e.key === "i") { e.preventDefault(); rail = "agent"; }
+    else if (e.key === "i") { e.preventDefault(); openView("agent"); }
     else if (e.key === "/") { e.preventDefault(); keymapOpen = true; }
     else if (rail === "editor" && e.altKey && e.key === "ArrowLeft") { e.preventDefault(); navBack(); }
     else if (rail === "editor" && e.altKey && e.key === "ArrowRight") { e.preventDefault(); navForward(); }
@@ -1386,12 +1396,10 @@
     }
     else if (e.key >= "1" && e.key <= "9") {
       e.preventDefault();
-      // ⌘1–9 jumps to the Nth tab across the strip (terminals, then files).
-      const tabList = [
-        ...terms.map((t) => () => selectTerm(t.id)),
-        ...openFiles.map((f) => () => { activeFile = f; rail = "editor"; }),
-      ];
-      tabList[Number(e.key) - 1]?.();
+      // ⌘1–9 focuses the Nth pane in the grid.
+      const ids = leafIds(paneTree);
+      const id = ids[Number(e.key) - 1];
+      if (id) activeLeaf = id;
     }
   }
 
@@ -1519,14 +1527,15 @@
     if (isDetached && detachSeed) {
       cwd = detachSeed.cwd || (await invoke<string>("home_dir").catch(() => ""));
       const v = detachSeed.view ?? "term";
-      paneTree = leaf(v as ViewKind, detachSeed.file, paneId("wt"));
+      // The grid is the surface even in a detached window: seed a single leaf
+      // showing the requested view and stay on "workspace".
+      paneTree = leaf(v as ViewKind, v === "term" ? paneId("wt") : detachSeed.file, paneId("wt"));
+      activeLeaf = firstLeaf(paneTree).id;
       if (v === "editor" && detachSeed.file) {
         openFiles = [detachSeed.file];
         activeFile = detachSeed.file;
-        rail = "editor";
-      } else {
-        rail = v === "term" ? "term" : v;
       }
+      rail = "workspace";
       restored = true;
       window.addEventListener("keydown", onCustomKey, true);
       await listen<string>("menu", (e) => onMenu(e.payload));
@@ -1540,9 +1549,10 @@
       try { st = JSON.parse(await invoke<string>("read_state", { label: winLabel })); } catch { st = {}; }
     }
     cwd = st.cwd || (await invoke<string>("home_dir"));
+    // terms[] is vestigial now (grid terminals are leaves), but restore it so an
+    // older session round-trips; seq keeps minting unique legacy ids.
     if (Array.isArray(st.terms) && st.terms.length) {
       terms = st.terms;
-      activeTerm = st.activeTerm || terms[0].id;
       seq = st.seq || terms.length;
     }
     if (Array.isArray(st.openFiles)) { openFiles = st.openFiles; activeFile = st.activeFile || openFiles.at(-1) || ""; }
@@ -1551,10 +1561,24 @@
     if (st.wsSettings && typeof st.wsSettings === "object") wsSettings = st.wsSettings;
     if (st.paneTree && typeof st.paneTree === "object") { try { paneTree = remapTermRefs(st.paneTree); seedPaneSeq(paneTree); } catch { /* ignore */ } }
     if (typeof st.activeLeaf === "string" && findLeaf(paneTree, st.activeLeaf)) activeLeaf = st.activeLeaf;
-    if (st.rail && st.rail !== "diff") rail = st.rail;
     if (typeof st.explorerOpen === "boolean") explorerOpen = st.explorerOpen;
-    // Migrate old single-rail "files" mode → persistent explorer + editor view.
-    if (rail === "files") { explorerOpen = true; rail = activeFile ? "editor" : "term"; }
+    // Always-grid migration: the grid is the only content surface. Any persisted
+    // single-view rail (term/editor/files/panel or a PANE_VIEW like scm/k8s/…)
+    // coerces to "workspace", seeding the active leaf with that view so the
+    // restored session lands on the same content inside the grid. Only "settings"
+    // (a modal overlay) survives as a non-grid rail.
+    if (st.rail === "settings") { rail = "settings"; settingsOpen = true; }
+    else {
+      rail = "workspace";
+      const lf = findLeaf(paneTree, activeLeaf);
+      const seed = st.rail === "files" ? "files" : st.rail === "panel" ? null : st.rail;
+      if (st.rail === "files") explorerOpen = true;
+      // Don't clobber a restored multi-pane layout; only seed when the tree is a
+      // lone leaf (the default), so a saved grid is preserved as-is.
+      if (lf && paneTree.kind === "leaf" && seed && PANE_VIEWS.has(seed)) {
+        paneTree = setLeafView(paneTree, lf.id, seed as ViewKind, seed === "editor" ? (activeFile || undefined) : seed === "term" ? paneId("wt") : undefined);
+      }
+    }
     restored = true;
     // Crash/quit safety: flush the session immediately (cancel the debounce) when
     // the window is hidden or about to close — saveState writes localStorage
@@ -1580,8 +1604,10 @@
     saveTimer = setTimeout(saveState, 400);
   });
 
-  // ── Tab drag-reorder + context menu (roadmap §A #15 / #16) ──
-  type TabKind = "term" | "file";
+  // ── File-tab drag-reorder + context menu (roadmap §A #15 / #16) ──
+  // Only file tabs live in the top strip now (terminals are grid panes), so the
+  // `kind` discriminant collapses to "file".
+  type TabKind = "file";
   let dragTab = $state<{ kind: TabKind; id: string } | null>(null);
   let tabMenu = $state<{ x: number; y: number; kind: TabKind; id: string } | null>(null);
 
@@ -1595,39 +1621,26 @@
     a.splice(ti < 0 ? a.length : ti, 0, from);
     return a;
   }
-  function tabDrop(kind: TabKind, id: string) {
-    if (!dragTab || dragTab.kind !== kind) { dragTab = null; return; }
-    if (kind === "term") {
-      const from = terms.find((t) => t.id === dragTab!.id);
-      const to = terms.find((t) => t.id === id);
-      if (from && to) terms = reorder(terms, from, to);
-    } else {
-      openFiles = reorder(openFiles, dragTab.id, id);
-    }
+  function tabDrop(_kind: TabKind, id: string) {
+    if (!dragTab) { dragTab = null; return; }
+    openFiles = reorder(openFiles, dragTab.id, id);
     dragTab = null;
   }
   function tabCtx(e: MouseEvent, kind: TabKind, id: string) {
     e.preventDefault();
     tabMenu = { x: e.clientX, y: e.clientY, kind, id };
   }
-  function closeOthers(kind: TabKind, id: string) {
-    if (kind === "term") { for (const t of [...terms]) if (t.id !== id) closeTerm(t.id); }
-    else { for (const f of [...openFiles]) if (f !== id && !pinnedFiles.includes(f)) closeFile(f); }
+  function closeOthers(_kind: TabKind, id: string) {
+    for (const f of [...openFiles]) if (f !== id && !pinnedFiles.includes(f)) closeFile(f);
     tabMenu = null;
   }
-  function closeRight(kind: TabKind, id: string) {
-    if (kind === "term") {
-      const i = terms.findIndex((t) => t.id === id);
-      for (const t of terms.slice(i + 1)) closeTerm(t.id);
-    } else {
-      const i = openFiles.indexOf(id);
-      for (const f of openFiles.slice(i + 1)) closeFile(f);
-    }
+  function closeRight(_kind: TabKind, id: string) {
+    const i = openFiles.indexOf(id);
+    for (const f of openFiles.slice(i + 1)) closeFile(f);
     tabMenu = null;
   }
-  function copyTabPath(kind: TabKind, id: string) {
-    const txt = kind === "file" ? id : (terms.find((t) => t.id === id)?.title ?? id);
-    navigator.clipboard.writeText(txt).catch((e) => console.warn("clipboard write failed", e));
+  function copyTabPath(_kind: TabKind, id: string) {
+    navigator.clipboard.writeText(id).catch((e) => console.warn("clipboard write failed", e));
     tabMenu = null;
   }
 </script>
@@ -1640,18 +1653,8 @@
        tab pills into an OS window-drag, breaking tab→pane drag-and-drop. The
        empty .spacer below carries the drag region for moving the window. -->
   <div class="tabs">
-    {#each terms as t (t.id)}
-      <div class="tab {rail === 'term' && activeTerm === t.id ? 'on' : ''}" role="button" tabindex="0" onclick={() => selectTerm(t.id)} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), selectTerm(t.id))} title={t.title}
-        draggable="true" class:drag={dragTab?.kind === 'term' && dragTab.id === t.id}
-        ondragstart={(e) => { dragTab = { kind: 'term', id: t.id }; tabDragView = { view: 'term', ref: t.id }; if (e.dataTransfer) { e.dataTransfer.setData('text/plain', t.id); e.dataTransfer.effectAllowed = 'move'; } }}
-        ondragend={() => { dragTab = null; tabDragView = null; }} ondragover={(e) => e.preventDefault()}
-        ondrop={() => tabDrop('term', t.id)} oncontextmenu={(e) => tabCtx(e, 'term', t.id)}>
-        <span class="tt">{t.title}</span>
-        <span class="x" role="button" tabindex="0" onclick={(e) => { e.stopPropagation(); closeTerm(t.id); }} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), e.stopPropagation(), closeTerm(t.id))}>×</span>
-      </div>
-    {/each}
     {#each orderedFiles as f, i (f + '#' + i)}
-      <div class="tab {rail === 'editor' && activeFile === f ? 'on' : ''}" class:pinned-tab={pinnedFiles.includes(f)} role="button" tabindex="0" onclick={() => { activeFile = f; rail = 'editor'; }} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (activeFile = f, rail = 'editor'))} title={tabGroups[f] ? `${f}  ·  group: ${tabGroups[f]}` : f}
+      <div class="tab {activeFile === f ? 'on' : ''}" class:pinned-tab={pinnedFiles.includes(f)} role="button" tabindex="0" onclick={() => openInEditor(f)} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openInEditor(f))} title={tabGroups[f] ? `${f}  ·  group: ${tabGroups[f]}` : f}
         style={tabGroups[f] ? `box-shadow: inset 0 -2px 0 ${groupColor(tabGroups[f])}` : ''}
         draggable="true" class:drag={dragTab?.kind === 'file' && dragTab.id === f}
         ondragstart={(e) => { dragTab = { kind: 'file', id: f }; tabDragView = { view: 'editor', ref: f }; if (e.dataTransfer) { e.dataTransfer.setData('text/plain', f); e.dataTransfer.effectAllowed = 'move'; } }}
@@ -1684,7 +1687,7 @@
     {#if settingsOpen}
       <div class="tab {rail === 'settings' ? 'on' : ''}" role="button" tabindex="0" onclick={() => (rail = 'settings')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'settings'))}>
         <span class="tab-ic"><Icon name="settings" size={12} /></span><span class="tt">Settings</span>
-        <span class="x" role="button" tabindex="0" onclick={(e) => { e.stopPropagation(); settingsOpen = false; if (rail === 'settings') rail = 'term'; }} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), e.stopPropagation(), (settingsOpen = false, rail === 'settings' && (rail = 'term')))}>×</span>
+        <span class="x" role="button" tabindex="0" onclick={(e) => { e.stopPropagation(); settingsOpen = false; if (rail === 'settings') rail = 'workspace'; }} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), e.stopPropagation(), (settingsOpen = false, rail === 'settings' && (rail = 'workspace')))}>×</span>
       </div>
     {/if}
     <div class="newtab" role="button" tabindex="0" title="New…" onclick={(e) => { if (plusMenu) { plusMenu = null; return; } const r = e.currentTarget.getBoundingClientRect(); plusMenu = { x: r.left, y: r.bottom + 4 }; }} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (plusMenu) { plusMenu = null; } else { const r = (e.currentTarget as HTMLElement).getBoundingClientRect(); plusMenu = { x: r.left, y: r.bottom + 4 }; } } }}><Icon name="plus" size={15} /></div>
@@ -1710,7 +1713,7 @@
   {#if tabMenu}
     <div class="ctxscrim" onclick={() => (tabMenu = null)} oncontextmenu={(e) => { e.preventDefault(); tabMenu = null; }} role="presentation"></div>
     <div class="tabctx" style:left="{tabMenu.x}px" style:top="{tabMenu.y}px">
-      <button onclick={() => { if (tabMenu!.kind === 'term') closeTerm(tabMenu!.id); else closeFile(tabMenu!.id); tabMenu = null; }}>Close</button>
+      <button onclick={() => { closeFile(tabMenu!.id); tabMenu = null; }}>Close</button>
       <button onclick={() => closeOthers(tabMenu!.kind, tabMenu!.id)}>Close Others</button>
       <button onclick={() => closeRight(tabMenu!.kind, tabMenu!.id)}>Close to the Right</button>
       {#if tabMenu.kind === 'file'}<button onclick={() => togglePin(tabMenu!.id)}>{pinnedFiles.includes(tabMenu.id) ? 'Unpin Tab' : 'Pin Tab'}</button>{/if}
@@ -1723,7 +1726,7 @@
     <div class="ctxscrim" onclick={() => (tabOverflow = false)} role="presentation"></div>
     <div class="taboverflow">
       {#each orderedFiles as f, i (f + '#' + i)}
-        <button class:on={activeFile === f && rail === 'editor'} onclick={() => { activeFile = f; rail = 'editor'; tabOverflow = false; }} title={f}>
+        <button class:on={activeFile === f} onclick={() => { openInEditor(f); tabOverflow = false; }} title={f}>
           {#if pinnedFiles.includes(f)}<span class="ofpin"><Icon name="pin" size={9} /></span>{/if}<span class="oftt">{baseName(f)}</span>{#if dirtyFiles[f]}<span class="dirty"></span>{/if}
         </button>
       {/each}
@@ -1735,28 +1738,22 @@
     {#if !railHidden}
     <nav class="rail" aria-label="Activity bar">
       <div class="brandmark" role="button" tabindex="0" title="Anvil — Command Palette (⌘K)" onclick={openCommands} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openCommands())}><Icon name="basin" size={20} /></div>
-      <div class="i {rail === 'term' ? 'on' : ''}" role="button" tabindex="0" title="Terminal" onclick={() => (rail = 'term')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (rail = 'term'))}><Icon name="terminal" /></div>
+      <div class="i {activeView === 'term' ? 'on' : ''}" role="button" tabindex="0" title="Terminal" onclick={focusTerm} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), focusTerm())}><Icon name="terminal" /></div>
       <div class="i panel {explorerOpen ? 'pinned' : ''}" role="button" tabindex="0" title="Explorer (⌘B)" onclick={openExplorer} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openExplorer())}><Icon name="folder" /></div>
-      <div class="i {rail === 'scm' ? 'on' : ''}" role="button" tabindex="0" title="Source Control" onclick={() => openView('scm')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('scm'))}><Icon name="branch" /></div>
-      <div class="i {rail === 'search' ? 'on' : ''}" role="button" tabindex="0" title="Search (⌘⇧F)" onclick={() => openView('search')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('search'))}><Icon name="search" /></div>
-      <div class="i agent {rail === 'agent' ? 'on' : ''}" role="button" tabindex="0" title="AI Agent" onclick={() => openView('agent')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('agent'))}><Icon name="agent" /></div>
-      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'k8s' ? 'on' : ''}" role="button" tabindex="0" title={kubeFails ? `Kubernetes — ${kubeFails} failing` : "Kubernetes"} onclick={() => openView('k8s')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('k8s'))}><Icon name="kube" />{#if kubeFails}<span class="rail-badge">{kubeFails}</span>{/if}</div>{/if}
-      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'ci' ? 'on' : ''}" role="button" tabindex="0" title="CI / Pipelines" onclick={() => openView('ci')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('ci'))}><Icon name="ci" /></div>{/if}
-      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'terraform' ? 'on' : ''}" role="button" tabindex="0" title="Terraform / Terragrunt" onclick={() => openView('terraform')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('terraform'))}><Icon name="terraform" /></div>{/if}
-      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'obs' ? 'on' : ''}" role="button" tabindex="0" title="Observability (Metrics / Logs)" onclick={() => openView('obs')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('obs'))}><Icon name="chart" /></div>{/if}
-      {#if railEnabled('devops', $extEnabled)}<div class="i {rail === 'devops' ? 'on' : ''}" role="button" tabindex="0" title="DevOps (PRs / GitLab / AWS / Incidents)" onclick={() => openView('devops')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('devops'))}><Icon name="devops" /></div>{/if}
+      <div class="i {activeView === 'scm' ? 'on' : ''}" role="button" tabindex="0" title="Source Control" onclick={() => openView('scm')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('scm'))}><Icon name="branch" /></div>
+      <div class="i {activeView === 'search' ? 'on' : ''}" role="button" tabindex="0" title="Search (⌘⇧F)" onclick={() => openView('search')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('search'))}><Icon name="search" /></div>
+      <div class="i agent {activeView === 'agent' ? 'on' : ''}" role="button" tabindex="0" title="AI Agent" onclick={() => openView('agent')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('agent'))}><Icon name="agent" /></div>
+      {#if railEnabled('devops', $extEnabled)}<div class="i {activeView === 'k8s' ? 'on' : ''}" role="button" tabindex="0" title={kubeFails ? `Kubernetes — ${kubeFails} failing` : "Kubernetes"} onclick={() => openView('k8s')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('k8s'))}><Icon name="kube" />{#if kubeFails}<span class="rail-badge">{kubeFails}</span>{/if}</div>{/if}
+      {#if railEnabled('devops', $extEnabled)}<div class="i {activeView === 'ci' ? 'on' : ''}" role="button" tabindex="0" title="CI / Pipelines" onclick={() => openView('ci')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('ci'))}><Icon name="ci" /></div>{/if}
+      {#if railEnabled('devops', $extEnabled)}<div class="i {activeView === 'terraform' ? 'on' : ''}" role="button" tabindex="0" title="Terraform / Terragrunt" onclick={() => openView('terraform')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('terraform'))}><Icon name="terraform" /></div>{/if}
+      {#if railEnabled('devops', $extEnabled)}<div class="i {activeView === 'obs' ? 'on' : ''}" role="button" tabindex="0" title="Observability (Metrics / Logs)" onclick={() => openView('obs')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('obs'))}><Icon name="chart" /></div>{/if}
+      {#if railEnabled('devops', $extEnabled)}<div class="i {activeView === 'devops' ? 'on' : ''}" role="button" tabindex="0" title="DevOps (PRs / GitLab / AWS / Incidents)" onclick={() => openView('devops')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('devops'))}><Icon name="devops" /></div>{/if}
       <div class="i grow {rail === 'settings' ? 'on' : ''}" role="button" tabindex="0" title="Settings" onclick={openSettings} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openSettings())}><Icon name="settings" /></div>
     </nav>
     {/if}
 
     {#if explorerOpen}
     <aside class="side" style="width:{sideW}px">
-      <div class="sect">Sessions <span class="n">{terms.length}</span></div>
-      {#each terms as t (t.id)}
-        <div class="row {activeTerm === t.id ? 'cur' : ''}" role="button" tabindex="0" onclick={() => selectTerm(t.id)} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), selectTerm(t.id))}>
-          <span class="ic">›_</span>{t.title}
-        </div>
-      {/each}
       <div class="sect">Explorer <button class="sect-x" title="Hide explorer (⌘B)" onclick={() => (explorerOpen = false)}><Icon name="close" size={11} /></button></div>
       {#if cwd}<FileBrowser bind:path={cwd} onOpenFile={openInEditor} />{/if}
     </aside>
@@ -1779,46 +1776,13 @@
       {/if}
       {#if rail !== "workspace"}
       <div class="pane-head">
-        {#if rail === "scm"}<span class="ph-ic accent"><Icon name="branch" /></span> Source Control — {baseName(cwd)}
-        {:else if rail === "diff"}<span class="accent">±</span> Diff — {diffTarget?.rev ?? diffTarget?.path}
-        {:else if rail === "search"}<span class="ph-ic accent"><Icon name="search" /></span> Search
-        {:else if rail === "agent"}<span class="ph-ic accent"><Icon name="agent" /></span> Agent
-        {:else if rail === "k8s"}<span class="ph-ic accent"><Icon name="kube" /></span> Kubernetes
-        {:else if rail === "ci"}<span class="ph-ic accent"><Icon name="ci" /></span> CI / Pipelines
-        {:else if rail === "terraform"}<span class="ph-ic accent"><Icon name="terraform" /></span> Terraform
-        {:else if rail === "obs"}<span class="ph-ic accent"><Icon name="chart" /></span> Observability
-        {:else if rail === "devops"}<span class="ph-ic accent"><Icon name="devops" /></span> DevOps
-        {:else if rail === "workspace"}<span class="ph-ic accent"><Icon name="workspace" /></span> Workspace — {baseName(cwd)}
+        {#if rail === "diff"}<span class="accent">±</span> Diff — {diffTarget?.rev ?? diffTarget?.path}
         {:else if rail === "settings"}<span class="ph-ic accent"><Icon name="settings" /></span> Settings
-        {:else if rail === "files"}<span class="ph-ic accent"><Icon name="folder" /></span> Explorer
         {:else if rail === "editor"}<span class="accent"></span> {activeFile || "Welcome"}
         {:else if rail === "panel"}{@const ap = panels.find((p) => p.id === activePanel)}<span class="ph-ic accent"><Icon name={ap ? panelIcon(ap.kind) : "globe"} /></span> {ap?.title ?? ""}
-        {:else}<span class="ph-ic accent"><Icon name="terminal" /></span> {terms.find((t) => t.id === activeTerm)?.title ?? "zsh"}{/if}
+        {/if}
       </div>
       {/if}
-
-      <div class="term-row" style:display={rail === "term" ? "flex" : "none"}>
-        {#if terms.length === 0}
-          <div class="term-empty">
-            <Icon name="terminal" size={28} />
-            <p>No terminals open</p>
-            <button onclick={newTerm}>New Terminal <kbd>⌘T</kbd></button>
-          </div>
-        {/if}
-        {#each terms as t (t.id)}
-          {@const shown = t.id === activeTerm || t.id === splitTerm}
-          <div
-            class="term-wrap"
-            style:display={shown ? "block" : "none"}
-            style:flex={shown ? "1" : "0"}
-            style:border-left={splitTerm && t.id === splitTerm ? "1px solid var(--border)" : "none"}
-            onclickcapture={() => (activeTerm = t.id)}
-            role="presentation"
-          >
-            <Terminal id={t.id} {cwd} shell={t.shell ?? ""} active={rail === "term" && shown} />
-          </div>
-        {/each}
-      </div>
 
       <!-- Terax-style openable panels (preview / markdown / git history), kept alive like terminals. -->
       <div class="panel-row" style:display={rail === "panel" ? "block" : "none"}>
@@ -1838,7 +1802,7 @@
 
       {#if rail === "diff" && diffTarget}
         <div class="view">
-          <div class="difftop"><button class="back" onclick={() => (rail = "scm")}>← Source Control</button></div>
+          <div class="difftop"><button class="back" onclick={() => openView("scm")}>← Source Control</button></div>
           {#key JSON.stringify(diffTarget)}
             {#if diffTarget.rev && diffTarget.path}{#await DiffView() then M}<M.default {cwd} rev={diffTarget.rev} path={diffTarget.path} />{/await}
             {:else if diffTarget.rev}<CommitDetail {cwd} rev={diffTarget.rev} />
@@ -1859,13 +1823,19 @@
             {/await}
           {/if}
         </div>
-      {:else if rail === "workspace"}
-        <div class="view ws">
+      {:else if rail === "settings"}
+        <div class="view">{#await Settings() then M}<M.default />{/await}</div>
+      {/if}
+
+      <!-- The grid is the permanent content surface — keep it MOUNTED even when a
+           modal-ish overlay (diff/settings/markdown-preview/panel) is showing, so
+           terminal panes keep their PTYs instead of respawning on every flip. -->
+      <div class="view ws" style:display={rail === "workspace" ? "flex" : "none"}>
           {#snippet paneView(lf: Leaf)}
             <div class="pane-view">
             {#key lf.tabs[lf.active]?.id}
             {#if lf.view === "term"}
-              <Terminal id={lf.ref ?? lf.id} {cwd} active={rail === "workspace"} />
+              <Terminal id={lf.ref ?? lf.id} {cwd} shell={termShells[lf.ref ?? ""] ?? ""} active={rail === "workspace"} />
             {:else if lf.view === "files"}
               {#key cwd}<FileBrowser bind:path={cwd} onOpenFile={openInEditor} />{/key}
             {:else if lf.view === "scm"}
@@ -1876,9 +1846,10 @@
               {#await AgentPanel() then M}<M.default {cwd} attachPath={activeFile}
                 listFiles={() => invoke<string[]>("walk_dir", { root: cwd.replace(/\/$/, "") })}
                 onReadFile={(p) => invoke<string>("read_file", { path: p })}
-                onApplyFile={(path, content) => { invoke("write_file", { path, contents: content }); }}
+                onApplyFile={(path, content) => { invoke("write_file", { path, contents: content }); toast(`Applied edit to ${path.split("/").pop()}`, "success"); }}
                 getTerminalText={() => readTerminal(activeTerm)}
-                onRunCommand={(c) => invoke("pty_write", { id: activeTerm, data: c + "\n" })} />{/await}
+                onRunCommand={(c) => { invoke("pty_write", { id: activeTerm, data: c + "\n" }); focusTerm(); }}
+                onReply={(summary) => { if (document.hidden) notifyAgent(summary); }} />{/await}
             {:else if lf.view === "devops"}
               {#key cwd}{#await DevOps() then M}<M.default {cwd} onRunCommand={(c) => invoke("pty_write", { id: activeTerm, data: c + "\n" })} onInvestigate={investigate} />{/await}{/key}
             {:else if lf.view === "k8s"}
@@ -1897,7 +1868,7 @@
                 {#await Editor() then M}<M.default path={p} onDirty={(d) => (dirtyFiles = { ...dirtyFiles, [p]: d })} onOpen={(np, ln) => { openInEditor(np); if (ln) editorGoto.set(ln); }} onReferences={showReferences} onExplain={explainCode} />{/await}
               {/if}
             {:else}
-              <div class="ws-empty">Pick a view ↑ or open a file</div>
+              <Welcome recent={recentFiles} onOpenRecent={openInEditor} onNewTerminal={newTerm} onCommandPalette={openCommands} onNewFile={newRootFile} onNewFolder={newRootFolder} onOpenFile={openFileDialog} onOpenFolder={openFolder} />
             {/if}
             {/key}
             </div>
@@ -1911,48 +1882,6 @@
             onDragStart={(id) => (paneDrag = { id })} onDragEnd={() => (paneDrag = { id: null })} />
           </div>
         </div>
-      {:else if rail === "settings"}
-        <div class="view">{#await Settings() then M}<M.default />{/await}</div>
-      {:else if rail === "editor" || rail === "files"}
-        <div class="view"><Welcome recent={recentFiles} onOpenRecent={openInEditor} onNewTerminal={newTerm} onCommandPalette={openCommands} onNewFile={newRootFile} onNewFolder={newRootFolder} onOpenFile={openFileDialog} onOpenFolder={openFolder} /></div>
-      {/if}
-
-      <!-- Heavy rail views: mounted on first visit, then shown/hidden (no re-fetch on switch). -->
-      {#if mountedRails.scm}
-        <div class="view" style:display={rail === "scm" ? "block" : "none"}>{#key cwd}{#await SourceControl() then M}<M.default {cwd} onOpenDiff={(t) => { diffTarget = t; rail = "diff"; }} />{/await}{/key}</div>
-      {/if}
-      {#if mountedRails.search}
-        <div class="view" style:display={rail === "search" ? "block" : "none"}>{#key cwd}{#await SearchPanel() then M}<M.default root={cwd} onOpen={(p) => openInEditor(p)} />{/await}{/key}</div>
-      {/if}
-      {#if mountedRails.k8s}
-        <div class="view" style:display={rail === "k8s" ? "block" : "none"}>{#key cwd}{#await Kube() then M}<M.default {cwd} active={rail === "k8s"} onRunCommand={sendToTerm} onHealth={(n) => (kubeFails = n)} onInvestigate={investigate} onCheckConnections={() => (doctorOpen = true)} />{:catch e}<div class="view-err">Kubernetes view failed to load: {e}</div>{/await}{/key}</div>
-      {/if}
-      {#if mountedRails.ci}
-        <div class="view" style:display={rail === "ci" ? "block" : "none"}>{#key cwd}{#await CI() then M}<M.default {cwd} active={rail === "ci"} onRunCommand={sendToTerm} onInvestigate={investigate} />{/await}{/key}</div>
-      {/if}
-      {#if mountedRails.terraform}
-        <div class="view" style:display={rail === "terraform" ? "block" : "none"}>{#key cwd}{#await Terraform() then M}<M.default {cwd} onRunCommand={sendToTerm} onInvestigate={investigate} />{/await}{/key}</div>
-      {/if}
-      {#if mountedRails.obs}
-        <div class="view" style:display={rail === "obs" ? "block" : "none"}>{#await Observability() then M}<M.default />{/await}</div>
-      {/if}
-      {#if mountedRails.devops}
-        <div class="view" style:display={rail === "devops" ? "block" : "none"}>{#key cwd}{#await DevOps() then M}<M.default {cwd} onRunCommand={sendToTerm} onInvestigate={investigate} />{/await}{/key}</div>
-      {/if}
-
-      <!-- Agent stays mounted so a request keeps running after you switch views. -->
-      <div class="view" style:display={rail === "agent" ? "block" : "none"}>
-        {#await AgentPanel() then M}<M.default
-          {cwd}
-          attachPath={activeFile}
-          listFiles={() => invoke<string[]>("walk_dir", { root: cwd.replace(/\/$/, "") })}
-          onReadFile={(p) => invoke<string>("read_file", { path: p })}
-          onApplyFile={(path, content) => { invoke("write_file", { path, contents: content }); toast(`Applied edit to ${path.split("/").pop()}`, "success"); }}
-          getTerminalText={() => readTerminal(activeTerm)}
-          onRunCommand={(cmd) => { invoke("pty_write", { id: activeTerm, data: cmd + "\n" }); rail = "term"; toast("Command sent to terminal", "success"); }}
-          onReply={(summary) => { if (rail !== "agent" || document.hidden) notifyAgent(summary); }}
-        />{/await}
-      </div>
 
       {#if bottomDock}
         <div class="bdock" style:height="{dockH}px">
@@ -2072,7 +2001,7 @@
   {/if}
 
   {#if $agentQueue.length}
-    <button class="agentq-chip" title="Queued agent tasks — click to run the next" onclick={() => { const t = dequeueAgent(); if (t) { agentSeed.set(t.prompt); rail = "agent"; } }}>⚙ {$agentQueue.length} queued</button>
+    <button class="agentq-chip" title="Queued agent tasks — click to run the next" onclick={() => { const t = dequeueAgent(); if (t) { agentSeed.set(t.prompt); openView("agent"); } }}>⚙ {$agentQueue.length} queued</button>
   {/if}
 
   {#if !$online}
@@ -2128,9 +2057,7 @@
      view component to flex-fill. */
   .pane-view { height: 100%; width: 100%; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
   .pane-view > :global(*) { flex: 1 1 auto; min-width: 0; min-height: 0; }
-  .ws-empty { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text3); font-size: 12.5px; }
-  .term-row { flex: 1; min-height: 0; }
-.difftop { padding: 6px 12px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
+  .difftop { padding: 6px 12px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
   .back { border: 0; background: transparent; color: var(--accent); font-size: 12px; cursor: default; }
   .tab .x { margin-left: 8px; color: var(--text3); font-size: 13px; }
   .tab .x:hover { color: var(--text); }
