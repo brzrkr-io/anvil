@@ -114,6 +114,31 @@ pub async fn kube_set_namespace(namespace: String) -> Result<String, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// #16 Node capacity: `kubectl top nodes` (live CPU/mem usage, needs
+/// metrics-server) plus `kubectl get nodes -o wide` (Ready/roles/version). Both
+/// are best-effort; if metrics-server is absent the top section explains that.
+#[tauri::command]
+pub async fn kube_nodes(context: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let ctx: Vec<&str> = if context.is_empty() {
+            vec![]
+        } else {
+            vec!["--context", &context]
+        };
+        let mut top_args = ctx.clone();
+        top_args.extend(["top", "nodes"]);
+        let top = kubectl(&top_args).unwrap_or_else(|e| format!("(metrics unavailable: {e})"));
+        let mut get_args = ctx;
+        get_args.extend(["get", "nodes", "-o", "wide"]);
+        let get = kubectl(&get_args)?;
+        Ok(format!(
+            "# USAGE (kubectl top nodes)\n{top}\n\n# NODES (kubectl get nodes -o wide)\n{get}"
+        ))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub async fn kube_pods(context: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {

@@ -151,6 +151,15 @@
     } catch (e) { panel = { pod: `${p.ns}/${p.name}`, content: String(e), title: "Logs" }; }
   }
 
+  // #16 Cluster node capacity + usage in a panel.
+  async function openNodes() {
+    panel = { pod: current || "cluster", content: "Loading…", title: "Nodes" };
+    try {
+      const out = await invoke<string>("kube_nodes", { context: current });
+      panel = { pod: current || "cluster", content: out, title: "Nodes" };
+    } catch (e) { panel = { pod: current || "cluster", content: String(e), title: "Nodes" }; }
+  }
+
   async function openDescribe(p: Pod) {
     panel = { pod: `${p.ns}/${p.name}`, content: "Loading…", title: "Describe" };
     try {
@@ -259,6 +268,9 @@
     </select>
     <span class="spacer"></span>
     {#if busy}<span class="spin">…</span>{/if}
+    <button class="iconbtn" onclick={openNodes} title="Node capacity & usage (kubectl top nodes)">
+      <Icon name="chart" size={13} />
+    </button>
     <button class="iconbtn" onclick={() => { load(); refreshPf(); }} title="Refresh" disabled={busy}>
       <Icon name="refresh" size={13} />
     </button>

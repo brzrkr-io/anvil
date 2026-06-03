@@ -515,6 +515,7 @@ pub fn run() {
             iac::helm_rollback,
             iac::helm_diff_revision,
             kube::kube_pods,
+            kube::kube_nodes,
             kube::kube_logs,
             kube::kube_logs_selector,
             kube::kube_pf_start,
