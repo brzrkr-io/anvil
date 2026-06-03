@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { onMount, onDestroy } from "svelte";
+  import { onDestroy } from "svelte";
+  import { listen } from "@tauri-apps/api/event";
   import { invoke } from "@tauri-apps/api/core";
   import Icon from "$lib/Icon.svelte";
   import { toast } from "$lib/toast";
   import { askConfirm } from "$lib/dialog";
-  import { byHealth, failingCount, oneLine, shortRev } from "$lib/flux-health";
+  import { failingCount, oneLine, shortRev } from "$lib/flux-health";
   import { fluxInvestigation } from "$lib/agent-ops";
 
   let { onRunCommand, onPresence, onHealth, onInvestigate, active = true, visible = true }:
@@ -54,48 +55,42 @@
     }
   }
 
-  function parse(raw: string): FluxItem[] {
-    let j: any;
-    try { j = JSON.parse(raw); } catch { return []; }
-    const list = Array.isArray(j?.items) ? j.items : [];
-    return list.map((it: any): FluxItem => {
-      const conds = it?.status?.conditions ?? [];
-      const ready = conds.find((c: any) => c.type === "Ready");
-      const st = it?.status ?? {};
-      const sp = it?.spec ?? {};
-      const source = sp.sourceRef?.name || sp.chart?.spec?.sourceRef?.name || sp.chartRef?.name || "";
-      return {
-        name: it?.metadata?.name ?? "?",
-        ns: it?.metadata?.namespace ?? "",
-        apiKind: it?.kind ?? "",
-        ready: !ready ? "unknown" : ready.status === "True" ? "ok" : "fail",
-        suspended: it?.spec?.suspend === true,
-        revision: st.lastAppliedRevision || st.lastAttemptedRevision || st.artifact?.revision || "",
-        message: ready?.message ?? "",
-        source,
-        deps: Array.isArray(sp.dependsOn) ? sp.dependsOn.length : 0,
-      };
-    });
+  // Data layer: the backend watcher (watch.rs) fetches + parses + sorts each Flux
+  // CRD in Rust off the UI thread and pushes shaped rows over kube://flux:<tab>.
+  // The frontend subscribes — no polling, no JSON parse here.
+  interface FluxListPayload { rows: FluxItem[]; present: boolean; error: string }
+
+  let unlistenList: (() => void) | undefined;
+  let watchedTab = "";
+
+  // One-shot shaped snapshot (instant + CRD-presence probe, even when hidden).
+  async function refreshList(t: Tab = tab) {
+    try {
+      const p = await invoke<FluxListPayload>("kube_snapshot", { kind: `flux:${t}` });
+      if (t !== tab) return;
+      present = p.present; items = p.rows; err = p.error; loading = false;
+      onPresence?.(present);
+    } catch (e) { err = String(e); loading = false; }
   }
 
-  async function load() {
+  async function subscribeTab(t: Tab) {
+    if (watchedTab === t) return;
+    if (watchedTab) invoke("kube_watch_stop", { kind: `flux:${watchedTab}` }).catch(() => {});
+    unlistenList?.();
+    watchedTab = t;
     loading = true;
-    err = "";
     try {
-      const raw = await invoke<string>("flux_get", { kind: tab });
-      if (/the server doesn't have a resource type|no matches for kind|NotFound|could not find the requested resource/i.test(raw)) {
-        present = false;
-        items = [];
-        return;
-      }
-      present = true;
-      items = parse(raw).sort(byHealth);
-    } catch (e) {
-      err = String(e);
-    } finally {
-      loading = false;
-      onPresence?.(present);
-    }
+      unlistenList = await listen<FluxListPayload>(`kube://flux:${t}`, (e) => {
+        if (watchedTab !== t) return;
+        present = e.payload.present; items = e.payload.rows; err = e.payload.error;
+        loading = false; onPresence?.(present);
+      });
+    } catch { /* no Tauri event bus (browser preview) */ }
+    invoke("kube_watch_start", { kind: `flux:${t}`, intervalMs: 6000 }).catch(() => {});
+  }
+  function stopListWatch() {
+    if (watchedTab) { invoke("kube_watch_stop", { kind: `flux:${watchedTab}` }).catch(() => {}); watchedTab = ""; }
+    unlistenList?.(); unlistenList = undefined;
   }
 
   async function act(it: FluxItem, cmd: "flux_reconcile" | "flux_suspend" | "flux_resume", withSource = false) {
@@ -109,8 +104,8 @@
       const out = await invoke<string>(cmd, args);
       const verb = cmd.replace("flux_", "");
       toast(`${verb} ${it.name}: ${out.trim().split("\n").pop() || "done"}`.slice(0, 120), /error|fail/i.test(out) ? "error" : "success");
-      await load();
-      refreshClusterHealth();
+      refreshList();
+      refreshHealth();
     } catch (e) {
       toast(String(e).slice(0, 160), "error");
     } finally {
@@ -136,55 +131,46 @@
 
   let fails = $derived(failingCount(shown)); // shown set (drives the in-panel chip)
 
-  // A1: cluster-wide failing count — Kustomizations + HelmReleases, regardless of
-  // the active tab — so the rail badge reflects the whole cluster's health.
+  // A1: cluster-wide failing count (Kustomizations + HelmReleases) for the rail
+  // badge — streamed from the backend `flux:health` watcher, regardless of tab.
   let clusterFails = $state(0);
-  async function refreshClusterHealth() {
-    let total = 0;
-    let any = false;
-    for (const kind of ["kustomizations", "helmreleases"]) {
-      try {
-        const raw = await invoke<string>("flux_get", { kind });
-        if (/the server doesn't have a resource type|no matches for kind|NotFound|could not find the requested resource/i.test(raw)) continue;
-        any = true;
-        total += failingCount(parse(raw));
-      } catch { /* ignore one kind */ }
-    }
-    if (any) clusterFails = total;
+  let unlistenHealth: (() => void) | undefined;
+  let healthOn = false;
+  async function refreshHealth() {
+    try {
+      const h = await invoke<{ failing: number; present: boolean }>("kube_snapshot", { kind: "flux:health" });
+      clusterFails = h.failing;
+    } catch { /* ignore */ }
+  }
+  async function startHealth() {
+    if (healthOn) return;
+    healthOn = true;
+    try {
+      unlistenHealth = await listen<{ failing: number }>("kube://flux:health", (e) => { clusterFails = e.payload.failing; });
+    } catch { /* no event bus */ }
+    invoke("kube_watch_start", { kind: "flux:health", intervalMs: 18000 }).catch(() => {});
+    refreshHealth();
+  }
+  function stopHealth() {
+    if (!healthOn) return;
+    healthOn = false;
+    invoke("kube_watch_stop", { kind: "flux:health" }).catch(() => {});
+    unlistenHealth?.(); unlistenHealth = undefined;
   }
   $effect(() => { onHealth?.(present ? clusterFails : 0); });
 
-  // Auto-poll so a reconcile is watched to green without hammering refresh — but
-  // ONLY while the panel is actually on-screen. The Kubernetes view is kept-alive
-  // (display:none) once opened, so without these gates Flux would fire 3 cluster-
-  // wide kubectl calls every 6s for the whole session, even from a terminal.
-  //   - list refresh: every POLL_MS, only when `visible` (Flux list shown)
-  //   - cluster-health (rail badge): every HEALTH_EVERY ticks, only when `active`
-  //     (Kubernetes view open) — much cheaper than the old 6s cadence.
-  const POLL_MS = 6000;
-  const HEALTH_EVERY = 3; // 3 × 6s = ~18s between health sweeps
-  let healthTick = 0;
-  let timer: ReturnType<typeof setInterval> | undefined;
-  function tick() {
-    if (!active || loading || busyRow || (typeof document !== "undefined" && document.hidden)) return;
-    if (visible) load();
-    if (++healthTick % HEALTH_EVERY === 0) refreshClusterHealth();
-  }
-  onMount(() => {
-    timer = setInterval(tick, POLL_MS);
-  });
-  onDestroy(() => clearInterval(timer));
-  // (Re)load when the panel becomes active or its list is shown. Reading both
-  // `active` and `visible` makes this re-run on k8s open, on return to the view,
-  // and when switching to the Flux sub-view (instant refresh instead of waiting a
-  // poll tick). `load()` always runs while active so Flux-CRD presence is detected
-  // even before the list is shown (drives onPresence → the Flux tab appears). It
-  // doesn't read `loading`, so it can't loop on its own state changes.
+  onDestroy(() => { stopListWatch(); stopHealth(); });
+  // Lifecycle: health runs whenever the Kubernetes view is open (cheap rail
+  // badge); the list watcher runs only while the Flux sub-view is shown. A
+  // one-shot snapshot probes CRD presence (drives the Flux tab) even before the
+  // list is visible. Re-runs on active/visible/tab change.
   $effect(() => {
-    const a = active; void visible;
-    if (!a) return;
-    load();
-    refreshClusterHealth();
+    const a = active, v = visible;
+    if (!a) { stopListWatch(); stopHealth(); return; }
+    startHealth();
+    refreshList(tab);
+    if (v) subscribeTab(tab);
+    else stopListWatch();
   });
 </script>
 
@@ -192,7 +178,7 @@
   <div class="flux">
     <div class="fx-tabs">
       {#each TABS as t (t.id)}
-        <button class:on={tab === t.id} onclick={() => { tab = t.id; load(); }}>{t.label}</button>
+        <button class:on={tab === t.id} onclick={() => { tab = t.id; }}>{t.label}</button>
       {/each}
       {#if namespaces.length > 1}
         <select class="fx-ns-sel" bind:value={nsFilter} title="Filter by namespace">
@@ -204,7 +190,7 @@
       {#if fails}<span class="fx-fail-chip" title="{fails} failing">{fails} failing</span>{/if}
       {#if loading}<span class="spin">…</span>{/if}
       {#if onRunCommand}<button class="fx-refresh" title="Watch all Flux events in terminal" onclick={() => onRunCommand?.(`flux events --watch${nsFilter ? ` -n ${nsFilter}` : ""}`)}><Icon name="alert" size={12} /></button>{/if}
-      <button class="fx-refresh" title="Refresh" onclick={load}><Icon name="refresh" size={12} /></button>
+      <button class="fx-refresh" title="Refresh" onclick={() => { refreshList(); refreshHealth(); }}><Icon name="refresh" size={12} /></button>
     </div>
 
     {#if err}<div class="fx-err">{err.slice(0, 200)}</div>{/if}

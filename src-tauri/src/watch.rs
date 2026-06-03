@@ -90,6 +90,151 @@ fn parse_pods(text: &str) -> Vec<PodRow> {
     rows
 }
 
+// ── Flux (GitOps) ─────────────────────────────────────────────────────────
+const KUSTOMIZATIONS: &str = "kustomizations.kustomize.toolkit.fluxcd.io";
+const HELMRELEASES: &str = "helmreleases.helm.toolkit.fluxcd.io";
+const SOURCES: &str = "gitrepositories.source.toolkit.fluxcd.io,ocirepositories.source.toolkit.fluxcd.io,helmrepositories.source.toolkit.fluxcd.io,helmcharts.source.toolkit.fluxcd.io,buckets.source.toolkit.fluxcd.io";
+const IMAGES: &str = "imagerepositories.image.toolkit.fluxcd.io,imagepolicies.image.toolkit.fluxcd.io,imageupdateautomations.image.toolkit.fluxcd.io";
+
+#[derive(Serialize)]
+struct FluxRow {
+    name: String,
+    ns: String,
+    #[serde(rename = "apiKind")]
+    api_kind: String,
+    ready: String,
+    suspended: bool,
+    revision: String,
+    message: String,
+    source: String,
+    deps: usize,
+}
+
+fn flux_absent(raw: &str) -> bool {
+    let l = raw.to_lowercase();
+    l.contains("the server doesn't have a resource type")
+        || l.contains("no matches for kind")
+        || l.contains("notfound")
+        || l.contains("could not find the requested resource")
+}
+
+fn health_rank(ready: &str, suspended: bool) -> u8 {
+    if ready == "fail" {
+        0
+    } else if suspended {
+        1
+    } else if ready == "unknown" {
+        2
+    } else {
+        3
+    }
+}
+
+/// Parse `kubectl get <flux-crd> -A -o json` into rows. Returns (rows, present);
+/// present=false when the cluster has no such CRD.
+fn parse_flux(raw: &str) -> (Vec<FluxRow>, bool) {
+    if flux_absent(raw) {
+        return (vec![], false);
+    }
+    let j: Value = match serde_json::from_str(raw) {
+        Ok(v) => v,
+        Err(_) => return (vec![], false),
+    };
+    let items = j["items"].as_array().cloned().unwrap_or_default();
+    let mut rows: Vec<FluxRow> = items
+        .iter()
+        .map(|it| {
+            let st = &it["status"];
+            let sp = &it["spec"];
+            let ready_cond = st["conditions"]
+                .as_array()
+                .and_then(|cs| cs.iter().find(|c| c["type"] == "Ready"));
+            let ready = match ready_cond {
+                None => "unknown",
+                Some(c) if c["status"] == "True" => "ok",
+                Some(_) => "fail",
+            };
+            let revision = st["lastAppliedRevision"]
+                .as_str()
+                .or_else(|| st["lastAttemptedRevision"].as_str())
+                .or_else(|| st["artifact"]["revision"].as_str())
+                .unwrap_or("")
+                .to_string();
+            let source = sp["sourceRef"]["name"]
+                .as_str()
+                .or_else(|| sp["chart"]["spec"]["sourceRef"]["name"].as_str())
+                .or_else(|| sp["chartRef"]["name"].as_str())
+                .unwrap_or("")
+                .to_string();
+            FluxRow {
+                name: it["metadata"]["name"].as_str().unwrap_or("?").to_string(),
+                ns: it["metadata"]["namespace"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string(),
+                api_kind: it["kind"].as_str().unwrap_or("").to_string(),
+                ready: ready.to_string(),
+                suspended: sp["suspend"] == Value::Bool(true),
+                revision,
+                message: ready_cond
+                    .and_then(|c| c["message"].as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                source,
+                deps: sp["dependsOn"].as_array().map(|a| a.len()).unwrap_or(0),
+            }
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        health_rank(&a.ready, a.suspended)
+            .cmp(&health_rank(&b.ready, b.suspended))
+            .then_with(|| (a.ns.clone() + &a.name).cmp(&(b.ns.clone() + &b.name)))
+    });
+    (rows, true)
+}
+
+fn flux_crd(tab: &str) -> Option<&'static str> {
+    match tab {
+        "kustomizations" => Some(KUSTOMIZATIONS),
+        "helmreleases" => Some(HELMRELEASES),
+        "sources" => Some(SOURCES),
+        "images" => Some(IMAGES),
+        _ => None,
+    }
+}
+
+fn snapshot_flux(tab: &str) -> Value {
+    let Some(crd) = flux_crd(tab) else {
+        return json!({ "rows": [], "present": false, "error": format!("unknown flux tab: {tab}") });
+    };
+    match kubectl(&["get", crd, "-A", "-o", "json"]) {
+        Ok(raw) if is_auth_err(&raw) => {
+            json!({ "rows": [], "present": true, "error": "Cloud credentials expired or missing." })
+        }
+        Ok(raw) => {
+            let (rows, present) = parse_flux(&raw);
+            json!({ "rows": rows, "present": present, "error": "" })
+        }
+        Err(e) => json!({ "rows": [], "present": false, "error": e }),
+    }
+}
+
+/// Cluster-wide failing count for the rail badge (Kustomizations + HelmReleases).
+fn snapshot_flux_health() -> Value {
+    let mut failing = 0usize;
+    let mut present = false;
+    for crd in [KUSTOMIZATIONS, HELMRELEASES] {
+        if let Ok(raw) = kubectl(&["get", crd, "-A", "-o", "json"]) {
+            let (rows, ok) = parse_flux(&raw);
+            if ok {
+                present = true;
+                failing += rows.iter().filter(|r| r.ready == "fail").count();
+            }
+        }
+    }
+    json!({ "failing": failing, "present": present })
+}
+
 fn is_auth_err(s: &str) -> bool {
     let l = s.to_lowercase();
     [
@@ -118,6 +263,8 @@ fn snapshot(kind: &str) -> Value {
             Ok(text) => json!({ "rows": parse_pods(&text), "error": "" }),
             Err(e) => json!({ "rows": [], "error": e }),
         },
+        "flux:health" => snapshot_flux_health(),
+        k if k.starts_with("flux:") => snapshot_flux(&k["flux:".len()..]),
         _ => json!({ "rows": [], "error": format!("unknown watch kind: {kind}") }),
     }
 }
