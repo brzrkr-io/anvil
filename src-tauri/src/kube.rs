@@ -216,6 +216,36 @@ pub async fn kube_logs_selector(
     .map_err(|e| e.to_string())?
 }
 
+/// #13 Events for a specific object (pod/deploy/…) — the fastest "why" for a
+/// crash/pending without leaving the panel.
+#[tauri::command]
+pub async fn kube_events(
+    context: String,
+    namespace: String,
+    object: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut args: Vec<&str> = Vec::new();
+        if !context.is_empty() {
+            args.push("--context");
+            args.push(&context);
+        }
+        let selector = format!("involvedObject.name={object}");
+        args.extend([
+            "get",
+            "events",
+            "-n",
+            &namespace,
+            "--field-selector",
+            &selector,
+            "--sort-by=.lastTimestamp",
+        ]);
+        kubectl(&args)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// `kubectl describe pod` (#74).
 #[tauri::command]
 pub async fn kube_describe(

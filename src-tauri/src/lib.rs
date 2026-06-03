@@ -517,6 +517,7 @@ pub fn run() {
             kube::kube_pods,
             kube::kube_nodes,
             kube::kube_deployments,
+            kube::kube_events,
             kube::kube_logs,
             kube::kube_logs_selector,
             kube::kube_pf_start,

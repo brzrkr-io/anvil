@@ -308,6 +308,9 @@
       <button class="act" disabled={!!running} onclick={loadOutputs} title="Show outputs">
         {running === "output" ? "Outputs…" : "Outputs"}
       </button>
+      {#if onRunCommand}
+        <button class="act" title="Cost estimate (infracost breakdown) in terminal" onclick={() => onRunCommand(`cd "${activeDir}" && infracost breakdown --path .`)}>Cost ↗</button>
+      {/if}
       {#if onInvestigate && (err || (summary && !summary.none))}
         <button class="act ai" disabled={!!running} title="Investigate this plan with the agent" onclick={() => onInvestigate(terraformInvestigation(activeStack ?? ".", cmdFor("plan"), err || output))}>Investigate</button>
       {/if}

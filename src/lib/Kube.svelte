@@ -168,6 +168,14 @@
     } catch (e) { panel = { pod: current || "cluster", content: String(e), title: "Rollouts" }; }
   }
 
+  async function openEvents(p: Pod) {
+    panel = { pod: `${p.ns}/${p.name}`, content: "Loading…", title: "Events" };
+    try {
+      const out = await invoke<string>("kube_events", { context: current, namespace: p.ns, object: p.name });
+      panel = { pod: `${p.ns}/${p.name}`, content: out.trim() || "(no events)", title: "Events" };
+    } catch (e) { panel = { pod: `${p.ns}/${p.name}`, content: String(e), title: "Events" }; }
+  }
+
   async function openDescribe(p: Pod) {
     panel = { pod: `${p.ns}/${p.name}`, content: "Loading…", title: "Describe" };
     try {
@@ -383,6 +391,9 @@
               </button>
               <button class="act" title="Describe" onclick={(e) => { e.stopPropagation(); openDescribe(p); }}>
                 <Icon name="info" size={12} />
+              </button>
+              <button class="act" title="Events (why)" onclick={(e) => { e.stopPropagation(); openEvents(p); }}>
+                <Icon name="alert" size={12} />
               </button>
               <button class="act" title="Exec shell" onclick={(e) => { e.stopPropagation(); execPod(p); }}>
                 <Icon name="terminal" size={12} />
