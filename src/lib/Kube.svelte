@@ -97,13 +97,35 @@
   }
 
   // One-shot shaped snapshot for instant pod refresh (Refresh button, context
-  // switch) without waiting for the next watcher tick.
+  // switch). Falls back to the legacy text command if the backend predates the
+  // watcher (e.g. dev backend not yet restarted) so the page always loads.
   async function refreshPods() {
     try {
       const p = await invoke<PodPayload>("kube_snapshot", { kind: "pods" });
       livePods = p.rows; k8sErr = p.error;
       writeCache("kube-pods", p.rows);
-    } catch (e) { k8sErr = String(e); }
+    } catch {
+      try {
+        const text = await invoke<string>("kube_pods", { context: "" });
+        if (AUTH_RE.test(text)) { livePods = []; k8sErr = "Cloud credentials expired or missing."; return; }
+        livePods = parsePodsText(text); k8sErr = "";
+        writeCache("kube-pods", livePods);
+      } catch (e) { k8sErr = String(e); }
+    }
+  }
+
+  // Client-side fallback parser (mirrors watch.rs): broken-first, then restarts.
+  function parsePodsText(text: string): Pod[] {
+    const lines = text.split("\n").filter(Boolean);
+    if (!lines.length || !/^NAMESPACE\s/.test(lines[0])) return [];
+    const rank = (s: string, r: string) =>
+      /Error|CrashLoop|Failed|Evicted|ImagePull|Pending|Unknown|Init:|Terminating|OOMKilled/i.test(s) ? 0 : (parseInt(r, 10) || 0) > 0 ? 1 : 2;
+    return lines.slice(1)
+      .map((l) => l.split(/\s+/))
+      .filter((c) => c[1])
+      .map((c) => ({ ns: c[0], name: c[1], ready: c[2] ?? "", status: c[3] ?? "", restarts: c[4] ?? "0", age: c[c.length - 1] ?? "" }))
+      .sort((a, b) => rank(a.status, a.restarts) - rank(b.status, b.restarts) || (parseInt(b.restarts, 10) || 0) - (parseInt(a.restarts, 10) || 0) || a.name.localeCompare(b.name))
+      .slice(0, POD_CAP);
   }
 
   async function refreshPf() {
