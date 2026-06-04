@@ -70,6 +70,15 @@ jobs:
         working-directory: src-tauri
         run: cargo clippy --all-targets -- -D warnings
 
+      # The git-integration tests build ephemeral repos and assume the initial
+      # branch is `main` + a commit identity. A fresh runner has neither (git
+      # defaults to `master`, no global user), so set them before the tests.
+      - name: Git defaults for integration tests
+        run: |
+          git config --global init.defaultBranch main
+          git config --global user.email "ci@anvil.test"
+          git config --global user.name "Anvil CI"
+
       - name: Tests
         working-directory: src-tauri
         run: cargo test
