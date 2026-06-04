@@ -143,7 +143,13 @@
   import { get } from "svelte/store";
   import { activeTheme, initTheme, cycleTheme, applyTheme, themeLabel } from "$lib/themes";
   import { density, initDensity, toggleDensity, applyDensity, type Density } from "$lib/density";
-  import { initScale, bumpScale, resetScale } from "$lib/scale";
+  import { initScale } from "$lib/scale";
+  import { bumpTermFontSize, setTermFontSize } from "$lib/terminal-settings";
+  // ⌘+/−/0 = content text size: bump the editor + terminal font together (like
+  // VS Code/Zed). It does NOT scale chrome or the Settings/Explorer sidebars.
+  const CONTENT_FS = 13;
+  function zoomContent(dir: number) { bumpEditorFontSize(dir); bumpTermFontSize(dir); }
+  function zoomContentReset() { setEditorFontSize(CONTENT_FS); setTermFontSize(CONTENT_FS); }
   import { initOpacity } from "$lib/window-opacity";
   import { initFonts } from "$lib/fonts";
   import { autoHideRail, focusDimming, toggleFocusDimming, terminalAutoCd, toggleTerminalAutoCd } from "$lib/layout-settings";
@@ -506,9 +512,9 @@
       case "goto-file": openFilesPalette(); break;
       case "toggle-sidebar": toggleSide(); break;
       case "zen": toggleZen(); break;
-      case "zoom-in": bumpScale(1); break;
-      case "zoom-out": bumpScale(-1); break;
-      case "zoom-reset": resetScale(); break;
+      case "zoom-in": zoomContent(1); break;
+      case "zoom-out": zoomContent(-1); break;
+      case "zoom-reset": zoomContentReset(); break;
     }
   }
 
@@ -1159,9 +1165,9 @@
       { label: "Recent Workspaces…", run: openRecentWorkspace },
       { label: "Cycle Theme", run: cycleTheme },
       { label: "Toggle Density", run: toggleDensity },
-      { label: "Zoom In", hint: "⌘+", run: () => bumpScale(1) },
-      { label: "Zoom Out", hint: "⌘−", run: () => bumpScale(-1) },
-      { label: "Reset Zoom", hint: "⌘0", run: resetScale },
+      { label: "Zoom In (text)", hint: "⌘+", run: () => zoomContent(1) },
+      { label: "Zoom Out (text)", hint: "⌘−", run: () => zoomContent(-1) },
+      { label: "Reset Zoom (text)", hint: "⌘0", run: zoomContentReset },
       { label: "Check for Updates", run: checkForUpdates },
       { label: "Update Channel (stable / beta)…", run: setUpdateChannel },
       { label: `Dev: FPS Overlay ${fpsOn ? "(on)" : "(off)"}`, run: toggleFps },
@@ -1467,9 +1473,9 @@
       const lf = findLeaf(paneTree, activeLeaf);
       if (lf) wsSplit(lf.id, e.shiftKey ? "bottom" : "right", lf.view, lf.ref);
     }
-    else if (e.key === "=" || e.key === "+") { e.preventDefault(); bumpScale(1); }
-    else if (e.key === "-" || e.key === "_") { e.preventDefault(); bumpScale(-1); }
-    else if (e.key === "0") { e.preventDefault(); resetScale(); }
+    else if (e.key === "=" || e.key === "+") { e.preventDefault(); zoomContent(1); }
+    else if (e.key === "-" || e.key === "_") { e.preventDefault(); zoomContent(-1); }
+    else if (e.key === "0") { e.preventDefault(); zoomContentReset(); }
     else if (e.key === ".") {
       // In the editor ⌘. is the LSP code-action / quick-fix; only outside it does
       // ⌘. mean "jump to a zen terminal".
@@ -1847,8 +1853,6 @@
 
     <svelte:boundary onerror={(e) => { console.error("view crashed", e); toast("This view hit an error — use Reload view", "error"); }}>
     <section class="content">
-      <!-- czoom: ⌘+/−/0 scales the content region only; chrome stays fixed. -->
-      <div class="czoom">
       {#if rail !== "workspace"}
       <div class="pane-head">
         {#if rail === "diff"}<span class="accent">±</span> Diff — {diffTarget?.rev ?? diffTarget?.path}
@@ -1977,7 +1981,6 @@
           {/if}
         </div>
       {/if}
-      </div>
     </section>
     {#snippet failed(error, reset)}
       <section class="content">

@@ -21,10 +21,9 @@
   }
   import {
     editorFontSize, editorTabSize, editorWordWrap, editorMinimap, editorLigatures, editorLineHeight, editorLetterSpacing, editorStickyScroll, editorInlayHints, editorFormatOnSave, editorBlameAlways,
-    bumpEditorFontSize, setEditorTabSize, toggleWordWrap, toggleMinimap, toggleLigatures, bumpEditorLineHeight, bumpEditorLetterSpacing, toggleStickyScroll, toggleInlayHints, toggleFormatOnSave, toggleBlameAlways,
+    bumpEditorFontSize, setEditorFontSize, setEditorTabSize, toggleWordWrap, toggleMinimap, toggleLigatures, bumpEditorLineHeight, bumpEditorLetterSpacing, toggleStickyScroll, toggleInlayHints, toggleFormatOnSave, toggleBlameAlways,
   } from "$lib/editor-settings";
-  import { termFontSize, termCursorBlink, termCursorStyle, CURSOR_STYLES, termLineHeight, termLetterSpacing, termScrollback, bumpTermFontSize, toggleTermBlink, setTermCursorStyle, bumpTermLineHeight, bumpTermLetterSpacing, setTermScrollback, termCmdSep, toggleTermCmdSep } from "$lib/terminal-settings";
-  import { uiScale, bumpScale, resetScale } from "$lib/scale";
+  import { termFontSize, termCursorBlink, termCursorStyle, CURSOR_STYLES, termLineHeight, termLetterSpacing, termScrollback, bumpTermFontSize, setTermFontSize, toggleTermBlink, setTermCursorStyle, bumpTermLineHeight, bumpTermLetterSpacing, setTermScrollback, termCmdSep, toggleTermCmdSep } from "$lib/terminal-settings";
   import { windowOpacity, applyOpacity } from "$lib/window-opacity";
   import { uiFont, monoFont, editorBold, termBold, UI_FONTS, MONO_FONTS, setUiFont, setMonoFont, toggleEditorBold, toggleTermBold } from "$lib/fonts";
   import Icon from "$lib/Icon.svelte";
@@ -197,14 +196,14 @@
         </div>
       </section>
       <section>
-        <div class="section-header">UI Scale</div>
+        <div class="section-header">Text Size</div>
         <div class="opt">
-          <span class="opt-lbl">Zoom whole app <span class="kbd-hint">⌘ + / − / 0</span></span>
+          <span class="opt-lbl">Editor &amp; terminal text <span class="kbd-hint">⌘ + / − / 0</span></span>
           <div class="stepper">
-            <button onclick={() => bumpScale(-1)}>−</button>
-            <span class="val">{Math.round($uiScale * 100)}%</span>
-            <button onclick={() => bumpScale(1)}>+</button>
-            <button class="reset" onclick={resetScale}>Reset</button>
+            <button onclick={() => { bumpEditorFontSize(-1); bumpTermFontSize(-1); }}>−</button>
+            <span class="val">{$editorFontSize}px</span>
+            <button onclick={() => { bumpEditorFontSize(1); bumpTermFontSize(1); }}>+</button>
+            <button class="reset" onclick={() => { setEditorFontSize(13); setTermFontSize(13); }}>Reset</button>
           </div>
         </div>
       </section>
