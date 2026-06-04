@@ -212,15 +212,16 @@ body {
    mirrors so floating overlays keep their existing frost without compounding.
    At full opacity (no `.translucent`) the tokens stay solid — pixel-identical. */
 :root.translucent {
-  /* Translucency frosts every chrome + side-menu surface, but the frost stays
-     THEME-COLORED so it flows with the active palette instead of washing out to
-     the desktop wallpaper's color: each surface token recomposes as the theme's
-     own solid color mixed only partway toward transparent. --frost-amt floors the
-     theme tint high (≈0.72–1.0 across the slider) so a dark theme frosts as dark
-     glass and a light theme as light glass — the macOS vibrancy only adds depth
-     behind, it doesn't dictate the hue. The two "main windows" (code editor and
-     terminal) are pinned solid below, since you can't read code on glass. */
-  --frost-amt: calc(0.55 + var(--win-alpha) * 0.45);
+  /* Translucency frosts every chrome + side-menu surface: each surface token
+     recomposes as the theme's own solid color mixed toward transparent by the
+     slider value, so the wallpaper shows through (real see-through glass) while
+     the theme color tints it. The macOS vibrancy material — pinned to the theme's
+     light/dark mode in window.rs — keeps the frost flowing with the palette
+     instead of the desktop's colors. --frost-amt IS the slider (1 = solid, 0.3 =
+     very see-through), so the slider directly controls how transparent it is. The
+     two "main windows" (code editor + terminal) are pinned solid below, since you
+     can't read code on glass. */
+  --frost-amt: var(--win-alpha);
   --bg:     color-mix(in srgb, var(--bg-solid)     calc(var(--frost-amt) * 100%), transparent);
   --panel:  color-mix(in srgb, var(--panel-solid)  calc(var(--frost-amt) * 100%), transparent);
   --panel2: color-mix(in srgb, var(--panel2-solid) calc(var(--frost-amt) * 100%), transparent);
