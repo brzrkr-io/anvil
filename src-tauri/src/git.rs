@@ -724,3 +724,67 @@ pub async fn git_show_file(cwd: String, rev: String, path: String) -> Result<Str
     .await
     .map_err(|e| e.to_string())?
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{git, op_arg};
+    use std::process::Command;
+
+    /// The op allowlist is the injection guard for git_op_abort/continue: only the
+    /// four known multi-step ops are accepted, everything else is rejected before
+    /// it reaches a shell-out arg.
+    #[test]
+    fn op_arg_allowlists_only_known_git_ops() {
+        for op in ["merge", "rebase", "cherry-pick", "revert"] {
+            assert_eq!(op_arg(op).unwrap(), op);
+        }
+        assert!(op_arg("status").is_err());
+        assert!(op_arg("push --force").is_err());
+        assert!(op_arg("merge; rm -rf /").is_err());
+        assert!(op_arg("").is_err());
+    }
+
+    /// Real-backend integration: drive the actual `git -C <dir> …` shell-out (the
+    /// same path every Source Control command uses) against an ephemeral repo and
+    /// assert the output the frontend parsers expect. This exercises the backend
+    /// end-to-end — real process, real git — not a mock. Skips cleanly if `git`
+    /// isn't installed; CI runners have it.
+    #[test]
+    fn git_command_runs_against_a_real_repo() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return; // no git on this machine — nothing to exercise
+        }
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("anvil-git-it-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let d = dir.to_str().unwrap();
+
+        // Build a one-commit repo using the same `git -C` convention as the app.
+        for args in [
+            ["init", "-q"].as_slice(),
+            &["config", "user.email", "t@anvil.test"],
+            &["config", "user.name", "Anvil Test"],
+            &["commit", "--allow-empty", "-q", "-m", "first commit"],
+        ] {
+            git(d, args).unwrap();
+        }
+
+        // The backend path under test, returning parser-ready output.
+        let log = git(d, &["log", "--oneline", "--no-decorate"]).unwrap();
+        assert!(
+            log.contains("first commit"),
+            "git() must return real log output; got {log:?}"
+        );
+
+        let status = git(d, &["status", "--porcelain=v1", "-b"]).unwrap();
+        assert!(
+            status.starts_with("##"),
+            "porcelain status must start with the branch header line; got {status:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
