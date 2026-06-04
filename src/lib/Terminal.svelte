@@ -90,6 +90,14 @@
   let searchInput = $state<HTMLInputElement>();
   let matchInfo = $state<{ idx: number; count: number }>({ idx: -1, count: 0 });
 
+  // Command-timing badge (OSC 133 C→D): how long the last command ran + its exit.
+  // Shown only for non-trivial commands so it doesn't clutter quick prompts.
+  let cmdStart = 0;
+  let lastCmdMs = $state<number | null>(null);
+  let lastCmdExit = $state(0);
+  const fmtDur = (ms: number) =>
+    ms < 1000 ? `${ms}ms` : ms < 60000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.floor(ms / 60000)}m${Math.round((ms % 60000) / 1000)}s`;
+
   function find(forward = true) {
     const opts = { incremental: true };
     if (forward) search?.findNext(searchQuery, opts);
@@ -152,8 +160,13 @@
       const buf = term.buffer.active;
       const line = buf.baseY + buf.cursorY;
       const parts = data.split(";");
-      if (parts[0] === "A") { recordPrompt(id, line); if (get(termCmdSep)) addCmdSeparator(); }
-      else if (parts[0] === "D") recordExit(id, Number(parts[1] ?? "0") || 0);
+      if (parts[0] === "A") { recordPrompt(id, line); cmdStart = performance.now(); if (get(termCmdSep)) addCmdSeparator(); }
+      else if (parts[0] === "C") cmdStart = performance.now();
+      else if (parts[0] === "D") {
+        const code = Number(parts[1] ?? "0") || 0;
+        recordExit(id, code);
+        if (cmdStart) { lastCmdMs = Math.round(performance.now() - cmdStart); lastCmdExit = code; cmdStart = 0; }
+      }
       return true;
     });
     // Expose recent parsed buffer text to the agent (#32).
@@ -490,6 +503,12 @@
       <button onclick={() => { searchOpen = false; term?.focus(); }} title="Close (Esc)">×</button>
     </div>
   {/if}
+  {#if lastCmdMs !== null && lastCmdMs >= 1000}
+    <div class="cmd-timing" class:err={lastCmdExit !== 0}
+      title={lastCmdExit === 0 ? "Last command duration" : `Last command exited ${lastCmdExit}`}>
+      {lastCmdExit === 0 ? "✓" : "✕"} {fmtDur(lastCmdMs)}
+    </div>
+  {/if}
   <div class="xterm-host" bind:this={host}></div>
   {#if menu}
     <div class="ctxscrim" onclick={() => (menu = null)} oncontextmenu={(e) => { e.preventDefault(); menu = null; }} role="presentation"></div>
@@ -523,6 +542,15 @@
     font-size: 13px; line-height: 1;
   }
   .jump-bottom:hover { background: var(--sel); color: var(--text); }
+  /* Command-timing badge (OSC 133): last command's run time, top-right. */
+  .cmd-timing {
+    position: absolute; top: 6px; right: 8px; z-index: 5;
+    font-family: var(--font-mono); font-size: 10.5px; line-height: 1;
+    color: var(--status-verified); background: color-mix(in srgb, var(--bg-solid) 80%, transparent);
+    border: 1px solid var(--hairline); border-radius: 5px; padding: 2px 6px;
+    pointer-events: none;
+  }
+  .cmd-timing.err { color: var(--red); }
   .ctxscrim { position: fixed; inset: 0; z-index: 40; }
   .ctxmenu {
     position: fixed; z-index: 41; min-width: 140px; padding: 4px;
