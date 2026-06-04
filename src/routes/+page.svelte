@@ -829,8 +829,10 @@
       const lf = findLeaf(paneTree, activeLeaf);
       closeFile(closing);
       if (lf?.view === "editor" && lf.ref === closing) {
-        if (activeFile) paneTree = setLeafView(paneTree, lf.id, "editor", activeFile);
-        else wsClose(lf.id);
+        // Show the next open file, or fall back to the anvil welcome splash
+        // (recent files + shortcuts) when this was the last tab — never leave the
+        // just-closed file rendering, and don't kill the pane.
+        paneTree = setLeafView(paneTree, lf.id, "editor", activeFile || undefined);
       }
       return;
     }
@@ -1990,7 +1992,7 @@
               {#key cwd}{#await Terraform()}<Skeleton rows={7} />{:then M}<M.default {cwd} onRunCommand={sendToTerm} onInvestigate={investigate} />{/await}{/key}
             {:else if lf.view === "obs"}
               {#await Observability()}<Skeleton rows={6} />{:then M}<M.default />{/await}
-            {:else if lf.view === "editor" && (lf.ref || activeFile)}
+            {:else if lf.view === "editor" && openFiles.includes(lf.ref || activeFile)}
               {@const p = lf.ref || activeFile}
               {#if isNonText(p)}
                 {#key p}{#await FileView()}<Skeleton rows={6} />{:then M}<M.default path={p} />{/await}{/key}
