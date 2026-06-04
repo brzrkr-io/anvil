@@ -80,7 +80,7 @@
   .palette {
     position: fixed; top: 64px; left: 50%; transform: translateX(-50%);
     width: min(620px, 86vw); z-index: 91;
-    background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+    background: var(--panel-solid); border: 1px solid var(--border); border-radius: 6px;
     box-shadow: var(--elev-3); overflow: hidden;
     animation: pal-in 0.14s cubic-bezier(0.2, 0.9, 0.3, 1);
   }

@@ -135,10 +135,10 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; }
 body {
-  /* Alpha-aware base floor: at --win-alpha 1 it's solid --bg (no transparency);
-     below 1 it goes translucent so the macOS vibrancy blur shows through
-     (Zed-style). The native window is transparent + frosted. */
-  background: color-mix(in srgb, var(--bg) calc(var(--win-alpha) * 100%), transparent);
+  /* Solid --bg. When the window is translucent the `:root.translucent` block
+     recomposes --bg itself as alpha-composited, so this frosts app-wide without
+     a per-surface mix. At full opacity --bg is solid (Zed-style native frost). */
+  background: var(--bg);
   color: var(--text);
   font-family: var(--font-ui);
   font-size: var(--ui-fs);
@@ -196,17 +196,22 @@ body {
 
 /* ---- app shell ---- */
 :root { --scale: 1; --win-alpha: 1; --win-blur: 0px; }
-/* Frost the translucent shell surfaces: when --win-alpha < 1 the surface is
-   partly see-through and --win-blur (set by the opacity control) blurs the native
-   vibrancy backdrop behind it, so it reads as frosted glass instead of a raw,
-   washed-out window. At full opacity --win-blur is 0 (no compositing cost). */
-/* Content panes (editor + terminal) stay SOLID on the theme background even when
-   the window is translucent — only the chrome (rail/side/tabs/status) goes
-   see-through. Making the terminal/editor transparent bled the desktop through
-   and broke zen mode (white/washed text). Readability wins over a full-glass look. */
-/* Window translucency: shell surfaces are mixed toward transparent by
-   --win-alpha (1 = fully opaque, identical to no transparency). At <1 the macOS
-   vibrancy material set on the NSWindow shows through as a blurred backdrop. */
+/* Window translucency — one source of truth. window-opacity.ts toggles
+   `.translucent` and sets --win-alpha (0.3–1) when the slider is < 1. Here we
+   recompose the surface tokens themselves as alpha-composited from their solid
+   `-solid` mirrors (set in themes.ts), so EVERY surface that paints --bg/--panel/
+   --panel2 frosts at once — the macOS vibrancy material on the NSWindow shows
+   through as a blurred backdrop. Glass tokens are recomposed from the same
+   mirrors so floating overlays keep their existing frost without compounding.
+   At full opacity (no `.translucent`) the tokens stay solid — pixel-identical. */
+:root.translucent {
+  --bg:      color-mix(in srgb, var(--bg-solid)      calc(var(--win-alpha) * 100%), transparent);
+  --panel:   color-mix(in srgb, var(--panel-solid)   calc(var(--win-alpha) * 100%), transparent);
+  --panel2:  color-mix(in srgb, var(--panel2-solid)  calc(var(--win-alpha) * 100%), transparent);
+  --glass:       color-mix(in srgb, var(--panel-solid) 76%, transparent);
+  --glass-2:     color-mix(in srgb, var(--panel2-solid) 80%, transparent);
+  --glass-scrim: color-mix(in srgb, var(--bg-solid) 48%, transparent);
+}
 /* Global UI zoom: scale the whole shell but inverse-size it so it still fills
    the viewport (keeps the bottom status bar on-screen at any scale). */
 .app { display: flex; flex-direction: column; width: 100vw; height: 100vh; overflow: hidden; }
@@ -215,7 +220,7 @@ body {
 /* Hiding the tab strip removes the inset that cleared the macOS traffic lights
    (titleBarStyle Overlay). Keep a thin draggable strip so the lights don't
    overlap the terminal and the window stays movable in zen. */
-.zen-bar { flex: 0 0 28px; height: 28px; width: 100%; -webkit-app-region: drag; background: color-mix(in srgb, var(--bg) calc(var(--win-alpha) * 100%), transparent); }
+.zen-bar { flex: 0 0 28px; height: 28px; width: 100%; -webkit-app-region: drag; background: var(--bg); }
 /* Presentation polish: fade chrome away, give content a calm inset, and hide the
    pointer after it rests (revealed again on move). */
 .app.zen .main { animation: zen-fade 0.22s ease; }
@@ -223,7 +228,7 @@ body {
 /* First-run onboarding overlay (#100). */
 .onboard-scrim { position: fixed; inset: 0; z-index: 90; display: flex; align-items: center; justify-content: center;
   background: var(--glass-scrim); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
-.onboard { width: 440px; max-width: 90vw; background: var(--panel); border: 1px solid var(--border);
+.onboard { width: 440px; max-width: 90vw; background: var(--panel-solid); border: 1px solid var(--border);
   border-radius: 4px; padding: 26px 28px; box-shadow: var(--elev-3); }
 .ob-tag { margin: 4px 0 16px; font-size: 13px; color: var(--text2); }
 .ob-tips { list-style: none; margin: 0 0 18px; padding: 0; display: flex; flex-direction: column; gap: 9px; }
@@ -293,7 +298,7 @@ body {
 
 .tabs {
   height: var(--tab-h); flex: 0 0 auto; display: flex; align-items: stretch;
-  background: color-mix(in srgb, var(--panel) calc(var(--win-alpha) * 100%), transparent); border-bottom: 1px solid var(--border);
+  background: var(--panel); border-bottom: 1px solid var(--border);
   padding-left: 78px; /* clear macOS traffic lights */
   overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
   -webkit-app-region: drag;
@@ -328,7 +333,7 @@ body {
 .app.rail-auto .rail:hover { transform: translateX(0); }
 
 .rail {
-  width: var(--rail-w); flex: 0 0 auto; background: color-mix(in srgb, var(--bg) calc(var(--win-alpha) * 100%), transparent);
+  width: var(--rail-w); flex: 0 0 auto; background: var(--bg);
   border-right: 1px solid var(--border);
   display: flex; flex-direction: column; align-items: center; padding-top: 6px; gap: 2px;
 }
@@ -362,7 +367,7 @@ body {
 .rail .brandmark:hover { background: color-mix(in srgb, var(--status-trace) 12%, transparent); }
 
 .side {
-  width: var(--side-w); flex: 0 0 auto; background: color-mix(in srgb, var(--panel) calc(var(--win-alpha) * 100%), transparent);
+  width: var(--side-w); flex: 0 0 auto; background: var(--panel);
   border-right: 1px solid var(--border); overflow-y: auto;
 }
 .sect {
@@ -385,7 +390,7 @@ body {
 .row .ic { width: 13px; color: var(--text2); font-size: 11px; flex: 0 0 auto; }
 .row .meta { margin-left: auto; color: var(--text3); font-size: 10.5px; }
 
-.content { flex: 1; min-width: 0; min-height: 0; position: relative; display: flex; flex-direction: column; overflow: hidden; background: color-mix(in srgb, var(--bg) calc(var(--win-alpha) * 100%), transparent); }
+.content { flex: 1; min-width: 0; min-height: 0; position: relative; display: flex; flex-direction: column; overflow: hidden; background: var(--bg); }
 .pane-head {
   height: var(--head-h); flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
   padding: 0 var(--pad-x); color: var(--text2); font-size: 12px; border-bottom: 1px solid var(--hairline);
@@ -395,7 +400,7 @@ body {
 
 .status {
   height: var(--status-h); flex: 0 0 auto; display: flex; align-items: center; gap: 13px;
-  padding: 0 var(--pad-x); background: color-mix(in srgb, var(--panel) calc(var(--win-alpha) * 100%), transparent); border-top: 1px solid var(--hairline);
+  padding: 0 var(--pad-x); background: var(--panel); border-top: 1px solid var(--hairline);
   color: var(--text2); font-size: 11px;
 }
 .status .r { margin-left: auto; display: flex; gap: 14px; align-items: center; }

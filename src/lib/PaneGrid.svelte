@@ -154,7 +154,7 @@
   /* Flush panes (no card look): no border/radius, no gap — panes meet at the
      1px .divider only. Active pane gets a subtle inset accent that adds no layout. */
   .leaf { display: flex; flex-direction: column; width: 100%; height: 100%; min-width: 0; min-height: 0;
-    overflow: hidden; background: color-mix(in srgb, var(--bg) calc(var(--win-alpha) * 100%), transparent);
+    overflow: hidden; background: var(--bg);
     /* Pane enter (create/split): opacity + a hair of scale only — never animate
        width/height/flex (that reflows and reintroduces the floating-box look). */
     animation: pane-in 0.12s ease-out; }

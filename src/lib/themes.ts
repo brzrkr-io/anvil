@@ -739,11 +739,20 @@ function applyVars(name: string): void {
   const t = themes[name];
   if (!t || typeof document === "undefined") return;
   const root = document.documentElement.style;
-  for (const [k, v] of Object.entries(t.ui)) root.setProperty(`--${k}`, v);
+  // Each token also gets a `--<k>-solid` mirror holding the opaque color. The
+  // `.translucent` rule (app.css) recomposes the surface tokens from these
+  // mirrors, so translucency lives in one place and overlays can stay opaque.
+  for (const [k, v] of Object.entries(t.ui)) {
+    root.setProperty(`--${k}`, v);
+    root.setProperty(`--${k}-solid`, v);
+  }
   // Custom overrides win over the base theme.
   try {
     const ov = JSON.parse(localStorage.getItem("anvil-custom-theme") || "{}");
-    for (const [k, v] of Object.entries(ov)) root.setProperty(`--${k}`, v as string);
+    for (const [k, v] of Object.entries(ov)) {
+      root.setProperty(`--${k}`, v as string);
+      root.setProperty(`--${k}-solid`, v as string);
+    }
   } catch { /* ignore */ }
   document.documentElement.style.colorScheme = isLight(name) ? "light" : "dark";
   // Match the macOS vibrancy material to the theme's light/dark mode so the
