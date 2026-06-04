@@ -411,4 +411,16 @@ mod tests {
         assert_eq!(kind("stk"), Some("tg-stack"));
         let _ = fs::remove_dir_all(&tmp);
     }
+
+    // tf_bin is the injection guard for every tf/tg command: only the three known
+    // binaries are accepted, so a caller can't run an arbitrary program via `bin`.
+    #[test]
+    fn tf_bin_allowlists_only_known_binaries() {
+        assert_eq!(super::tf_bin("terraform").unwrap(), "terraform");
+        assert_eq!(super::tf_bin("terragrunt").unwrap(), "terragrunt");
+        assert_eq!(super::tf_bin("tofu").unwrap(), "tofu");
+        assert!(super::tf_bin("bash").is_err());
+        assert!(super::tf_bin("terraform; rm -rf /").is_err());
+        assert!(super::tf_bin("").is_err());
+    }
 }
