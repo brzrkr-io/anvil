@@ -5,6 +5,11 @@
 // ${} exit point — Tab cycles.
 import { snippetCompletion, type CompletionContext, type CompletionResult, type Completion } from "@codemirror/autocomplete";
 import { EditorState, type Extension } from "@codemirror/state";
+// User-snippet storage lives in a CodeMirror-free module so non-editor callers
+// (the command palette) can use it without pulling the CM vendor chunk. Re-export
+// so existing `from "$lib/cm-snippets"` imports of these keep resolving.
+import { getUserSnippets } from "./user-snippets";
+export { getUserSnippets, addUserSnippet, removeUserSnippet, type UserSnippet } from "./user-snippets";
 
 type Snip = [label: string, template: string, detail?: string];
 
@@ -70,27 +75,6 @@ const BY_EXT: Record<string, Snip[]> = {
   yaml: YAML, yml: YAML,
   tf: TF, hcl: TF,
 };
-
-// User snippet pack (#3 / #92): a shareable list persisted in localStorage,
-// merged in per-extension. Each entry is { ext, label, template }.
-export type UserSnippet = { ext: string; label: string; template: string };
-const USER_KEY = "anvil-user-snippets";
-
-export function getUserSnippets(): UserSnippet[] {
-  if (typeof localStorage === "undefined") return [];
-  try { return JSON.parse(localStorage.getItem(USER_KEY) || "[]"); } catch { return []; }
-}
-function saveUserSnippets(list: UserSnippet[]) {
-  if (typeof localStorage !== "undefined") localStorage.setItem(USER_KEY, JSON.stringify(list));
-}
-export function addUserSnippet(s: UserSnippet) {
-  if (!s.ext || !s.label || !s.template) return;
-  const next = [...getUserSnippets().filter((x) => !(x.ext === s.ext && x.label === s.label)), s];
-  saveUserSnippets(next);
-}
-export function removeUserSnippet(ext: string, label: string) {
-  saveUserSnippets(getUserSnippets().filter((x) => !(x.ext === ext && x.label === label)));
-}
 
 function snipsFor(path: string): Completion[] {
   const file = path.split("/").pop()?.toLowerCase() ?? "";

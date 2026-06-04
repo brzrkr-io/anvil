@@ -36,14 +36,14 @@ rfd = "0.15"
 [dev-dependencies]
 tempfile = "3"
 
-# Tuned for fast local rebuilds (solo dev iterates constantly). Thin LTO links
-# ~2-3x faster than fat with ~95% of the size win; 16 codegen units parallelize
-# compilation. Net binary cost is <1 MB on a ~9.5 MB app. For a public/min-size
-# distribution build, set `lto = "fat"` and `codegen-units = 1`.
+# Min-size distribution profile: strip symbols, fat LTO + a single codegen unit
+# for maximum cross-crate inlining/dead-code elimination, size-optimized codegen,
+# and abort-on-panic (drops unwinding tables). Fat LTO + cgu=1 builds notably
+# slower than thin/cgu=16, but this is the shipped binary, so size wins.
 [profile.release]
 strip = true
-lto = "thin"
+lto = "fat"
 opt-level = "s"
-codegen-units = 16
+codegen-units = 1
 panic = "abort"
 

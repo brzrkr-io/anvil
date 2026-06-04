@@ -69,7 +69,7 @@
   }
   import { installCrashHandlers, getCrashes, clearCrashes, diagnosticsReport, originFrame } from "$lib/crash";
   import { redactionRules, addRedactionRule, removeRedactionRule, getAuditLog, clearAuditLog } from "$lib/redaction";
-  import { getUserSnippets, addUserSnippet, removeUserSnippet } from "$lib/cm-snippets";
+  import { getUserSnippets, addUserSnippet, removeUserSnippet } from "$lib/user-snippets";
   // Settings is a large surface and never the startup view — load on demand (#74).
   const Settings = () => import("$lib/Settings.svelte");
   // DevOps (kubectl/CI) panes aren't the startup view; load them
@@ -156,7 +156,10 @@
     cpp: "clangd", terraform: "terraform-ls", yaml: "yaml-ls", json: "json-ls",
     shellscript: "bash-ls", lua: "lua-ls", dockerfile: "docker-ls",
   };
-  import { fetchSymbols, searchWorkspaceSymbols } from "$lib/cm-lsp";
+  // cm-lsp statically pulls the whole CodeMirror vendor chunk (~1 MB). Load it
+  // lazily so it stays out of the cold-start graph — Editor is already lazy via
+  // {#await}, and only the symbol-search/breadcrumb handlers below need it.
+  const loadCmLsp = () => import("$lib/cm-lsp");
   import { problems } from "$lib/diagnostics";
   import { railEnabled, extEnabled } from "$lib/extensions";
   import { agentSeed, agentInvestigate } from "$lib/agent-seed";
@@ -533,6 +536,26 @@
     if (e.button !== 0) return;
     const startX = e.clientX, startY = e.clientY;
     let active = false;
+    // Coalesce the per-move hit-test (elementFromPoint + getBoundingClientRect)
+    // to one update per animation frame, matching the splitter-resize pattern in
+    // PaneGrid — a fast drag fires dozens of pointermoves per frame, but the
+    // ghost/dropzone only repaint once per frame anyway.
+    let curX = startX, curY = startY;
+    let raf = 0;
+    const flush = () => {
+      raf = 0;
+      dragXY = { x: curX, y: curY };
+      const hit = leafRectAt(curX, curY);
+      if (hit) {
+        dropHint = { leafId: hit.leafId, edge: edgeFromRect(hit.rect, curX, curY) };
+        reorderTo = null;
+      } else {
+        dropHint = null;
+        // Not over a pane → maybe over another file tab (strip reorder).
+        const tabEl = document.elementFromPoint(curX, curY)?.closest("[data-file-tab]") as HTMLElement | null;
+        reorderTo = !payload.from ? (tabEl?.dataset.fileTab ?? null) : null;
+      }
+    };
     const move = (ev: PointerEvent) => {
       if (!active) {
         if (!passedThreshold(startX, startY, ev.clientX, ev.clientY)) return;
@@ -540,22 +563,15 @@
         tabDrag = payload; // commit the drag only past the click/drag threshold
       }
       ev.preventDefault(); // suppress text selection once dragging
-      dragXY = { x: ev.clientX, y: ev.clientY };
-      const hit = leafRectAt(ev.clientX, ev.clientY);
-      if (hit) {
-        dropHint = { leafId: hit.leafId, edge: edgeFromRect(hit.rect, ev.clientX, ev.clientY) };
-        reorderTo = null;
-      } else {
-        dropHint = null;
-        // Not over a pane → maybe over another file tab (strip reorder).
-        const tabEl = document.elementFromPoint(ev.clientX, ev.clientY)?.closest("[data-file-tab]") as HTMLElement | null;
-        reorderTo = !payload.from ? (tabEl?.dataset.fileTab ?? null) : null;
-      }
+      curX = ev.clientX; curY = ev.clientY;
+      if (!raf) raf = requestAnimationFrame(flush);
     };
     const up = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      if (raf) { cancelAnimationFrame(raf); raf = 0; }
       if (active) {
+        flush(); // settle on the final pointer position before resolving the drop
         if (dropHint) applyTabDrop(payload, dropHint);
         else if (reorderTo && payload.ref) openFiles = reorder(openFiles, payload.ref, reorderTo);
       }
@@ -789,6 +805,7 @@
     // Symbols in the active file (LSP) — fused into the same list.
     if (activeFile && lspLang(activeFile)) {
       try {
+        const { fetchSymbols } = await loadCmLsp();
         const syms = await fetchSymbols(lspLang(activeFile)!, activeFile);
         for (const s of syms.slice(0, 200)) items.push({ label: `◇ ${s.name}`, hint: `${baseName(activeFile)}:${s.line}`, run: () => { openInEditor(activeFile); editorGoto.set(s.line); } });
       } catch { /* ignore */ }
@@ -1019,6 +1036,7 @@
     if (!activeFile || !lspLang(activeFile)) { toast("Open a file with a language server first", "info"); return; }
     const q = prompt("Search workspace symbols:");
     if (q == null) return;
+    const { searchWorkspaceSymbols } = await loadCmLsp();
     let syms: Awaited<ReturnType<typeof searchWorkspaceSymbols>> = [];
     try { syms = await searchWorkspaceSymbols(lspLang(activeFile)!, q); } catch { syms = []; }
     if (!syms.length) { toast("No symbols", "info"); return; }
@@ -1035,6 +1053,7 @@
     if (!activeFile) { toast("Open a file first", "info"); return; }
     const lang = lspLang(activeFile);
     if (!lang) { toast("No language server for this file", "info"); return; }
+    const { fetchSymbols } = await loadCmLsp();
     let syms: Awaited<ReturnType<typeof fetchSymbols>> = [];
     try { syms = await fetchSymbols(lang, activeFile); } catch { syms = []; }
     if (!syms.length) { toast("No symbols found", "info"); return; }
