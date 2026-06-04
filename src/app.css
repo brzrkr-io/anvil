@@ -427,6 +427,9 @@ body {
 .status .r { margin-left: auto; display: flex; gap: 14px; align-items: center; }
 .status .ok { color: var(--green); }
 .status .accent { color: var(--accent); }
+/* Active kube context chip — turns red on prod-looking contexts so a wrong-cluster
+   mutation is unmissable (#9/#28). */
+.status .kctx.prod { color: var(--red); font-weight: 600; }
 
 /* Render-crash fallback (svelte:boundary) — keeps chrome alive when a view throws. */
 .crash-fallback { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;

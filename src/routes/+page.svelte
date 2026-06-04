@@ -362,6 +362,7 @@
       if (p.kubeContext) await invoke("kube_use_context", { name: p.kubeContext });
       if (p.namespace) await invoke("kube_set_namespace", { namespace: p.namespace });
       if (p.awsProfile) await invoke("set_aws_profile", { profile: p.awsProfile });
+      void refreshKubeCtx();
       setActiveProfile(p.name);
       toast(`Environment → ${p.name}${profileSummary(p) ? ` (${profileSummary(p)})` : ""}`, "success");
     } catch (e) {
@@ -685,7 +686,7 @@
     liveTermRefs = now;
   });
   // Free this window's shells on close — the reconciler can't fire on teardown.
-  onDestroy(() => { for (const ref of liveTermRefs) invoke("pty_kill", { id: ref }).catch(() => {}); });
+  onDestroy(() => { clearInterval(kctxTimer); for (const ref of liveTermRefs) invoke("pty_kill", { id: ref }).catch(() => {}); });
   function paneRef(v: ViewKind, srcRef?: string): string | undefined {
     if (v === "term") return paneId("wt");
     if (v === "editor") return srcRef ?? (activeFile || undefined); // carry the file
@@ -779,6 +780,7 @@
   // Views that can live inside a workspace pane (paneView renders these).
   const PANE_VIEWS = new Set(["term", "editor", "files", "scm", "search", "agent", "devops", "k8s", "ci", "terraform", "obs"]);
   function openView(kind: string) {
+    if (kind === "k8s") void refreshKubeCtx();
     // Whole-app-as-workspace: when the grid is up, the rail drives the ACTIVE
     // pane instead of switching to a separate full-screen mode (no PTY churn).
     if (rail === "workspace" && PANE_VIEWS.has(kind) && findLeaf(paneTree, activeLeaf)) {
@@ -842,6 +844,15 @@
   let recentFiles = $state<string[]>([]);
   let recentWorkspaces = $state<string[]>([]);
   let branch = $state("");
+  // Active kubeconfig context, surfaced in the status bar so mutating the WRONG
+  // cluster is unmissable (#9/#28). Refreshed on mount, on env-profile switch, on
+  // opening the k8s view, and on a slow poll (catches an external `use-context`).
+  let kubeCtx = $state("");
+  let kctxTimer: ReturnType<typeof setInterval> | undefined;
+  async function refreshKubeCtx() {
+    try { kubeCtx = ((await invoke<string>("kube_current_context")) || "").trim(); }
+    catch { kubeCtx = ""; }
+  }
 
   async function openFolder() {
     const p = await invoke<string | null>("pick_folder", { start: cwd }).catch(() => null);
@@ -1645,6 +1656,8 @@
       const where = origin ? `  (${origin})` : "";
       toast("Unexpected error: " + message.slice(0, 100) + where, "error");
     });
+    void refreshKubeCtx();
+    kctxTimer = setInterval(refreshKubeCtx, 30000);
     bootMs = Math.round(performance.now() - bootStart);
     requestAnimationFrame(() => { firstPaintMs = Math.round(performance.now() - bootStart); });
     initTheme();
@@ -2056,6 +2069,11 @@
       onclick={() => openView('scm')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('scm'))}><Icon name="branch" size={12} /> {branch || "—"}{#if aheadBehind} <span class="ab">↑{aheadBehind.a} ↓{aheadBehind.b}</span>{/if}</span>
     <span class="si" role="button" tabindex="0" style="cursor:default" title={`${cwd} — toggle Explorer`}
       onclick={toggleSide} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), toggleSide())}><Icon name="folder" size={11} /> {baseName(cwd) || "~"}</span>
+    {#if kubeCtx}
+      <span class="si kctx" class:prod={/prod|prd|production/i.test(kubeCtx)} role="button" tabindex="0"
+        title={`Active kube context: ${kubeCtx} — open Kubernetes`} style="cursor:default"
+        onclick={() => openView('k8s')} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView('k8s'))}><Icon name="kube" size={11} /> {kubeCtx}</span>
+    {/if}
     <div class="r">
       <span class="si" role="button" tabindex="0" onclick={toggleDensity} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), toggleDensity())} title="Toggle density" style="cursor:default">{$density}</span>
       <span class="si" role="button" tabindex="0" onclick={cycleTheme} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), cycleTheme())} title="Cycle theme" style="cursor:default">{themeLabel($activeTheme)}</span>
