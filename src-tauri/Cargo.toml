@@ -29,6 +29,7 @@ futures-util = "0.3"
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-window-state = "2"
 rfd = "0.15"
+window-vibrancy = "0.5"
 
 # Shrink the shipped binary: strip symbols, fat LTO, size-optimized codegen,
 # single codegen unit, and abort-on-panic (drops unwinding tables). Takes the

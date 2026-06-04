@@ -462,6 +462,10 @@ pub fn run() {
             // a connected monitor.
             for win in app.handle().webview_windows().values() {
                 ensure_on_screen(win);
+                // Frost the transparent window from the first frame (default dark;
+                // the frontend re-applies the correct light/dark material on theme
+                // init). Without this the window is just see-through, not blurred.
+                window::apply_window_vibrancy(win, true);
             }
             Ok(())
         })

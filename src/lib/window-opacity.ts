@@ -3,7 +3,7 @@ import { writable, get } from "svelte/store";
 // Window translucency. 1 = fully opaque (no transparency); lower values mix the
 // shell surfaces toward transparent so the macOS vibrancy material shows through
 // as a blurred backdrop. Drives the `--win-alpha` custom property.
-const MIN = 0.5, MAX = 1;
+const MIN = 0.3, MAX = 1;
 
 function load(): number {
   if (typeof localStorage === "undefined") return 1;

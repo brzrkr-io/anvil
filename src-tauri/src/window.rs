@@ -61,14 +61,31 @@ pub fn open_named_window(app: tauri::AppHandle, url: String, label: String) -> R
 /// themes when window translucency is on. Called from the frontend on theme change.
 #[tauri::command]
 pub fn set_vibrancy(app: tauri::AppHandle, dark: bool) -> Result<(), String> {
-    use tauri::window::{Effect, EffectsBuilder};
-    let effect = if dark {
-        Effect::HudWindow
-    } else {
-        Effect::Sidebar
-    };
     for w in app.webview_windows().values() {
-        let _ = w.set_effects(EffectsBuilder::new().effect(effect).build());
+        apply_window_vibrancy(w, dark);
     }
     Ok(())
+}
+
+/// Apply the macOS NSVisualEffectView frost to one window via the
+/// `window-vibrancy` crate (applied directly on the NSWindow — more reliable
+/// than Tauri's runtime `set_effects`). Dark themes → HudWindow, light → Sidebar.
+/// No-op off macOS.
+pub fn apply_window_vibrancy(window: &tauri::WebviewWindow, dark: bool) {
+    #[cfg(target_os = "macos")]
+    {
+        use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
+        // UnderWindowBackground = the macOS "blurred desktop behind the window"
+        // material (what shows your wallpaper frosted through). HudWindow is far
+        // darker/near-opaque and reads as a solid black window, so we don't use it.
+        let _ = dark;
+        let _ = apply_vibrancy(
+            window,
+            NSVisualEffectMaterial::UnderWindowBackground,
+            Some(NSVisualEffectState::Active),
+            None,
+        );
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (window, dark);
 }

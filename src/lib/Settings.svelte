@@ -213,7 +213,7 @@
         <div class="opt">
           <span class="opt-lbl">Translucency <span class="kbd-hint">macOS vibrancy</span></span>
           <div class="stepper">
-            <input type="range" min="0.5" max="1" step="0.02" value={$windowOpacity}
+            <input type="range" min="0.3" max="1" step="0.02" value={$windowOpacity}
               oninput={(e) => applyOpacity(+(e.currentTarget as HTMLInputElement).value)} style="width:140px" />
             <span class="val">{Math.round($windowOpacity * 100)}%</span>
             <button class="reset" onclick={() => applyOpacity(1)}>Off</button>
