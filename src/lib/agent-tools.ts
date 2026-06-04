@@ -62,6 +62,15 @@ export function riskyCommand(cmd: string): string | null {
     [/\b(cat|less|head|tail|grep|cp|scp|curl|base64)\b[^|;&]*(\.ssh\/|\.aws\/credentials|\.config\/gcloud|\.netrc|id_rsa|id_ed25519|\.env\b)/, "reads credentials / secrets"],
     [/\bgit\b[^|;&]*\bpush\b[^|;&]*(--force\b|-f\b)/, "force-pushes git history"],
     [/\bhistory\b[\s\S]*\|\s*(curl|wget|nc)/, "exfiltrates shell history"],
+    // Infrastructure mutations an agent must never auto-run unreviewed — the
+    // wrong-context blast radius is the worst-case failure (#9/#28).
+    [/\b(terraform|tofu|terragrunt)\b[^|;&]*\bdestroy\b/, "destroys infrastructure (terraform/tofu destroy)"],
+    [/\b(terraform|tofu|terragrunt)\b[^|;&]*\bapply\b[^|;&]*-auto-approve\b/, "applies infrastructure without review (-auto-approve)"],
+    [/\bkubectl\b[^|;&]*\bdelete\b/, "deletes Kubernetes resources (kubectl delete)"],
+    [/\bhelm\b[^|;&]*\b(uninstall|delete)\b/, "uninstalls a Helm release"],
+    [/\bflux\b[^|;&]*\bdelete\b/, "deletes a Flux resource (flux delete)"],
+    [/\bgit\b[^|;&]*\breset\b[^|;&]*--hard\b/, "discards local changes (git reset --hard)"],
+    [/\bgit\b[^|;&]*\bclean\b[^|;&]*-[a-z]*f/, "force-deletes untracked files (git clean -f)"],
   ];
   for (const [re, reason] of checks) if (re.test(c)) return reason;
   return null;

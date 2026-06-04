@@ -26,6 +26,21 @@ describe("redact", () => {
     expect(redact(pem)).toBe("****REDACTED PRIVATE KEY****");
   });
 
+  it("masks AWS temporary (STS) access key IDs", () => {
+    expect(redact("AWS_ACCESS_KEY_ID=ASIAY34FZKBOKMUTVV7A")).not.toContain("ASIAY34FZKBOKMUTVV7A");
+  });
+
+  it("masks Google API keys", () => {
+    const k = "AIza" + "x".repeat(35);
+    expect(redact(`gkey=${k}`)).not.toContain(k);
+  });
+
+  it("masks Authorization: Bearer tokens", () => {
+    const out = redact('curl -H "Authorization: Bearer eyJabc.def.ghi1234567"');
+    expect(out).toContain("****REDACTED");
+    expect(out).not.toContain("eyJabc.def.ghi1234567");
+  });
+
   it("leaves ordinary code untouched", () => {
     const code = "function add(a, b) { return a + b; }";
     expect(redact(code)).toBe(code);

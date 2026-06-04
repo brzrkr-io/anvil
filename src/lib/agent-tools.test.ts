@@ -87,6 +87,17 @@ describe("riskyCommand", () => {
     expect(riskyCommand("git push --force origin main")).toMatch(/force-push/);
   });
 
+  it("flags infrastructure-destroying commands (wrong-context blast radius)", () => {
+    expect(riskyCommand("terraform destroy")).toMatch(/destroys infrastructure/);
+    expect(riskyCommand("tofu -chdir=prod destroy -auto-approve")).toMatch(/destroys infrastructure/);
+    expect(riskyCommand("terraform apply -auto-approve")).toMatch(/without review/);
+    expect(riskyCommand("kubectl delete ns prod")).toMatch(/Kubernetes/);
+    expect(riskyCommand("helm uninstall app -n prod")).toMatch(/Helm/);
+    expect(riskyCommand("flux delete kustomization apps -s")).toMatch(/Flux/);
+    expect(riskyCommand("git reset --hard origin/main")).toMatch(/discards local/);
+    expect(riskyCommand("git clean -fd")).toMatch(/untracked/);
+  });
+
   it("returns null for ordinary commands", () => {
     expect(riskyCommand("ls -la")).toBeNull();
     expect(riskyCommand("kubectl get pods")).toBeNull();
