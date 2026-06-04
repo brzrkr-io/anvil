@@ -14,29 +14,12 @@
     if (webglInUse > 0) webglInUse--;
   }
 
-  // #99 PTY re-attach: moving/re-docking a pane DESTROYS this component and mounts
-  // a fresh one with the SAME `id`. We must not kill the live shell in between, or
-  // the remount respawns and the user sees `[process exited]`. So a destroy only
-  // SCHEDULES the kill after a short grace window; if a terminal with the same id
-  // mounts within it (a move), the pending kill is cancelled and the backend
-  // re-attaches the still-running shell. A real pane close has nothing remount, so
-  // the kill lands and the PTY is freed (no leak).
-  const pendingKills = new Map<string, ReturnType<typeof setTimeout>>();
-  const KILL_GRACE_MS = 400;
-  function scheduleKill(id: string) {
-    clearTimeout(pendingKills.get(id));
-    pendingKills.set(
-      id,
-      setTimeout(() => {
-        pendingKills.delete(id);
-        invoke("pty_kill", { id });
-      }, KILL_GRACE_MS),
-    );
-  }
-  function cancelKill(id: string) {
-    const t = pendingKills.get(id);
-    if (t !== undefined) { clearTimeout(t); pendingKills.delete(id); }
-  }
+  // #99 PTY lifecycle is owned by the workspace, not this component. Moving a pane
+  // or switching its view DESTROYS this <Terminal> and (on return) mounts a fresh
+  // one with the SAME `id`; killing the shell on unmount would make the remount
+  // respawn and show `[process exited]`. The backend keeps the session alive and
+  // pty_spawn re-attaches it; the shell is freed only when its id leaves the pane
+  // tree, reconciled in +page.svelte (terminalRefs diff + window-close cleanup).
 </script>
 
 <script lang="ts">
@@ -118,10 +101,6 @@
   }
 
   onMount(async () => {
-    // #99 If this id was just unmounted (a pane move re-keys the component), a
-    // kill is pending — cancel it synchronously, before any await, so the live
-    // shell survives long enough for pty_spawn below to re-attach to it.
-    cancelKill(id);
     // Ensure the mono font is loaded BEFORE xterm measures cell width, otherwise
     // it sizes cells to the fallback font and the glyphs render with big gaps.
     const fam = get(monoFont);
@@ -467,10 +446,9 @@
     unregisterTerminal(id);
     clearBlocks(id);
     if (webglHeld) { releaseWebgl(); webglHeld = false; }
-    // #99 Don't kill the PTY outright — a pane move remounts this id immediately
-    // and would respawn. Schedule it; a remount cancels it (re-attach), a real
-    // close lets it land (PTY freed).
-    scheduleKill(id);
+    // PTY is NOT killed here — the workspace reconciler (+page.svelte) frees it
+    // only when this terminal's id leaves the pane tree. That is what lets a
+    // view-switch or pane move re-attach to the still-running shell.
     term?.dispose();
   });
 

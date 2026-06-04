@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   leaf, splitLeaf, closeLeaf, resizeSplit, dockLeaf, setView,
   findLeaf, leafCount, firstLeaf, balanceTree, closeOthers, leafIds,
-  addTab, setActiveTab, closeTab, seedPaneSeq, paneId, type PaneNode, type SplitNode,
+  addTab, setActiveTab, closeTab, terminalRefs, seedPaneSeq, paneId, type PaneNode, type SplitNode,
 } from "./panes";
 
 describe("tabs in panes", () => {
@@ -12,6 +12,16 @@ describe("tabs in panes", () => {
     expect(lf.tabs[0].view).toBe("term");
     expect(lf.view).toBe("term");
     expect(lf.ref).toBe("t1");
+  });
+  it("terminalRefs tracks shell ids: a term survives a view-switch, dies on close", () => {
+    const tree = splitLeaf(leaf("term", "t1", "A"), "A", "right", "term", "t2").tree;
+    expect(new Set(terminalRefs(tree))).toEqual(new Set(["t1", "t2"]));
+    // Switching pane A to a view by ADDING a tab keeps the shell id in the tree,
+    // so the PTY reconciler won't kill it — it re-attaches when shown again (#99).
+    const switched = addTab(tree, "A", "k8s");
+    expect(terminalRefs(switched)).toContain("t1");
+    // Closing the terminal tab removes its id (the reconciler then frees the PTY).
+    expect(terminalRefs(closeTab(switched, "A", 0))).not.toContain("t1");
   });
   it("addTab appends + activates; mirror follows the active tab", () => {
     const tree = addTab(leaf("term", "t1", "A"), "A", "editor", "/f.ts");

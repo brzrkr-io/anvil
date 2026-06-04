@@ -61,6 +61,23 @@ export function addTab(root: PaneNode, leafId: string, view: ViewKind, ref?: str
   });
 }
 
+/** Every terminal session id currently live anywhere in the tree (each tab whose
+ *  view is a terminal). The frontend reconciles backend PTYs against this: a shell
+ *  is killed only when its ref leaves the tree (an explicit close), never on a
+ *  view-switch or a pane move — where the ref stays and the terminal re-attaches. */
+export function terminalRefs(node: PaneNode): string[] {
+  const out: string[] = [];
+  const walk = (n: PaneNode) => {
+    if (n.kind === "leaf") {
+      for (const t of n.tabs) if (t.view === "term" && t.ref) out.push(t.ref);
+    } else {
+      n.children.forEach(walk);
+    }
+  };
+  walk(node);
+  return out;
+}
+
 /** Switch the active tab of a pane. */
 export function setActiveTab(root: PaneNode, leafId: string, idx: number): PaneNode {
   return mapTree(root, (n) => (n.kind === "leaf" && n.id === leafId ? syncTabs(n, n.tabs, idx) : n));

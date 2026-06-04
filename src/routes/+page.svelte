@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -123,7 +123,7 @@
   }
   $effect(() => { if (cwd) prewarmLsp(cwd); });
   import PaneGrid from "$lib/PaneGrid.svelte";
-  import { leaf, splitLeaf, closeLeaf, resizeSplit, setView as setLeafView, paneId, remapTermRefs, seedPaneSeq, firstLeaf, findLeaf, balanceTree, closeOthers as closeOtherPanes, leafIds, addTab, setActiveTab, closeTab, type PaneNode, type Leaf, type ViewKind, type Edge } from "$lib/panes";
+  import { leaf, splitLeaf, closeLeaf, resizeSplit, setView as setLeafView, paneId, remapTermRefs, seedPaneSeq, firstLeaf, findLeaf, balanceTree, closeOthers as closeOtherPanes, leafIds, addTab, setActiveTab, closeTab, terminalRefs, type PaneNode, type Leaf, type ViewKind, type Edge } from "$lib/panes";
   import { edgeFromRect, passedThreshold, dropAction, type TabDrag } from "$lib/tabdrag";
   import Palette, { type Item } from "$lib/Palette.svelte";
   import Toasts from "$lib/Toasts.svelte";
@@ -673,6 +673,19 @@
   $effect(() => { if (!findLeaf(paneTree, activeLeaf)) activeLeaf = firstLeaf(paneTree).id; });
   // Drop the zoom if its pane is gone.
   $effect(() => { if (zoomedLeaf && !findLeaf(paneTree, zoomedLeaf)) zoomedLeaf = null; });
+  // #99 PTY lifecycle reconciler: the workspace owns when a shell dies, not the
+  // <Terminal> component. On every tree change, kill the PTYs whose terminal id
+  // has LEFT the tree (an explicit tab/pane close). Ids that merely moved or got
+  // backgrounded by a view-switch stay in the tree, so their shell survives and
+  // re-attaches when the term tab is shown again.
+  let liveTermRefs = new Set<string>();
+  $effect(() => {
+    const now = new Set(terminalRefs(paneTree));
+    for (const ref of liveTermRefs) if (!now.has(ref)) invoke("pty_kill", { id: ref }).catch(() => {});
+    liveTermRefs = now;
+  });
+  // Free this window's shells on close — the reconciler can't fire on teardown.
+  onDestroy(() => { for (const ref of liveTermRefs) invoke("pty_kill", { id: ref }).catch(() => {}); });
   function paneRef(v: ViewKind, srcRef?: string): string | undefined {
     if (v === "term") return paneId("wt");
     if (v === "editor") return srcRef ?? (activeFile || undefined); // carry the file
@@ -769,7 +782,19 @@
     // Whole-app-as-workspace: when the grid is up, the rail drives the ACTIVE
     // pane instead of switching to a separate full-screen mode (no PTY churn).
     if (rail === "workspace" && PANE_VIEWS.has(kind) && findLeaf(paneTree, activeLeaf)) {
-      wsSetView(activeLeaf, kind as ViewKind);
+      const lf = findLeaf(paneTree, activeLeaf)!;
+      const cur = lf.tabs[lf.active];
+      // Switching a TERMINAL pane to another view keeps its shell alive: open the
+      // view as a tab (or re-activate an existing one) instead of replacing the
+      // terminal, so returning to the term tab re-attaches the same session (#99).
+      if (cur?.view === "term" && kind !== "term") {
+        const existing = lf.tabs.findIndex((t) => t.view === kind);
+        paneTree = existing >= 0
+          ? setActiveTab(paneTree, lf.id, existing)
+          : addTab(paneTree, lf.id, kind as ViewKind, paneRef(kind as ViewKind));
+      } else {
+        wsSetView(activeLeaf, kind as ViewKind);
+      }
       explorerOpen = false;
       return;
     }
