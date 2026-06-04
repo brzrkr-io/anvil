@@ -212,22 +212,22 @@ body {
    mirrors so floating overlays keep their existing frost without compounding.
    At full opacity (no `.translucent`) the tokens stay solid — pixel-identical. */
 :root.translucent {
-  /* Chrome-only translucency, native-vibrancy style (Finder/Notes sidebar):
-     the outer bars (.tabs/.rail/.side/.status) go fully transparent so the macOS
-     NSVisualEffectView frost on the NSWindow IS the surface — no CSS color wash.
-     Editor/panes/content stay SOLID (var(--bg)) and readable. Glass tokens for
-     floating overlays recompose from the -solid mirrors so they keep their
-     existing frost without compounding. */
+  /* Translucency frosts every chrome + side-menu surface: recompose the surface
+     tokens as alpha-composited from their solid `-solid` mirrors, so each element
+     that paints --bg/--panel/--panel2 (outer bars, sidebars, side-menu nav
+     columns, panels, cards) lets the macOS vibrancy backdrop show through. The
+     two "main windows" — the code editor (.ed-wrap) and the terminal — are pinned
+     back to solid below (and in Terminal.svelte), since you can't read code or
+     command output on frosted glass. */
+  --bg:     color-mix(in srgb, var(--bg-solid)     calc(var(--win-alpha) * 100%), transparent);
+  --panel:  color-mix(in srgb, var(--panel-solid)  calc(var(--win-alpha) * 100%), transparent);
+  --panel2: color-mix(in srgb, var(--panel2-solid) calc(var(--win-alpha) * 100%), transparent);
   --glass:       color-mix(in srgb, var(--panel-solid) 76%, transparent);
   --glass-2:     color-mix(in srgb, var(--panel2-solid) 80%, transparent);
   --glass-scrim: color-mix(in srgb, var(--bg-solid) 48%, transparent);
 }
-/* The four chrome bars: solid by default (pixel-identical at full opacity), and
-   fully transparent when translucent so the native frost shows through them. */
-:root.translucent .tabs,
-:root.translucent .rail,
-:root.translucent .side,
-:root.translucent .status { background: transparent; }
+/* Main windows stay solid + readable even while the rest of the app frosts. */
+:root.translucent .ed-wrap { background: var(--bg-solid); }
 /* Global UI zoom: scale the whole shell but inverse-size it so it still fills
    the viewport (keeps the bottom status bar on-screen at any scale). */
 .app { display: flex; flex-direction: column; width: 100vw; height: 100vh; overflow: hidden; }
@@ -312,7 +312,7 @@ body {
 
 .tabs {
   height: var(--tab-h); flex: 0 0 auto; display: flex; align-items: stretch;
-  background: var(--panel-solid); border-bottom: 1px solid var(--border);
+  background: var(--panel); border-bottom: 1px solid var(--border);
   padding-left: 78px; /* clear macOS traffic lights */
   overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
   -webkit-app-region: drag;
@@ -347,7 +347,7 @@ body {
 .app.rail-auto .rail:hover { transform: translateX(0); }
 
 .rail {
-  width: var(--rail-w); flex: 0 0 auto; background: var(--bg-solid);
+  width: var(--rail-w); flex: 0 0 auto; background: var(--bg);
   border-right: 1px solid var(--border);
   display: flex; flex-direction: column; align-items: center; padding-top: 6px; gap: 2px;
 }
@@ -381,7 +381,7 @@ body {
 .rail .brandmark:hover { background: color-mix(in srgb, var(--status-trace) 12%, transparent); }
 
 .side {
-  width: var(--side-w); flex: 0 0 auto; background: var(--panel-solid);
+  width: var(--side-w); flex: 0 0 auto; background: var(--panel);
   border-right: 1px solid var(--border); overflow-y: auto;
 }
 .sect {
@@ -414,7 +414,7 @@ body {
 
 .status {
   height: var(--status-h); flex: 0 0 auto; display: flex; align-items: center; gap: 13px;
-  padding: 0 var(--pad-x); background: var(--panel-solid); border-top: 1px solid var(--hairline);
+  padding: 0 var(--pad-x); background: var(--panel); border-top: 1px solid var(--hairline);
   color: var(--text2); font-size: 11px;
 }
 .status .r { margin-left: auto; display: flex; gap: 14px; align-items: center; }

@@ -95,15 +95,11 @@
   let unsubOpacity: () => void;
   let selTimer: ReturnType<typeof setTimeout> | undefined;
 
-  // Build an xterm theme whose background is mixed toward transparent by the
-  // window-opacity value (a). At a=1 the background is the theme's solid color;
-  // below 1 it becomes translucent so the vibrancy backdrop shows through.
-  function themeFor(name: string, a: number) {
-    const base = themes[name].xterm;
-    if (a >= 1) return base;
-    const hex = (base.background ?? "#000000").replace("#", "");
-    const r = parseInt(hex.slice(0, 2), 16), g = parseInt(hex.slice(2, 4), 16), b = parseInt(hex.slice(4, 6), 16);
-    return { ...base, background: `rgba(${r}, ${g}, ${b}, ${a})` };
+  // The terminal is a "main window": its background stays solid + readable even
+  // when the surrounding chrome frosts (you can't read command output on glass),
+  // so we always use the theme's solid color regardless of window opacity.
+  function themeFor(name: string, _a: number) {
+    return themes[name].xterm;
   }
 
   let searchOpen = $state(false);
