@@ -742,15 +742,20 @@ function applyVars(name: string): void {
   // Each token also gets a `--<k>-solid` mirror holding the opaque color. The
   // `.translucent` rule (app.css) recomposes the surface tokens from these
   // mirrors, so translucency lives in one place and overlays can stay opaque.
+  // The surface tokens (bg/panel/panel2) are set ONLY as `-solid` mirrors, never
+  // inline as `--bg` etc. — an inline `--bg` would beat the `:root.translucent`
+  // stylesheet rule (inline > selector) and silently kill window translucency.
+  // CSS aliases `--bg: var(--bg-solid)` (opaque) / recomposes it when translucent.
+  const SURFACE = new Set(["bg", "panel", "panel2"]);
   for (const [k, v] of Object.entries(t.ui)) {
-    root.setProperty(`--${k}`, v);
+    if (!SURFACE.has(k)) root.setProperty(`--${k}`, v);
     root.setProperty(`--${k}-solid`, v);
   }
   // Custom overrides win over the base theme.
   try {
     const ov = JSON.parse(localStorage.getItem("anvil-custom-theme") || "{}");
     for (const [k, v] of Object.entries(ov)) {
-      root.setProperty(`--${k}`, v as string);
+      if (!SURFACE.has(k)) root.setProperty(`--${k}`, v as string);
       root.setProperty(`--${k}-solid`, v as string);
     }
   } catch { /* ignore */ }

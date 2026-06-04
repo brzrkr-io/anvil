@@ -58,9 +58,15 @@
 
 /* Anvil design tokens — Solarized Dark default; overridden at runtime by themes.ts. */
 :root {
-  --bg: #002b36;
-  --panel: #073642;
-  --panel2: #0a4150;
+  /* Surface tokens are aliased from `-solid` mirrors (set by themes.ts) so the
+     `:root.translucent` rule can recompose them — themes.ts must NOT set --bg
+     etc. inline, or it would shadow that rule and break window translucency. */
+  --bg-solid: #002b36;
+  --panel-solid: #073642;
+  --panel2-solid: #0a4150;
+  --bg: var(--bg-solid);
+  --panel: var(--panel-solid);
+  --panel2: var(--panel2-solid);
   --border: #0f4a5a;
   --text: #93a1a1;
   --text2: #839496;

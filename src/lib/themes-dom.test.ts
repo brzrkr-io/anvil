@@ -20,7 +20,9 @@ beforeEach(() => {
 describe("applyTheme — CSS vars + persist + colorScheme", () => {
   it("sets --bg on documentElement matching the theme", () => {
     applyTheme("anvil-dark");
-    const bg = document.documentElement.style.getPropertyValue("--bg");
+    // Surface tokens are set as `-solid` mirrors (not inline --bg, which would
+    // shadow the translucency rule); --bg is aliased from it in CSS.
+    const bg = document.documentElement.style.getPropertyValue("--bg-solid");
     expect(bg).toBe(themes["anvil-dark"].ui.bg);
   });
 
@@ -59,20 +61,20 @@ describe("applyTheme — custom-override layering", () => {
   it("custom-color overrides win over base theme bg", () => {
     localStorage.setItem("anvil-custom-theme", JSON.stringify({ bg: "#ff0000" }));
     applyTheme("anvil-dark");
-    expect(document.documentElement.style.getPropertyValue("--bg")).toBe("#ff0000");
+    expect(document.documentElement.style.getPropertyValue("--bg-solid")).toBe("#ff0000");
   });
 
   it("custom overrides do not affect other theme vars", () => {
     localStorage.setItem("anvil-custom-theme", JSON.stringify({ bg: "#ff0000" }));
     applyTheme("anvil-dark");
-    const panel = document.documentElement.style.getPropertyValue("--panel");
+    const panel = document.documentElement.style.getPropertyValue("--panel-solid");
     expect(panel).toBe(themes["anvil-dark"].ui.panel);
   });
 
   it("malformed custom JSON is ignored gracefully", () => {
     localStorage.setItem("anvil-custom-theme", "not valid json");
     expect(() => applyTheme("anvil-dark")).not.toThrow();
-    expect(document.documentElement.style.getPropertyValue("--bg")).toBe(themes["anvil-dark"].ui.bg);
+    expect(document.documentElement.style.getPropertyValue("--bg-solid")).toBe(themes["anvil-dark"].ui.bg);
   });
 });
 
