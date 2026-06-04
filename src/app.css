@@ -202,7 +202,7 @@ body {
 .anvil-g-del::before { background: var(--red); height: 2px; top: 0; }
 
 /* ---- app shell ---- */
-:root { --scale: 1; --win-alpha: 1; --win-blur: 0px; }
+:root { --scale: 1; --win-alpha: 1; --win-blur: 0px; --bar-alpha: var(--win-alpha); }
 /* Window translucency — one source of truth. window-opacity.ts toggles
    `.translucent` and sets --win-alpha (0.3–1) when the slider is < 1. Here we
    recompose the surface tokens themselves as alpha-composited from their solid
@@ -215,7 +215,10 @@ body {
   /* Chrome-only translucency: surface tokens stay SOLID (editor/panes/content
      opaque). Only the outer bars frost — see .tabs/.rail/.side/.status, which
      alpha-mix from the -solid mirrors over the transparent body, revealing the
-     macOS vibrancy backdrop. */
+     macOS vibrancy backdrop. Bars frost HARDER than the slider value so the
+     wallpaper reads through even on light themes (where a light tint would
+     otherwise wash out the desktop). */
+  --bar-alpha: calc(var(--win-alpha) * 0.5);
   --glass:       color-mix(in srgb, var(--panel-solid) 76%, transparent);
   --glass-2:     color-mix(in srgb, var(--panel2-solid) 80%, transparent);
   --glass-scrim: color-mix(in srgb, var(--bg-solid) 48%, transparent);
@@ -304,7 +307,7 @@ body {
 
 .tabs {
   height: var(--tab-h); flex: 0 0 auto; display: flex; align-items: stretch;
-  background: color-mix(in srgb, var(--panel-solid) calc(var(--win-alpha) * 100%), transparent); border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel-solid) calc(var(--bar-alpha) * 100%), transparent); border-bottom: 1px solid var(--border);
   padding-left: 78px; /* clear macOS traffic lights */
   overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
   -webkit-app-region: drag;
@@ -339,7 +342,7 @@ body {
 .app.rail-auto .rail:hover { transform: translateX(0); }
 
 .rail {
-  width: var(--rail-w); flex: 0 0 auto; background: color-mix(in srgb, var(--bg-solid) calc(var(--win-alpha) * 100%), transparent);
+  width: var(--rail-w); flex: 0 0 auto; background: color-mix(in srgb, var(--bg-solid) calc(var(--bar-alpha) * 100%), transparent);
   border-right: 1px solid var(--border);
   display: flex; flex-direction: column; align-items: center; padding-top: 6px; gap: 2px;
 }
@@ -373,7 +376,7 @@ body {
 .rail .brandmark:hover { background: color-mix(in srgb, var(--status-trace) 12%, transparent); }
 
 .side {
-  width: var(--side-w); flex: 0 0 auto; background: color-mix(in srgb, var(--panel-solid) calc(var(--win-alpha) * 100%), transparent);
+  width: var(--side-w); flex: 0 0 auto; background: color-mix(in srgb, var(--panel-solid) calc(var(--bar-alpha) * 100%), transparent);
   border-right: 1px solid var(--border); overflow-y: auto;
 }
 .sect {
@@ -406,7 +409,7 @@ body {
 
 .status {
   height: var(--status-h); flex: 0 0 auto; display: flex; align-items: center; gap: 13px;
-  padding: 0 var(--pad-x); background: color-mix(in srgb, var(--panel-solid) calc(var(--win-alpha) * 100%), transparent); border-top: 1px solid var(--hairline);
+  padding: 0 var(--pad-x); background: color-mix(in srgb, var(--panel-solid) calc(var(--bar-alpha) * 100%), transparent); border-top: 1px solid var(--hairline);
   color: var(--text2); font-size: 11px;
 }
 .status .r { margin-left: auto; display: flex; gap: 14px; align-items: center; }
