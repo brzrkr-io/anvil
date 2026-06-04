@@ -130,4 +130,25 @@ describe("initTheme — restores from localStorage", () => {
     initTheme();
     expect(get(activeTheme)).toBe("anvil-dark");
   });
+
+  // Regression: a manual theme pick must survive a relaunch. The Settings picker
+  // calls applyTheme(); reloading re-runs initTheme(), which must restore that
+  // pick — not fall back to a system theme — and keep system-mode off.
+  it("a manual pick (applyTheme) survives a relaunch (re-run initTheme)", () => {
+    // User had been following the system pair (so the wrong fallback would be a
+    // system theme), then makes an explicit pick.
+    setSystemMode(true);
+    applyTheme("ferra");
+    expect(get(activeTheme)).toBe("ferra");
+    expect(get(systemMode)).toBe(false);
+
+    // Simulate relaunch: fresh stores, then boot.
+    activeTheme.set("anvil-dark");
+    systemMode.set(true);
+    initTheme();
+
+    expect(get(activeTheme)).toBe("ferra");
+    expect(get(systemMode)).toBe(false);
+    expect(document.documentElement.style.getPropertyValue("--accent")).toBe(themes["ferra"].ui.accent);
+  });
 });

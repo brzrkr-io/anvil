@@ -130,6 +130,7 @@
   import NotificationCenter from "$lib/NotificationCenter.svelte";
   import Dialog from "$lib/Dialog.svelte";
   import Welcome from "$lib/Welcome.svelte";
+  import Skeleton from "$lib/Skeleton.svelte";
   import { askText } from "$lib/dialog";
   import { getProfiles, saveProfile, setActiveProfile, profileSummary, type EnvProfile } from "$lib/profiles";
   import WhatsNew from "$lib/WhatsNew.svelte";
@@ -1476,8 +1477,17 @@
   });
 
   // Apply a workspace's pinned theme/density when its folder becomes active.
+  // Skip the initial restore: on relaunch initTheme() has already applied the
+  // user's last manual pick, so re-applying a stale pinned theme here is the
+  // "theme won't stick" bug. The pin only takes over on a real mid-session
+  // switch to a different folder.
+  let lastWsCwd = "";
   $effect(() => {
-    const ws = wsSettings[cwd];
+    const dir = cwd;
+    const first = lastWsCwd === "";
+    lastWsCwd = dir;
+    if (first || !dir) return;
+    const ws = wsSettings[dir];
     if (ws?.theme) applyTheme(ws.theme);
     if (ws?.density) applyDensity(ws.density);
   });
@@ -1834,11 +1844,11 @@
           {@const on = rail === "panel" && p.id === activePanel}
           <div class="view" style:display={on ? "block" : "none"}>
             {#if p.kind === "preview"}
-              {#await WebPreview() then M}<M.default bind:url={p.url} />{/await}
+              {#await WebPreview()}<Skeleton rows={5} />{:then M}<M.default bind:url={p.url} />{/await}
             {:else if p.kind === "markdown"}
-              {#key p.file}{#await MarkdownPreview() then M}<M.default path={p.file ?? ""} />{/await}{/key}
+              {#key p.file}{#await MarkdownPreview()}<Skeleton rows={8} />{:then M}<M.default path={p.file ?? ""} />{/await}{/key}
             {:else if p.kind === "githistory"}
-              {#key cwd}{#await SourceControl() then M}<M.default {cwd} onOpenDiff={(t) => { diffTarget = t; rail = "diff"; }} />{/await}{/key}
+              {#key cwd}{#await SourceControl()}<Skeleton rows={10} />{:then M}<M.default {cwd} onOpenDiff={(t) => { diffTarget = t; rail = "diff"; }} />{/await}{/key}
             {/if}
           </div>
         {/each}
@@ -1848,27 +1858,29 @@
         <div class="view">
           <div class="difftop"><button class="back" onclick={() => openView("scm")}>← Source Control</button></div>
           {#key JSON.stringify(diffTarget)}
-            {#if diffTarget.rev && diffTarget.path}{#await DiffView() then M}<M.default {cwd} rev={diffTarget.rev} path={diffTarget.path} />{/await}
+            {#if diffTarget.rev && diffTarget.path}{#await DiffView()}<Skeleton rows={14} />{:then M}<M.default {cwd} rev={diffTarget.rev} path={diffTarget.path} />{/await}
             {:else if diffTarget.rev}<CommitDetail {cwd} rev={diffTarget.rev} />
-            {:else}{#await DiffView() then M}<M.default {cwd} path={diffTarget.path} staged={diffTarget.staged} />{/await}{/if}
+            {:else}{#await DiffView()}<Skeleton rows={14} />{:then M}<M.default {cwd} path={diffTarget.path} staged={diffTarget.staged} />{/await}{/if}
           {/key}
         </div>
       {:else if rail === "editor" && activeFile}
         <div class="view">
           {#if runbook && isMarkdown(activeFile)}
-            {#key activeFile}{#await RunbookView() then M}<M.default path={activeFile} onRun={(c) => { invoke("pty_write", { id: activeTerm, data: c + "\n" }); }} />{/await}{/key}
+            {#key activeFile}{#await RunbookView()}<Skeleton rows={10} />{:then M}<M.default path={activeFile} onRun={(c) => { invoke("pty_write", { id: activeTerm, data: c + "\n" }); }} />{/await}{/key}
           {:else if mdPreview && isMarkdown(activeFile)}
-            {#key activeFile}{#await MarkdownPreview() then M}<M.default path={activeFile} />{/await}{/key}
+            {#key activeFile}{#await MarkdownPreview()}<Skeleton rows={10} />{:then M}<M.default path={activeFile} />{/await}{/key}
           {:else if isNonText(activeFile)}
-            {#key activeFile}{#await FileView() then M}<M.default path={activeFile} />{/await}{/key}
+            {#key activeFile}{#await FileView()}<Skeleton rows={6} />{:then M}<M.default path={activeFile} />{/await}{/key}
           {:else}
-            {#await Editor() then M}
+            {#await Editor()}
+              <Skeleton rows={16} />
+            {:then M}
               <M.default path={activeFile} onDirty={(d) => (dirtyFiles = { ...dirtyFiles, [activeFile]: d })} onOpen={(np, ln) => { openInEditor(np); if (ln) editorGoto.set(ln); }} onReferences={showReferences} onExplain={explainCode} />
             {/await}
           {/if}
         </div>
       {:else if rail === "settings"}
-        <div class="view">{#await Settings() then M}<M.default />{/await}</div>
+        <div class="view">{#await Settings()}<Skeleton rows={12} />{:then M}<M.default />{/await}</div>
       {/if}
 
       <!-- The grid is the permanent content surface — keep it MOUNTED even when a
@@ -1883,11 +1895,11 @@
             {:else if lf.view === "files"}
               {#key cwd}<FileBrowser bind:path={cwd} onOpenFile={openInEditor} />{/key}
             {:else if lf.view === "scm"}
-              {#key cwd}{#await SourceControl() then M}<M.default {cwd} onOpenDiff={(t) => { diffTarget = t; }} />{/await}{/key}
+              {#key cwd}{#await SourceControl()}<Skeleton rows={10} />{:then M}<M.default {cwd} onOpenDiff={(t) => { diffTarget = t; }} />{/await}{/key}
             {:else if lf.view === "search"}
-              {#key cwd}{#await SearchPanel() then M}<M.default root={cwd} onOpen={(p) => openInEditor(p)} />{/await}{/key}
+              {#key cwd}{#await SearchPanel()}<Skeleton rows={8} />{:then M}<M.default root={cwd} onOpen={(p) => openInEditor(p)} />{/await}{/key}
             {:else if lf.view === "agent"}
-              {#await AgentPanel() then M}<M.default {cwd} attachPath={activeFile}
+              {#await AgentPanel()}<Skeleton rows={8} />{:then M}<M.default {cwd} attachPath={activeFile}
                 listFiles={() => invoke<string[]>("walk_dir", { root: cwd.replace(/\/$/, "") })}
                 onReadFile={(p) => invoke<string>("read_file", { path: p })}
                 onApplyFile={(path, content) => { invoke("write_file", { path, contents: content }); toast(`Applied edit to ${path.split("/").pop()}`, "success"); }}
@@ -1895,21 +1907,21 @@
                 onRunCommand={(c) => { invoke("pty_write", { id: activeTerm, data: c + "\n" }); focusTerm(); }}
                 onReply={(summary) => { if (document.hidden) notifyAgent(summary); }} />{/await}
             {:else if lf.view === "devops"}
-              {#key cwd}{#await DevOps() then M}<M.default {cwd} onRunCommand={(c) => invoke("pty_write", { id: activeTerm, data: c + "\n" })} onInvestigate={investigate} />{/await}{/key}
+              {#key cwd}{#await DevOps()}<Skeleton rows={9} />{:then M}<M.default {cwd} onRunCommand={(c) => invoke("pty_write", { id: activeTerm, data: c + "\n" })} onInvestigate={investigate} />{/await}{/key}
             {:else if lf.view === "k8s"}
-              {#key cwd}{#await Kube() then M}<M.default {cwd} active={true} onRunCommand={sendToTerm} onHealth={(n) => (kubeFails = n)} onInvestigate={investigate} onCheckConnections={() => (doctorOpen = true)} />{:catch e}<div class="view-err">Kubernetes view failed to load: {e}</div>{/await}{/key}
+              {#key cwd}{#await Kube()}<Skeleton rows={10} />{:then M}<M.default {cwd} active={true} onRunCommand={sendToTerm} onHealth={(n) => (kubeFails = n)} onInvestigate={investigate} onCheckConnections={() => (doctorOpen = true)} />{:catch e}<div class="view-err">Kubernetes view failed to load: {e}</div>{/await}{/key}
             {:else if lf.view === "ci"}
-              {#key cwd}{#await CI() then M}<M.default {cwd} active={true} onRunCommand={sendToTerm} onInvestigate={investigate} />{/await}{/key}
+              {#key cwd}{#await CI()}<Skeleton rows={12} />{:then M}<M.default {cwd} active={true} onRunCommand={sendToTerm} onInvestigate={investigate} />{/await}{/key}
             {:else if lf.view === "terraform"}
-              {#key cwd}{#await Terraform() then M}<M.default {cwd} onRunCommand={sendToTerm} onInvestigate={investigate} />{/await}{/key}
+              {#key cwd}{#await Terraform()}<Skeleton rows={7} />{:then M}<M.default {cwd} onRunCommand={sendToTerm} onInvestigate={investigate} />{/await}{/key}
             {:else if lf.view === "obs"}
-              {#await Observability() then M}<M.default />{/await}
+              {#await Observability()}<Skeleton rows={6} />{:then M}<M.default />{/await}
             {:else if lf.view === "editor" && (lf.ref || activeFile)}
               {@const p = lf.ref || activeFile}
               {#if isNonText(p)}
-                {#key p}{#await FileView() then M}<M.default path={p} />{/await}{/key}
+                {#key p}{#await FileView()}<Skeleton rows={6} />{:then M}<M.default path={p} />{/await}{/key}
               {:else}
-                {#await Editor() then M}<M.default path={p} onDirty={(d) => (dirtyFiles = { ...dirtyFiles, [p]: d })} onOpen={(np, ln) => { openInEditor(np); if (ln) editorGoto.set(ln); }} onReferences={showReferences} onExplain={explainCode} />{/await}
+                {#await Editor()}<Skeleton rows={16} />{:then M}<M.default path={p} onDirty={(d) => (dirtyFiles = { ...dirtyFiles, [p]: d })} onOpen={(np, ln) => { openInEditor(np); if (ln) editorGoto.set(ln); }} onReferences={showReferences} onExplain={explainCode} />{/await}
               {/if}
             {:else}
               <Welcome recent={recentFiles} onOpenRecent={openInEditor} onNewTerminal={newTerm} onCommandPalette={openCommands} onNewFile={newRootFile} onNewFolder={newRootFolder} onOpenFile={openFileDialog} onOpenFolder={openFolder} />
@@ -2060,7 +2072,7 @@
   {#if tabDrag}
     <!-- Floating drag ghost: follows the cursor while a tab is being dragged
          onto a pane (the .dropzone highlight is rendered inside the target leaf). -->
-    <div class="dragghost" style:left="{dragXY.x}px" style:top="{dragXY.y}px" aria-hidden="true">{tabDrag.label}</div>
+    <div class="dragghost" style:transform="translate3d({dragXY.x + 12}px, {dragXY.y + 12}px, 0)" aria-hidden="true">{tabDrag.label}</div>
   {/if}
 </div>
 
@@ -2112,11 +2124,12 @@
   .tab .x:hover { color: var(--text); }
   .dirty { display: inline-block; width: 7px; height: 7px; margin-left: 7px; border-radius: 50%;
     background: var(--accent); vertical-align: middle; }
-  /* Floating drag ghost (pointer-based tab drag). Offset off the cursor so it
-     doesn't sit under elementFromPoint hit-testing. */
-  .dragghost { position: fixed; z-index: 100; pointer-events: none; transform: translate(10px, 10px);
-    background: var(--panel); color: var(--text); border: 1px solid var(--accent); border-radius: 6px;
-    padding: 3px 9px; font-family: var(--font-ui); font-size: 11.5px; white-space: nowrap;
+  /* Floating drag ghost (pointer-based tab drag). Positioned via a GPU transform
+     (set inline, cursor + 12px offset) so it tracks the pointer on the compositor
+     without per-move layout, and stays off elementFromPoint hit-testing. */
+  .dragghost { position: fixed; left: 0; top: 0; z-index: 100; pointer-events: none; will-change: transform;
+    background: var(--panel); color: var(--accent); border: 1px solid var(--accent); border-radius: 6px;
+    padding: 3px 9px; font-family: var(--font-ui); font-size: 11.5px; font-weight: 500; white-space: nowrap;
     box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35); max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
   .newtab { display: flex; align-items: center; padding: 0 12px; color: var(--text3); font-size: 16px;
     -webkit-app-region: no-drag; cursor: default; }

@@ -14,7 +14,11 @@
   .skel {
     display: flex;
     flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
     padding: 10px 12px;
+    background: var(--bg);
+    pointer-events: none;
   }
   .skel-row {
     height: 12px;

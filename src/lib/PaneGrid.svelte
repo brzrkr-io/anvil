@@ -154,7 +154,12 @@
   /* Flush panes (no card look): no border/radius, no gap — panes meet at the
      1px .divider only. Active pane gets a subtle inset accent that adds no layout. */
   .leaf { display: flex; flex-direction: column; width: 100%; height: 100%; min-width: 0; min-height: 0;
-    overflow: hidden; background: var(--bg); }
+    overflow: hidden; background: var(--bg);
+    /* Pane enter (create/split): opacity + a hair of scale only — never animate
+       width/height/flex (that reflows and reintroduces the floating-box look). */
+    animation: pane-in 0.12s ease-out; }
+  @keyframes pane-in { from { opacity: 0; transform: scale(0.985); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) { .leaf { animation: none; } }
   .leaf.dimmed > .pbody { opacity: 0.5; transition: opacity 0.15s ease; }
   .leaf.active { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent); }
   .leaf.active > .phead { background: var(--sel); }
@@ -181,8 +186,13 @@
   .pbtn:hover { background: var(--sel); color: var(--text); }
   .pbtn.close:hover { color: var(--red); }
   .pbody { position: relative; flex: 1; min-height: 0; overflow: hidden; }
-  .dropzone { position: absolute; background: color-mix(in srgb, var(--accent) 30%, transparent);
-    border: 1px solid var(--accent); pointer-events: none; z-index: 5; }
+  .dropzone { position: absolute; background: color-mix(in srgb, var(--accent) 22%, transparent);
+    border: 2px solid var(--accent); pointer-events: none; z-index: 5;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent),
+      0 0 12px color-mix(in srgb, var(--accent) 35%, transparent);
+    animation: dropzone-in 0.09s ease-out; }
+  @keyframes dropzone-in { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) { .dropzone { animation: none; } }
   .dropzone.left { left: 0; top: 0; bottom: 0; width: 50%; }
   .dropzone.right { right: 0; top: 0; bottom: 0; width: 50%; }
   .dropzone.top { left: 0; right: 0; top: 0; height: 50%; }
