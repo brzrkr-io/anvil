@@ -330,6 +330,9 @@
   // left dock alongside it.
   function openExplorer() {
     explorerOpen = !explorerOpen;
+    // Opening the tree also lands the focused pane on the editor — showing the
+    // last open file, or the anvil splash (new file / folder) when none.
+    if (explorerOpen) openView("editor");
   }
   async function newRootFile() {
     const name = await askText({ title: "New file", placeholder: "name.ext" });
@@ -428,7 +431,7 @@
   // #96 Onboarding tour v2 — a short stepped intro instead of one wall of tips.
   let obStep = $state(0);
   const TOUR = [
-    { title: "Welcome to Anvil", body: "The AI-native console for 100% of your work — terminal, editor, git, and DevOps in one native surface.", tips: ["Press <kbd>⌘K</kbd> any time — every action lives in the command palette."] },
+    { title: "Welcome to anvil", body: "The AI-native console for 100% of your work — terminal, editor, git, and DevOps in one native surface.", tips: ["Press <kbd>⌘K</kbd> any time — every action lives in the command palette."] },
     { title: "Code & terminal together", body: "Open files alongside live shells.", tips: ["<kbd>⌘O</kbd> open file · <kbd>⌘⇧O</kbd> open folder", "<kbd>⌘T</kbd> new terminal · <kbd>⌘J</kbd> terminal under your editor", "<kbd>⌘\\</kbd> split workspace panes · drag a tab onto a pane edge"] },
     { title: "Git & DevOps built in", body: "Source Control has a Terax-style commit panel, swimlane history, and per-hunk staging. The k8s, Terraform, and CI surfaces sort failing-first — broken Flux reconciles, drifted stacks, and red checks float to the top so you see what needs attention without scanning.", tips: ["The <kbd>gen</kbd> button writes your commit message from the staged diff.", "Watch for the red count badge on the Kubernetes rail icon."] },
     { title: "Your AI agent drives ops", body: "On any failing resource — a Flux reconcile, a Terraform plan, a PR with red CI — hit Investigate. The agent runs the right diagnostic, reads it, and proposes a fix you approve. It never mutates on its own; every command is approval-gated.", tips: ["<kbd>⌘I</kbd> ask the agent · <kbd>⌘,</kbd> Settings for themes, fonts, keymap.", "Tool results are treated as untrusted — the agent won't act on instructions hidden in command output."] },

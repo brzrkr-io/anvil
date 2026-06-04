@@ -36,7 +36,7 @@
 <div class="welcome">
   <div class="inner">
     <header>
-      <h1 class="wordmark">Anvil<span class="dot">.</span></h1>
+      <h1 class="wordmark">anvil<span class="dot">.</span></h1>
       <p class="tagline">The AI-native console for 100% of your work.</p>
     </header>
 
