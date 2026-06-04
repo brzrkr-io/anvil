@@ -1847,6 +1847,8 @@
 
     <svelte:boundary onerror={(e) => { console.error("view crashed", e); toast("This view hit an error — use Reload view", "error"); }}>
     <section class="content">
+      <!-- czoom: ⌘+/−/0 scales the content region only; chrome stays fixed. -->
+      <div class="czoom">
       {#if rail !== "workspace"}
       <div class="pane-head">
         {#if rail === "diff"}<span class="accent">±</span> Diff — {diffTarget?.rev ?? diffTarget?.path}
@@ -1975,6 +1977,7 @@
           {/if}
         </div>
       {/if}
+      </div>
     </section>
     {#snippet failed(error, reset)}
       <section class="content">

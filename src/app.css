@@ -290,9 +290,15 @@ body {
    box, which makes selections and click-anchored menus drift. The inverse-size
    keeps `zoom` from inflating 100vw/vh past the viewport. At 100% nothing
    applies, so the terminal canvas still renders natively. */
-:root[data-scaled] .app {
-  width: calc(100vw / var(--scale));
-  height: calc(100vh / var(--scale));
+/* Content-only zoom (⌘+/−/0): scale ONLY the pane content, not the chrome
+   (tab bar, rail, sidebar, status stay fixed). .czoom absolutely fills the
+   flex .content slot; the inverse-size + `zoom` keeps it filling after scaling,
+   so the panes grow like font zoom while the frame is stable. `zoom` (not
+   transform) keeps caret hit-testing + fixed popovers aligned with the cursor. */
+.czoom { position: absolute; inset: 0; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+:root[data-scaled] .czoom {
+  width: calc(100% / var(--scale));
+  height: calc(100% / var(--scale));
   zoom: var(--scale);
 }
 
