@@ -516,6 +516,7 @@
       case "close-tab":
         closeActiveTab();
         break;
+      case "close-window": getCurrentWindow().close(); break;
       case "settings": openSettings(); break;
       case "palette": openCommands(); break;
       case "goto-file": openFilesPalette(); break;
@@ -790,12 +791,26 @@
   // Close whichever tab is currently active. Single source of truth for both the
   // ⌘W shortcut and the "close-tab" menu command so they can never drift.
   function closeActiveTab() {
-    if (rail === "editor" && activeFile) closeFile(activeFile);
-    else if (rail === "panel") closePanel(activePanel);
-    else if (rail === "diff") rail = "workspace";
-    else if (viewTabs.includes(rail)) closeView(rail);
-    else if (rail === "workspace") wsClose(activeLeaf);
-    else if (rail === "settings") { settingsOpen = false; rail = "workspace"; }
+    if (rail === "panel") { closePanel(activePanel); return; }
+    if (rail === "diff") { rail = "workspace"; return; }
+    if (rail === "settings") { settingsOpen = false; rail = "workspace"; return; }
+    if (viewTabs.includes(rail)) { closeView(rail); return; }
+    // Workspace grid: ⌘W closes the active file tab (mirrors clicking its ×).
+    // Opening a file forces rail="workspace", so this — not a dead `editor`
+    // branch — is what ⌘W actually hits when a file is open. After closing, show
+    // the next open file in the focused pane, or drop the pane if none remain.
+    if (activeFile) {
+      const closing = activeFile;
+      const lf = findLeaf(paneTree, activeLeaf);
+      closeFile(closing);
+      if (lf?.view === "editor" && lf.ref === closing) {
+        if (activeFile) paneTree = setLeafView(paneTree, lf.id, "editor", activeFile);
+        else wsClose(lf.id);
+      }
+      return;
+    }
+    // No file tab open → close the focused grid pane (e.g. a terminal).
+    wsClose(activeLeaf);
   }
   let recentFiles = $state<string[]>([]);
   let recentWorkspaces = $state<string[]>([]);

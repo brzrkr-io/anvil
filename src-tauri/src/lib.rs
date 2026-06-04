@@ -527,7 +527,9 @@ fn build_menu(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> 
         .item(&mi("new-window", "New Window", "CmdOrCtrl+N")?)
         .separator()
         .item(&mi("open-file", "Open File…", "CmdOrCtrl+O")?)
-        .item(&mi("open-folder", "Open Folder…", "CmdOrCtrl+Shift+O")?)
+        // No accelerator: ⌘⇧O is the editor's Go-to-Symbol (handled in the
+        // webview). Open Folder stays available as a menu click.
+        .item(&MenuItemBuilder::with_id("menu:open-folder", "Open Folder…").build(app)?)
         .separator()
         .item(&mi("close-tab", "Close Tab", "CmdOrCtrl+W")?)
         .build()?;
@@ -547,7 +549,9 @@ fn build_menu(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> 
         .item(&mi("goto-file", "Go to File…", "CmdOrCtrl+P")?)
         .separator()
         .item(&mi("toggle-sidebar", "Toggle Sidebar", "CmdOrCtrl+B")?)
-        .item(&mi("zen", "Toggle Zen Mode", "CmdOrCtrl+.")?)
+        // No accelerator: in the editor ⌘. is the LSP quick-fix; the webview
+        // handler maps ⌘. to zen only outside the editor.
+        .item(&MenuItemBuilder::with_id("menu:zen", "Toggle Zen Mode").build(app)?)
         .separator()
         .item(&mi("zoom-in", "Zoom In", "CmdOrCtrl+=")?)
         .item(&mi("zoom-out", "Zoom Out", "CmdOrCtrl+-")?)
@@ -558,10 +562,10 @@ fn build_menu(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> 
         .item(&PredefinedMenuItem::minimize(app, None)?)
         .item(&PredefinedMenuItem::maximize(app, None)?)
         .separator()
-        .item(&PredefinedMenuItem::close_window(
-            app,
-            Some("Close Window"),
-        )?)
+        // ⌘W is reserved for Close Tab (File menu); the window closes with ⌘⇧W,
+        // matching macOS tabbed-app convention so ⌘W never closes the window out
+        // from under an open tab.
+        .item(&mi("close-window", "Close Window", "CmdOrCtrl+Shift+W")?)
         .build()?;
 
     let menu = MenuBuilder::new(app)
