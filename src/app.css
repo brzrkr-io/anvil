@@ -135,10 +135,10 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; }
 body {
-  /* Opaque base floor: the window is solid (not vibrancy), so chrome surfaces
-     blend toward this --bg rather than the desktop. Keeps resize smooth and
-     prevents any backing bleed when window opacity is lowered. */
-  background: var(--bg);
+  /* Alpha-aware base floor: at --win-alpha 1 it's solid --bg (no transparency);
+     below 1 it goes translucent so the macOS vibrancy blur shows through
+     (Zed-style). The native window is transparent + frosted. */
+  background: color-mix(in srgb, var(--bg) calc(var(--win-alpha) * 100%), transparent);
   color: var(--text);
   font-family: var(--font-ui);
   font-size: var(--ui-fs);
@@ -215,7 +215,7 @@ body {
 /* Hiding the tab strip removes the inset that cleared the macOS traffic lights
    (titleBarStyle Overlay). Keep a thin draggable strip so the lights don't
    overlap the terminal and the window stays movable in zen. */
-.zen-bar { flex: 0 0 28px; height: 28px; width: 100%; -webkit-app-region: drag; background: var(--bg); }
+.zen-bar { flex: 0 0 28px; height: 28px; width: 100%; -webkit-app-region: drag; background: color-mix(in srgb, var(--bg) calc(var(--win-alpha) * 100%), transparent); }
 /* Presentation polish: fade chrome away, give content a calm inset, and hide the
    pointer after it rests (revealed again on move). */
 .app.zen .main { animation: zen-fade 0.22s ease; }

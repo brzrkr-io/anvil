@@ -13,7 +13,9 @@ export function cmTheme(name: string): Extension {
 
   const theme = EditorView.theme(
     {
-      "&": { color: ui.text, backgroundColor: ui.bg, height: "100%" },
+      // Transparent so the pane's (alpha-aware) background shows through when
+      // window translucency is on; at full opacity the pane bg is solid --bg.
+      "&": { color: ui.text, backgroundColor: "transparent", height: "100%" },
       // line-height is owned by Editor's fontTheme (from the user setting).
       ".cm-scroller": { fontFamily: "var(--font-mono)" },
       ".cm-content": { caretColor: ui.accent, padding: "2px 0" },

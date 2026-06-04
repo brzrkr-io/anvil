@@ -1,4 +1,5 @@
 import { writable } from "svelte/store";
+import { invoke } from "@tauri-apps/api/core";
 
 export type Theme = {
   ui: Record<string, string>;
@@ -745,6 +746,9 @@ function applyVars(name: string): void {
     for (const [k, v] of Object.entries(ov)) root.setProperty(`--${k}`, v as string);
   } catch { /* ignore */ }
   document.documentElement.style.colorScheme = isLight(name) ? "light" : "dark";
+  // Match the macOS vibrancy material to the theme's light/dark mode so the
+  // translucent window's frosted backdrop doesn't wash out (no-op off-Tauri).
+  try { void invoke("set_vibrancy", { dark: !isLight(name) }).catch(() => {}); } catch { /* not in Tauri */ }
   activeTheme.set(name);
 }
 

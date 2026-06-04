@@ -2110,7 +2110,7 @@
   .view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   /* Bottom terminal dock (⌘J) — sits under the active view. */
   .bdock { flex: 0 0 auto; display: flex; flex-direction: column; min-height: 0;
-    border-top: 1px solid var(--border); background: var(--bg); position: relative; }
+    border-top: 1px solid var(--border); background: color-mix(in srgb, var(--bg) calc(var(--win-alpha) * 100%), transparent); position: relative; }
   .bdock-resize { position: absolute; top: -3px; left: 0; right: 0; height: 6px; cursor: row-resize; z-index: 5; }
   .bdock-head { display: flex; align-items: center; gap: 2px;
     padding: 2px 8px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
