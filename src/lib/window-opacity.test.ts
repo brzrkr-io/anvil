@@ -6,8 +6,8 @@ describe("window-opacity", () => {
   beforeEach(() => { localStorage.clear(); document.documentElement.className = ""; });
 
   it("clamps below the minimum so the window never becomes invisible", () => {
-    applyOpacity(0.1);
-    expect(get(windowOpacity)).toBe(0.3);
+    applyOpacity(0.05);
+    expect(get(windowOpacity)).toBe(0.15);
   });
 
   it("clamps above 1 (fully opaque is the ceiling)", () => {

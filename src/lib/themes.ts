@@ -760,6 +760,10 @@ function applyVars(name: string): void {
     }
   } catch { /* ignore */ }
   document.documentElement.style.colorScheme = isLight(name) ? "light" : "dark";
+  // Light themes keep a higher translucency floor (see app.css --frost-amt): a
+  // light frosted panel over a bright desktop has little contrast, so it must
+  // stay more opaque to remain readable.
+  document.documentElement.classList.toggle("theme-light", isLight(name));
   // Match the macOS vibrancy material to the theme's light/dark mode so the
   // translucent window's frosted backdrop doesn't wash out (no-op off-Tauri).
   try { void invoke("set_vibrancy", { dark: !isLight(name) }).catch(() => {}); } catch { /* not in Tauri */ }

@@ -229,6 +229,10 @@ body {
   --glass-2:     color-mix(in srgb, var(--panel2-solid) 80%, transparent);
   --glass-scrim: color-mix(in srgb, var(--bg-solid) 48%, transparent);
 }
+/* Light themes need a higher opacity floor: a light frosted panel over a bright
+   desktop has little contrast and washes out, so it stays more opaque (the slider
+   still varies it, just over a narrower, readable range) — set by themes.ts. */
+:root.translucent.theme-light { --frost-amt: calc(0.68 + var(--win-alpha) * 0.32); }
 /* Main windows stay solid + readable even while the rest of the app frosts. */
 :root.translucent .ed-wrap { background: var(--bg-solid); }
 /* Global UI zoom: scale the whole shell but inverse-size it so it still fills
