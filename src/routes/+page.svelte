@@ -330,9 +330,15 @@
   // left dock alongside it.
   function openExplorer() {
     explorerOpen = !explorerOpen;
-    // Opening the tree also lands the focused pane on the editor — showing the
-    // last open file, or the anvil splash (new file / folder) when none.
-    if (explorerOpen) openView("editor");
+    // Opening the tree lands the focused grid pane on the editor — the last open
+    // file, or the anvil splash when none. Route straight to the grid (not
+    // openView, whose non-workspace path would push "editor" into viewTabs and
+    // crash the tab render, since "editor" has no VIEW_META entry).
+    if (explorerOpen) {
+      settingsOpen = false;
+      rail = "workspace";
+      if (findLeaf(paneTree, activeLeaf)) wsSetView(activeLeaf, "editor");
+    }
   }
   async function newRootFile() {
     const name = await askText({ title: "New file", placeholder: "name.ext" });
@@ -1765,7 +1771,7 @@
         <span class="x" role="button" tabindex="0" onclick={(e) => { e.stopPropagation(); closePanel(p.id); }} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), e.stopPropagation(), closePanel(p.id))}>×</span>
       </div>
     {/each}
-    {#each viewTabs as vk (vk)}
+    {#each viewTabs.filter((vk) => VIEW_META[vk]) as vk (vk)}
       <div class="tab {rail === vk ? 'on' : ''}" class:drag={tabDrag?.view === vk && !tabDrag?.ref && !tabDrag?.from} role="button" tabindex="0" title={VIEW_META[vk].title}
         onpointerdown={(e) => startTabDrag(e, { view: vk as ViewKind, label: VIEW_META[vk].title })}
         onclick={() => openView(vk)} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openView(vk))}>
