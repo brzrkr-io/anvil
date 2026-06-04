@@ -725,6 +725,32 @@ pub async fn git_show_file(cwd: String, rev: String, path: String) -> Result<Str
     .map_err(|e| e.to_string())?
 }
 
+/// Whether commit signing is enabled for this repo (`git config commit.gpgsign`).
+#[tauri::command]
+pub async fn git_signing_state(cwd: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(git(&cwd, &["config", "--get", "commit.gpgsign"])
+            .unwrap_or_default()
+            .trim()
+            == "true")
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Toggle commit signing for this repo (local `commit.gpgsign`).
+#[tauri::command]
+pub async fn git_set_signing(cwd: String, on: bool) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        git(
+            &cwd,
+            &["config", "commit.gpgsign", if on { "true" } else { "false" }],
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::{git, op_arg};

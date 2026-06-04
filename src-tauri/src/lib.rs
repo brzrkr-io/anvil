@@ -449,7 +449,9 @@ pub fn run() {
             docker::docker_action,
             ci::gh_pr_web,
             git::git_tags,
-            git::git_show_file
+            git::git_show_file,
+            git::git_signing_state,
+            git::git_set_signing
         ])
         .setup(|app| {
             build_menu(app.handle())?;

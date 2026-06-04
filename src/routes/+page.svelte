@@ -1265,6 +1265,7 @@
       { label: "Git: Pull (fast-forward)", run: async () => { try { await invoke("git_pull", { cwd }); toast("Pulled", "success"); } catch (e) { toast(String(e).slice(0, 80) || "Pull failed", "error"); } } },
       { label: "Git: Push", run: async () => { try { await invoke("git_push", { cwd }); toast("Pushed", "success"); } catch (e) { toast(String(e).slice(0, 80) || "Push failed", "error"); } } },
       { label: "Git: Fetch All", run: async () => { try { await invoke("git_fetch", { cwd }); toast("Fetched", "success"); } catch { toast("Fetch failed", "error"); } } },
+      { label: "Git: Toggle Commit Signing", hint: "commit.gpgsign", run: async () => { try { const on = await invoke<boolean>("git_signing_state", { cwd }); await invoke("git_set_signing", { cwd, on: !on }); toast(`Commit signing ${!on ? "on" : "off"} for this repo`, "success"); } catch (e) { toast("Signing toggle failed: " + String(e).slice(0, 60), "error"); } } },
       { label: "Git: 3-Pane Merge (current file)", run: () => { if (!activeFile) { toast("Open the conflicted file first", "info"); return; } mergeView = activeFile; } },
       { label: "Git: Generate PR Body (agent → clipboard)", run: generatePrBody },
       { label: "Git: Interactive Rebase onto…", run: () => { const target = prompt("Rebase onto (branch / ref / commit):", "origin/main"); if (target) rebaseTarget = target; } },
