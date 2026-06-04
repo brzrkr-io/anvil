@@ -59,14 +59,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # macOS code-signing + notarization (#97). tauri-action notarizes when
-          # these are present; otherwise the macOS build is unsigned.
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Apple code-signing + notarization intentionally omitted: no paid
+          # Apple Developer cert. tauri-action ad-hoc signs the .app (Gatekeeper
+          # shows an "unidentified developer" warning — right-click > Open to
+          # bypass). Auto-update artifacts (.app.tar.gz + .sig + latest.json)
+          # are still signed by TAURI_SIGNING_PRIVATE_KEY.
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Anvil ${{ github.ref_name }}"
