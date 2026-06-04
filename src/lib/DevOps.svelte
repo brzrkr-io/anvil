@@ -287,6 +287,15 @@
     catch (e) { mrErr = String(e); mrRows = []; }
     busy = false;
   }
+  async function approveMr(iid: string) {
+    try { await invoke("glab_mr_approve", { cwd, iid }); toast(`Approved !${iid}`, "success"); }
+    catch (e) { toast("Approve failed: " + String(e).slice(0, 80), "error"); }
+  }
+  async function mergeMr(iid: string) {
+    if (!confirm(`Merge MR !${iid}?\n\n  glab mr merge ${iid} --yes\n\nThis merges into the target branch.`)) return;
+    try { await invoke("glab_mr_merge", { cwd, iid }); toast(`Merged !${iid}`, "success"); loadMrs(); }
+    catch (e) { toast("Merge failed: " + String(e).slice(0, 80), "error"); }
+  }
   function refresh() {
     if (tab === "prs") loadPRs();
   }
@@ -417,6 +426,8 @@
             <span class="bdg" style="color:var(--accent)">!{r.iid}</span>
             <span class="pnm">{r.title}{r.draft ? " · draft" : ""}</span>
             <span class="basechip" title="{r.source} → {r.target}">{r.source} → {r.target}</span>
+            <button class="refresh" onclick={(e) => { e.stopPropagation(); approveMr(r.iid); }} title="glab mr approve {r.iid}">Approve</button>
+            <button class="refresh" onclick={(e) => { e.stopPropagation(); mergeMr(r.iid); }} title="glab mr merge {r.iid} --yes">Merge</button>
           </div>
         {/each}
       </div>

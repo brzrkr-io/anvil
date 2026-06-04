@@ -431,6 +431,8 @@ pub fn run() {
             ci::glab_pipeline_cancel,
             ci::glab_job_retry,
             ci::glab_job_play,
+            ci::glab_mr_approve,
+            ci::glab_mr_merge,
             iac::terraform_apply,
             git::git_blame,
             ci::gh_prs,

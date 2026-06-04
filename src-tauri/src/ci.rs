@@ -477,6 +477,46 @@ pub async fn glab_job_retry(cwd: String, job: String) -> Result<String, String> 
     .map_err(|e| e.to_string())?
 }
 
+/// Approve a merge request via `glab mr approve <iid>`.
+#[tauri::command]
+pub async fn glab_mr_approve(cwd: String, iid: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut cmd = crate::shared::command("glab");
+        cmd.current_dir(&cwd).args(["mr", "approve", &iid]);
+        let out =
+            crate::shared::exec_capture(cmd, 30).map_err(|e| format!("glab not found: {e}"))?;
+        if out.status.success() {
+            Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        } else {
+            let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+            s.push_str(&String::from_utf8_lossy(&out.stderr));
+            Err(s)
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Merge a merge request via `glab mr merge <iid> --yes` (non-interactive).
+#[tauri::command]
+pub async fn glab_mr_merge(cwd: String, iid: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut cmd = crate::shared::command("glab");
+        cmd.current_dir(&cwd).args(["mr", "merge", &iid, "--yes"]);
+        let out =
+            crate::shared::exec_capture(cmd, 45).map_err(|e| format!("glab not found: {e}"))?;
+        if out.status.success() {
+            Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        } else {
+            let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+            s.push_str(&String::from_utf8_lossy(&out.stderr));
+            Err(s)
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Play (start) a manual job via `glab api -X POST projects/:id/jobs/<id>/play`.
 #[tauri::command]
 pub async fn glab_job_play(cwd: String, job: String) -> Result<String, String> {
