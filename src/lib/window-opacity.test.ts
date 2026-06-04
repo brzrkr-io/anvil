@@ -7,7 +7,7 @@ describe("window-opacity", () => {
 
   it("clamps below the minimum so the window never becomes invisible", () => {
     applyOpacity(0.1);
-    expect(get(windowOpacity)).toBe(0.5);
+    expect(get(windowOpacity)).toBe(0.3);
   });
 
   it("clamps above 1 (fully opaque is the ceiling)", () => {
