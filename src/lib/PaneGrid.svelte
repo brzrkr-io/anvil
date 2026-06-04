@@ -158,7 +158,7 @@
     /* Pane enter (create/split): opacity + a hair of scale only — never animate
        width/height/flex (that reflows and reintroduces the floating-box look). */
     animation: pane-in 0.12s ease-out; }
-  @keyframes pane-in { from { opacity: 0; transform: scale(0.985); } to { opacity: 1; transform: none; } }
+  @keyframes pane-in { from { opacity: 0; } to { opacity: 1; } }
   @media (prefers-reduced-motion: reduce) { .leaf { animation: none; } }
   .leaf.dimmed > .pbody { opacity: 0.5; transition: opacity 0.15s ease; }
   .leaf.active { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent); }
