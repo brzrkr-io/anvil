@@ -1,3 +1,44 @@
+<script lang="ts" module>
+  // WKWebView caps concurrent WebGL contexts (~16); past that, creating another
+  // tears down an older one and can crash the renderer. Cap WebGL-backed
+  // terminals well under that limit and fall back to the canvas renderer once the
+  // budget is spent — canvas is still far faster than xterm's DOM renderer.
+  const WEBGL_BUDGET = 12;
+  let webglInUse = 0;
+  function claimWebgl(): boolean {
+    if (webglInUse >= WEBGL_BUDGET) return false;
+    webglInUse++;
+    return true;
+  }
+  function releaseWebgl() {
+    if (webglInUse > 0) webglInUse--;
+  }
+
+  // #99 PTY re-attach: moving/re-docking a pane DESTROYS this component and mounts
+  // a fresh one with the SAME `id`. We must not kill the live shell in between, or
+  // the remount respawns and the user sees `[process exited]`. So a destroy only
+  // SCHEDULES the kill after a short grace window; if a terminal with the same id
+  // mounts within it (a move), the pending kill is cancelled and the backend
+  // re-attaches the still-running shell. A real pane close has nothing remount, so
+  // the kill lands and the PTY is freed (no leak).
+  const pendingKills = new Map<string, ReturnType<typeof setTimeout>>();
+  const KILL_GRACE_MS = 400;
+  function scheduleKill(id: string) {
+    clearTimeout(pendingKills.get(id));
+    pendingKills.set(
+      id,
+      setTimeout(() => {
+        pendingKills.delete(id);
+        invoke("pty_kill", { id });
+      }, KILL_GRACE_MS),
+    );
+  }
+  function cancelKill(id: string) {
+    const t = pendingKills.get(id);
+    if (t !== undefined) { clearTimeout(t); pendingKills.delete(id); }
+  }
+</script>
+
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { Terminal } from "@xterm/xterm";
@@ -45,6 +86,7 @@
     } catch { /* decorations unavailable */ }
   }
   let destroyed = false;
+  let webglHeld = false; // this terminal currently owns a WebGL context slot
   let ro: ResizeObserver;
   let fitTimer: ReturnType<typeof setInterval> | undefined;
   let resizeRaf = 0;
@@ -80,6 +122,10 @@
   }
 
   onMount(async () => {
+    // #99 If this id was just unmounted (a pane move re-keys the component), a
+    // kill is pending — cancel it synchronously, before any await, so the live
+    // shell survives long enough for pty_spawn below to re-attach to it.
+    cancelKill(id);
     // Ensure the mono font is loaded BEFORE xterm measures cell width, otherwise
     // it sizes cells to the fallback font and the glyphs render with big gaps.
     const fam = get(monoFont);
@@ -174,15 +220,28 @@
     if (destroyed || !host || !host.isConnected) { try { term.dispose(); } catch { /* noop */ } return; }
     term.open(host);
     fit.fit();
-    // GPU renderer for crisp, fast text. If WebGL is unavailable/lost, fall back
-    // to the CANVAS renderer (still far faster than xterm's default DOM renderer).
+    // GPU renderer for crisp, fast text. WKWebView caps concurrent WebGL contexts
+    // (~16), so only claim one while the shared budget has room; otherwise (or if
+    // creation throws / the context is later lost) fall back to the CANVAS renderer
+    // — still far faster than xterm's default DOM renderer, and it never risks
+    // crashing the whole web view by over-allocating GPU contexts.
     let webglOk = false;
-    try {
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => { webgl.dispose(); try { term.loadAddon(new CanvasAddon()); } catch { /* DOM */ } });
-      term.loadAddon(webgl);
-      webglOk = true;
-    } catch { /* no WebGL */ }
+    if (claimWebgl()) {
+      try {
+        const webgl = new WebglAddon();
+        webglHeld = true;
+        webgl.onContextLoss(() => {
+          webgl.dispose();
+          if (webglHeld) { releaseWebgl(); webglHeld = false; }
+          try { term.loadAddon(new CanvasAddon()); } catch { /* DOM */ }
+        });
+        term.loadAddon(webgl);
+        webglOk = true;
+      } catch {
+        // Creation failed — give the slot back so another terminal can try.
+        if (webglHeld) { releaseWebgl(); webglHeld = false; }
+      }
+    }
     if (!webglOk) {
       try { term.loadAddon(new CanvasAddon()); } catch { /* DOM renderer — slowest, last resort */ }
     }
@@ -284,7 +343,14 @@
         if (e.payload.id === id) term.writeln("\r\n\x1b[2m[process exited]\x1b[0m");
       }),
     );
-    await invoke("pty_spawn", { id, cols: term.cols, rows: term.rows, cwd, shell, onData });
+    // pty_spawn returns true when it RE-ATTACHED to an already-live shell (a pane
+    // move/re-dock) rather than spawning a fresh one (#99). On re-attach the
+    // backend replays its recent-output ring over `onData`, redrawing the screen +
+    // scrollback into this fresh xterm; the replay flows through the same onmessage
+    // handler as live data and arrives once, so there's nothing to de-duplicate.
+    // Snap to the bottom on the next frame so the restored view shows the prompt.
+    const reattached = await invoke<boolean>("pty_spawn", { id, cols: term.cols, rows: term.rows, cwd, shell, onData }).catch(() => false);
+    if (reattached) requestAnimationFrame(() => { if (!destroyed) term.scrollToBottom(); });
 
     ro = new ResizeObserver(() => {
       // Coalesce resize bursts (window drag fires many callbacks/sec) into one
@@ -404,7 +470,11 @@
     unlisten.forEach((u) => u());
     unregisterTerminal(id);
     clearBlocks(id);
-    invoke("pty_kill", { id });
+    if (webglHeld) { releaseWebgl(); webglHeld = false; }
+    // #99 Don't kill the PTY outright — a pane move remounts this id immediately
+    // and would respawn. Schedule it; a remount cancels it (re-attach), a real
+    // close lets it land (PTY freed).
+    scheduleKill(id);
     term?.dispose();
   });
 

@@ -32,10 +32,13 @@ test("every rail view mounts within budget", async ({ page }) => {
       { timeout: BUDGET },
     );
 
-    // Also wait for the pane-head to reflect the new view (it updates on
-    // navigation) — this ensures the view has actually mounted, not just that
-    // the previous view didn't crash.
-    await page.locator(".pane-head").waitFor({ state: "visible", timeout: BUDGET });
+    // Always-grid shell (cda9d56): a rail click retargets the active pane, so the
+    // content stays the PaneGrid — there's no full-screen ".pane-head" to wait on,
+    // and some rail icons (Settings) hide the grid behind an overlay view. The grid
+    // stays MOUNTED throughout (display-toggled, not unmounted), so requiring its
+    // leaf to be attached — together with the crash-fallback check above — proves
+    // the shell re-rendered for this view without tearing the surface down.
+    await page.locator("[data-leaf-id]").first().waitFor({ state: "attached", timeout: BUDGET });
 
     const ms = Date.now() - t0;
     timings.push({ title, ms });
