@@ -24,17 +24,32 @@ test("command palette opens with ⌘K and filters", async ({ page }) => {
   await expect(input).toBeHidden();
 });
 
-test("activity rail switches the main view", async ({ page }) => {
-  await page.locator('.rail .i[title^="Source Control"]').click();
-  await expect(page.locator(".pane-head")).toContainText(/Source Control/i);
+test("activity rail retargets the active pane's view (always-grid)", async ({ page }) => {
+  // Always-grid shell (cda9d56): the content is permanently the PaneGrid; a rail
+  // icon click sets the ACTIVE pane's view instead of swapping a full-screen view.
+  const scmIcon = page.locator('.rail .i[title^="Source Control"]');
+  await scmIcon.click();
+  // The clicked rail icon reflects the active pane's view by going active…
+  await expect(scmIcon).toHaveClass(/\bon\b/);
+  // …and the Source Control surface renders inside the grid leaf, not a pane-head view.
+  const leaf = page.locator("[data-leaf-id]").first();
+  await expect(leaf).toBeVisible();
+  await expect(leaf.locator(".scm")).toBeVisible();
 });
 
-test("rail view opens as a closable tab (unified tab model)", async ({ page }) => {
+test("rail icons retarget the same pane rather than stacking views", async ({ page }) => {
+  // The refactor (cda9d56) made rail buttons drive the active pane: clicking a
+  // second rail view REPLACES the first in the same leaf — it does not open a new
+  // pane or a separate top-bar tab. Exactly one leaf, showing the last view picked.
   await page.locator('.rail .i[title^="Source Control"]').click();
-  const tab = page.locator(".tabs .tab").filter({ hasText: "Source Control" });
-  await expect(tab).toBeVisible();
-  await tab.locator(".x").click();
-  await expect(tab).toBeHidden();
+  await expect(page.locator("[data-leaf-id]").first().locator(".scm")).toBeVisible();
+
+  await page.locator('.rail .i[title^="Search"]').click();
+  const leaves = page.locator("[data-leaf-id]");
+  await expect(leaves).toHaveCount(1); // retargeted, not stacked into a new pane
+  const leaf = leaves.first();
+  await expect(leaf.locator(".sp")).toBeVisible(); // Search panel now fills the pane
+  await expect(leaf.locator(".scm")).toHaveCount(0); // the previous view was replaced
 });
 
 test("the + menu opens with New… actions", async ({ page }) => {
