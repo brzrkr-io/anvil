@@ -55,10 +55,8 @@ pub fn open_named_window(app: tauri::AppHandle, url: String, label: String) -> R
     Ok(())
 }
 
-/// Swap the macOS window vibrancy material to match the active theme's light/dark
-/// mode. Dark themes get a dark frosted material (`HudWindow`); light themes get
-/// Sidebar. Without this, the fixed light "sidebar" material washes out dark
-/// themes when window translucency is on. Called from the frontend on theme change.
+/// Match the macOS window vibrancy to the active theme's light/dark mode so the
+/// frost flows with the palette. Called from the frontend on theme change.
 #[tauri::command]
 pub fn set_vibrancy(app: tauri::AppHandle, dark: bool) -> Result<(), String> {
     for w in app.webview_windows().values() {
@@ -69,16 +67,23 @@ pub fn set_vibrancy(app: tauri::AppHandle, dark: bool) -> Result<(), String> {
 
 /// Apply the macOS NSVisualEffectView frost to one window via the
 /// `window-vibrancy` crate (applied directly on the NSWindow — more reliable
-/// than Tauri's runtime `set_effects`). Dark themes → HudWindow, light → Sidebar.
-/// No-op off macOS.
+/// than Tauri's runtime `set_effects`). The material is always
+/// `UnderWindowBackground`, but the NSWindow appearance is set to match the theme
+/// so the material frosts dark for dark themes / light for light themes. No-op off
+/// macOS.
 pub fn apply_window_vibrancy(window: &tauri::WebviewWindow, dark: bool) {
     #[cfg(target_os = "macos")]
     {
         use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
-        // UnderWindowBackground = the macOS "blurred desktop behind the window"
-        // material (what shows your wallpaper frosted through). HudWindow is far
-        // darker/near-opaque and reads as a solid black window, so we don't use it.
-        let _ = dark;
+        // The UnderWindowBackground material adopts the NSWindow's effective
+        // appearance. Pin that appearance to the theme's mode, otherwise a fixed
+        // light material drags the frost toward the desktop's bright colors and it
+        // stops flowing with a dark palette.
+        let _ = window.set_theme(Some(if dark {
+            tauri::Theme::Dark
+        } else {
+            tauri::Theme::Light
+        }));
         let _ = apply_vibrancy(
             window,
             NSVisualEffectMaterial::UnderWindowBackground,
