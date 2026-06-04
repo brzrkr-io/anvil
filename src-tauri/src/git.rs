@@ -744,7 +744,11 @@ pub async fn git_set_signing(cwd: String, on: bool) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         git(
             &cwd,
-            &["config", "commit.gpgsign", if on { "true" } else { "false" }],
+            &[
+                "config",
+                "commit.gpgsign",
+                if on { "true" } else { "false" },
+            ],
         )
     })
     .await
