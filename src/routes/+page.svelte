@@ -148,8 +148,16 @@
   // ⌘+/−/0 = content text size: bump the editor + terminal font together (like
   // VS Code/Zed). It does NOT scale chrome or the Settings/Explorer sidebars.
   const CONTENT_FS = 13;
-  function zoomContent(dir: number) { bumpEditorFontSize(dir); bumpTermFontSize(dir); }
-  function zoomContentReset() { setEditorFontSize(CONTENT_FS); setTermFontSize(CONTENT_FS); }
+  // Ops/content views (k8s, terraform, devops, …) size in px, so ⌘+/−/0 scales
+  // them with a CSS region `zoom`; the editor + terminal scale via font size.
+  let opsZoom = $state((() => { try { return Number(localStorage.getItem("anvil-ops-zoom")) || 1; } catch { return 1; } })());
+  $effect(() => { document.documentElement.style.setProperty("--ops-zoom", String(opsZoom)); });
+  function setOpsZoom(z: number) {
+    opsZoom = Math.min(2, Math.max(0.6, Math.round(z * 100) / 100));
+    try { localStorage.setItem("anvil-ops-zoom", String(opsZoom)); } catch { /* ignore */ }
+  }
+  function zoomContent(dir: number) { bumpEditorFontSize(dir); bumpTermFontSize(dir); setOpsZoom(opsZoom + dir * 0.1); }
+  function zoomContentReset() { setEditorFontSize(CONTENT_FS); setTermFontSize(CONTENT_FS); setOpsZoom(1); }
   import { initOpacity } from "$lib/window-opacity";
   import { initFonts } from "$lib/fonts";
   import { autoHideRail, focusDimming, toggleFocusDimming, terminalAutoCd, toggleTerminalAutoCd } from "$lib/layout-settings";
@@ -2184,6 +2192,9 @@
     padding: 0 3px; border-radius: 7px; background: var(--red); color: #fff; font-size: 9px; line-height: 13px;
     text-align: center; font-variant-numeric: tabular-nums; }
   .view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  /* ⌘+/−/0 scales the ops/content views (px-sized) via a region zoom; no-op at
+     100% (default), and the workspace (.ws = editor+terminal) scales via font. */
+  .view:not(.ws) { zoom: var(--ops-zoom, 1); }
   /* Bottom terminal dock (⌘J) — sits under the active view. */
   .bdock { flex: 0 0 auto; display: flex; flex-direction: column; min-height: 0;
     border-top: 1px solid var(--border); background: var(--bg); position: relative; }

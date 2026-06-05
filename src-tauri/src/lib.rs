@@ -259,6 +259,12 @@ pub fn run() {
         }
     }));
 
+    // GUI launch (Finder/Dock) strips PATH/env; kube-rs spawns the EKS exec
+    // plugin (`aws eks get-token`) via the process env, so promote the login
+    // shell's PATH + rc env into the process up front — otherwise `aws`/`kubectl`
+    // aren't found and EKS auth fails even though the user is logged in.
+    crate::shared::promote_login_env();
+
     let mut builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
     // Desktop-only auto-update plugin (no-op until a release endpoint is live).
     #[cfg(desktop)]

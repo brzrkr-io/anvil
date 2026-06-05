@@ -95,6 +95,19 @@ pub(crate) fn command(program: &str) -> Command {
     c
 }
 
+/// Promote the login-shell PATH + rc env into THIS process, so tools spawned via
+/// the process environment — e.g. kube-rs's EKS exec plugin (`aws eks get-token`)
+/// — resolve like the user's terminal instead of a Finder-stripped PATH. Call
+/// once at startup. Existing process vars win (never clobbered).
+pub(crate) fn promote_login_env() {
+    std::env::set_var("PATH", shell_path());
+    for (k, v) in shell_env() {
+        if std::env::var_os(k).is_none() {
+            std::env::set_var(k, v);
+        }
+    }
+}
+
 /// Shared pooled HTTP client. Built once so TCP/TLS connections are kept alive
 /// and reused across every integration request (Prometheus, LLM, Sentry, …)
 /// instead of a cold handshake per call. `.no_proxy()` matches the rest of the
