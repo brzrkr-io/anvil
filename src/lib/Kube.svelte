@@ -368,11 +368,30 @@
     onRunCommand?.(`kubectl ${ctx}debug -it -n ${p.ns} ${p.name} --image=nicolaka/netshoot --share-processes -- bash`);
   }
 
-  // Stream logs live in a terminal pane (the in-panel Logs view is a snapshot).
-  function followLogs(p: Pod) {
-    const ctx = current ? `--context ${current} ` : "";
-    onRunCommand?.(`kubectl ${ctx}logs -f --tail=200 -n ${p.ns} ${p.name}`);
+  // Live logs IN-APP: re-fetch the tail every 2s into the Logs panel — no terminal.
+  let logTimer: ReturnType<typeof setTimeout> | undefined;
+  let following = $state(false);
+  function stopFollow() {
+    following = false;
+    if (logTimer) { clearTimeout(logTimer); logTimer = undefined; }
   }
+  async function followLogs(p: Pod) {
+    stopFollow();
+    following = true;
+    const key = `${p.ns}/${p.name}`;
+    panel = { pod: key, content: "Loading…", title: "Logs (live)" };
+    const tick = async () => {
+      if (!following) return;
+      try {
+        const out = await invoke<string>("kube_logs", { context: current, namespace: p.ns, pod: p.name });
+        if (following && panel?.pod === key) panel = { ...panel, content: applyRedaction(out) };
+      } catch { /* keep last shown */ }
+      if (following) logTimer = setTimeout(tick, 2000);
+    };
+    tick();
+  }
+  // Stop the live poll whenever the panel closes or switches to a non-live view.
+  $effect(() => { if (following && panel?.title !== "Logs (live)") stopFollow(); });
 
   // Flux | Workloads top-level views. Default to Workloads; switch to Flux the
   // first time the cluster reports Flux CRDs (GitOps-first), but never trap the
@@ -420,7 +439,7 @@
       });
     } catch { /* no Tauri event bus (e.g. browser preview) — snapshot still works */ }
   });
-  onDestroy(() => { stopPodWatch(); unlistenPods?.(); });
+  onDestroy(() => { stopPodWatch(); unlistenPods?.(); stopFollow(); });
   // Start/stop the watcher with view visibility; refresh instantly on (re)entry.
   $effect(() => {
     if (active) { refreshPods(); startPodWatch(); }
@@ -571,7 +590,7 @@
               <button class="act" title="Logs (snapshot)" onclick={(e) => { e.stopPropagation(); openLogs(p); }}>
                 <Icon name="history" size={12} />
               </button>
-              <button class="act" title="Follow logs in terminal" onclick={(e) => { e.stopPropagation(); followLogs(p); }}>
+              <button class="act" title="Follow logs (live, in-app)" onclick={(e) => { e.stopPropagation(); followLogs(p); }}>
                 <Icon name="play" size={12} />
               </button>
               <button class="act" title="Describe" onclick={(e) => { e.stopPropagation(); openDescribe(p); }}>

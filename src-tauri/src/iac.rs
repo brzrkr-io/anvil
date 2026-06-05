@@ -252,17 +252,29 @@ pub async fn tf_plan(cwd: String, bin: String) -> Result<String, String> {
 /// output as the error so the UI can show why it broke. Read-only — `-out` writes
 /// only a throwaway plan file, never touches infra.
 #[tauri::command]
-pub async fn tf_plan_json(cwd: String, bin: String) -> Result<String, String> {
+pub async fn tf_plan_json(
+    cwd: String,
+    bin: String,
+    targets: Vec<String>,
+) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let plan_file =
             std::env::temp_dir().join(format!("anvil-tfplan-{}.bin", std::process::id()));
         let plan_path = plan_file.to_string_lossy().to_string();
         // 1) Produce the binary plan (human output doubles as error detail).
-        let human = tf_exec(
-            &bin,
-            &cwd,
-            &["plan", "-no-color", "-input=false", "-out", &plan_path],
-        )?;
+        // `targets` scopes the plan to specific resources (click-to-plan), if any.
+        let mut plan_args: Vec<String> = vec![
+            "plan".into(),
+            "-no-color".into(),
+            "-input=false".into(),
+            "-out".into(),
+            plan_path.clone(),
+        ];
+        for t in &targets {
+            plan_args.push(format!("-target={t}"));
+        }
+        let plan_refs: Vec<&str> = plan_args.iter().map(String::as_str).collect();
+        let human = tf_exec(&bin, &cwd, &plan_refs)?;
         // 2) Convert it to the machine-readable JSON document.
         let json = tf_exec(&bin, &cwd, &["show", "-json", &plan_path]);
         let _ = std::fs::remove_file(&plan_file);
@@ -288,6 +300,28 @@ pub async fn tf_state_list(cwd: String, bin: String) -> Result<String, String> {
 pub async fn tf_output(cwd: String, bin: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         tf_exec(&bin, &cwd, &["output", "-json", "-no-color"])
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// `infracost breakdown` for a dir — captured for an in-app cost panel (no terminal).
+#[tauri::command]
+pub async fn tf_cost(cwd: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut cmd = crate::shared::command("infracost");
+        cmd.current_dir(&cwd)
+            .args(["breakdown", "--path", ".", "--no-color"]);
+        let out = crate::shared::exec_capture(cmd, 120).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                "infracost not found in PATH".to_string()
+            } else {
+                e.to_string()
+            }
+        })?;
+        let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+        s.push_str(&String::from_utf8_lossy(&out.stderr));
+        Ok(s)
     })
     .await
     .map_err(|e| e.to_string())?

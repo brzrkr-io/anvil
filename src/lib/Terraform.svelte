@@ -153,7 +153,7 @@
       if (cmd === "plan") {
         // Structured plan: `-out` a binary plan then `show -json` → a real diff
         // tree (add/change/destroy/replace + attribute diffs), not raw stdout.
-        const j = await invoke<string>("tf_plan_json", { cwd: activeDir, bin });
+        const j = await invoke<string>("tf_plan_json", { cwd: activeDir, bin, targets: [] });
         planTree = parsePlanJson(j);
         if (!planTree) output = j; // unparseable doc → fall back to raw text
         if (activeStack && planTree) {
@@ -169,6 +169,44 @@
         if (cmd === "init") await loadState();
       }
       if (outEl) outEl.scrollTop = 0;
+    } catch (e) {
+      err = String(e);
+    } finally {
+      running = "";
+    }
+  }
+
+  // Click-to-plan a single resource (-target) in-app (diff tree), not the terminal.
+  async function planTarget(addr: string) {
+    if (running || !activeStack) return;
+    if (!capturable) { sendCmd(`plan -target='${addr}'`); return; } // run-all/stack → terminal
+    running = "plan";
+    output = "";
+    outKind = "plan";
+    planTree = null;
+    expanded = {};
+    err = "";
+    try {
+      const j = await invoke<string>("tf_plan_json", { cwd: activeDir, bin, targets: [addr] });
+      planTree = parsePlanJson(j);
+      if (!planTree) output = j;
+    } catch (e) {
+      err = String(e);
+    } finally {
+      running = "";
+    }
+  }
+
+  // Cost estimate captured in-app (infracost) instead of dumping to the terminal.
+  async function loadCost() {
+    if (running || !activeStack) return;
+    running = "cost";
+    output = "";
+    outKind = "";
+    planTree = null;
+    err = "";
+    try {
+      output = await invoke<string>("tf_cost", { cwd: activeDir });
     } catch (e) {
       err = String(e);
     } finally {
@@ -338,9 +376,7 @@
       <button class="act" disabled={!!running} onclick={loadOutputs} title="Show outputs">
         {running === "output" ? "Outputs…" : "Outputs"}
       </button>
-      {#if onRunCommand}
-        <button class="act" title="Cost estimate (infracost breakdown) in terminal" onclick={() => onRunCommand(`cd "${activeDir}" && infracost breakdown --path .`)}>Cost ↗</button>
-      {/if}
+      <button class="act" disabled={!!running} title="Cost estimate (infracost breakdown)" onclick={loadCost}>{running === "cost" ? "Cost…" : "Cost"}</button>
       {#if onInvestigate && (err || (summary && !summary.none))}
         <button class="act ai" disabled={!!running} title="Investigate this plan with the agent" onclick={() => onInvestigate(terraformInvestigation(activeStack ?? ".", cmdFor("plan"), err || output))}>Investigate</button>
       {/if}
@@ -411,9 +447,9 @@
             {#if !collapsed[g.module]}
               {#each g.items as r, i (r + '#' + i)}
                 {@const addr = g.module === "(root)" ? r : `${g.module}.${r}`}
-                <div class="res" role="button" tabindex="0" title="{addr} — click to plan -target"
-                  onclick={() => sendCmd(`plan -target='${addr}'`)}
-                  onkeydown={(e) => e.key === "Enter" && sendCmd(`plan -target='${addr}'`)}>{r}</div>
+                <div class="res" role="button" tabindex="0" title="{addr} — click to plan this resource"
+                  onclick={() => planTarget(addr)}
+                  onkeydown={(e) => e.key === "Enter" && planTarget(addr)}>{r}</div>
               {/each}
             {/if}
           {/each}

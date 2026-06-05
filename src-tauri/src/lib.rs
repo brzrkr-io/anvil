@@ -376,6 +376,7 @@ pub fn run() {
             iac::tf_validate,
             iac::tf_plan,
             iac::tf_plan_json,
+            iac::tf_cost,
             iac::tf_state_list,
             iac::tf_output,
             iac::tg_stack_output,
