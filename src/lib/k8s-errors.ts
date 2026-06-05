@@ -18,6 +18,9 @@ const NET_RE =
 export function classifyK8sError(raw: string | null | undefined): K8sErrorKind {
   const e = (raw ?? "").trim();
   if (!e) return "none";
+  // A successful `-o json` body is not an error even if its data contains
+  // auth-ish words ("token", "credentials", "expired") — never classify JSON.
+  if (e.startsWith("{") || e.startsWith("[")) return "none";
   // Tooling wins: "exec: executable aws not found" contains "credentials" but is
   // a PATH problem, so it must not be misread as expired auth.
   if (TOOLING_RE.test(e)) return "tooling";

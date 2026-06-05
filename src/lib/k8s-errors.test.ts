@@ -20,6 +20,12 @@ describe("classifyK8sError (#5)", () => {
     expect(classifyK8sError("token has expired; pods is forbidden")).toBe("auth");
   });
 
+  it("never classifies a valid JSON body as an error (the kustomizations bug)", () => {
+    // A successful `-o json` response whose data contains auth-ish words.
+    const json = '{"apiVersion":"v1","items":[{"kind":"Kustomization","metadata":{"name":"sso-credentials"},"status":{"message":"token expired"}}]}';
+    expect(classifyK8sError(json)).toBe("none");
+  });
+
   it("flags a missing CLI (exec not found) as tooling, not auth", () => {
     // The real EKS-in-a-GUI failure: contains "credentials" but is a PATH bug.
     expect(classifyK8sError("getting credentials: exec: executable aws not found")).toBe("tooling");

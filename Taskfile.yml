@@ -25,7 +25,10 @@ tasks:
     desc: Build + install a release Anvil.app to /Applications
     cmds:
       - "{{.VITE}} build"
-      - "{{.TAURI}} build --bundles app"
+      # tauri's updater-signing step errors locally (no TAURI_SIGNING_PRIVATE_KEY)
+      # AFTER the .app is bundled — tolerate it, then verify the bundle exists.
+      - "{{.TAURI}} build --bundles app || true"
+      - test -d src-tauri/target/release/bundle/macos/Anvil.app
       - pkill -9 anvil || true
       - rm -rf /Applications/Anvil.app
       - cp -R src-tauri/target/release/bundle/macos/Anvil.app /Applications/Anvil.app

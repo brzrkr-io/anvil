@@ -201,6 +201,15 @@ fn snapshot_flux_health() -> Value {
 }
 
 fn is_auth_err(s: &str) -> bool {
+    // A SUCCESSFUL `kubectl ... -o json` response is valid JSON whose DATA may
+    // contain words like "credentials"/"token"/"expired" (a resource name, a
+    // status message). Never flag a JSON body as an auth error — real auth
+    // failures come back as plain-text stderr, not JSON. (This was the bug: a
+    // kustomization JSON containing such a word showed a false "creds expired".)
+    let t = s.trim_start();
+    if t.starts_with('{') || t.starts_with('[') {
+        return false;
+    }
     let l = s.to_lowercase();
     // A missing CLI ("exec: executable aws not found") contains "credentials" but
     // is a PATH problem, not expired auth — let it pass through as a raw error so
@@ -316,6 +325,36 @@ pub fn kube_watch_stop(kind: String) {
     }
     if let Some(s) = watchers().lock().unwrap().get(&kind) {
         s.store(true, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_auth_err;
+
+    #[test]
+    fn json_body_is_never_auth_error() {
+        // The bug: a successful `-o json` response whose DATA contains auth-ish
+        // words (a kustomization name, a status message) was flagged as expired.
+        let json = r#"{"apiVersion":"v1","items":[{"kind":"Kustomization","metadata":{"name":"sso-credentials"},"status":{"conditions":[{"message":"token expired upstream"}]}}]}"#;
+        assert!(!is_auth_err(json));
+    }
+
+    #[test]
+    fn plain_text_auth_error_still_detected() {
+        assert!(is_auth_err(
+            "error: You must be logged in to the server (the server has asked for credentials)"
+        ));
+        assert!(is_auth_err(
+            "the SSO session associated with this profile has expired"
+        ));
+    }
+
+    #[test]
+    fn missing_cli_is_not_auth() {
+        assert!(!is_auth_err(
+            "Unable to connect: getting credentials: exec: executable aws not found"
+        ));
     }
 }
 
