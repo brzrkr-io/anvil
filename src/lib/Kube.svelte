@@ -147,17 +147,25 @@
   const authErr = $derived(conn === "auth");
   const friendlyErr = friendlyK8sError;
 
-  const statusDot = (s: string): string =>
-    s === "Running" || s === "Completed" ? "var(--green)"
-      : /Error|CrashLoop|Failed|Evicted/.test(s) ? "var(--red)"
-      : s === "Pending" || s === "ContainerCreating" ? "var(--yellow)"
-      : "var(--text3)";
-
-  const statusText = (s: string): string =>
-    s === "Running" || s === "Completed" ? "var(--green)"
-      : /Error|CrashLoop|Failed|Evicted/.test(s) ? "var(--red)"
-      : s === "Pending" || s === "ContainerCreating" ? "var(--yellow)"
-      : "var(--text3)";
+  // One semantic status classifier drives the dot, the chip, and the summary —
+  // brand status colors (verified / attention / failure).
+  function statusKind(s: string): "ok" | "warn" | "bad" | "idle" {
+    if (s === "Running") return "ok";
+    if (/Error|CrashLoop|Failed|Evicted|OOMKilled|ImagePull|BackOff|Unknown/i.test(s)) return "bad";
+    if (/Pending|ContainerCreating|Init|Terminating|PodInitializing/i.test(s)) return "warn";
+    return "idle"; // Completed / Succeeded / other steady states
+  }
+  // Operational glance over the whole cluster (pre-filter): the health summary.
+  const podStats = $derived.by(() => {
+    let running = 0, pending = 0, failing = 0;
+    for (const p of podRows) {
+      const k = statusKind(p.status);
+      if (k === "bad") failing++;
+      else if (k === "warn") pending++;
+      else running++;
+    }
+    return { running, pending, failing, total: podRows.length };
+  });
 
   let panel = $state<{ pod: string; content: string; title: string } | null>(null);
   let pfList = $state<{ pid: string; desc: string }[]>([]);
@@ -522,6 +530,13 @@
       {:else if conn === "connecting"}
         <Skeleton rows={10} />
       {:else if podRows.length}
+        <div class="pod-summary">
+          <span class="sum-chip ok"><i></i>{podStats.running} running</span>
+          {#if podStats.pending}<span class="sum-chip warn"><i></i>{podStats.pending} pending</span>{/if}
+          {#if podStats.failing}<span class="sum-chip bad"><i></i>{podStats.failing} failing</span>{/if}
+          <span class="spacer"></span>
+          <span class="sum-total" title={current}>{podStats.total} pods · {current.split('/').pop()}</span>
+        </div>
         <div class="pod-filter">
           <input class="pf-in" placeholder="Filter pods… ({podRows.length})" bind:value={podFilter} spellcheck="false" />
           {#if filteredPods.length > POD_CAP}<span class="pf-cap">showing {POD_CAP} of {filteredPods.length} — filter to narrow</span>{/if}
@@ -543,14 +558,14 @@
             title="View logs"
           >
             <span class="col-dot">
-              <span class="dot" style="background:{statusDot(p.status)}"></span>
+              <span class="dot {statusKind(p.status)}"></span>
             </span>
             <span class="col-name mono">{p.name}</span>
             <span class="col-ready muted">{p.ready}</span>
             <span class="col-restarts" style="color:{Number(p.restarts) > 0 ? 'var(--red)' : 'var(--text3)'}">
               {p.restarts}
             </span>
-            <span class="col-status" style="color:{statusText(p.status)}">{p.status}</span>
+            <span class="col-status"><span class="st-chip {statusKind(p.status)}">{p.status}</span></span>
             <span class="col-age muted">{p.age}</span>
             <span class="col-acts">
               <button class="act" title="Logs (snapshot)" onclick={(e) => { e.stopPropagation(); openLogs(p); }}>
@@ -712,6 +727,25 @@
   .pf-in:focus { outline: none; border-color: var(--text3); }
   .pf-cap { flex: 0 0 auto; font-size: 10px; color: var(--text3); }
 
+  /* Operational health glance — chips encode real cluster state (brand). */
+  .pod-summary {
+    display: flex; align-items: center; gap: 7px; padding: 7px 12px;
+    border-bottom: 1px solid var(--hairline); flex: 0 0 auto;
+  }
+  .pod-summary .spacer { flex: 1; }
+  .sum-chip {
+    display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono);
+    font-size: 11px; font-weight: 500; padding: 2px 9px 2px 8px; border-radius: 11px;
+    border: 1px solid var(--border); color: var(--text2); background: var(--panel2);
+  }
+  .sum-chip i { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; background: var(--text3); }
+  .sum-chip.ok i { background: var(--status-verified, var(--green)); box-shadow: 0 0 5px color-mix(in srgb, var(--status-verified, var(--green)) 70%, transparent); }
+  .sum-chip.warn i { background: var(--status-attention, var(--yellow)); }
+  .sum-chip.bad { color: var(--status-failure, var(--red)); border-color: color-mix(in srgb, var(--status-failure, var(--red)) 45%, var(--border)); }
+  .sum-chip.bad i { background: var(--status-failure, var(--red)); box-shadow: 0 0 5px color-mix(in srgb, var(--status-failure, var(--red)) 70%, transparent); }
+  .sum-total { font-family: var(--font-mono); font-size: 10.5px; color: var(--text3);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 50%; }
+
   /* Shared grid so header + every row align exactly. Actions float on hover
      (absolute) so they never shift the columns. */
   .pod-header, .pod-row {
@@ -729,11 +763,25 @@
 
   /* Columns */
   .col-dot { display: flex; align-items: center; }
-  .dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+  /* Live status dot — sparse glow only on running (live) + failing (attention). */
+  .dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; background: var(--text3); }
+  .dot.ok { background: var(--status-verified, var(--green)); box-shadow: 0 0 5px color-mix(in srgb, var(--status-verified, var(--green)) 75%, transparent); }
+  .dot.warn { background: var(--status-attention, var(--yellow)); }
+  .dot.bad { background: var(--status-failure, var(--red)); box-shadow: 0 0 5px color-mix(in srgb, var(--status-failure, var(--red)) 75%, transparent); }
   .col-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
   .col-ready { text-align: right; }
   .col-restarts { text-align: right; font-family: var(--font-mono); }
   .col-status { text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Status chip — squared pill, semantic color, mono label (brand). */
+  .st-chip {
+    display: inline-block; font-family: var(--font-mono); font-size: 10px; font-weight: 500;
+    letter-spacing: 0.01em; padding: 1px 7px; border-radius: 4px; max-width: 100%;
+    overflow: hidden; text-overflow: ellipsis; vertical-align: middle;
+    color: var(--text3); background: color-mix(in srgb, var(--text) 7%, transparent);
+  }
+  .st-chip.ok { color: var(--status-verified, var(--green)); background: color-mix(in srgb, var(--status-verified, var(--green)) 13%, transparent); }
+  .st-chip.warn { color: var(--status-attention, var(--yellow)); background: color-mix(in srgb, var(--status-attention, var(--yellow)) 13%, transparent); }
+  .st-chip.bad { color: var(--status-failure, var(--red)); background: color-mix(in srgb, var(--status-failure, var(--red)) 14%, transparent); }
   .col-age { text-align: right; }
   .col-acts { position: absolute; right: 8px; top: 0; height: 100%; display: flex; align-items: center; gap: 2px;
     padding-left: 14px; background: linear-gradient(to right, transparent, var(--panel) 16px);
