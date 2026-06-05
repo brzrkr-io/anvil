@@ -20,6 +20,12 @@ describe("classifyK8sError (#5)", () => {
     expect(classifyK8sError("token has expired; pods is forbidden")).toBe("auth");
   });
 
+  it("flags a missing CLI (exec not found) as tooling, not auth", () => {
+    // The real EKS-in-a-GUI failure: contains "credentials" but is a PATH bug.
+    expect(classifyK8sError("getting credentials: exec: executable aws not found")).toBe("tooling");
+    expect(classifyK8sError("kubectl: command not found")).toBe("tooling");
+  });
+
   it("empty is none; unknown is other", () => {
     expect(classifyK8sError("")).toBe("none");
     expect(classifyK8sError("   ")).toBe("none");

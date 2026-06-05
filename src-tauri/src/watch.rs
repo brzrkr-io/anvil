@@ -202,6 +202,12 @@ fn snapshot_flux_health() -> Value {
 
 fn is_auth_err(s: &str) -> bool {
     let l = s.to_lowercase();
+    // A missing CLI ("exec: executable aws not found") contains "credentials" but
+    // is a PATH problem, not expired auth — let it pass through as a raw error so
+    // the UI shows the real cause instead of a false "credentials expired".
+    if l.contains("not found") || l.contains("no such file") || l.contains("command not found") {
+        return false;
+    }
     [
         "expired",
         "credentials",
