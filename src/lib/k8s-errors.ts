@@ -20,6 +20,18 @@ export function classifyK8sError(raw: string | null | undefined): K8sErrorKind {
   return "other";
 }
 
+// Parse `kubectl get ns -o name` output into clean namespace names. On an auth
+// failure the backend returns the kubectl error TEXT instead of a list; keep only
+// valid RFC1123 label names so the error's words can't render as bogus namespace
+// options — and (critically) so repeated error lines can't collide as duplicate
+// keys in the namespace <select>'s keyed each block (each_key_duplicate crash).
+export function parseNamespaces(raw: string | null | undefined): string[] {
+  return (raw ?? "")
+    .split("\n")
+    .map((l) => l.trim().replace(/^namespace\//, ""))
+    .filter((l) => /^[a-z0-9][a-z0-9-]*$/.test(l));
+}
+
 export function friendlyK8sError(raw: string | null | undefined): string {
   switch (classifyK8sError(raw)) {
     case "auth":

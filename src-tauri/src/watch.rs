@@ -20,75 +20,8 @@ use tauri::{AppHandle, Emitter};
 
 use crate::kube::kubectl;
 
-#[derive(Serialize)]
-struct PodRow {
-    ns: String,
-    name: String,
-    ready: String,
-    status: String,
-    restarts: String,
-    age: String,
-}
-
-// Surface broken workloads first (not-running), then high restart counts.
-fn pod_rank(status: &str, restarts: &str) -> u8 {
-    const BROKEN: [&str; 10] = [
-        "Error",
-        "CrashLoop",
-        "Failed",
-        "Evicted",
-        "ImagePull",
-        "Pending",
-        "Unknown",
-        "Init:",
-        "Terminating",
-        "OOMKilled",
-    ];
-    if BROKEN.iter().any(|b| status.contains(b)) {
-        return 0;
-    }
-    if restarts.parse::<i64>().unwrap_or(0) > 0 {
-        return 1;
-    }
-    2
-}
-
-fn parse_pods(text: &str) -> Vec<PodRow> {
-    let mut lines = text.lines();
-    let header = lines.next().unwrap_or("");
-    if !header.starts_with("NAMESPACE") {
-        return vec![];
-    }
-    let mut rows: Vec<PodRow> = lines
-        .filter_map(|l| {
-            let t: Vec<&str> = l.split_whitespace().collect();
-            if t.len() < 5 || t[1].is_empty() {
-                return None;
-            }
-            Some(PodRow {
-                ns: t[0].into(),
-                name: t[1].into(),
-                ready: t[2].into(),
-                status: t[3].into(),
-                restarts: t[4].into(),
-                age: t.last().copied().unwrap_or("").into(),
-            })
-        })
-        .collect();
-    rows.sort_by(|a, b| {
-        pod_rank(&a.status, &a.restarts)
-            .cmp(&pod_rank(&b.status, &b.restarts))
-            .then_with(|| {
-                b.restarts
-                    .parse::<i64>()
-                    .unwrap_or(0)
-                    .cmp(&a.restarts.parse::<i64>().unwrap_or(0))
-            })
-            .then_with(|| a.name.cmp(&b.name))
-    });
-    rows.truncate(400);
-    rows
-}
+// Pods now stream live via kube-rs (`kube_rs.rs`); the kubectl text parser that
+// used to live here is gone. The watcher below still serves Flux over kubectl.
 
 // ── Flux (GitOps) ─────────────────────────────────────────────────────────
 const KUSTOMIZATIONS: &str = "kustomizations.kustomize.toolkit.fluxcd.io";
@@ -288,13 +221,6 @@ fn is_auth_err(s: &str) -> bool {
 /// worker thread, never the UI thread.
 fn snapshot(kind: &str) -> Value {
     match kind {
-        "pods" => match kubectl(&["get", "pods", "-A"]) {
-            Ok(text) if is_auth_err(&text) => {
-                json!({ "rows": [], "error": "Cloud credentials expired or missing." })
-            }
-            Ok(text) => json!({ "rows": parse_pods(&text), "error": "" }),
-            Err(e) => json!({ "rows": [], "error": e }),
-        },
         "flux:health" => snapshot_flux_health(),
         k if k.starts_with("flux:") => snapshot_flux(&k["flux:".len()..]),
         _ => json!({ "rows": [], "error": format!("unknown watch kind: {kind}") }),
@@ -317,6 +243,12 @@ fn watchers() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
 /// data changes, at most every `interval_ms`.
 #[tauri::command]
 pub fn kube_watch_start(app: AppHandle, kind: String, interval_ms: u64) {
+    // Pods are served by the live kube-rs watch (server-push stream), not the
+    // kubectl text poll below.
+    if kind == "pods" {
+        crate::kube_rs::start_pod_watch(app);
+        return;
+    }
     {
         let mut reg = watchers().lock().unwrap();
         if reg.contains_key(&kind) {
@@ -372,6 +304,10 @@ pub fn kube_watch_start(app: AppHandle, kind: String, interval_ms: u64) {
 /// Signal a watcher to stop (it tears down within ~150ms and frees its slot).
 #[tauri::command]
 pub fn kube_watch_stop(kind: String) {
+    if kind == "pods" {
+        crate::kube_rs::stop_pod_watch();
+        return;
+    }
     if let Some(s) = watchers().lock().unwrap().get(&kind) {
         s.store(true, Ordering::Relaxed);
     }
@@ -380,36 +316,10 @@ pub fn kube_watch_stop(kind: String) {
 /// One-shot shaped snapshot for instant first paint and the Refresh button.
 #[tauri::command]
 pub async fn kube_snapshot(kind: String) -> Result<Value, String> {
+    if kind == "pods" {
+        return Ok(crate::kube_rs::pod_snapshot().await);
+    }
     tauri::async_runtime::spawn_blocking(move || snapshot(&kind))
         .await
         .map_err(|e| e.to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{parse_pods, pod_rank};
-
-    #[test]
-    fn broken_pods_sort_first() {
-        let text = "NAMESPACE NAME READY STATUS RESTARTS AGE\n\
-                    default ok-1 1/1 Running 0 4d\n\
-                    prod crash-1 0/1 CrashLoopBackOff 8 12m\n\
-                    default restarted 1/1 Running 3 1d";
-        let rows = parse_pods(text);
-        assert_eq!(rows[0].name, "crash-1"); // broken first
-        assert_eq!(rows[1].name, "restarted"); // then restarts > 0
-        assert_eq!(rows[2].name, "ok-1");
-    }
-
-    #[test]
-    fn rank_orders_broken_then_restarts_then_healthy() {
-        assert_eq!(pod_rank("CrashLoopBackOff", "0"), 0);
-        assert_eq!(pod_rank("Running", "5"), 1);
-        assert_eq!(pod_rank("Running", "0"), 2);
-    }
-
-    #[test]
-    fn non_table_text_yields_no_rows() {
-        assert!(parse_pods("error: something").is_empty());
-    }
 }

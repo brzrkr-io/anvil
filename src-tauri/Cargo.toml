@@ -30,6 +30,9 @@ tauri-plugin-updater = "2.10.1"
 tauri-plugin-window-state = "2"
 rfd = "0.15"
 window-vibrancy = "0.5"
+kube = { version = "3.1.0", default-features = false, features = ["client", "config", "runtime", "rustls-tls"] }
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros"] }
+k8s-openapi = { version = "0.27.1", features = ["v1_31"] }
 
 # Shrink the shipped binary: strip symbols, fat LTO, size-optimized codegen,
 # single codegen unit, and abort-on-panic (drops unwinding tables). Takes the

@@ -6,7 +6,7 @@
   import Skeleton from "$lib/Skeleton.svelte";
   import EmptyState from "$lib/EmptyState.svelte";
   import { toast } from "$lib/toast";
-  import { parsePlanSummary, planBadge, lineClass, type PlanSummary } from "$lib/iac-plan";
+  import { parsePlanSummary, planBadge, lineClass, parsePlanJson, type PlanSummary, type PlanTree } from "$lib/iac-plan";
   import { terraformInvestigation } from "$lib/agent-ops";
 
   let { cwd, onRunCommand, onInvestigate }: { cwd: string; onRunCommand?: (cmd: string) => void; onInvestigate?: (prompt: string) => void } = $props();
@@ -33,6 +33,13 @@
   let running = $state("");
   let err = $state("");
   let outEl = $state<HTMLPreElement | null>(null);
+  // Structured plan tree (terraform show -json) for the active plan, plus which
+  // resources are expanded to reveal their attribute-level diffs.
+  let planTree = $state<PlanTree | null>(null);
+  let expanded = $state<Record<string, boolean>>({});
+  function toggleRes(addr: string) { expanded = { ...expanded, [addr]: !expanded[addr] }; }
+  const glyph = (a: string) =>
+    a === "create" ? "+" : a === "update" ? "~" : a === "delete" ? "-" : a === "replace" ? "±" : a === "read" ? ">" : "·";
 
   const BIN_LABEL: Record<Bin, string> = { terraform: "Terraform", terragrunt: "Terragrunt", tofu: "OpenTofu" };
 
@@ -84,6 +91,8 @@
     activeStack = path;
     output = "";
     outKind = "";
+    planTree = null;
+    expanded = {};
     // Show last-known state + plan result for this stack instantly, then refresh.
     const dir = path && path !== "." ? `${cwd}/${path}` : cwd;
     resources = readCache<string[]>(`tf-state:${dir}`) ?? [];
@@ -138,17 +147,27 @@
     output = "";
     outKind = kind;
     err = "";
+    planTree = null;
+    expanded = {};
     try {
-      const map = { init: "tf_init", validate: "tf_validate", plan: "tf_plan" } as const;
-      output = await invoke<string>(map[cmd], { cwd: activeDir, bin });
-      if (cmd === "plan" && activeStack) {
-        const s = parsePlanSummary(output, true);
-        if (s) {
+      if (cmd === "plan") {
+        // Structured plan: `-out` a binary plan then `show -json` → a real diff
+        // tree (add/change/destroy/replace + attribute diffs), not raw stdout.
+        const j = await invoke<string>("tf_plan_json", { cwd: activeDir, bin });
+        planTree = parsePlanJson(j);
+        if (!planTree) output = j; // unparseable doc → fall back to raw text
+        if (activeStack && planTree) {
+          const c = planTree.counts;
+          const s: PlanSummary = { add: c.create + c.replace, change: c.update, destroy: c.delete + c.replace, none: planTree.changes.length === 0 };
           planResults = { ...planResults, [activeStack]: s };
           writeCache(`tf-plan:${activeDir}`, s);
         }
+        await loadState();
+      } else {
+        const map = { init: "tf_init", validate: "tf_validate" } as const;
+        output = await invoke<string>(map[cmd], { cwd: activeDir, bin });
+        if (cmd === "init") await loadState();
       }
-      if (cmd === "init" || cmd === "plan") await loadState();
       if (outEl) outEl.scrollTop = 0;
     } catch (e) {
       err = String(e);
@@ -194,6 +213,7 @@
     running = "output";
     output = "";
     outKind = "";
+    planTree = null;
     err = "";
     try {
       output =
@@ -245,8 +265,16 @@
   let collapsed = $state<Record<string, boolean>>({});
   function toggle(k: string) { collapsed = { ...collapsed, [k]: !collapsed[k] }; }
 
-  // Plan summary for the active output pane.
-  const summary = $derived(parsePlanSummary(output, outKind === "plan"));
+  // Plan summary for the active output pane. From the structured tree when we
+  // have one (replace counts as add+destroy, matching terraform's Plan line),
+  // else parsed from raw text (init/validate or an unparseable plan).
+  const summary = $derived.by<PlanSummary | null>(() => {
+    if (outKind === "plan" && planTree) {
+      const c = planTree.counts;
+      return { add: c.create + c.replace, change: c.update, destroy: c.delete + c.replace, none: planTree.changes.length === 0 };
+    }
+    return parsePlanSummary(output, outKind === "plan");
+  });
 
   // Last plan result per stack path, so the stacks list shows which have pending
   // changes (drift) without re-planning each. Persisted per stack dir.
@@ -397,7 +425,16 @@
     <div class="out">
       <div class="pane-h">
         <span>{outKind ? outKind[0].toUpperCase() + outKind.slice(1) : "Output"}</span>
-        {#if summary}
+        {#if outKind === "plan" && planTree}
+          {#if planTree.changes.length === 0}
+            <span class="badge ok">No changes</span>
+          {:else}
+            {#if planTree.counts.create}<span class="badge add">+{planTree.counts.create}</span>{/if}
+            {#if planTree.counts.update}<span class="badge chg">~{planTree.counts.update}</span>{/if}
+            {#if planTree.counts.replace}<span class="badge rep">±{planTree.counts.replace}</span>{/if}
+            {#if planTree.counts.delete}<span class="badge del">-{planTree.counts.delete}</span>{/if}
+          {/if}
+        {:else if summary}
           {#if summary.none}
             <span class="badge ok">No changes</span>
           {:else}
@@ -411,6 +448,36 @@
         <div class="out-body busy">{running}…</div>
       {:else if !activeStack}
         <div class="out-body empty">Select a stack to run Terraform.</div>
+      {:else if outKind === "plan" && planTree}
+        {#if planTree.changes.length === 0}
+          <div class="out-body empty">No changes. Infrastructure matches configuration.</div>
+        {:else}
+          <div class="out-body tree">
+            {#each planTree.changes as c (c.address)}
+              <div class="chg-row a-{c.action}" role="button" tabindex="0"
+                title={c.attrs.length ? `${c.attrs.length} attribute change${c.attrs.length === 1 ? "" : "s"} — click to ${expanded[c.address] ? "collapse" : "expand"}` : c.action}
+                onclick={() => toggleRes(c.address)}
+                onkeydown={(e) => e.key === "Enter" && toggleRes(c.address)}>
+                <span class="chg-glyph">{glyph(c.action)}</span>
+                <span class="chg-addr">{c.address}</span>
+                <span class="chg-act">{c.action}</span>
+                {#if c.attrs.length}<span class="chg-n" class:open={expanded[c.address]}>{c.attrs.length}</span>{/if}
+              </div>
+              {#if expanded[c.address] && c.attrs.length}
+                <div class="attrs">
+                  {#each c.attrs as a (a.key)}
+                    <div class="attr">
+                      <span class="attr-key" title={a.key}>{a.key}</span>
+                      <span class="attr-b">{a.before}</span>
+                      <span class="attr-arr">→</span>
+                      <span class="attr-a" class:unknown={a.unknown}>{a.after}</span>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+            {/each}
+          </div>
+        {/if}
       {:else if !output}
         <div class="out-body empty">Run <b>Plan</b> to preview changes in <code>{stackLabel(activeStack)}</code>.</div>
       {:else}
@@ -557,6 +624,7 @@
   .badge.add { color: var(--green); background: color-mix(in srgb, var(--green) 14%, transparent); }
   .badge.chg { color: var(--yellow); background: color-mix(in srgb, var(--yellow) 14%, transparent); }
   .badge.del { color: var(--red); background: color-mix(in srgb, var(--red) 14%, transparent); }
+  .badge.rep { color: var(--status-risk, var(--orange, #b85a30)); background: color-mix(in srgb, var(--status-risk, #b85a30) 16%, transparent); }
   .badge.ok { color: var(--green); background: color-mix(in srgb, var(--green) 14%, transparent); }
   .out-body {
     flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 10px 12px;
@@ -571,6 +639,41 @@
   .ln.rec { color: var(--orange, var(--yellow)); }
   .ln.err { color: var(--red); }
   .ln.ok { color: var(--green); }
+
+  /* Structured plan tree: one row per resource change, click to reveal attr diffs.
+     Left border + glyph carry the semantic action color (brand status palette). */
+  .out-body.tree { padding: 4px 0; font-size: 11.5px; background: var(--bg); }
+  .chg-row {
+    display: flex; align-items: center; gap: 8px; padding: 3px 12px; cursor: default;
+    border-left: 2px solid transparent;
+  }
+  .chg-row:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+  .chg-glyph { flex: 0 0 12px; text-align: center; font-family: var(--font-mono); font-weight: 700; }
+  .chg-addr {
+    flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-family: var(--font-mono); color: var(--text);
+  }
+  .chg-act { flex: 0 0 auto; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text3); }
+  .chg-n {
+    flex: 0 0 auto; font-family: var(--font-mono); font-size: 9.5px; color: var(--text3);
+    background: color-mix(in srgb, var(--text) 8%, transparent); border-radius: 8px; padding: 0 6px;
+  }
+  .chg-n.open { color: var(--text); background: color-mix(in srgb, var(--text) 14%, transparent); }
+  .a-create { border-left-color: var(--status-verified, var(--green)); }
+  .a-create .chg-glyph { color: var(--status-verified, var(--green)); }
+  .a-update { border-left-color: var(--status-attention, var(--yellow)); }
+  .a-update .chg-glyph { color: var(--status-attention, var(--yellow)); }
+  .a-replace { border-left-color: var(--status-risk, var(--orange, #b85a30)); }
+  .a-replace .chg-glyph { color: var(--status-risk, var(--orange, #b85a30)); }
+  .a-delete { border-left-color: var(--status-failure, var(--red)); }
+  .a-delete .chg-glyph { color: var(--status-failure, var(--red)); }
+  .attrs { padding: 2px 0 6px 26px; background: color-mix(in srgb, var(--text) 3%, transparent); }
+  .attr { display: flex; align-items: baseline; gap: 7px; padding: 1px 12px; font-family: var(--font-mono); font-size: 10.5px; line-height: 1.5; }
+  .attr-key { flex: 0 0 auto; color: var(--text2); min-width: 110px; max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .attr-b { color: var(--text3); text-decoration: line-through; opacity: 0.8; word-break: break-all; }
+  .attr-arr { color: var(--text3); flex: 0 0 auto; }
+  .attr-a { color: var(--text); word-break: break-all; }
+  .attr-a.unknown { color: var(--status-attention, var(--yellow)); font-style: italic; }
 
   .empty { padding: 16px 12px; color: var(--text3); font-size: 12px; line-height: 1.5; }
   .empty code { font-family: var(--font-mono); color: var(--text2); }

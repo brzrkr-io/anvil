@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { classifyK8sError, friendlyK8sError } from "./k8s-errors";
+import { classifyK8sError, friendlyK8sError, parseNamespaces } from "./k8s-errors";
 
 describe("classifyK8sError (#5)", () => {
   it("flags expired/SSO credentials as auth", () => {
@@ -34,5 +34,31 @@ describe("friendlyK8sError", () => {
     expect(friendlyK8sError("i/o timeout")).toMatch(/reach the cluster/i);
     expect(friendlyK8sError("")).toBe("");
     expect(friendlyK8sError("raw thing")).toBe("raw thing");
+  });
+});
+
+describe("parseNamespaces", () => {
+  it("keeps valid namespace names", () => {
+    expect(parseNamespaces("default\nkube-system\nflux-system")).toEqual([
+      "default", "kube-system", "flux-system",
+    ]);
+  });
+
+  it("strips a namespace/ prefix", () => {
+    expect(parseNamespaces("namespace/default\nnamespace/cert-manager")).toEqual([
+      "default", "cert-manager",
+    ]);
+  });
+
+  // The regression: kubectl returns the SSO error TEXT on expired creds. Split
+  // into lines it produced duplicate strings that crashed the keyed <select>
+  // (each_key_duplicate at indexes 5 and 6). parseNamespaces must drop it whole,
+  // even when the line repeats — no bogus options, nothing to collide.
+  it("drops kubectl auth-error text entirely (even when repeated)", () => {
+    const sso =
+      "The SSO session associated with this profile has expired or is otherwise invalid. To refresh this SSO session run aws sso login with the corresponding profile.";
+    expect(parseNamespaces(`${sso}\n${sso}`)).toEqual([]);
+    expect(parseNamespaces("error: You must be logged in to the server (Unauthorized)")).toEqual([]);
+    expect(parseNamespaces("")).toEqual([]);
   });
 });

@@ -11,8 +11,47 @@ fn port_forwards() -> &'static Mutex<HashMap<u32, (std::process::Child, String)>
     PORT_FORWARDS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+// Hybrid view-only context model: Anvil drives which cluster it QUERIES via a
+// `--context` flag injected on every resource call, without ever running
+// `kubectl config use-context` (which rewrites the user's kubeconfig and moves
+// every other terminal). Empty = fall back to the kubeconfig's own
+// current-context (ambient), so the first paint just works.
+static VIEW_CONTEXT: std::sync::OnceLock<Mutex<String>> = std::sync::OnceLock::new();
+fn view_context() -> &'static Mutex<String> {
+    VIEW_CONTEXT.get_or_init(|| Mutex::new(String::new()))
+}
+
+/// Set the context Anvil queries (view-only — does NOT touch kubeconfig). Empty
+/// clears it back to the ambient kubeconfig current-context.
+#[tauri::command]
+pub fn kube_set_view_context(name: String) {
+    *view_context().lock().unwrap() = name;
+    // Tell the live kube-rs watch to reconnect to the newly selected cluster.
+    crate::kube_rs::ctx_changed().notify_waiters();
+}
+
+/// The currently selected view-context (empty = ambient). Read by the kube-rs
+/// watch to know which cluster to connect to.
+pub(crate) fn view_context_value() -> String {
+    view_context().lock().unwrap().clone()
+}
+
+/// Whether to inject `--context <sel>` for a kubectl invocation. View-only
+/// context applies to resource ops only: never to `kubectl config ...` (those
+/// operate on the kubeconfig file itself, so --context is wrong there — and it
+/// must never silently rewrite the user's current-context), and never when the
+/// caller already passed an explicit --context.
+fn should_inject_context(sel: &str, args: &[&str]) -> bool {
+    !sel.is_empty() && args.first() != Some(&"config") && !args.contains(&"--context")
+}
+
 pub(crate) fn kubectl(args: &[&str]) -> Result<String, String> {
     let mut cmd = crate::shared::command("kubectl");
+    // Inject the view-only context for resource ops (see should_inject_context).
+    let sel = view_context().lock().unwrap().clone();
+    if should_inject_context(&sel, args) {
+        cmd.arg("--context").arg(&sel);
+    }
     cmd.args(args);
     let profile = aws_profile().lock().unwrap().clone();
     if !profile.is_empty() {
@@ -509,5 +548,50 @@ region = us-west-2
     #[test]
     fn empty_when_profile_absent() {
         assert_eq!(aws_profile_sso_session(CONFIG, "nope"), "");
+    }
+}
+
+#[cfg(test)]
+mod view_context_tests {
+    use super::should_inject_context;
+
+    #[test]
+    fn injects_for_resource_ops_when_a_context_is_selected() {
+        assert!(should_inject_context("prod", &["get", "pods", "-A"]));
+        assert!(should_inject_context("prod", &["get", "ns", "-o", "name"]));
+    }
+
+    #[test]
+    fn no_injection_without_a_selection() {
+        // Empty selection ⇒ fall back to the kubeconfig's ambient current-context.
+        assert!(!should_inject_context("", &["get", "pods", "-A"]));
+    }
+
+    #[test]
+    fn never_injects_into_kubeconfig_config_commands() {
+        // The whole point of view-only: config ops must not get a --context, so
+        // current-context/get-contexts keep reading the real file and the opt-in
+        // use-context keeps writing it.
+        assert!(!should_inject_context(
+            "prod",
+            &["config", "current-context"]
+        ));
+        assert!(!should_inject_context(
+            "prod",
+            &["config", "get-contexts", "-o", "name"]
+        ));
+        assert!(!should_inject_context(
+            "prod",
+            &["config", "use-context", "other"]
+        ));
+    }
+
+    #[test]
+    fn respects_an_explicit_context_from_the_caller() {
+        // Per-pod commands pass their own --context; don't double-inject.
+        assert!(!should_inject_context(
+            "prod",
+            &["--context", "explicit", "get", "pods"]
+        ));
     }
 }

@@ -1,8 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { listen } from "@tauri-apps/api/event";
-  import { readCache, writeCache } from "$lib/cache";
-  import { classifyK8sError, friendlyK8sError } from "$lib/k8s-errors";
+  import { classifyK8sError, friendlyK8sError, parseNamespaces } from "$lib/k8s-errors";
   import { reauthActions, type CloudAuth } from "$lib/kube-cloud";
   import { invoke } from "@tauri-apps/api/core";
   import Icon from "$lib/Icon.svelte";
@@ -19,16 +18,34 @@
   let { cwd, onRunCommand, onHealth, onInvestigate, onCheckConnections, active = true }: { cwd: string; onRunCommand?: (cmd: string) => void; onHealth?: (failing: number) => void; onInvestigate?: (prompt: string) => void; onCheckConnections?: () => void; active?: boolean } = $props();
 
   let contexts = $state<string[]>([]);
+  // `current` = the context Anvil VIEWS (queries via --context); `shellCtx` =
+  // the kubeconfig's own current-context (what the user's terminals use). In the
+  // hybrid view-only model these can differ: picking a cluster here never writes
+  // kubeconfig, so the shell stays put until you explicitly sync it.
   let current = $state("");
+  let shellCtx = $state("");
   // A10: pin favorite kubeconfig contexts to the top of the switcher.
   const PIN_KEY = "anvil-kube-pinned";
   let pinned = $state<string[]>(
     (() => { try { return JSON.parse(localStorage.getItem(PIN_KEY) || "[]"); } catch { return []; } })(),
   );
+  // Recently-viewed contexts (most-recent-first) float just under the pinned
+  // ones so the clusters you actually use sit at the top of the switcher.
+  const RECENT_KEY = "anvil-kube-recent";
+  let recent = $state<string[]>(
+    (() => { try { return JSON.parse(localStorage.getItem(RECENT_KEY) || "[]"); } catch { return []; } })(),
+  );
+  function rememberRecent(name: string) {
+    recent = [name, ...recent.filter((r) => r !== name)].slice(0, 6);
+    try { localStorage.setItem(RECENT_KEY, JSON.stringify(recent)); } catch { /* ignore */ }
+  }
   const sortedContexts = $derived(
     [...contexts].sort((a, b) => {
       const pa = pinned.includes(a), pb = pinned.includes(b);
-      return pa === pb ? a.localeCompare(b) : pa ? -1 : 1;
+      if (pa !== pb) return pa ? -1 : 1;
+      const ra = recent.indexOf(a), rb = recent.indexOf(b);
+      const fa = ra === -1 ? 99 : ra, fb = rb === -1 ? 99 : rb;
+      return fa !== fb ? fa - fb : a.localeCompare(b);
     }),
   );
   function togglePin(name: string) {
@@ -36,7 +53,9 @@
     localStorage.setItem(PIN_KEY, JSON.stringify(pinned));
   }
   let namespaces = $state<string[]>([]);
-  let currentNs = $state("default");
+  // "" = All namespaces (pods are listed cluster-wide; this is a client-side
+  // filter + the default ns for per-pod actions). Persisted, view-only.
+  let currentNs = $state((() => { try { return localStorage.getItem("anvil-kube-ns") ?? ""; } catch { return ""; } })());
   // Resizable width of the pods table when the log/describe panel is open.
   let podsW = $state((() => { try { return Number(localStorage.getItem("anvil-kube-podsw")) || 640; } catch { return 640; } })());
   // #24 Pin favorite namespaces to the top of the switcher (mirrors contexts).
@@ -72,29 +91,60 @@
   // and capped at 400 in Rust off the UI thread, then pushed over `kube://pods`
   // only when they change. The frontend is a dumb subscriber — no polling, no
   // parse, no jank. Render straight from `livePods`.
-  // Guard the cache: a pre-migration cache stored the raw pods TEXT, not Pod[].
-  // Reject anything that isn't an array of rows with a name, so a stale value
-  // can't feed undefined keys into the {#each} (each_key_duplicate crash).
-  function cachedPods(): Pod[] {
-    const c = readCache<unknown>("kube-pods");
-    return Array.isArray(c) && c.every((p) => p && typeof (p as Pod).name === "string" && (p as Pod).name) ? (c as Pod[]) : [];
-  }
-  let livePods = $state<Pod[]>(cachedPods());
+  // Auth-gated: NEVER seed from cache or render stale cluster data. Pods start
+  // empty and appear only on a live, authenticated read of the CURRENT cluster
+  // this session (conn === "live"). Showing a dead session's pods — or the
+  // previous context's — then flashing to a login prompt is exactly wrong.
+  let livePods = $state<Pod[]>([]);
   const podRows = $derived(livePods);
+
+  // Per-cluster connection state — the single source of truth for what renders.
+  // Data shows ONLY when "live". Switching context resets to "connecting" and
+  // clears pods, so the old cluster never lingers on screen.
+  type ConnState = "connecting" | "live" | "auth" | "error";
+  let conn = $state<ConnState>("connecting");
+  function applyPods(rows: Pod[], err: string) {
+    if (err) {
+      k8sErr = err;
+      livePods = []; // never show stale data behind an error
+      conn = classifyK8sError(err) === "auth" ? "auth" : "error";
+      return;
+    }
+    k8sErr = "";
+    livePods = rows;
+    conn = "live";
+  }
 
   // Client-side filter only (cap already applied in Rust).
   let podFilter = $state("");
   const POD_CAP = 400;
   const filteredPods = $derived(
-    podFilter.trim()
-      ? podRows.filter((p) => `${p.name} ${p.ns}`.toLowerCase().includes(podFilter.toLowerCase()))
-      : podRows,
+    podRows.filter(
+      (p) =>
+        (!currentNs || p.ns === currentNs) &&
+        (!podFilter.trim() || `${p.name} ${p.ns}`.toLowerCase().includes(podFilter.toLowerCase())),
+    ),
   );
-  const shownPods = $derived(filteredPods.slice(0, POD_CAP));
+  // Stable, de-duplicated rows. The {#each} keys on ns/name ALONE (no index) so a
+  // pod that re-ranks (broken-first) is MOVED, not destroyed+recreated — that DOM
+  // churn was the "jumpy" flashing + scroll reset every 5s. Dedupe guards the
+  // keyed each against a malformed parse yielding two rows with the same ns/name.
+  const shownPods = $derived.by(() => {
+    const seen = new Set<string>();
+    const out: Pod[] = [];
+    for (const p of filteredPods) {
+      const k = `${p.ns}/${p.name}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(p);
+      if (out.length >= POD_CAP) break;
+    }
+    return out;
+  });
 
   // Auth-error detection drives the re-auth banner; full classification (auth /
   // rbac / network) lives in the shared, unit-tested k8s-errors helper (#5).
-  const authErr = $derived(classifyK8sError(k8sErr) === "auth");
+  const authErr = $derived(conn === "auth");
   const friendlyErr = friendlyK8sError;
 
   const statusDot = (s: string): string =>
@@ -115,16 +165,22 @@
   async function load() {
     busy = true;
     // Context/namespace metadata (cheap). Pods stream in from the watcher.
-    const [ctxs, cur, curNs, nss] = await Promise.allSettled([
+    // kube_namespaces is context-aware (the backend injects the view context),
+    // so it lists the namespaces of the cluster Anvil is VIEWING, not the shell.
+    const [ctxs, cur, nss] = await Promise.allSettled([
       invoke<string>("kube_contexts"),
       invoke<string>("kube_current_context"),
-      invoke<string>("kube_current_namespace"),
       invoke<string>("kube_namespaces"),
     ]);
     contexts = ctxs.status === "fulfilled" ? ctxs.value.split("\n").filter(Boolean) : [];
-    current = cur.status === "fulfilled" ? cur.value.trim() : "";
-    currentNs = curNs.status === "fulfilled" ? curNs.value.trim() || "default" : "default";
-    namespaces = nss.status === "fulfilled" ? nss.value.split("\n").filter(Boolean) : [];
+    // Ambient kubeconfig context = what the user's terminals use.
+    shellCtx = cur.status === "fulfilled" ? cur.value.trim() : "";
+    // Seed the viewed context from the shell on first load so the page just
+    // works; once the user has picked a cluster, keep their selection.
+    if (!current) current = shellCtx;
+    // parseNamespaces keeps only valid label names: on an auth failure the
+    // backend returns kubectl error TEXT, which must not become namespace options.
+    namespaces = nss.status === "fulfilled" ? parseNamespaces(nss.value) : [];
     // Per-context AWS/cloud auth detail (profile, region, cluster, sso_session,
     // live auth status) for the CURRENT context only — drives precise SSO login.
     if (current) {
@@ -132,11 +188,8 @@
         .then((ci) => (cloudInfo = ci))
         .catch(() => (cloudInfo = null));
     } else cloudInfo = null;
-    // No active context but kubeconfig has some → restore the last one we used
-    // (#7) so the page just works; only prompt if we have nothing to restore.
+    // No context to view at all (empty kubeconfig / none restored) → prompt.
     if (!current && contexts.length) {
-      const remembered = (() => { try { return localStorage.getItem("anvil-kube-context") || ""; } catch { return ""; } })();
-      if (remembered && contexts.includes(remembered)) { busy = false; await useCtx(remembered); return; }
       k8sErr = "Select a context above to load resources.";
     }
     busy = false;
@@ -148,19 +201,15 @@
   async function refreshPods() {
     try {
       const p = await invoke<PodPayload>("kube_snapshot", { kind: "pods" });
-      const rows = Array.isArray(p.rows) ? p.rows : [];
-      k8sErr = p.error ?? "";
-      // Keep last-known rows on a failed snapshot (see listen handler).
-      if (k8sErr && rows.length === 0 && livePods.length) return;
-      livePods = rows;
-      writeCache("kube-pods", livePods);
+      applyPods(Array.isArray(p.rows) ? p.rows : [], p.error ?? "");
     } catch {
+      // Backend predates the watcher (dev backend not restarted) — legacy text
+      // path, still auth-gated (no stale, no cache).
       try {
         const text = await invoke<string>("kube_pods", { context: "" });
-        if (classifyK8sError(text) === "auth") { livePods = []; k8sErr = "Cloud credentials expired or missing."; return; }
-        livePods = parsePodsText(text); k8sErr = "";
-        writeCache("kube-pods", livePods);
-      } catch (e) { k8sErr = String(e); }
+        if (classifyK8sError(text) === "auth") applyPods([], "Cloud credentials expired or missing.");
+        else applyPods(parsePodsText(text), "");
+      } catch (e) { applyPods([], String(e)); }
     }
   }
 
@@ -190,17 +239,40 @@
   async function useCtx(name: string) {
     if (!name || name === current) return;
     busy = true;
-    try { await invoke("kube_use_context", { name }); current = name; try { localStorage.setItem("anvil-kube-context", name); } catch { /* ignore */ } await load(); refreshPods(); }
-    catch (e) { k8sErr = String(e); }
+    // View-only: tell the backend which cluster to QUERY (it injects --context
+    // on every kubectl call) — never `kubectl config use-context`, so the user's
+    // terminals stay on whatever context they were already using.
+    try {
+      await invoke("kube_set_view_context", { name });
+      current = name;
+      rememberRecent(name);
+      try { localStorage.setItem("anvil-kube-context", name); } catch { /* ignore */ }
+      currentNs = ""; // namespaces differ per cluster — reset to All
+      panel = null;
+      conn = "connecting"; livePods = []; // drop the old cluster instantly — no stale bleed
+      await load();
+      refreshPods();
+    } catch (e) { k8sErr = String(e); }
     busy = false;
   }
 
-  async function useNs(ns: string) {
-    if (!ns || ns === currentNs) return;
-    busy = true;
-    try { await invoke("kube_set_namespace", { namespace: ns }); currentNs = ns; await load(); refreshPods(); }
-    catch (e) { k8sErr = String(e); }
-    busy = false;
+  function useNs(ns: string) {
+    // View-only: the namespace is a client-side filter + default for per-pod
+    // actions; pods are listed cluster-wide (-A). Don't pin it into kubeconfig.
+    currentNs = ns;
+    try { localStorage.setItem("anvil-kube-ns", ns); } catch { /* ignore */ }
+  }
+
+  // Opt-in escape hatch from the view-only model: actually move the shell's
+  // kubeconfig current-context to match what Anvil is viewing, so the user's
+  // terminals follow. The ONLY place Anvil writes kubeconfig.
+  async function syncShellContext() {
+    if (!current) return;
+    try {
+      await invoke("kube_use_context", { name: current });
+      shellCtx = current;
+      toast(`Shell context → ${current}`, "success");
+    } catch (e) { toast(String(e).slice(0, 100), "error"); }
   }
 
   async function openLogs(p: Pod) {
@@ -326,20 +398,17 @@
     invoke("kube_watch_stop", { kind: "pods" }).catch(() => {});
   }
   onMount(async () => {
+    // Restore the last cluster Anvil was VIEWING (view-only — does not move the
+    // shell). load() then lists that cluster's namespaces + streams its pods.
+    const remembered = (() => { try { return localStorage.getItem("anvil-kube-context") || ""; } catch { return ""; } })();
+    if (remembered) { current = remembered; invoke("kube_set_view_context", { name: remembered }).catch(() => {}); }
     load();
     refreshPf();
     try {
       unlistenPods = await listen<PodPayload>("kube://pods", (e) => {
-        const rows = Array.isArray(e.payload?.rows) ? e.payload.rows : [];
-        const err = e.payload?.error ?? "";
-        k8sErr = err;
-        // Keep the last good rows on a failed poll (expired creds, transient
-        // network) so the page stays populated (dimmed) instead of blanking
-        // out mid-session. Only replace when we actually got data, or when the
-        // cluster legitimately has no pods (no error).
-        if (err && rows.length === 0 && livePods.length) return;
-        livePods = rows;
-        writeCache("kube-pods", livePods);
+        // Auth-gated: an error (expired creds, unreachable) clears the pods and
+        // flips to the auth/error state — we never keep showing the last batch.
+        applyPods(Array.isArray(e.payload?.rows) ? e.payload.rows : [], e.payload?.error ?? "");
       });
     } catch { /* no Tauri event bus (e.g. browser preview) — snapshot still works */ }
   });
@@ -355,16 +424,22 @@
   <!-- Top bar: context, namespace, refresh -->
   <div class="topbar">
     <span class="lbl">Context</span>
-    <select value={current} onchange={(e) => useCtx((e.currentTarget as HTMLSelectElement).value)} disabled={busy}>
+    <select value={current} onchange={(e) => useCtx((e.currentTarget as HTMLSelectElement).value)} disabled={busy} title="Cluster Anvil is viewing — does not change your shell's kubectl context">
       {#each sortedContexts as c, i (c + '#' + i)}<option value={c}>{pinned.includes(c) ? "★ " : ""}{c}</option>{/each}
-      {#if !contexts.length && current}<option value={current}>{current}</option>{/if}
+      {#if current && !contexts.includes(current)}<option value={current}>{current}</option>{/if}
     </select>
     {#if current}
       <button class="pin" class:on={pinned.includes(current)} title={pinned.includes(current) ? "Unpin context" : "Pin context to top"} onclick={() => togglePin(current)}>★</button>
     {/if}
+    {#if current && shellCtx && current !== shellCtx}
+      <button class="shellsync" onclick={syncShellContext}
+        title={`Your shell/kubectl is on "${shellCtx}". Anvil is only viewing "${current}". Click to point your shell here too (kubectl config use-context).`}>
+        <Icon name="terminal" size={11} /> shell: {shellCtx}
+      </button>
+    {/if}
     <span class="lbl">Namespace</span>
-    <select value={currentNs} onchange={(e) => useNs((e.currentTarget as HTMLSelectElement).value)} disabled={busy}>
-      {#if !namespaces.includes(currentNs)}<option value={currentNs}>{currentNs}</option>{/if}
+    <select value={currentNs} onchange={(e) => useNs((e.currentTarget as HTMLSelectElement).value)} disabled={busy} title="Filter pods by namespace">
+      <option value="">All namespaces</option>
       {#each sortedNamespaces as n, i (n + '#' + i)}<option value={n}>{pinnedNs.includes(n) ? "★ " : ""}{n}</option>{/each}
     </select>
     {#if currentNs}
@@ -395,7 +470,6 @@
       {/each}
       <button class="ghost" onclick={() => { load(); refreshPods(); fluxNonce++; }}>Retry</button>
       {#if onCheckConnections}<button class="ghost" onclick={onCheckConnections}>Check connections</button>{/if}
-      {#if livePods.length}<span class="stale">showing last-known pods</span>{/if}
     </div>
   {/if}
 
@@ -440,9 +514,13 @@
   <!-- Main pod table / panel split -->
   <div class="body">
     <!-- Pod table -->
-    <div class="pods" class:split={!!panel} class:stale={authErr && livePods.length} style={panel ? `flex:0 0 ${podsW}px` : ""}>
-      {#if k8sErr && !authErr}
-        <div class="empty">{k8sErr}</div>
+    <div class="pods" class:split={!!panel} style={panel ? `flex:0 0 ${podsW}px` : ""}>
+      {#if conn === "auth"}
+        <EmptyState icon="kube" title="Not connected" hint={`Authenticate to "${current}" above — nothing is shown until this cluster is connected.`} />
+      {:else if conn === "error"}
+        <div class="empty" title={k8sErr}>{friendlyErr(k8sErr)}</div>
+      {:else if conn === "connecting"}
+        <Skeleton rows={10} />
       {:else if podRows.length}
         <div class="pod-filter">
           <input class="pf-in" placeholder="Filter pods… ({podRows.length})" bind:value={podFilter} spellcheck="false" />
@@ -458,7 +536,7 @@
           <span class="col-age">Age</span>
           <span class="col-acts"></span>
         </div>
-        {#each shownPods as p, i (`${p.ns}/${p.name}/${i}`)}
+        {#each shownPods as p (`${p.ns}/${p.name}`)}
           <div class="pod-row" role="button" tabindex="0"
             onclick={() => openLogs(p)}
             onkeydown={(e) => e.key === "Enter" && openLogs(p)}
@@ -505,14 +583,8 @@
             </span>
           </div>
         {/each}
-      {:else if !busy}
-        {#if k8sErr}
-          <div class="empty" title={k8sErr}>{friendlyErr(k8sErr)}</div>
-        {:else}
-          <EmptyState icon="kube" title="No pods found" hint="This namespace has no pods, or a filter is hiding them." />
-        {/if}
       {:else}
-        <Skeleton rows={10} />
+        <EmptyState icon="kube" title="No pods" hint="This cluster has no pods in the selected namespace." />
       {/if}
     </div>
 
@@ -567,6 +639,15 @@
   .pin.on { color: var(--status-attention, var(--yellow, #d8a657)); }
   .spacer { flex: 1; }
   .spin { color: var(--accent); font-size: 12px; }
+  /* Opt-in shell-context sync: shown only when Anvil is viewing a different
+     cluster than the shell. Coral = trace/active operational state (brand). */
+  .shellsync {
+    display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto;
+    background: transparent; border: 1px solid var(--border); color: var(--text3);
+    font-family: var(--font-mono); font-size: 10.5px; padding: 1px 7px;
+    border-radius: 6px; cursor: default; white-space: nowrap;
+  }
+  .shellsync:hover { color: var(--accent); border-color: var(--accent); }
 
   /* Icon buttons */
   .iconbtn {
@@ -593,9 +674,6 @@
   }
   .authbar button.ghost { background: transparent; color: var(--text2); border-color: var(--border); }
   .authbar button:hover { filter: brightness(1.08); }
-  .authbar .stale { color: var(--text3); font-style: italic; margin-left: auto; }
-  /* Stale data (creds expired) — dim the last-known rows until they refresh. */
-  .pods.stale { opacity: 0.5; transition: opacity 0.2s; }
 
   /* Port-forwards */
   .section-head {

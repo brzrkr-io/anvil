@@ -1,0 +1,75 @@
+{
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "local_file.alpha",
+      "mode": "managed",
+      "type": "local_file",
+      "name": "alpha",
+      "provider_name": "registry.terraform.io/hashicorp/local",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "before": null,
+        "after": {
+          "content": "hello",
+          "content_base64": null,
+          "directory_permission": "0777",
+          "file_permission": "0777",
+          "filename": "./alpha.txt",
+          "sensitive_content": null,
+          "source": null
+        },
+        "after_unknown": {
+          "content_base64sha256": true,
+          "content_base64sha512": true,
+          "content_md5": true,
+          "content_sha1": true,
+          "content_sha256": true,
+          "content_sha512": true,
+          "id": true
+        },
+        "before_sensitive": false,
+        "after_sensitive": {
+          "sensitive_content": true
+        }
+      }
+    },
+    {
+      "address": "local_file.beta",
+      "mode": "managed",
+      "type": "local_file",
+      "name": "beta",
+      "provider_name": "registry.terraform.io/hashicorp/local",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "before": null,
+        "after": {
+          "content": "world",
+          "content_base64": null,
+          "directory_permission": "0777",
+          "file_permission": "0777",
+          "filename": "./beta.txt",
+          "sensitive_content": null,
+          "source": null
+        },
+        "after_unknown": {
+          "content_base64sha256": true,
+          "content_base64sha512": true,
+          "content_md5": true,
+          "content_sha1": true,
+          "content_sha256": true,
+          "content_sha512": true,
+          "id": true
+        },
+        "before_sensitive": false,
+        "after_sensitive": {
+          "sensitive_content": true
+        }
+      }
+    }
+  ]
+}

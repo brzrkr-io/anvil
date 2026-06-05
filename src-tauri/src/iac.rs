@@ -245,6 +245,36 @@ pub async fn tf_plan(cwd: String, bin: String) -> Result<String, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// Structured plan for rich review: write a binary plan with `plan -out`, then
+/// `show -json` it so the UI can render a per-resource add/change/destroy/replace
+/// tree with attribute-level diffs instead of scraping human stdout. Returns the
+/// `show -json` document on success; on a failed plan, returns the human plan
+/// output as the error so the UI can show why it broke. Read-only — `-out` writes
+/// only a throwaway plan file, never touches infra.
+#[tauri::command]
+pub async fn tf_plan_json(cwd: String, bin: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let plan_file =
+            std::env::temp_dir().join(format!("anvil-tfplan-{}.bin", std::process::id()));
+        let plan_path = plan_file.to_string_lossy().to_string();
+        // 1) Produce the binary plan (human output doubles as error detail).
+        let human = tf_exec(
+            &bin,
+            &cwd,
+            &["plan", "-no-color", "-input=false", "-out", &plan_path],
+        )?;
+        // 2) Convert it to the machine-readable JSON document.
+        let json = tf_exec(&bin, &cwd, &["show", "-json", &plan_path]);
+        let _ = std::fs::remove_file(&plan_file);
+        match json {
+            Ok(j) if j.trim_start().starts_with('{') => Ok(j),
+            _ => Err(human),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// `<bin> state list` — managed resource addresses in current state.
 #[tauri::command]
 pub async fn tf_state_list(cwd: String, bin: String) -> Result<String, String> {

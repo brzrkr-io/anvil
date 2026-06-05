@@ -13,6 +13,7 @@ mod fs;
 mod git;
 mod iac;
 mod kube;
+mod kube_rs;
 mod llm;
 mod lsp;
 mod observability;
@@ -368,6 +369,7 @@ pub fn run() {
             iac::tf_init,
             iac::tf_validate,
             iac::tf_plan,
+            iac::tf_plan_json,
             iac::tf_state_list,
             iac::tf_output,
             iac::tg_stack_output,
@@ -391,6 +393,7 @@ pub fn run() {
             kube::kube_diff,
             kube::kube_current_context,
             kube::kube_use_context,
+            kube::kube_set_view_context,
             kube::kube_namespaces,
             kube::kube_current_namespace,
             kube::kube_set_namespace,
